@@ -106,23 +106,24 @@ See [MOD_SUPPORT.md](/docs/MOD_SUPPORT.md) for detailed documentation.
 
 ## Building
 
-[Check out the building instructions here](/docs/BUILDING.md).
-
-### Quick Start
+Install the [platform prerequisites](docs/BUILDING.md#1-install-prerequisites), then:
 
 ```bash
-# Clone with submodules
-git clone --recurse-submodules https://github.com/OZORDI/LibertyRecomp.git
+git clone https://github.com/OZORDI/LibertyRecomp.git
 cd LibertyRecomp
-
-# Add game files to LibertyRecompLib/private/
-# - default.xex
-# - xbox360.rpf
-
-# Configure and build (macOS example)
-cmake . --preset macos-release
-cmake --build ./out/build/macos-release --target LibertyRecomp
+python3 tools/setup_repo.py
 ```
+
+Setup fetches all pinned dependencies and applies the required source patches.
+On Windows use `py -3` instead of `python3`. After pulling an update:
+
+```bash
+git -c submodule.recurse=false pull --ff-only
+python3 tools/setup_repo.py
+```
+
+See [Building Liberty Recompiled](docs/BUILDING.md) for build presets, CMake 4 support,
+prerequisites, and recovery from incomplete/manual dependency downloads.
 
 ## Documentation
 

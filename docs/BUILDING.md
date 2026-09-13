@@ -1,223 +1,181 @@
 # Building Liberty Recompiled
 
-Liberty Recompiled is an unofficial PC port of Grand Theft Auto IV for Xbox 360, created through static recompilation. This guide covers building the project from source.
+This guide covers contributor setup and native desktop builds. Dependency sources for
+all platforms and tools are fetched by the setup command. Platform SDKs and compilers
+are installed separately using the prerequisites below.
 
-## Supported Platforms
+## 1. Install Prerequisites
 
-| Platform | Architecture | Status | CMake Preset |
-|-|-|-|-|
-| Windows | x64 | Supported | `x64-Clang-Release` |
-| Windows | ARM64 | Supported | `arm64-Clang-Release` |
-| Linux | x64 | Supported | `linux-release` |
-| Linux | ARM64 | Supported | `linux-release` |
-| macOS | ARM64 (Apple Silicon) | Supported | `macos-release` |
-| macOS | x64 (Intel) | Supported | `macos-release` |
-| iOS | ARM64 | Experimental | `ios-release` |
-| Android | ARM64 | Experimental | `android-release` |
-| PS4 | x64 | Experimental | `ps4-release` |
-| Switch | ARM64 | Experimental | `switch-release` |
-
-## 1. Clone the Repository
-
-Clone **LibertyRecomp** with submodules using [Git](https://git-scm.com/).
-```
-git clone --recurse-submodules https://github.com/OZORDI/LibertyRecomp.git
-```
+Use **Git, Python 3.10+, CMake 3.29+, Ninja, and Clang 18+** with a C++23-capable
+standard library. CMake 4 is supported; do not downgrade a distro's system CMake.
 
 ### Windows
-If you skipped the `--recurse-submodules` argument during cloning, you can run `update_submodules.bat` to ensure the submodules are pulled.
 
-## 2. Add the Required Game Files
-
-Copy the following files from your GTA IV Xbox 360 game and place them inside `./LibertyRecompLib/private/`:
-- `default.xex` - Main executable (from game root)
-- `xbox360.rpf` - Main game archive (from game root)
-
-> [!TIP]
-> It is recommended that you install the game using [an existing Liberty Recompiled release](https://github.com/OZORDI/LibertyRecomp/releases/latest) to acquire these files, otherwise you'll need to rely on third-party tools to extract them from your Xbox 360 disc or ISO.
->
-> When sourcing these files from a Liberty Recompiled installation, they will be stored under the `game` subdirectory.
-
-### Shader Files (Optional)
-
-For shader development, you can also copy the shader files from `common/shaders/` to enable the shader pipeline:
-- All `.fxc` files from the game's shader directories
-
-These will be automatically processed during installation to generate platform-native shader caches.
-
-## 3. Install Dependencies
-
-### Windows (x64 and ARM64)
-You will need to install [Visual Studio 2022](https://visualstudio.microsoft.com/downloads/).
-
-In the installer, you must select the following **Workloads** and **Individual components** for installation:
-- Desktop development with C++
-- C++ Clang Compiler for Windows
-- C++ CMake tools for Windows
-
-For **ARM64 builds**, also install:
-- C++ ARM64/ARM64EC build tools (Latest)
-- MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools
+Install Visual Studio 2022 with **Desktop development with C++**, **C++ Clang Compiler
+for Windows**, and **C++ CMake tools for Windows**. Install Python and Git for Windows.
+Use a Visual Studio developer terminal and check `clang-cl --version` and
+`cmake --version` against the minimum versions above. For ARM64, also install the
+ARM64/ARM64EC C++ build tools and use an ARM64 developer terminal.
 
 ### Linux
-The following command will install the required dependencies on a distro that uses `apt` (such as Debian-based distros).
-```bash
-sudo apt install autoconf automake libtool pkg-config curl cmake ninja-build clang clang-tools libgtk-3-dev
-```
-The following command will install the required dependencies on a distro that uses `pacman` (such as Arch-based distros).
-```bash
-sudo pacman -S base-devel ninja lld clang gtk3
-```
-You can also find the equivalent packages for your preferred distro.
 
-> [!NOTE]
-> This list may not be comprehensive for your particular distro and you may be required to install additional packages, should an error occur during configuration.
+For Arch Linux:
+
+```bash
+sudo pacman -Syu --needed base-devel git python cmake ninja clang lld pkgconf curl zip unzip \
+  autoconf automake libtool gtk3 libx11 libxrandr libxcursor libxi libxinerama libxext \
+  libxkbcommon wayland wayland-protocols libdecor alsa-lib libpulse dbus libusb \
+  openssl vulkan-icd-loader vulkan-headers nasm
+```
+
+For Ubuntu/Debian, install the corresponding development packages:
+
+```bash
+sudo apt update
+sudo apt install git python3 cmake ninja-build clang lld build-essential pkg-config \
+  curl zip unzip autoconf automake libtool libgtk-3-dev libx11-dev libxrandr-dev \
+  libxcursor-dev libxi-dev libxinerama-dev libxext-dev libxkbcommon-dev libwayland-dev \
+  wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libdbus-1-dev \
+  libusb-1.0-0-dev libssl-dev libvulkan-dev nasm
+```
+
+Check the installed versions. Older distro releases need a newer CMake/LLVM installation
+on PATH; the bundled SDK requires Clang 18 or newer. Install the Vulkan driver for your GPU.
 
 ### macOS
-You will need to install the latest Xcode from Apple.
 
-The following commands will install additional required dependencies, depending on which package manager you use.
-
-If you use Homebrew:
-```bash
-brew install cmake ninja pkg-config
-```
-
-If you use MacPorts:
-```bash
-sudo port install cmake ninja pkg-config
-```
-
-## 4. Build the Project
-
-### Windows (x64)
-1. Open the repository directory in Visual Studio and wait for CMake generation to complete. If you don't plan to debug, switch to the `Release` configuration.
-
-> [!TIP]
-> If you need a Release-performant build and want to iterate on development without debugging, **it is highly recommended** that you use the `RelWithDebInfo` configuration for faster compile times.
-
-2. Under **Solution Explorer**, right-click and choose **Switch to CMake Targets View**.
-3. Right-click the **LibertyRecomp** project and choose **Set as Startup Item**, then choose **Add Debug Configuration**.
-4. Add a `currentDir` property to the first element under `configurations` in the generated JSON and set its value to the path to your game directory (where root is the directory containing `dlc`, `game`, etc).
-5. Start **LibertyRecomp**. The initial compilation may take a while to complete due to code and shader recompilation.
-
-#### Command Line Build (x64)
-```powershell
-# Open Developer Command Prompt for VS 2022, then:
-cmake . --preset x64-Clang-Release
-cmake --build .\out\build\x64-Clang-Release --target LibertyRecomp
-```
-
-### Windows (ARM64)
-For ARM64 builds, use the command line:
-
-```powershell
-# Open ARM64 Developer Command Prompt for VS 2022, then:
-cmake . --preset arm64-Clang-Release
-cmake --build .\out\build\arm64-Clang-Release --target LibertyRecomp
-```
-
-> [!NOTE]
-> The available Windows presets are:
-> - **x64**: `x64-Clang-Debug`, `x64-Clang-RelWithDebInfo`, `x64-Clang-Release`
-> - **ARM64**: `arm64-Clang-Debug`, `arm64-Clang-RelWithDebInfo`, `arm64-Clang-Release`
-
-### Linux (x64 and ARM64)
-The build process is the same for both x64 and ARM64 - the architecture is auto-detected.
-
-1. Configure the project using CMake by navigating to the repository and running the following command.
-```bash
-cmake . --preset linux-release
-```
-
-> [!NOTE]
-> The available presets are `linux-debug`, `linux-relwithdebinfo` and `linux-release`.
-
-2. Build the recompiled game library, then the main application:
-```bash
-cmake --build ./out/build/linux-release --target LibertyRecompLib
-cmake --build ./out/build/linux-release --target LibertyRecomp
-```
-
-3. Navigate to the directory that was specified as the output in the previous step and run the game.
-```bash
-./LibertyRecomp
-```
-
-### macOS (ARM64 and x64)
-The build process works for both Apple Silicon (ARM64) and Intel (x64) Macs.
-
-1. Set the VCPKG_ROOT environment variable (required for dependency management):
-```bash
-export VCPKG_ROOT=$(pwd)/thirdparty/vcpkg
-```
-
-2. Configure the project using CMake by navigating to the repository and running the following command.
-```bash
-# For Apple Silicon (ARM64) - default on M1/M2/M3 Macs
-cmake . --preset macos-release
-
-# For Intel (x64) Macs  
-cmake . --preset macos-release -DCMAKE_OSX_ARCHITECTURES=x86_64
-```
-
-> [!NOTE]
-> The available presets are `macos-debug`, `macos-relwithdebinfo` and `macos-release`.
-
-3. Build the recompiled game library, then the main application:
-```bash
-cmake --build ./out/build/macos-release --target LibertyRecompLib
-cmake --build ./out/build/macos-release --target LibertyRecomp
-```
-
-4. Navigate to the directory that was specified as the output in the previous step and run the game.
-```bash
-open "./out/build/macos-release/LibertyRecomp/Liberty Recompiled.app"
-```
-
-## 5. Shader Pipeline (Development)
-
-Liberty Recompiled includes an automated shader pipeline that converts Xbox 360 RAGE engine shaders to platform-native formats during installation.
-
-### How It Works
-
-1. **During Installation**: The installer automatically extracts and converts shaders from `.fxc` files
-2. **Platform Detection**: Automatically selects the correct format:
-   - **Windows**: DXIL (Direct3D 12)
-   - **Linux**: SPIR-V (Vulkan)
-   - **macOS**: AIR (Metal)
-3. **Caching**: Converted shaders are cached to avoid re-conversion on subsequent runs
-
-### Building the Shader Tools
-
-#### RAGE FXC Extractor (Standalone Tool)
-```bash
-cd tools/rage_fxc_extractor
-mkdir build && cd build
-cmake ..
-make
-```
-
-#### XenosRecomp (Shader Compiler)
-```bash
-cd build_xenosrecomp
-cmake ../tools/XenosRecomp
-make
-```
-
-### Manual Shader Conversion
-
-For development purposes, you can manually convert shaders:
+Install Xcode and select its developer directory. With Homebrew:
 
 ```bash
-# Extract shaders from RAGE FXC files
-./tools/rage_fxc_extractor/build/rage_fxc_extractor --batch shader_batch/ LibertyRecompLib/shader/rage_shaders/
-
-# Compile to shader cache
-./build_xenosrecomp/XenosRecomp/XenosRecomp LibertyRecompLib/shader/rage_shaders/ LibertyRecompLib/shader/shader_cache.cpp tools/XenosRecomp/XenosRecomp/shader_common.h
+brew install cmake ninja pkg-config llvm openssl@3 vulkan-loader
 ```
 
-For more details, see [SHADER_PIPELINE.md](SHADER_PIPELINE.md).
+Compiler discovery honors explicit `CMAKE_C_COMPILER`/`CMAKE_CXX_COMPILER` overrides
+and `CC`/`CXX`, then looks in `brew --prefix llvm`, then PATH. It supports both Homebrew
+installation prefixes. The desktop macOS application uses system libraries and the
+bundled RexGlue sources; its preset does not use vcpkg.
+
+The LunarG Vulkan SDK is an alternative source of the Vulkan loader. Set `VULKAN_SDK`
+or `REX_VULKAN_SDK` to its macOS directory if it is installed in a custom location.
+
+## 2. Clone and Set Up
+
+```bash
+git clone https://github.com/OZORDI/LibertyRecomp.git
+cd LibertyRecomp
+python3 tools/setup_repo.py
+```
+
+On Windows, use `py -3 tools/setup_repo.py`. The `update_submodules.bat` and
+`./update_submodules.sh` wrappers run the same helper.
+
+Setup initializes **every pinned submodule and nested submodule**, including
+XenosRecomp, its shader compiler dependencies, LLVM/libc++, and console tool sources.
+Initial submodule downloads use shallow history while checking out the complete source
+at the recorded commit. To work on a dependency's history later, run
+`git -C <dependency-path> fetch --unshallow` if that dependency is shallow.
+
+Setup also applies the reviewed dependency patches and bootstraps the bundled vcpkg.
+It can be rerun after an interrupted download. It does not pull the main repository,
+install OS packages, or change global Git settings.
+
+A recursive clone is supported too; run setup afterward to apply the patches. GitHub's
+**Download ZIP** omits submodule contents, so use Git for development.
+
+Check a prepared checkout offline without changing it:
+
+```bash
+python3 tools/setup_repo.py --check
+```
+
+### Updating an existing checkout
+
+```bash
+git -c submodule.recurse=false pull --ff-only
+python3 tools/setup_repo.py
+```
+
+The explicit non-recursive pull lets setup coordinate dependency pin changes with our
+source patches. Setup records managed patch state in local Git metadata and migrates
+recognized old patch versions, including the earlier local XenosRecomp revision. It
+preserves local branches and unrelated files. If an affected file has an unrecognized
+edit or staged changes, setup stops with its path so you can preserve/review it first.
+
+If you previously copied a dependency from a ZIP or MediaFire, keep that unversioned
+folder as a backup outside its expected submodule path, then rerun setup. The helper
+will not overwrite a nonempty unversioned directory. Do not use `git clean`, forced
+submodule updates, or `git submodule update --remote` as a repair step.
+
+### CMake 4 / Arch Linux compatibility
+
+Presets supply the legacy policy minimum for directly included dependencies. The
+checked-in vcpkg overlay triplets also pass `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` into
+individual port configure commands, including their debug/release builds. A setting
+only in the top-level project does not configure those separate processes.
+
+If an old build directory still fails, configure a new build directory rather than
+changing system packages. Report the failing port and its complete configure log.
+
+## 3. Build the Desktop Application
+
+| Host / target | Release preset |
+|---|---|
+| Windows x64 | `x64-Clang-Release` |
+| Windows ARM64 | `arm64-Clang-Release` |
+| Linux x64 | `linux-release` |
+| Linux ARM64 | `linux-arm64-release` |
+| macOS Apple Silicon | `macos-release` |
+| macOS Intel | `macos-release` with `-DCMAKE_OSX_ARCHITECTURES=x86_64` |
+
+For example, on Linux x64:
+
+```bash
+cmake --preset linux-release
+cmake --build --preset linux-release --target LibertyRecomp
+```
+
+On macOS:
+
+```bash
+cmake --preset macos-release
+cmake --build --preset macos-release --target LibertyRecomp
+open "out/build/macos-release/LibertyRecomp/Liberty Recompiled.app"
+```
+
+For Intel macOS, add `-DCMAKE_OSX_ARCHITECTURES=x86_64` to the configure command.
+For Windows, substitute the appropriate Windows preset in the configure/build commands.
+The Windows and Linux presets set `VCPKG_ROOT` to the bundled checkout automatically.
+
+Debug and RelWithDebInfo presets are also available (`cmake --list-presets`). Build
+`LibertyRecomp` directly; its required libraries are dependencies of that target.
+The macOS consumer does not expose a separate `LibertyRecompLib` target.
+
+## 4. Game Files and Other Platforms
+
+The generated PPC sources and shader caches are checked in. **Normal desktop builds
+do not require copying an XEX/RPF into the source tree or regenerating game code.**
+Provide your own Xbox 360 game files through the application installer to run the game.
+See [the dumping guide](DUMPING-en.md) for obtaining files from your copy.
+
+Code-generation work requires the matching executable and documented recompiler inputs;
+keep those local. Embedded builds (iOS, PS4, Switch) additionally require a local game
+payload at packaging time. Android supports runtime asset selection. See
+[platform setup](PLATFORM_SETUP.md) and `tools/local_game_payload/README.md` for SDK and
+payload requirements. Fetching all tool sources does not install those platform SDKs.
+
+## 5. Shader Tools
+
+Run repository setup before configuring XenosRecomp as a standalone tool:
+
+```bash
+python3 tools/setup_repo.py
+cmake -S tools/XenosRecomp -B out/build/xenosrecomp -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DXENOS_RECOMP_GTA4=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build out/build/xenosrecomp --target XenosRecomp
+```
+
+Shader development and cache regeneration are separate from normal application builds.
+See [the shader pipeline guide](SHADER_PIPELINE.md) for the extraction/conversion flow.
 
 ## 6. Project Structure
 
@@ -356,7 +314,7 @@ cmake -B build-codegen -S glue/rexglue-sdk-main -G Ninja -DCMAKE_BUILD_TYPE=Rele
 
 ### Build Notes
 
-- macOS builds require `VCPKG_ROOT` to be set before CMake configuration
+- Windows/Linux presets set the bundled `VCPKG_ROOT`; macOS uses the system dependencies listed above
 - Codegen requires Homebrew LLVM on macOS; Apple Clang does not support the required flags
 - The `RelWithDebInfo` configuration is recommended for iterative development
 - CRT functions hooked via rexcrt (32 functions) must appear in both `[hooks]` and `[functions]` sections of the recompiler config to force proper code splitting

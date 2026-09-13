@@ -14,10 +14,12 @@
                 "CMAKE_TOOLCHAIN_FILE": {
                     "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
                     "type": "FILEPATH"
-                }
+                },
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "environment": {
-                "VCPKG_ROOT": "${sourceDir}/thirdparty/vcpkg"
+                "VCPKG_ROOT": "${sourceDir}/thirdparty/vcpkg",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "equals",
@@ -106,10 +108,12 @@
                     "value": "x64-linux",
                     "type": "STRING"
                 },
-                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/toolchains/linux-clang.cmake"
+                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/toolchains/linux-clang.cmake",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "environment": {
-                "VCPKG_ROOT": "${sourceDir}/thirdparty/vcpkg"
+                "VCPKG_ROOT": "${sourceDir}/thirdparty/vcpkg",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "equals",
@@ -154,9 +158,9 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "installDir": "${sourceDir}/out/install/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
-                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
-                "CMAKE_OSX_ARCHITECTURES": "arm64"
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/FindHostLLVM.cmake"
             },
             "condition": {
                 "type": "equals",
@@ -167,6 +171,9 @@
                 "microsoft.com/VisualStudioRemoteSettings/CMake/2.0": {
                     "remoteSourceRootDir": "$env{HOME}/.vs/$ms{projectDirName}"
                 }
+            },
+            "environment": {
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             }
         },
         {
@@ -215,12 +222,16 @@
                 "LIBERTY_RECOMP_EMBEDDED_ASSETS": {
                     "value": "ON",
                     "type": "BOOL"
-                }
+                },
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
                 "rhs": "Darwin"
+            },
+            "environment": {
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             }
         },
         {
@@ -277,15 +288,20 @@
                 "LIBERTY_RECOMP_ANDROID_RUNTIME_ASSETS": {
                     "value": "ON",
                     "type": "BOOL"
-                }
+                },
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "environment": {
-                "ANDROID_NDK": "$penv{ANDROID_NDK}"
+                "ANDROID_NDK": "$penv{ANDROID_NDK}",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "inList",
                 "string": "${hostSystemName}",
-                "list": ["Darwin", "Linux"]
+                "list": [
+                    "Darwin",
+                    "Linux"
+                ]
             }
         },
         {
@@ -326,15 +342,20 @@
                 "LIBERTY_RECOMP_EMBEDDED_ASSETS": {
                     "value": "ON",
                     "type": "BOOL"
-                }
+                },
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "environment": {
-                "OO_PS4_TOOLCHAIN": "$penv{OO_PS4_TOOLCHAIN}"
+                "OO_PS4_TOOLCHAIN": "$penv{OO_PS4_TOOLCHAIN}",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "inList",
                 "string": "${hostSystemName}",
-                "list": ["Darwin", "Linux"]
+                "list": [
+                    "Darwin",
+                    "Linux"
+                ]
             }
         },
         {
@@ -387,15 +408,20 @@
                 "LIBERTY_SWITCH_ROMFS_DIR": {
                     "value": "${sourceDir}/out/build/${presetName}/switch_romfs",
                     "type": "PATH"
-                }
+                },
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "environment": {
-                "DEVKITPRO": "$penv{DEVKITPRO}"
+                "DEVKITPRO": "$penv{DEVKITPRO}",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
             },
             "condition": {
                 "type": "inList",
                 "string": "${hostSystemName}",
-                "list": ["Darwin", "Linux"]
+                "list": [
+                    "Darwin",
+                    "Linux"
+                ]
             }
         },
         {
@@ -413,28 +439,129 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "linux-arm64-debug",
+            "displayName": "Linux ARM64 debug",
+            "inherits": "linux-debug",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-linux"
+            }
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo",
+            "displayName": "Linux ARM64 relwithdebinfo",
+            "inherits": "linux-relwithdebinfo",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-linux"
+            }
+        },
+        {
+            "name": "linux-arm64-release",
+            "displayName": "Linux ARM64 release",
+            "inherits": "linux-release",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-linux"
+            }
         }
     ],
     "buildPresets": [
-        { "name": "x64-Clang-Debug",          "configurePreset": "x64-Clang-Debug" },
-        { "name": "x64-Clang-RelWithDebInfo", "configurePreset": "x64-Clang-RelWithDebInfo" },
-        { "name": "x64-Clang-Release",        "configurePreset": "x64-Clang-Release" },
-        { "name": "arm64-Clang-Debug",          "configurePreset": "arm64-Clang-Debug" },
-        { "name": "arm64-Clang-RelWithDebInfo", "configurePreset": "arm64-Clang-RelWithDebInfo" },
-        { "name": "arm64-Clang-Release",        "configurePreset": "arm64-Clang-Release" },
-        { "name": "linux-debug",          "configurePreset": "linux-debug" },
-        { "name": "linux-relwithdebinfo", "configurePreset": "linux-relwithdebinfo" },
-        { "name": "linux-release",        "configurePreset": "linux-release" },
-        { "name": "macos-debug",          "configurePreset": "macos-debug" },
-        { "name": "macos-relwithdebinfo", "configurePreset": "macos-relwithdebinfo" },
-        { "name": "macos-release",        "configurePreset": "macos-release" },
-        { "name": "ios-debug",   "configurePreset": "ios-debug" },
-        { "name": "ios-release", "configurePreset": "ios-release" },
-        { "name": "android-debug",   "configurePreset": "android-debug" },
-        { "name": "android-release", "configurePreset": "android-release" },
-        { "name": "ps4-debug",   "configurePreset": "ps4-debug" },
-        { "name": "ps4-release", "configurePreset": "ps4-release" },
-        { "name": "switch-debug",   "configurePreset": "switch-debug" },
-        { "name": "switch-release", "configurePreset": "switch-release" }
-    ]
+        {
+            "name": "x64-Clang-Debug",
+            "configurePreset": "x64-Clang-Debug"
+        },
+        {
+            "name": "x64-Clang-RelWithDebInfo",
+            "configurePreset": "x64-Clang-RelWithDebInfo"
+        },
+        {
+            "name": "x64-Clang-Release",
+            "configurePreset": "x64-Clang-Release"
+        },
+        {
+            "name": "arm64-Clang-Debug",
+            "configurePreset": "arm64-Clang-Debug"
+        },
+        {
+            "name": "arm64-Clang-RelWithDebInfo",
+            "configurePreset": "arm64-Clang-RelWithDebInfo"
+        },
+        {
+            "name": "arm64-Clang-Release",
+            "configurePreset": "arm64-Clang-Release"
+        },
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug"
+        },
+        {
+            "name": "linux-relwithdebinfo",
+            "configurePreset": "linux-relwithdebinfo"
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release"
+        },
+        {
+            "name": "macos-debug",
+            "configurePreset": "macos-debug"
+        },
+        {
+            "name": "macos-relwithdebinfo",
+            "configurePreset": "macos-relwithdebinfo"
+        },
+        {
+            "name": "macos-release",
+            "configurePreset": "macos-release"
+        },
+        {
+            "name": "ios-debug",
+            "configurePreset": "ios-debug"
+        },
+        {
+            "name": "ios-release",
+            "configurePreset": "ios-release"
+        },
+        {
+            "name": "android-debug",
+            "configurePreset": "android-debug"
+        },
+        {
+            "name": "android-release",
+            "configurePreset": "android-release"
+        },
+        {
+            "name": "ps4-debug",
+            "configurePreset": "ps4-debug"
+        },
+        {
+            "name": "ps4-release",
+            "configurePreset": "ps4-release"
+        },
+        {
+            "name": "switch-debug",
+            "configurePreset": "switch-debug"
+        },
+        {
+            "name": "switch-release",
+            "configurePreset": "switch-release"
+        },
+        {
+            "name": "linux-arm64-debug",
+            "configurePreset": "linux-arm64-debug"
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo",
+            "configurePreset": "linux-arm64-relwithdebinfo"
+        },
+        {
+            "name": "linux-arm64-release",
+            "configurePreset": "linux-arm64-release"
+        }
+    ],
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 29,
+        "patch": 0
+    }
 }

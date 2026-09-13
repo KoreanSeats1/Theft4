@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.20)
+cmake_minimum_required (VERSION 3.29)
 
 set(LIBERTY_RECOMP_THIRDPARTY_ROOT ${CMAKE_SOURCE_DIR}/thirdparty)
 set(LIBERTY_RECOMP_TOOLS_ROOT ${CMAKE_SOURCE_DIR}/tools)
@@ -13,10 +13,15 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Check source prerequisites before project() enters the vcpkg toolchain.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DependencyPatches.cmake")
+liberty_require_dependency_sources("${CMAKE_CURRENT_SOURCE_DIR}")
+if(APPLE AND NOT CMAKE_TOOLCHAIN_FILE)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindHostLLVM.cmake")
+endif()
 project("LibertyRecomp-ALL")
 
 # Reproduce the source fixes carried for pinned upstream dependencies.
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DependencyPatches.cmake")
 liberty_apply_dependency_patches("${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(LIBERTY_RECOMP_GRAINE_MAC OFF)

@@ -732,3 +732,17 @@ scripts/
 !/tools/run_xma_audio_regressions.py
 !/tools/extract_xma_loop_fixtures.py
 !/tools/generate_xma_loop_cases.py
+
+# Repository setup and validation are maintained source, not local scripts.
+!/tools/setup_repo.py
+!/tools/test_setup_repo.py
+!/update_submodules.sh
+/CMakeFiles/
+/glue/rexglue-sdk-main/CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+/.github/*
+!/.github/
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/repository-checks.yml

@@ -97,8 +97,13 @@ set(MVK_INCLUDES
 add_library(MoltenVK SHARED ${MVK_SOURCES})
 target_include_directories(MoltenVK PRIVATE ${MVK_INCLUDES})
 target_compile_options(MoltenVK PRIVATE -w -Wno-elaborated-enum-base)
-# Link against Homebrew LLVM's libc++ to match the compiler
-target_link_options(MoltenVK PRIVATE -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -lc++)
+# Match the selected LLVM installation on both Intel and Apple Silicon Macs.
+get_filename_component(_mvk_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+get_filename_component(_mvk_compiler_prefix "${_mvk_compiler_bin}" DIRECTORY)
+set(_mvk_llvm_cxx "${_mvk_compiler_prefix}/lib/c++")
+if(IS_DIRECTORY "${_mvk_llvm_cxx}")
+    target_link_options(MoltenVK PRIVATE "-L${_mvk_llvm_cxx}" "-Wl,-rpath,${_mvk_llvm_cxx}" -lc++)
+endif()
 target_link_libraries(MoltenVK PRIVATE
     ${APPKIT_LIBRARY} ${FOUNDATION_LIBRARY} ${IOKIT_LIBRARY} ${IOSURFACE_LIBRARY} ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY}
     spirv-cross-msl MoltenVKCommon MoltenVKShaderConverter cereal::cereal)
@@ -111,6 +116,8 @@ add_executable(MoltenVKBufferRetentionTest EXCLUDE_FROM_ALL
     ${MVK_DIR}/MoltenVK/Commands/MVKMTLBufferRetention.mm)
 target_include_directories(MoltenVKBufferRetentionTest PRIVATE ${MVK_DIR}/MoltenVK/Commands)
 target_compile_options(MoltenVKBufferRetentionTest PRIVATE -fno-objc-arc -fblocks -Wall -Wextra -Werror)
-target_link_options(MoltenVKBufferRetentionTest PRIVATE
-    -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -lc++)
+if(IS_DIRECTORY "${_mvk_llvm_cxx}")
+    target_link_options(MoltenVKBufferRetentionTest PRIVATE
+        "-L${_mvk_llvm_cxx}" "-Wl,-rpath,${_mvk_llvm_cxx}" -lc++)
+endif()
 target_link_libraries(MoltenVKBufferRetentionTest PRIVATE ${FOUNDATION_LIBRARY} ${METAL_LIBRARY})

@@ -1,3 +1,12 @@
 # Dependency patches retain their exact upstream context and portable LF bytes.
 # Leading context markers before tabs and empty lines are patch syntax.
 cmake/dependency-patches/*.patch text eol=lf -whitespace
+
+# Setup entrypoints use platform-appropriate line endings.
+/tools/setup_repo.py text eol=lf
+/tools/test_setup_repo.py text eol=lf
+/update_submodules.sh text eol=lf
+/update_submodules.bat text eol=crlf
+/cmake/*.cmake text eol=lf
+/vcpkg/triplets/*.cmake text eol=lf
+/.github/workflows/*.yml text eol=lf

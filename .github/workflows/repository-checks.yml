@@ -1,0 +1,116 @@
+name: Repository setup and desktop builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup-tests:
+    name: Setup regression tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate tracked paths, submodule mappings and patch pins
+        run: python tools/setup_repo.py --check-metadata
+      - name: Exercise clone, pull, migration and recovery with local test remotes
+        run: python tools/test_setup_repo.py
+
+  desktop:
+    name: Clean dependencies and build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: linux-debug
+          - os: windows-2022
+            preset: x64-Clang-Debug
+          - os: macos-latest
+            preset: macos-debug
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install current CMake and Ninja
+        run: python -m pip install 'cmake>=3.29,<5' ninja
+      - name: Install Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 build-essential pkg-config curl zip unzip \
+            autoconf automake libtool libgtk-3-dev libx11-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxinerama-dev libxext-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libdbus-1-dev \
+            libusb-1.0-0-dev libssl-dev libvulkan-dev nasm
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+      - name: Install macOS prerequisites
+        if: runner.os == 'macOS'
+        run: brew install llvm pkg-config openssl@3 vulkan-loader
+      - name: Select the Windows C++ development environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Initialize every public dependency and apply reviewed patches
+        run: python tools/setup_repo.py
+      - name: Verify repeatable setup and patch preparation
+        run: |
+          python tools/setup_repo.py
+          python tools/setup_repo.py --check
+          python tools/test_dependency_patches.py
+      - name: Configure desktop
+        if: runner.os != 'macOS'
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Configure native macOS architecture
+        if: runner.os == 'macOS'
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_OSX_ARCHITECTURES="$(uname -m)"
+      - name: Build application from checked-in generated sources
+        run: cmake --build --preset ${{ matrix.preset }} --target LibertyRecomp --parallel 2
+
+  arch:
+    name: Arch Linux with distro CMake 4 and uncached vcpkg
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 180
+    steps:
+      - name: Install Arch prerequisites
+        run: |
+          pacman -Syu --noconfirm --needed git python cmake ninja clang lld pkgconf curl zip unzip \
+            autoconf automake libtool gtk3 libx11 libxrandr libxcursor libxi libxinerama libxext \
+            libxkbcommon wayland wayland-protocols libdecor alsa-lib libpulse dbus libusb \
+            openssl vulkan-icd-loader vulkan-headers nasm
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Initialize and validate all dependency sources
+        run: |
+          python tools/setup_repo.py
+          python tools/setup_repo.py --check
+          cmake --version
+      - name: Configure with the system CMake and build
+        env:
+          VCPKG_BINARY_SOURCES: clear
+        run: |
+          cmake --preset linux-debug
+          cmake --build --preset linux-debug --target LibertyRecomp --parallel 2

@@ -63,48 +63,33 @@
     {
       "name": "xenosrecomp",
       "path": "tools/XenosRecomp",
-      "base_revision": "fb32631ee398e46f2a113d8f9103201dbaa000b4",
+      "base_revision": "0d0f3d56ea3f43ae1c3b0867017292f369e77667",
       "patch": "xenosrecomp.patch",
-      "sha256": "efe7a4e65a957092101feb4376e7c7ea741e975938c4beb4463bd87f398ee271",
+      "sha256": "a27b5301b7c590f6664f6a3650ec0f3ac2b1da3667d0fd268847a2d79e45641c",
       "files": [
         {
-          "path": "XenosRecomp/CMakeLists.txt",
-          "before_sha256": "59671d4f86131809b50cea4884dca72fc313e13a6fcf00ef0206493e7b7bbf2d",
-          "after_sha256": "9d269ef3ad4c45bf5371de3e0bba2b2610ab5859642577ba94cf315832761a3a"
-        },
-        {
           "path": "XenosRecomp/air_compiler.cpp",
-          "before_sha256": "07df966f86fd35e48689416efd12de022fded78aa70a19e8d72a74c3405abd7c",
+          "before_sha256": "c8d071abd627f1aa52ced53a544abf5bc8ab6ba58f80a26b60371503b09a7fa9",
           "after_sha256": "84d552b97312605429c69141ed5adcf925464341876d2df6094e786310d00c50"
         },
         {
-          "path": "XenosRecomp/dxc_compiler.cpp",
-          "before_sha256": "95abaa7136159210ae25eaa134f02094ae58ab980bc63292fe8a294cd3cdd40d",
-          "after_sha256": "72c1a6aeedd267f17580591a25caf00b773164009254949e3032ba8adde7de0f"
-        },
-        {
           "path": "XenosRecomp/main.cpp",
-          "before_sha256": "f04fb38b1f9bcbb27a922835c81914d851314ff53aa8c5877cf3b17ebb8b309f",
+          "before_sha256": "d4c49f7fe44124fc04d3e419673b9c2d7b1e6b6eb88f5cd837561e42327228f6",
           "after_sha256": "593b78f97e41c35fbf19245dad893116ddbfb6feffcd4baefd1ccfc15d1f7a06"
         },
         {
-          "path": "XenosRecomp/pch.h",
-          "before_sha256": "f8c1a5c951041301f79d83f4ec9ab32efb113ecdaae928b3ede182d2ee7ef6b2",
-          "after_sha256": "e2910d32e88853b06614531afb2fb3f05e40ea220cf9c4a8569810b81eaadaf3"
-        },
-        {
           "path": "XenosRecomp/shader_common.h",
-          "before_sha256": "dbe3b1d4936734c18b54f9f035018638e87c1187edc5eec906e2320a5b4680e2",
+          "before_sha256": "f0f196114ef422740db57aabddb162fd6136c0dff06465764e6df47c6e8ffa91",
           "after_sha256": "79499e75ee81493de2828ccece79061a30fc5af507aad567489ea920de05bd47"
         },
         {
           "path": "XenosRecomp/shader_recompiler.cpp",
-          "before_sha256": "517fe7f38560e6205b053456fd3d69e7a9db1951a66cae2688107e5ba9bc46fc",
+          "before_sha256": "23efd9399e860761f6bbbd54d44d401c041171bd291e2268607ff1b4c1a72720",
           "after_sha256": "4e1987dc755739b8ca74b6c2a012cb3b47c939b39a55e789ef73e1fe21667bd8"
         },
         {
           "path": "XenosRecomp/shader_recompiler.h",
-          "before_sha256": "50bdf33e87d267f5389f48ce067659d6d6de8b8d6ca5842cc0b297dad368017d",
+          "before_sha256": "3a135e35b0583d713d83e1782b5410cb22aa85ed4d553b98b1f8916c4f42d633",
           "after_sha256": "e9e3d644776cff779846260e64ecff2fc0b07e447d52f60501c307d7ee08172c"
         },
         {
@@ -118,29 +103,9 @@
           "after_sha256": "34ce3b392f46bc2e402e4f9b6fe6b44683251a3e2d1dfb5dd78b9c7a43a3a8a9"
         },
         {
-          "path": "tests/conditional_exec_gpu_test.mm",
+          "path": "validate_smaa_pipeline.py",
           "before_sha256": "absent",
-          "after_sha256": "1c66a5222e7b03b7b0bf29db1235384163b0ee4acccc8610f85e3c27ba541763"
-        },
-        {
-          "path": "tests/deferred_alpha_gpu_test.mm",
-          "before_sha256": "absent",
-          "after_sha256": "3b1b8ef175a70759354420356fa441a7ff4c02d3fbf8949937906acc178b5e6a"
-        },
-        {
-          "path": "tests/run_conditional_exec_gpu_test.py",
-          "before_sha256": "absent",
-          "after_sha256": "193a7b80cc1544d59a62d4a799fab0c63fdedb604780633cc87cbaca024d66f9"
-        },
-        {
-          "path": "tests/run_deferred_alpha_gpu_test.py",
-          "before_sha256": "absent",
-          "after_sha256": "f29c1d1bfb76afe129cfbbb357d76e1ccfcda3910d4c8870355afd7ca943799b"
-        },
-        {
-          "path": "tests/run_texture_lod_gpu_test.py",
-          "before_sha256": "absent",
-          "after_sha256": "ff3ee3745a723d1f6414f671d7a6c45f417b404d10f17737f87f0f5e128e71b4"
+          "after_sha256": "f21c3e30202a579656f5cee7fa8636825e5c2ca22168c644065ba54474bda2f2"
         },
         {
           "path": "tests/shader_overrides/example_pixel.glsl",
@@ -158,11 +123,6 @@
           "after_sha256": "b909e262ce315fc158e79e1a3b3327b459064958c5d62f1878261c1433e70b95"
         },
         {
-          "path": "tests/test_conditional_exec_translation.py",
-          "before_sha256": "absent",
-          "after_sha256": "2acebbee67f88641debee654bdd788e1b2299adc23909201afe365d2ad52cab8"
-        },
-        {
           "path": "tests/test_override_sampler_lod_bias.py",
           "before_sha256": "absent",
           "after_sha256": "f9ef28451795a6f6e5f56486448cf582195a97788433a862b81e08498a00a89e"
@@ -178,9 +138,29 @@
           "after_sha256": "1d7cb609f8e2e439a1ca42f033ad16882dceb0d8492ca29c7af95c124a4b3143"
         },
         {
+          "path": "tests/test_conditional_exec_translation.py",
+          "before_sha256": "absent",
+          "after_sha256": "2acebbee67f88641debee654bdd788e1b2299adc23909201afe365d2ad52cab8"
+        },
+        {
+          "path": "tests/run_conditional_exec_gpu_test.py",
+          "before_sha256": "absent",
+          "after_sha256": "193a7b80cc1544d59a62d4a799fab0c63fdedb604780633cc87cbaca024d66f9"
+        },
+        {
+          "path": "tests/conditional_exec_gpu_test.mm",
+          "before_sha256": "absent",
+          "after_sha256": "1c66a5222e7b03b7b0bf29db1235384163b0ee4acccc8610f85e3c27ba541763"
+        },
+        {
           "path": "tests/test_texture_lod_translation.py",
           "before_sha256": "absent",
           "after_sha256": "cb4ec50021ea5871ba6f090b71dd50ca7345156379a8bcaf4c9bce2b2607f0e9"
+        },
+        {
+          "path": "tests/run_texture_lod_gpu_test.py",
+          "before_sha256": "absent",
+          "after_sha256": "ff3ee3745a723d1f6414f671d7a6c45f417b404d10f17737f87f0f5e128e71b4"
         },
         {
           "path": "tests/texture_lod_gpu_test.mm",
@@ -188,9 +168,14 @@
           "after_sha256": "0f081f2bee7c6552ebeff1af1fee37ad24f31ac4e5df2968bcc993b8450f4da8"
         },
         {
-          "path": "validate_smaa_pipeline.py",
+          "path": "tests/run_deferred_alpha_gpu_test.py",
           "before_sha256": "absent",
-          "after_sha256": "f21c3e30202a579656f5cee7fa8636825e5c2ca22168c644065ba54474bda2f2"
+          "after_sha256": "f29c1d1bfb76afe129cfbbb357d76e1ccfcda3910d4c8870355afd7ca943799b"
+        },
+        {
+          "path": "tests/deferred_alpha_gpu_test.mm",
+          "before_sha256": "absent",
+          "after_sha256": "3b1b8ef175a70759354420356fa441a7ff4c02d3fbf8949937906acc178b5e6a"
         }
       ]
     },
@@ -250,8 +235,5 @@
         }
       ]
     }
-  ],
-  "legacy_manifests": [
-    "legacy-manifest.json"
   ]
 }

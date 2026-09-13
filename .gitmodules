@@ -1,6 +1,9 @@
 [submodule "thirdparty/ddspp"]
 	path = thirdparty/ddspp
 	url = https://github.com/redorav/ddspp.git
+[submodule "tools/SparkIV"]
+	path = tools/SparkIV
+	url = https://github.com/ahmed605/SparkIV.git
 [submodule "tools/XenosRecomp"]
 	path = tools/XenosRecomp
 	url = https://github.com/sonicnext-dev/XenosRecomp.git

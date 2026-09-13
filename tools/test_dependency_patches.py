@@ -45,6 +45,9 @@ class DependencyPatchTests(unittest.TestCase):
         self.cmake = Path(self.temp.name) / 'distribution/cmake'
         self.cmake.mkdir(parents=True)
         shutil.copy2(ROOT / 'cmake/DependencyPatches.cmake', self.cmake)
+        helper = self.cmake.parent / 'tools'
+        helper.mkdir()
+        shutil.copy2(ROOT / 'tools/setup_repo.py', helper)
         shutil.copytree(ROOT / 'cmake/dependency-patches', self.cmake / 'dependency-patches')
         for dependency in MANIFEST['dependencies']:
             source = self.root / dependency['path']

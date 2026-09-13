@@ -30,11 +30,15 @@ def png_dimensions(path: Path) -> tuple[int, int]:
     return struct.unpack('>II', data[16:24])
 
 
-def generate(source: Path, repository: Path) -> dict:
+def generate(source: Path, repository: Path, apple_source: Path | None = None) -> dict:
     source = source.resolve(strict=True)
+    apple_source = apple_source.resolve(strict=True) if apple_source else source
     width, height = png_dimensions(source)
     if width != height or width < 1024:
         raise ValueError('Supply a square PNG at least 1024 pixels wide.')
+    apple_width, apple_height = png_dimensions(apple_source)
+    if apple_width != apple_height or apple_width < 1024:
+        raise ValueError('Supply a square Apple PNG at least 1024 pixels wide.')
     magick = shutil.which('magick')
     iconutil = shutil.which('iconutil')
     if not magick or not iconutil:
@@ -57,8 +61,11 @@ def generate(source: Path, repository: Path) -> dict:
         for logical in (16, 32, 128, 256, 512):
             for scale in (1, 2):
                 suffix = '@2x' if scale == 2 else ''
-                shutil.copyfile(pngs / f'{logical * scale}.png',
-                                iconset / f'icon_{logical}x{logical}{suffix}.png')
+                size = logical * scale
+                output = iconset / f'icon_{logical}x{logical}{suffix}.png'
+                run([magick, str(apple_source), '-colorspace', 'sRGB', '-filter', 'Lanczos',
+                     '-resize', f'{size}x{size}', '-depth', '8', '-strip',
+                     '-define', 'png:exclude-chunks=date,time', str(output)])
         run([iconutil, '-c', 'icns', str(iconset), '-o', str(stage / 'game_icon.icns')])
         run([magick, *[str(pngs / f'{size}.png') for size in ICO_SIZES],
              '-alpha', 'on', '-depth', '8', str(stage / 'game_icon.ico')])
@@ -69,16 +76,20 @@ def generate(source: Path, repository: Path) -> dict:
         (assets / 'png').mkdir(parents=True, exist_ok=True)
         if source != (assets / 'source.png').resolve():
             shutil.copyfile(source, assets / 'source.png')
+        if apple_source != (assets / 'apple.png').resolve():
+            shutil.copyfile(apple_source, assets / 'apple.png')
         for size in PNG_SIZES:
             shutil.copyfile(pngs / f'{size}.png', assets / 'png' / f'{size}.png')
         for name in ('game_icon.ico', 'game_icon.bmp'):
             shutil.copyfile(stage / name, assets / name)
         mac_icon.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(stage / 'game_icon.icns', mac_icon)
-    outputs = [assets / 'source.png', assets / 'game_icon.ico', assets / 'game_icon.bmp',
+    outputs = [assets / 'source.png', assets / 'apple.png', assets / 'game_icon.ico', assets / 'game_icon.bmp',
                mac_icon, *[assets / 'png' / f'{size}.png' for size in PNG_SIZES]]
     report = {
         'source_dimensions': [width, height],
+        'mac_source': 'LibertyRecomp/res/icons/apple.png',
+        'mac_source_dimensions': [apple_width, apple_height],
         'png_sizes': list(PNG_SIZES),
         'windows_icon_sizes': list(ICO_SIZES),
         'mac_iconset_logical_sizes': [16, 32, 128, 256, 512],
@@ -93,6 +104,7 @@ def generate(source: Path, repository: Path) -> dict:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
+    parser.add_argument('--apple-source', type=Path, help='Apple artwork; defaults to the desktop source')
     parser.add_argument('--repository', type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
-    print(json.dumps(generate(args.source, args.repository.resolve()), indent=2))
+    print(json.dumps(generate(args.source, args.repository.resolve(), args.apple_source), indent=2))

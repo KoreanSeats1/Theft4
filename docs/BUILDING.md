@@ -44,7 +44,20 @@ on PATH; the bundled SDK requires Clang 18 or newer. Install the Vulkan driver f
 
 ### macOS
 
-Install Xcode and select its developer directory. With Homebrew:
+The current native desktop runtime requires **macOS 26 (Tahoe) or newer** and a
+**macOS 26+ SDK**. Use Xcode 26+ or matching Command Line Tools, plus current Homebrew
+LLVM. Running Tahoe alone does not update an older SDK or the compiler's deployment
+target. The preset explicitly targets `26.0`; the app's minimum-version metadata uses
+the same value. This build does not currently support Sequoia or earlier.
+
+If using full Xcode, select its developer directory (adjust the path if renamed):
+
+```bash
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+xcrun --sdk macosx --show-sdk-version
+```
+
+With Homebrew:
 
 ```bash
 brew install cmake ninja pkg-config llvm openssl@3 vulkan-loader
@@ -57,6 +70,8 @@ bundled RexGlue sources; its preset does not use vcpkg.
 
 The LunarG Vulkan SDK is an alternative source of the Vulkan loader. Set `VULKAN_SDK`
 or `REX_VULKAN_SDK` to its macOS directory if it is installed in a custom location.
+Normal builds use the checked-in app icons; ImageMagick is only needed to regenerate
+icon assets.
 
 ## 2. Clone and Set Up
 
@@ -149,6 +164,71 @@ The Windows and Linux presets set `VCPKG_ROOT` to the bundled checkout automatic
 Debug and RelWithDebInfo presets are also available (`cmake --list-presets`). Build
 `LibertyRecomp` directly; its required libraries are dependencies of that target.
 The macOS consumer does not expose a separate `LibertyRecompLib` target.
+
+On a Mac with limited memory, append `--parallel 2` to the build command. If it is
+still killed for memory pressure, use `--parallel 1`. Generated game files can take
+several minutes to compile without printing a new progress line. Let the original
+build finish; do not start another build in the same directory.
+
+### macOS build errors
+
+If the compiler reports **`'from_chars' is unavailable: introduced in macOS 26.0`**,
+the build is targeting an older macOS version. This can happen even on Tahoe when
+the SDK/compiler default differs. From the repository root, reconfigure and resume:
+
+```bash
+cmake --preset macos-release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+cmake --build --preset macos-release --target LibertyRecomp --parallel 2
+```
+
+Configuration now checks that the selected compiler and SDK can both compile and
+link the floating-point overloads. If that check fails, update/select the macOS 26+
+developer tools and Homebrew LLVM, then reconfigure. Do not suppress availability
+errors or edit the app's `Info.plist` to pretend it supports an older OS.
+
+To report a different failure, save plain text rather than a screenshot of the last
+line. Include the first `error:` and the command that failed:
+
+```bash
+cmake --build --preset macos-release --target LibertyRecomp --parallel 2 > build-error.txt 2>&1
+sw_vers
+xcode-select -p
+xcrun --sdk macosx --show-sdk-version
+cmake --version
+```
+
+### Sharing and diagnosing a macOS app
+
+The build embeds non-system dynamic dependencies, including those loaded by renderer
+plugins, and signs the nested libraries before signing the app. Recipients should
+not need your Homebrew installation. Only distribute a build that completed its
+packaging/signing steps. Archive the complete bundle so executable permissions and
+symbolic links survive the transfer:
+
+```bash
+python3 tools/verify_macos_bundle.py \
+  "out/build/macos-release/LibertyRecomp/Liberty Recompiled.app" --arch arm64
+ditto -c -k --sequesterRsrc --keepParent \
+  "out/build/macos-release/LibertyRecomp/Liberty Recompiled.app" \
+  "out/build/LibertyRecomp-macos-arm64.zip"
+```
+
+Use the appropriate architecture in the archive name for an Intel build. Ad-hoc
+signing is for development; it is not Developer ID signing or notarization. Public
+distribution needs the corresponding Apple signing/notarization process. See
+[Apple's packaging guide](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).
+
+A Finder “can't be opened” popup alone does not identify the cause. Launch the
+executable from Terminal and capture the loader/startup error:
+
+```bash
+"/path/to/Liberty Recompiled.app/Contents/MacOS/Liberty Recompiled" > launch-error.txt 2>&1
+```
+
+`Library not loaded` with a Homebrew or developer-machine path indicates an incomplete
+bundle. `built for newer macOS version` indicates an OS requirement mismatch. Missing
+game files are handled after the app launches; a game ISO does not fix either loader
+failure.
 
 ## 4. Game Files and Other Platforms
 

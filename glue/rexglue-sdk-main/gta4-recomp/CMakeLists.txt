@@ -13,6 +13,7 @@ endif()
 include(generated/sources.cmake)
 
 if(APPLE AND LIBERTY_RECOMP_TARGET_PLATFORM STREQUAL "desktop")
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     find_package(CURL REQUIRED)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
     # The Apple SDK is already supplied through CMAKE_OSX_SYSROOT. Re-adding
@@ -218,6 +219,23 @@ if(APPLE AND LIBERTY_RECOMP_TARGET_PLATFORM STREQUAL "desktop")
     set_property(TARGET LibertyRecomp APPEND PROPERTY LINK_DEPENDS
         ${LIBERTY_VECTOR_FONT_RESOURCES})
 
+    set(LIBERTY_MACOS_RUNTIME_BUNDLER
+        "${LIBERTY_RECOMP_WORKSPACE_ROOT}/cmake/BundleMacOSRuntime.cmake")
+    set(LIBERTY_MACOS_BUNDLE_VERIFIER
+        "${LIBERTY_RECOMP_WORKSPACE_ROOT}/tools/verify_macos_bundle.py")
+    set_property(TARGET LibertyRecomp APPEND PROPERTY LINK_DEPENDS
+        "${LIBERTY_MACOS_RUNTIME_BUNDLER}" "${LIBERTY_MACOS_BUNDLE_VERIFIER}")
+    get_filename_component(_liberty_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(_liberty_compiler_prefix "${_liberty_compiler_bin}" DIRECTORY)
+    add_custom_command(TARGET LibertyRecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DAPP_BUNDLE=$<TARGET_BUNDLE_DIR:LibertyRecomp>"
+            "-DSIGN_IDENTITY=${LIBERTY_MACOS_CODE_SIGN_IDENTITY}"
+            "-DRUNTIME_SEARCH_DIRS=${_liberty_compiler_prefix}/lib/c++;${_liberty_compiler_prefix}/lib/unwind;$<TARGET_FILE_DIR:OpenSSL::Crypto>"
+            -P "${LIBERTY_MACOS_RUNTIME_BUNDLER}"
+        COMMENT "Embedding and signing non-system macOS runtime dependencies..."
+        VERBATIM)
+
     if(LIBERTY_MACOS_CODE_SIGN_IDENTITY)
         set_target_properties(LibertyRecomp PROPERTIES
             XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${LIBERTY_GC_MACOS_ENTITLEMENTS}"
@@ -244,6 +262,11 @@ if(APPLE AND LIBERTY_RECOMP_TARGET_PLATFORM STREQUAL "desktop")
             COMMENT "Ad-hoc signing macOS development bundle..."
         )
     endif()
+    add_custom_command(TARGET LibertyRecomp POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" "${LIBERTY_MACOS_BUNDLE_VERIFIER}"
+            "$<TARGET_BUNDLE_DIR:LibertyRecomp>" --arch "${CMAKE_OSX_ARCHITECTURES}"
+        COMMENT "Verifying macOS runtime closure, architecture, minimum OS, and signature..."
+        VERBATIM)
 else()
     add_library(gta4_recomp INTERFACE)
     target_include_directories(gta4_recomp INTERFACE

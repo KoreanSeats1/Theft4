@@ -1,5 +1,11 @@
 # Native macOS compiler discovery. Explicit -D compiler choices and CC/CXX win.
 # This can also be used as a preset toolchain and is safe in try_compile().
+# Keep the compiler's target independent of the installed CLT SDK's default.
+# The desktop runtime uses libc++ floating-point from_chars (macOS 26+).
+if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
+
 find_program(_liberty_brew brew)
 if(_liberty_brew)
     execute_process(COMMAND "${_liberty_brew}" --prefix llvm

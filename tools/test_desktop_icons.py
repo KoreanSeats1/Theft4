@@ -44,6 +44,12 @@ def verify(repository: Path, source: Path | None, mac_app: Path | None) -> dict:
     for size in SIZES:
         assert dimensions(assets / 'png' / f'{size}.png') == (size, size)
     expected_rgb = {size: rgb(magick, str(assets / 'png' / f'{size}.png')) for size in SIZES}
+    mac_source = repository / manifest.get('mac_source', 'LibertyRecomp/res/icons/source.png')
+    expected_mac_rgba = {
+        size: execute([magick, str(mac_source), '-colorspace', 'sRGB', '-filter', 'Lanczos',
+                       '-resize', f'{size}x{size}', '-depth', '8', 'rgba:-']).stdout
+        for size in SIZES
+    }
     assert rgb(magick, str(assets / 'game_icon.bmp')) == expected_rgb[256]
     ico = (assets / 'game_icon.ico').read_bytes()
     reserved, kind, count = struct.unpack_from('<HHH', ico)
@@ -68,7 +74,16 @@ def verify(repository: Path, source: Path | None, mac_app: Path | None) -> dict:
                 image = iconset / f'icon_{logical}x{logical}{suffix}.png'
                 actual = logical * scale
                 assert dimensions(image) == (actual, actual)
-                assert rgb(magick, str(image)) == expected_rgb[actual], str(image)
+                decoded = execute([magick, str(image), '-depth', '8', 'rgba:-']).stdout
+                expected = expected_mac_rgba[actual]
+                # Legacy small ICNS representations transform RGB at partially
+                # transparent edges. Alpha and every opaque pixel must survive
+                # exactly; larger PNG-backed representations are lossless.
+                assert decoded[3::4] == expected[3::4], str(image)
+                assert all(decoded[i:i + 3] == expected[i:i + 3]
+                           for i in range(0, len(expected), 4) if expected[i + 3] == 255), str(image)
+                if actual >= 128:
+                    assert decoded == expected, str(image)
                 representations.append(image.name)
         # Compile the icon directive used by the real Windows RC template.
         compiler = shutil.which('llvm-rc')
@@ -138,7 +153,7 @@ def verify(repository: Path, source: Path | None, mac_app: Path | None) -> dict:
         bundle_passed = True
     return {'passed': True, 'source_exact_copy': source is not None,
             'windows_sizes': frames, 'windows_resource_compiled': rc_passed,
-            'mac_representations_pixel_equal': representations,
+            'mac_representations_verified': representations,
             'sdl_bmp_pixel_equal': True, 'linux_stage_and_install_passed': True,
             'linux_sizes': list(SIZES), 'mac_bundle_and_signature_passed': bundle_passed}
 

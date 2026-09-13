@@ -31,6 +31,10 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
     set(LIBERTY_RECOMP_GRAINE_MAC ON)
 endif()
 
+if(LIBERTY_RECOMP_GRAINE_MAC)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMacOSToolchain.cmake")
+endif()
+
 if(NOT LIBERTY_RECOMP_GRAINE_MAC)
     add_compile_definitions(FMT_USE_CONSTEVAL=0)
 endif()

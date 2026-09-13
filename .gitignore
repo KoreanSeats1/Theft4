@@ -727,6 +727,8 @@ scripts/
 # Reproducible desktop application icon generation and verification.
 !tools/generate_desktop_icons.py
 !tools/test_desktop_icons.py
+!tools/generate_mobile_icons.py
+!tools/verify_macos_bundle.py
 
 # Reproducible audio regression tools (not disposable research scripts).
 !/tools/run_xma_audio_regressions.py
@@ -746,3 +748,4 @@ CMakeUserPresets.json
 !/.github/workflows/
 /.github/workflows/*
 !/.github/workflows/repository-checks.yml
+!/.github/workflows/build-macos.yml

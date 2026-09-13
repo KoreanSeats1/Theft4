@@ -1,0 +1,185 @@
+name: macOS Build
+
+# Builds the same Apple Silicon consumer and dependency setup as docs/BUILDING.md.
+
+on:
+  push:
+    branches: [main, beta]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE*'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE*'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.config }} ${{ matrix.arch }}
+    runs-on: macos-26
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+        arch: [arm64]
+
+    env:
+      CLICOLOR_FORCE: 1
+      MACOS_SIGN_CERT_P12: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Install build tools
+        run: brew install cmake ninja pkg-config llvm openssl@3 vulkan-loader
+
+      - name: Show toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          cmake --version
+          "$(brew --prefix llvm)/bin/clang++" --version
+          uname -m
+
+      - name: Prepare pinned dependencies and patches
+        run: python3 tools/setup_repo.py
+
+      - name: Configure
+        run: cmake --preset macos-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
+
+      - name: Build application and package runtime libraries
+        run: cmake --build --preset macos-${{ matrix.config == 'Debug' && 'debug' || 'release' }} --target LibertyRecomp --parallel 3
+
+      # ---------------------------------------------------------------------
+      # Code signing
+      #   If MACOS_SIGN_IDENTITY + MACOS_SIGN_CERT_P12 + MACOS_SIGN_CERT_PASSWORD
+      #   secrets are configured, import the cert into a temporary keychain
+      #   and sign with that identity. Otherwise fall back to ad-hoc signing
+      #   so the .app can launch on the signer's machine (no Gatekeeper).
+      # ---------------------------------------------------------------------
+      - name: Code sign (real identity)
+        if: env.MACOS_SIGN_CERT_P12 != ''
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_SIGN_CERT_P12: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+          MACOS_SIGN_CERT_PASSWORD: ${{ secrets.MACOS_SIGN_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_DIR="out/build/macos-${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          APP_PATH="${BUILD_DIR}/LibertyRecomp/Liberty Recompiled.app"
+
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASS="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$MACOS_SIGN_CERT_P12" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_SIGN_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
+
+          codesign --force --deep --timestamp --options runtime \
+            --sign "$MACOS_SIGN_IDENTITY" "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          # Clean up keychain
+          security delete-keychain "$KEYCHAIN" || true
+          rm -f "$CERT_PATH"
+
+      - name: Code sign (ad-hoc fallback)
+        if: env.MACOS_SIGN_CERT_P12 == ''
+        run: |
+          set -euo pipefail
+          BUILD_DIR="out/build/macos-${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          APP_PATH="${BUILD_DIR}/LibertyRecomp/Liberty Recompiled.app"
+          if [[ -d "$APP_PATH" ]]; then
+            codesign --force --deep --sign - "$APP_PATH"
+            codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          else
+            echo "::error::App bundle not found at $APP_PATH"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------------
+      # Package artifact — tar.gz preserves symlinks, bundle structure, and
+      # executable bits; upload-artifact's zip step does not.
+      # ---------------------------------------------------------------------
+      - name: Package .app as tar.gz
+        id: package
+        run: |
+          set -euo pipefail
+          BUILD_DIR="out/build/macos-${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          APP_PATH="${BUILD_DIR}/LibertyRecomp/Liberty Recompiled.app"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::App bundle not produced at $APP_PATH"
+            ls -la "${BUILD_DIR}/LibertyRecomp" || true
+            exit 1
+          fi
+
+          OUT_NAME="LibertyRecomp-macos-${{ matrix.arch }}-${{ matrix.config }}-${{ github.sha }}.tar.gz"
+          tar -czf "$RUNNER_TEMP/$OUT_NAME" -C "${BUILD_DIR}/LibertyRecomp" "Liberty Recompiled.app"
+          echo "artifact_path=$RUNNER_TEMP/$OUT_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$OUT_NAME" >> "$GITHUB_OUTPUT"
+          du -h "$RUNNER_TEMP/$OUT_NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0  # already compressed inside tar.gz
+
+      # ---------------------------------------------------------------------
+      # Best-effort failure diagnostics — capture CMake logs if configure
+      # or build failed, so the runner logs contain enough to triage.
+      # ---------------------------------------------------------------------
+      - name: Upload CMake logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmake-logs-${{ matrix.config }}-${{ matrix.arch }}
+          path: |
+            out/build/**/CMakeFiles/CMakeOutput.log
+            out/build/**/CMakeFiles/CMakeError.log
+            out/build/**/CMakeCache.txt
+            out/build/**/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7

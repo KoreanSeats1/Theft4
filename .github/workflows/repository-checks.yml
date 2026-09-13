@@ -43,7 +43,7 @@ jobs:
             preset: linux-debug
           - os: windows-2022
             preset: x64-Clang-Debug
-          - os: macos-latest
+          - os: macos-26
             preset: macos-debug
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180

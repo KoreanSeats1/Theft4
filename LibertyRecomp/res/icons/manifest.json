@@ -1,7 +1,12 @@
 {
   "source_dimensions": [
-    2732,
-    2732
+    1024,
+    1024
+  ],
+  "mac_source": "LibertyRecomp/res/icons/apple.png",
+  "mac_source_dimensions": [
+    1024,
+    1024
   ],
   "png_sizes": [
     16,
@@ -35,18 +40,19 @@
     2
   ],
   "assets": {
-    "LibertyRecomp/res/icons/source.png": "e170c3131096038f8d5a0662a59d50fab507b20dae040b5e9f00959eca6423da",
-    "LibertyRecomp/res/icons/game_icon.ico": "317f10a968ca266d7e1983ba7461f45f231e490594b48d3d03b6dda2d5564545",
-    "LibertyRecomp/res/icons/game_icon.bmp": "e527d3fbd2c965c261144c56840ef19b9e39086e1ebc9c07b139a7f6ee9749f1",
-    "LibertyRecomp/res/macos/game_icon.icns": "6411f35ed333ffb712b28c7991552a532a7b45fb524837894bb7e546035d434e",
-    "LibertyRecomp/res/icons/png/16.png": "47aca0d64156910fcc0dfc53bc8c6e86b738bfe8e793014e381e740abc691deb",
-    "LibertyRecomp/res/icons/png/24.png": "a550e4b73fb330a32170e394c5734179efaf8f9df890c2f5c3fde7de35cc467f",
-    "LibertyRecomp/res/icons/png/32.png": "3c0fe86722a4671db86d84757e8c800954e94eadbd646d45032af99ce1f6ccf0",
-    "LibertyRecomp/res/icons/png/48.png": "4b2b4c9979eb231ff776720cf680bf9b6da1c26db4f319f17871b7ff4db306dd",
-    "LibertyRecomp/res/icons/png/64.png": "91ca2713672d975e9db64cb403180f7aaa0e71762da4fc0349500e1d5f4d0f74",
-    "LibertyRecomp/res/icons/png/128.png": "8e8622662562102a3e416c6183d96d0235edcb7c621c679cdada78749874ddbf",
-    "LibertyRecomp/res/icons/png/256.png": "2f179fa347377b3420d22ad72e3f1915a4fd4b1cad782b11dfa99bfabf050249",
-    "LibertyRecomp/res/icons/png/512.png": "381d866d80f3dee1535ad5f2ad9504d4212e992ec22aa90a44cabc7374af7343",
-    "LibertyRecomp/res/icons/png/1024.png": "da60a8689dc4579dc00593c05065dd3cbf662bf8da670f8e7d2ed04e011d8c2f"
+    "LibertyRecomp/res/icons/source.png": "786674eb6f566cbc9c71bb91cd0509d6dd4a726fa3aa27baec6c5a239b3d2025",
+    "LibertyRecomp/res/icons/apple.png": "8ba15bc5e8937ec8de1ad93fc7db53edecc9b04a014e19c86efa2aad114143cf",
+    "LibertyRecomp/res/icons/game_icon.ico": "0624f779fdbb59132347f090d9323da68651d621c94a8542835e8f1ed46b478b",
+    "LibertyRecomp/res/icons/game_icon.bmp": "22eec3afb471e9cd52a81eaab0f0499a56de394f45e73b5e2af8643eb3817498",
+    "LibertyRecomp/res/macos/game_icon.icns": "709808c2c3f4da1f547eabb84d0dc351f2a83bb6acc847b3af2937eaa89426b2",
+    "LibertyRecomp/res/icons/png/16.png": "d92f72a3e65e7a28400b7ad621c621f57fd99f18db9746183e052cea8b2b02c0",
+    "LibertyRecomp/res/icons/png/24.png": "bc0fe1ca2b1fed7ff68392fac505229a4548e47aaffe34f940978a42f4f28b16",
+    "LibertyRecomp/res/icons/png/32.png": "83caca80d35e2e9c51e7ef72a54519716325c24ccea361d6b79b963b7e343d81",
+    "LibertyRecomp/res/icons/png/48.png": "46730234e52b966673814265e5eb15d70b71337d7646ec03423e9e850339127e",
+    "LibertyRecomp/res/icons/png/64.png": "91febc9640b8a7969edda56435283b2bbd579ec2fcd584cd4bdf3be75c9e5429",
+    "LibertyRecomp/res/icons/png/128.png": "7fb025e95ecc87a722fbe17e92e01372f6642e7faa00261d29740587f504441b",
+    "LibertyRecomp/res/icons/png/256.png": "760dc6fe12f4b26b8c2ad3f0998986a9cff982a94343d85f822cf70b5da3154c",
+    "LibertyRecomp/res/icons/png/512.png": "74ecd0db7e258ce55d202b789f7db09e106fae761f091941bf39f0299042d3e8",
+    "LibertyRecomp/res/icons/png/1024.png": "5d3e6688f45350739db709aa683270651bb16d9bd65356aa0ab00fad994c53cf"
   }
 }

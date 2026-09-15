@@ -2,6 +2,8 @@
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 development bundle ID")
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
+set(THEFT4_ARM64_TUNE "apple-m5" CACHE STRING
+    "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
 
 # Compile the actual checked-in AOT title, not a synthetic PPC fixture. Keep
 # this separate until the kernel/runtime imports can be linked into the host.
@@ -17,12 +19,21 @@ if(THEFT4_BUILD_GAME_CODE)
     target_link_libraries(theft4_game_code PRIVATE rex::core)
     target_include_directories(theft4_game_code PRIVATE "${THEFT4_GENERATED_DIR}")
     target_compile_features(theft4_game_code PRIVATE cxx_std_23)
-    target_compile_options(theft4_game_code PRIVATE -fno-strict-aliasing -ffp-model=strict -gline-tables-only)
-    # Apple Clang 21's O0 GlobalISel localizer spends minutes in the giant
-    # 38,606-call registrar. SelectionDAG avoids that measured bottleneck;
-    # keep the actual generated source and all registrations unchanged.
+    # Tune instruction scheduling while preserving the deployment target's
+    # default instruction set. Strict FP preserves generated guest math.
+    target_compile_options(theft4_game_code PRIVATE
+        -fno-strict-aliasing -ffp-model=strict
+        -gline-tables-only)
+    if(THEFT4_ARM64_TUNE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        target_compile_options(theft4_game_code PRIVATE "-mtune=${THEFT4_ARM64_TUNE}")
+    endif()
+    # The 38,606-call registrar only populates the function table once at
+    # startup. Optimizing it has no gameplay benefit and makes clean Release
+    # builds spend minutes in Apple Clang. Keep the actual generated source
+    # and all registrations unchanged while compiling this one table at O0;
+    # SelectionDAG also avoids the measured GlobalISel localizer bottleneck.
     set_source_files_properties("${THEFT4_GENERATED_DIR}/gta4_register.cpp"
-        PROPERTIES COMPILE_OPTIONS "-fno-global-isel")
+        PROPERTIES COMPILE_OPTIONS "-O0;-fno-global-isel")
     set_target_properties(theft4_game_code PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/game-code")
 endif()
@@ -101,6 +112,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         bridge/theft4_metal_presenter.mm
         bridge/theft4_bootstrap_audio.cpp
         bridge/theft4_ios_audio_output.mm
+        bridge/theft4_ios_audio_hotpaths.cpp
         bridge/theft4_bootstrap_input.cpp
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input/absolute_pointer.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input/ios/ios_input_driver.mm"
@@ -123,7 +135,12 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/util/draw.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/register_file.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/registers.cpp"
-        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/trace_writer.cpp")
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/trace_writer.cpp"
+        # Keep the generated AOT bodies authoritative while interposing the
+        # same platform-neutral world-transition diagnostics used by the
+        # desktop host. Apple codegen emits weak public entry points and
+        # separate __imp__ originals specifically for these strong wrappers.
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp")
     target_sources(theft4_core_bridge PRIVATE
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/flags.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/renderdoc_api.cpp"
@@ -164,15 +181,22 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     set_source_files_properties(bridge/theft4_ios_audio_output.mm
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    set_source_files_properties(bridge/theft4_ios_audio_hotpaths.cpp
+        PROPERTIES COMPILE_OPTIONS "-ffp-model=strict")
     set_source_files_properties(
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input/ios/ios_input_driver.mm"
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_include_directories(theft4_core_bridge PRIVATE
-        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input")
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input"
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src"
+        "${THEFT4_GENERATED_DIR}")
     target_link_libraries(theft4_core_bridge PRIVATE theft4_game_code
         SPIRV glslang MachineIndependent GenericCodeGen OSDependent OGLCompiler
         xxHash::xxhash)
     target_compile_definitions(theft4_core_bridge PUBLIC THEFT4_HAS_GAME_STARTUP=1)
+    if(THEFT4_ARM64_TUNE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        target_compile_options(theft4_core_bridge PRIVATE "-mtune=${THEFT4_ARM64_TUNE}")
+    endif()
     # Kernel exports register themselves during static initialization. Retain
     # all real exports, including ones found later by guest ordinal lookup.
     target_link_options(theft4_core_bridge INTERFACE "LINKER:-force_load,$<TARGET_FILE:rexruntime>")

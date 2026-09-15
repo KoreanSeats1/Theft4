@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <set>
@@ -3329,6 +3330,20 @@ bool VulkanPipelineCache::EnsurePipelineCreated(const PipelineCreationArguments&
     }
   }
 
+#if REX_PLATFORM_IOS
+  // Launch-only scene diagnostic: reveal whether host depth/stencil/culling
+  // reject the color passes. This intentionally produces incorrect visibility;
+  // never use it as a rendering fix or enable it in normal launches.
+  const char* raster_open = std::getenv("THEFT4_RASTER_OPEN");
+  if (raster_open && std::strcmp(raster_open, "1") == 0 &&
+      !edram_fragment_shader_interlock &&
+      (description.render_pass_key.depth_and_color_used >> 1)) {
+    depth_stencil_state.depthTestEnable = VK_FALSE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    depth_stencil_state.stencilTestEnable = VK_FALSE;
+    rasterization_state.cullMode = VK_CULL_MODE_NONE;
+  }
+#endif
   VkPipelineColorBlendStateCreateInfo color_blend_state = {};
   color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
   VkPipelineColorBlendAttachmentState color_blend_attachments[xenos::kMaxColorRenderTargets] = {};

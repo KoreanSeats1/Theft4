@@ -61,17 +61,24 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithRed:0.04 green:0.06 blue:0.10 alpha:1];
+    // The native game image is 1280x720. Keep its layer itself at 16:9 so
+    // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
+    self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
     _metalView.translatesAutoresizingMaskIntoConstraints = NO;
     _metalView.userInteractionEnabled = NO;
     [self.view addSubview:_metalView];
     [NSLayoutConstraint activateConstraints:@[
-        [_metalView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [_metalView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [_metalView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [_metalView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+        [_metalView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_metalView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [_metalView.widthAnchor constraintEqualToAnchor:_metalView.heightAnchor multiplier:(16.0 / 9.0)],
+        [_metalView.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor],
+        [_metalView.heightAnchor constraintLessThanOrEqualToAnchor:self.view.heightAnchor]
     ]];
+    NSLayoutConstraint *preferFullWidth =
+        [_metalView.widthAnchor constraintEqualToAnchor:self.view.widthAnchor];
+    preferFullWidth.priority = 999;
+    preferFullWidth.active = YES;
     theft4_metal_bind_layer((__bridge void *)_metalView.layer);
     UILabel *title = [UILabel new];
     title.text = @"Theft4";

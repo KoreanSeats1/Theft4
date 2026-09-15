@@ -25,6 +25,8 @@ option(REXGLUE_RUNTIME_ONLY      "Also build the headless system runtime without
 option(REXGLUE_HEADLESS_KERNEL   "Include core HLE exports; stop on unavailable media/UI exports" OFF)
 option(REXGLUE_HEADLESS_RENDER_AUDIO
     "Include XAudio render-driver exports for an injected lightweight backend" OFF)
+option(REXGLUE_HEADLESS_XMA_DECODER
+    "Include the real XMA decoder in a headless runtime" OFF)
 option(REXGLUE_HEADLESS_INPUT
     "Include XAM input exports for an injected lightweight backend" OFF)
 if(REXGLUE_HEADLESS_KERNEL AND NOT (REXGLUE_CORE_ONLY AND REXGLUE_RUNTIME_ONLY))
@@ -280,6 +282,9 @@ if(REXGLUE_CORE_ONLY)
     if(REXGLUE_RUNTIME_ONLY)
         add_subdirectory(src/filesystem)
         add_subdirectory(src/system)
+        if(REXGLUE_HEADLESS_XMA_DECODER)
+            add_subdirectory(src/audio)
+        endif()
         if(REXGLUE_HEADLESS_KERNEL)
             add_subdirectory(src/kernel)
         endif()

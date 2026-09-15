@@ -206,9 +206,11 @@ endif()
 #=============================================================================
 add_subdirectory(utfcpp)
 
-if(REXGLUE_CORE_ONLY)
+if(REXGLUE_CORE_ONLY AND NOT REXGLUE_HEADLESS_XMA_DECODER)
     return()
 endif()
+
+if(NOT REXGLUE_CORE_ONLY)
 
 #=============================================================================
 # Vulkan dependencies (only when Vulkan backend is enabled)
@@ -416,6 +418,8 @@ if(REXGLUE_ENABLE_TRACY)
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/tracy
             FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
 endif()
+
+endif() # NOT REXGLUE_CORE_ONLY
 
 #=============================================================================
 # FFmpeg - Audio/video codec library (for XMA decoding)

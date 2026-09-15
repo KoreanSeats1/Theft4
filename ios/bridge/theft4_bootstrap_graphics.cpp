@@ -25,6 +25,7 @@
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
+#include <rex/thread.h>
 
 namespace {
 
@@ -319,6 +320,27 @@ class Theft4BootstrapGraphics final : public rex::system::IGraphicsSystem {
     }
     REXLOG_INFO("Theft4 GPU read-pointer writeback {:08X}, block log2 {}", ptr,
                 block_size_log2);
+  }
+
+  void InitializeShaderStorage(const std::filesystem::path& cache_root,
+                               uint32_t title_id, bool blocking) override {
+    if (!command_processor_ || cache_root.empty() || !title_id) {
+      return;
+    }
+    if (blocking) {
+      rex::thread::Fence fence;
+      command_processor_->CallInThread(
+          [this, cache_root, title_id, &fence]() {
+            command_processor_->InitializeShaderStorage(cache_root, title_id,
+                                                        true);
+            fence.Signal();
+          });
+      fence.Wait();
+      return;
+    }
+    command_processor_->CallInThread([this, cache_root, title_id]() {
+      command_processor_->InitializeShaderStorage(cache_root, title_id, false);
+    });
   }
 
   void Shutdown() override {

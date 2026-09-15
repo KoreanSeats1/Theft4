@@ -246,6 +246,17 @@
             }
         },
         {
+            "name": "ios-device-release",
+            "displayName": "iOS Device Release",
+            "inherits": "ios-base",
+            "cacheVariables": {
+                "LIBERTY_RECOMP_IOS_CORE_ONLY": "ON",
+                "CMAKE_OSX_SYSROOT": "iphoneos",
+                "CMAKE_CONFIGURATION_TYPES": "Release",
+                "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO"
+            }
+        },
+        {
             "name": "ios-simulator-debug",
             "inherits": "ios-device-debug",
             "cacheVariables": {
@@ -488,6 +499,12 @@
             "name": "theft4-device-debug",
             "configurePreset": "ios-device-debug",
             "configuration": "Debug",
+            "targets": ["Theft4"]
+        },
+        {
+            "name": "theft4-device-release",
+            "configurePreset": "ios-device-release",
+            "configuration": "Release",
             "targets": ["Theft4"]
         },
         {

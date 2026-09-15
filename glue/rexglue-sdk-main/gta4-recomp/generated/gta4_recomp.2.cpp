@@ -43585,6 +43585,7 @@ loc_8219143C:
 	// beq cr6,0x82191458
 	if (ctx.cr6.eq) goto loc_82191458;
 	// db16cyc 
+	REX_DB16CYC();
 	// ld r11,0(r4)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r4.u32 + 0);
 	// cmpdi cr6,r11,0
@@ -49681,6 +49682,7 @@ loc_82193DA0:
 	// bgt cr6,0x82193ddc
 	if (ctx.cr6.gt) goto loc_82193DDC;
 	// db16cyc 
+	REX_DB16CYC();
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82193e48
@@ -74328,4 +74330,3 @@ loc_8219E1FC:
 	__restgprlr_27(ctx, base);
 	return;
 }
-

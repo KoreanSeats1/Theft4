@@ -72,12 +72,13 @@ if(REXGLUE_HEADLESS_KERNEL)
         xboxkrnl/xboxkrnl_audio.cpp xboxkrnl/xboxkrnl_audio_xma.cpp)
     if(REXGLUE_HEADLESS_RENDER_AUDIO)
         list(REMOVE_ITEM _headless_unavailable_sources xboxkrnl/xboxkrnl_audio.cpp)
-        # The complete decoder depends on the desktop audio/FFmpeg target. Use
-        # a deterministic silent XMA service during embedded bring-up so the
-        # guest-visible buffer protocol remains live without that dependency.
         list(REMOVE_ITEM _headless_unavailable_sources xboxkrnl/xboxkrnl_audio_xma.cpp)
-        list(REMOVE_ITEM REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma.cpp)
-        list(APPEND REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma_headless.cpp)
+        if(NOT REXGLUE_HEADLESS_XMA_DECODER)
+            # Minimal embedded builds may retain the deterministic silent
+            # service when the real decoder was not requested.
+            list(REMOVE_ITEM REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma.cpp)
+            list(APPEND REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma_headless.cpp)
+        endif()
     endif()
     if(REXGLUE_HEADLESS_INPUT)
         list(REMOVE_ITEM _headless_unavailable_sources xam/xam_input.cpp)
@@ -105,6 +106,9 @@ list(TRANSFORM REXKERNEL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 target_sources(rexruntime PRIVATE ${REXKERNEL_SOURCES})
 
 target_link_libraries(rexruntime PRIVATE o1heap rexcore rexfilesystem)
+if(REXGLUE_HEADLESS_XMA_DECODER)
+    target_link_libraries(rexruntime PRIVATE rexaudio)
+endif()
 if(NOT REXGLUE_HEADLESS_KERNEL)
     target_link_libraries(rexruntime PRIVATE rexui rexaudio rexinput imgui)
 endif()

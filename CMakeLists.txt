@@ -35,6 +35,10 @@ if(LIBERTY_RECOMP_IOS_CORE_ONLY)
     set(REXGLUE_BUILD_GTA4_RECOMP OFF CACHE BOOL "" FORCE)
     set(REXGLUE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(REXGLUE_HEADLESS_RENDER_AUDIO ON CACHE BOOL "" FORCE)
+    # The iOS shell owns final AudioUnit playback, but the guest still needs
+    # the real XMA hardware protocol and AOT-safe FFmpeg decoder. Without it,
+    # cutscene state can remain behind a permanent black transition.
+    set(REXGLUE_HEADLESS_XMA_DECODER ON CACHE BOOL "" FORCE)
     set(REXGLUE_HEADLESS_INPUT ON CACHE BOOL "" FORCE)
     add_subdirectory(glue/rexglue-sdk-main)
     add_subdirectory(tests/ios)

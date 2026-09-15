@@ -10,6 +10,8 @@
  */
 
 #include <bit>
+#include <cstdlib>
+#include <string_view>
 
 #include <rex/audio/xma/context.h>
 #include <rex/audio/handoff_trace.h>
@@ -125,6 +127,10 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
   }
   register_file_[XmaRegister::NextContextIndex] = 1;
   context_bitmap_.Resize(kContextCount);
+
+  const char* inline_setting = std::getenv("THEFT4_XMA_INLINE");
+  inline_work_ = inline_setting && std::string_view(inline_setting) == "1";
+  REXAPU_INFO("XMA decode scheduling: {}", inline_work_ ? "inline" : "dedicated worker");
 
   worker_running_ = true;
   work_event_ = rex::thread::Event::CreateAutoResetEvent(false);
@@ -327,14 +333,29 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
         diagnostics::gta4_transition::EventType::kXmaKick, 0, 0, 0,
         diagnostics::gta4_transition::kFlagBefore, ready_word, kicked_value,
         base_context_id);
-    ready_context_words_[ready_word].fetch_or(kicked_value, std::memory_order_release);
-    // Signal the decoder thread to start processing.
-    work_event_->Set();
-    // Block until the worker finishes, so the game sees updated context data.
-    for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
-      if (kicked_value & 1) {
-        uint32_t context_id = base_context_id + i;
-        contexts_[context_id].WaitForWorkDone();
+    if (inline_work_) {
+      // XeniOS exposes the same synchronous inline mode. It preserves the
+      // guest-visible completion point while avoiding a wake/wait round trip
+      // for every kick. The dedicated worker remains the default SDK path and
+      // is selectable per launch with THEFT4_XMA_INLINE=0.
+      uint32_t remaining = kicked_value;
+      while (remaining) {
+        const uint32_t bit_index = static_cast<uint32_t>(std::countr_zero(remaining));
+        const uint32_t bit = uint32_t{1} << bit_index;
+        remaining &= ~bit;
+        const uint32_t context_id = base_context_id + bit_index;
+        if (contexts_[context_id].Work()) PROFILE_XMA_FRAME_DECODED();
+      }
+    } else {
+      ready_context_words_[ready_word].fetch_or(kicked_value, std::memory_order_release);
+      // Signal the decoder thread to start processing.
+      work_event_->Set();
+      // Block until the worker finishes, so the game sees updated context data.
+      for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
+        if (kicked_value & 1) {
+          uint32_t context_id = base_context_id + i;
+          contexts_[context_id].WaitForWorkDone();
+        }
       }
     }
     diagnostics::gta4_transition::Record(

@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <set>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -70,6 +71,8 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
                     "Use VK_KHR_dynamic_rendering for Vulkan GPU emulation when supported by the "
                     "device (falls back to render passes otherwise)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DECLARE(bool, native_renderer_oracle_capture);
 
 namespace rex::graphics::vulkan {
 
@@ -3162,20 +3165,39 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   }
 #if REX_PLATFORM_IOS
   // Diagnostic only: keep the renderer and presentation settings unchanged.
-  // Capture a known startup frame and three depth-heavy world frames, then stop.
+  // Capture a known startup frame, three depth-heavy world frames, and the
+  // first later frame where the color pass has materially recovered, then stop.
   // Public capture acquires the mailbox and submits a readback after refresh's
   // release barriers. It may briefly synchronize the GPU; never enable by default.
   static uint64_t first_world_swap = 0;
   static unsigned capture_count = 0;
+  static bool recovered_world_frame_captured = false;
   const char* capture_dir = std::getenv("THEFT4_FRAME_CAPTURE_DIR");
   if (capture_dir && *capture_dir && guest_output_refreshed) {
     if (!first_world_swap && frame_flow_depth_only_draws_ > 100)
       first_world_swap = frame_flow_swap_count_;
+    // One complete post-loading frame, using the existing trace machinery.
+    // Keep this separate from pixel captures: XTR contains private game data
+    // and is only written when this additional diagnostic switch is enabled.
+    const char* trace_scene = std::getenv("THEFT4_TRACE_SCENE");
+    if (trace_scene && std::strcmp(trace_scene, "1") == 0 && first_world_swap &&
+        frame_flow_swap_count_ == first_world_swap + 120) {
+      REXCVAR_SET(trace_gpu_prefix, std::string(capture_dir));
+      REXCVAR_SET(native_renderer_oracle_capture, true);
+      ArmNativeRendererOracleCapture();
+    }
     const bool capture_frame = frame_flow_swap_count_ == 128 ||
         (first_world_swap && (frame_flow_swap_count_ == first_world_swap ||
          frame_flow_swap_count_ == first_world_swap + 120 ||
-         frame_flow_swap_count_ == first_world_swap + 300));
-    if (capture_frame && capture_count < 4) {
+         frame_flow_swap_count_ == first_world_swap + 300)) ||
+        (first_world_swap && !recovered_world_frame_captured &&
+         frame_flow_swap_count_ > first_world_swap + 300 &&
+         frame_flow_color_draws_ >= 400);
+    if (capture_frame && capture_count < 5) {
+      if (first_world_swap && frame_flow_swap_count_ > first_world_swap + 300 &&
+          frame_flow_color_draws_ >= 400) {
+        recovered_world_frame_captured = true;
+      }
       ++capture_count;
       REXGPU_INFO("[Theft4Capture] begin swap={} depth_only={} capture={}",
                   frame_flow_swap_count_, frame_flow_depth_only_draws_, capture_count);
@@ -4124,6 +4146,33 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   uint32_t normalized_color_mask =
       pixel_shader ? draw_util::GetNormalizedColorMask(regs, pixel_shader->writes_color_targets())
                    : 0;
+#if REX_PLATFORM_IOS
+  if (trace_writer_.is_open() && std::getenv("THEFT4_TRACE_SCENE")) {
+    REXGPU_INFO(
+        "[Theft4DrawState] swap={} draw={} vs={:016X} ps={:016X} "
+        "edram={} color_raw={:08X} color_normal={:04X} depth={:08X} "
+        "vertices={} host_prim={} vs_type={} index_type={}",
+        frame_flow_swap_count_, frame_flow_draw_calls_, vertex_shader->ucode_data_hash(),
+        pixel_shader ? pixel_shader->ucode_data_hash() : 0, uint32_t(edram_mode),
+        regs[XE_GPU_REG_RB_COLOR_MASK], normalized_color_mask, normalized_depth_control.value,
+        primitive_processing_result.host_draw_vertex_count,
+        uint32_t(primitive_processing_result.host_primitive_type),
+        uint32_t(primitive_processing_result.host_vertex_shader_type),
+        uint32_t(primitive_processing_result.index_buffer_type));
+    // Preserve only the translations actually used by this single scene frame.
+    static std::set<std::pair<uint64_t, uint64_t>> dumped_translations;
+    const char* capture_dir = std::getenv("THEFT4_FRAME_CAPTURE_DIR");
+    if (capture_dir && *capture_dir) {
+      for (const auto* translation : {vertex_shader_translation, pixel_shader_translation}) {
+        if (translation && dumped_translations.emplace(
+                translation->shader().ucode_data_hash(), translation->modification()).second) {
+          translation->shader().DumpUcode(capture_dir);
+          translation->Dump(capture_dir, "spirv");
+        }
+      }
+    }
+  }
+#endif
   if (is_rasterization_done) {
     ++frame_flow_rasterizing_draws_;
     if (normalized_color_mask) {

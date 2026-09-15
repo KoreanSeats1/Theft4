@@ -21,8 +21,11 @@
 REXCVAR_DECLARE(bool, vulkan_presenter_probe_swapchain_pixels);
 REXCVAR_DECLARE(std::string, render_target_path_vulkan);
 REXCVAR_DECLARE(bool, vulkan_dynamic_rendering);
+REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 
 extern const rex::PPCImageInfo PPCImageConfig;
+extern "C" void gta4_transition_hooks_link_anchor();
+extern "C" void theft4_ios_audio_hotpaths_link_anchor();
 
 namespace {
 // This bring-up entry is deliberately one-shot per process. A runtime owns
@@ -44,6 +47,11 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                      theft4_boot_event_fn event, void* context) {
     if (!game_directory || !support_directory || !event || attempted.test_and_set()) return 2;
     try {
+        // Retain the strong GTA transition wrappers in the embedded static
+        // engine. They are observational and still invoke the original AOT
+        // functions through their generated __imp__ entry points.
+        gta4_transition_hooks_link_anchor();
+        theft4_ios_audio_hotpaths_link_anchor();
         std::string reason;
         if (!gta4::install::IsInstallReady(game_directory, &reason)) {
             event(context, reason.c_str());
@@ -57,12 +65,36 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         logging.log_file = log_path.c_str();
         logging.log_to_console = true;
         rex::InitLogging(logging);
+        // Audio timing is an opt-in engineering capture, never a normal-play
+        // cost. Remove a previous bounded trace before deciding whether this
+        // launch needs one so device testing cannot accumulate large CSVs.
+        const auto audio_timing = support / "audio-timing";
+        std::error_code audio_timing_error;
+        std::filesystem::remove_all(audio_timing, audio_timing_error);
+        if (const char* timing = std::getenv("THEFT4_AUDIO_TIMING");
+            timing && std::string_view(timing) == "1") {
+            std::filesystem::create_directories(audio_timing);
+            setenv("REX_AUDIO_HANDOFF_DIR", audio_timing.c_str(), 1);
+            setenv("REX_AUDIO_HANDOFF_EVENTS_ONLY", "1", 1);
+            setenv("REX_AUDIO_HANDOFF_SECONDS", "600", 1);
+            REXLOG_INFO("Theft4 bounded audio timing enabled: {}",
+                        audio_timing.string());
+        }
+        // Candidate based on XeniOS's supported inline XMA mode. Set to 0 in a
+        // launch environment for the dedicated-worker control.
+        if (!std::getenv("THEFT4_XMA_INLINE")) setenv("THEFT4_XMA_INLINE", "1", 1);
+        // Initial startup keeps the full 32-block safety buffer. After an
+        // underrun, resume at eight blocks so one slow producer episode does
+        // not create a quarter-second refill pause. Set to 32 for the control.
+        if (!std::getenv("THEFT4_AUDIO_RECOVERY_BLOCKS"))
+            setenv("THEFT4_AUDIO_RECOVERY_BLOCKS", "8", 1);
         if (const char* diagnostics = std::getenv("THEFT4_DIAGNOSTICS");
             diagnostics && std::string_view(diagnostics) == "1") {
             const auto captures = support / "frame-captures";
             std::filesystem::create_directories(captures);
             setenv("THEFT4_FRAME_CAPTURE_DIR", captures.c_str(), 1);
             REXCVAR_SET(vulkan_presenter_probe_swapchain_pixels, true);
+            REXCVAR_SET(gta4_transition_diagnostics, "metadata");
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
         rex::Runtime runtime(game_directory, support / "user",
@@ -85,10 +117,12 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // disabling it, which can leave GTA IV waiting on stale scene data.
         REXCVAR_SET(readback_resolve, "fast");
         // ReXGlue's current Vulkan occlusion implementation synchronously waits
-        // for every query result. That strict path can wedge MoltenVK when GTA
-        // IV starts its depth-heavy world render. Use the runtime's established
-        // fake-result fallback until the nonblocking Xenia query path is ported.
-        REXCVAR_SET(occlusion_query_enable, false);
+        // for every query result. Keep the established fake-result fallback as
+        // the default, but allow a bounded device experiment with the real path
+        // without producing a separate source variant.
+        const char* real_occlusion = std::getenv("THEFT4_REAL_OCCLUSION");
+        REXCVAR_SET(occlusion_query_enable,
+                    real_occlusion && std::string_view(real_occlusion) == "1");
         // Opt-in comparison of the existing EDRAM implementations. Keep the
         // normal host-render-target path unchanged unless explicitly requested.
         if (const char* path = std::getenv("THEFT4_RENDER_TARGET_PATH"); path) {
@@ -117,6 +151,12 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         const auto* info = module->xex_module()->opt_execution_info();
         if (!info || info->version_value != 0x00000805)
             throw std::runtime_error("Refusing execution: loaded game is not matching TU8");
+        const uint32_t title_id = runtime.kernel_state()->title_id();
+        if (title_id != 0 && !runtime.cache_root().empty()) {
+            event(context, "Loading the persistent GTA IV shader and pipeline cache");
+            runtime.graphics_system()->InitializeShaderStorage(
+                runtime.cache_root(), title_id, true);
+        }
         const uint32_t address = module->entry_point();
         original_entry = runtime.function_dispatcher()->GetFunction(address);
         if (!original_entry) throw std::runtime_error("No AOT function registered for game entry point");

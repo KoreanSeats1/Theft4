@@ -3065,7 +3065,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
       theft4_present_count == 128 || theft4_present_count == 256 ||
       theft4_present_count == 512 || theft4_present_count == 1024 ||
       theft4_present_count % 300 == 0;
-  if (theft4_present_milestone || present_result != VK_SUCCESS) {
+  // VK_SUBOPTIMAL_KHR is an expected successful result when iOS presents the
+  // fixed 720p drawable into a differently sized UIKit view. Keep milestone
+  // visibility without formatting and writing a log entry every frame.
+  if (theft4_present_milestone ||
+      (present_result != VK_SUCCESS &&
+       present_result != VK_SUBOPTIMAL_KHR)) {
     REXLOG_INFO(
         "[Theft4Present] present={} guest_image={} guest={}x{} effects={} "
         "swapchain={}x{} image={} acquire={} submit={} queue_present={}",

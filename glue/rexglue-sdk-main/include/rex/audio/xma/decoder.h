@@ -73,6 +73,7 @@ class XmaDecoder {
   runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
 
   std::atomic<bool> worker_running_ = {false};
+  bool inline_work_ = false;
   system::object_ref<system::XHostThread> worker_thread_;
   std::unique_ptr<rex::thread::Event> work_event_ = nullptr;
 

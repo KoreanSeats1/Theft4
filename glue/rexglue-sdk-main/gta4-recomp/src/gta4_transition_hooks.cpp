@@ -6,6 +6,7 @@
 #include <rex/system/kernel_state.h>
 #include <rex/memory.h>
 #include <rex/diagnostics/gta4_transition.h>
+#include <rex/logging.h>
 #include <rex/thread.h>
 
 #include "gta4_init.h"
@@ -27,6 +28,8 @@ constexpr uint32_t kCommandArenaCursorOffset = 28;
 
 thread_local uint32_t g_world_activation_depth = 0;
 std::atomic<uint64_t> g_command_arena_generation{0};
+std::atomic_flag g_loading_hook_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_world_hook_logged = ATOMIC_FLAG_INIT;
 
 uint64_t ReadLoadingStateBits(uint8_t* base) {
   uint64_t bits = REX_LOAD_U8(kLoadingReadyGlobal);
@@ -37,7 +40,18 @@ uint64_t ReadLoadingStateBits(uint8_t* base) {
 
 }  // namespace
 
+// Static-library hosts must reference one symbol that exists only in this
+// translation unit. Otherwise Apple's linker may satisfy every interposed GTA
+// entry point with the generated weak body and never extract these wrappers.
+extern "C" void gta4_transition_hooks_link_anchor() {}
+
 extern "C" void sub_82144188(PPCContext& ctx, uint8_t* base) {
+  if (rex::diagnostics::gta4_transition::IsEnabled() &&
+      !g_loading_hook_logged.test_and_set(std::memory_order_relaxed)) {
+    REXLOG_INFO("GTA IV AOT transition loading hook reached: active={} state={}",
+                REX_LOAD_U8(kLoadingActiveGlobal) != 0,
+                REX_LOAD_U32(kLoadingScreenIndexGlobal));
+  }
   rex::diagnostics::gta4_transition::NoteLoadingTick(
       0x82144188, static_cast<uint32_t>(ctx.lr),
       REX_LOAD_U8(kLoadingActiveGlobal) != 0,
@@ -63,6 +77,11 @@ extern "C" void sub_8214B640(PPCContext& ctx, uint8_t* base) {
 }
 
 extern "C" void sub_82141F00(PPCContext& ctx, uint8_t* base) {
+  if (rex::diagnostics::gta4_transition::IsEnabled() &&
+      !g_world_hook_logged.test_and_set(std::memory_order_relaxed)) {
+    REXLOG_INFO("GTA IV AOT transition world hook reached: caller={:08X}",
+                static_cast<uint32_t>(ctx.lr));
+  }
   rex::audio::handoff::Span handoff_world("world-activation",0x82141F00,ctx.lr,ctx.r3.u32);
   rex::audio::handoff::Record("world",0x82141F00,{ctx.lr,ctx.r3.u32},"begin");
   const uint32_t caller = static_cast<uint32_t>(ctx.lr);

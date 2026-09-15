@@ -7,12 +7,20 @@
 #include <rex/system/xex_module.h>
 #include <rex/runtime.h>
 #include <atomic>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <string_view>
 #include <vector>
 
 int theft4_configure_boot_diagnostics(void) {
-    return rex::diagnostics::Configure(true, "logging") ? 0 : 1;
+    const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
+    const bool detailed = enabled && std::string_view(enabled) == "1";
+    return rex::diagnostics::Configure(
+               true, detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
+                              : "logging")
+               ? 0
+               : 1;
 }
 
 static std::vector<uint8_t> ReadExecutable(const std::filesystem::path& path) {

@@ -14,11 +14,14 @@ set_target_properties(rexcore_link_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ios-smoke")
 
 foreach(forbidden rexglue rexgpu-xenos rexgpu-gta4-native plume MoltenVK nfd
-                  SDL3-static libavcodec TracyClient GameNetworkingSockets)
+                  SDL3-static TracyClient GameNetworkingSockets)
     if(TARGET ${forbidden})
         message(FATAL_ERROR "Unexpected dependency in iOS core build: ${forbidden}")
     endif()
 endforeach()
+if(TARGET libavcodec AND NOT REXGLUE_HEADLESS_XMA_DECODER)
+    message(FATAL_ERROR "Unexpected dependency in iOS core build: libavcodec")
+endif()
 if(TARGET rexruntime AND NOT REXGLUE_RUNTIME_ONLY)
     message(FATAL_ERROR "Unexpected runtime in core-only build")
 endif()

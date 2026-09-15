@@ -18,6 +18,12 @@ dispatch_semaphore_t frame_slots = nil;
 std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
 
+// Match XeniOS's iOS presentation policy. GTA IV renders a 1280x720 guest
+// image; using the iPad's native 2816x1940 drawable only makes MoltenVK scale
+// and present almost six times as many pixels without adding guest detail.
+constexpr double kIOSDrawableWidth = 1280.0;
+constexpr double kIOSDrawableHeight = 720.0;
+
 void EnsureDeviceLocked() {
   if (!metal_device) metal_device = MTLCreateSystemDefaultDevice();
   if (metal_device && !command_queue) {
@@ -74,8 +80,11 @@ void theft4_metal_resize_layer(void* raw_layer, double width, double height,
                                double scale) {
   CAMetalLayer* layer = (__bridge CAMetalLayer*)raw_layer;
   if (!layer || width <= 0.0 || height <= 0.0 || scale <= 0.0) return;
-  layer.contentsScale = scale;
-  layer.drawableSize = CGSizeMake(width * scale, height * scale);
+  // The UIView still owns final placement on screen. Keep the Vulkan surface
+  // at the stable 720p-class size used by XeniOS rather than tying GPU work to
+  // the physical Retina pixel count.
+  layer.contentsScale = 1.0;
+  layer.drawableSize = CGSizeMake(kIOSDrawableWidth, kIOSDrawableHeight);
 }
 
 bool theft4_metal_has_layer(void) {

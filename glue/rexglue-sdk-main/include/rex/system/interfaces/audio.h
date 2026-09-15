@@ -20,6 +20,10 @@ namespace rex::system {
 class KernelState;
 }
 
+namespace rex::audio {
+class XmaDecoder;
+}
+
 namespace rex::system {
 
 class IAudioSystem {
@@ -43,6 +47,7 @@ class IAudioSystem {
     (void)index;
     (void)samples_ptr;
   }
+  virtual audio::XmaDecoder* xma_decoder() { return nullptr; }
 };
 
 }  // namespace rex::system

@@ -49,8 +49,10 @@ bool build_eieio(BuilderContext& ctx) {
 }
 
 bool build_db16cyc(BuilderContext& ctx) {
-  // Xenon-specific 16-cycle delay hint, no effect in recompiled code
-  (void)ctx;
+  // Xenon's db16cyc is used heavily in spin-wait loops. Preserve it as the
+  // host CPU's lightweight spin-loop hint rather than deleting it. In
+  // particular, the AArch64 backend in Xenia emits YIELD for this opcode.
+  ctx.println("\tREX_DB16CYC();");
   return true;
 }
 

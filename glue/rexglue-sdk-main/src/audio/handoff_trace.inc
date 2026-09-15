@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 namespace rex::audio::handoff {
@@ -36,6 +37,7 @@ struct State {
   std::thread writer;
   std::filesystem::path directory;
   uint64_t start=0,deadline=0,pcm_budget=0;
+  bool capture_pcm=true;
 };
 // Storage remains alive for process lifetime so a callback already in flight
 // cannot touch freed diagnostic queues when tracing is disabled or finalized.
@@ -184,6 +186,7 @@ void Capture(Stage stage,const float* interleaved,uint32_t frames,uint32_t chann
              uint64_t id,uint64_t serial,uint64_t position,uint64_t auxiliary,bool planar_big_endian,const float* const* planar) noexcept {
   if(!Enabled())return;
   auto* s=state;
+  if(!s->capture_pcm)return;
   if(size_t(stage)>=5||!frames||channels<1||channels>6||(!interleaved&&!planar)) {s->pcm_invalid.fetch_add(1);return;}
   const auto tick=Clock();
   for(uint32_t offset=0;offset<frames;offset+=256) {
@@ -206,7 +209,9 @@ void Initialize() {
     std::filesystem::create_directories(s->directory);
     s->start=Clock();s->deadline=s->start+Setting("REX_AUDIO_HANDOFF_SECONDS",600,60,1800)*1000000000ull;
     s->pcm_budget=Setting("REX_AUDIO_HANDOFF_PCM_MIB",1536,64,4096)*1024*1024;
-    std::ofstream info(s->directory/"clock.json");info<<"{\"clock\":\"steady_clock_nanoseconds\",\"start_tick\":"<<s->start<<",\"deadline_tick\":"<<s->deadline<<",\"pcm_budget\":"<<s->pcm_budget<<"}\n";info.close();
+    const char* events_only=std::getenv("REX_AUDIO_HANDOFF_EVENTS_ONLY");
+    s->capture_pcm=!(events_only&&std::string_view(events_only)=="1");
+    std::ofstream info(s->directory/"clock.json");info<<"{\"clock\":\"steady_clock_nanoseconds\",\"start_tick\":"<<s->start<<",\"deadline_tick\":"<<s->deadline<<",\"pcm_budget\":"<<s->pcm_budget<<",\"capture_pcm\":"<<(s->capture_pcm?"true":"false")<<"}\n";info.close();
     state=owner.release();enabled.store(true,std::memory_order_release);s->writer=std::thread(Writer,s);
   } catch(const std::exception& e) {enabled.store(false);REXAPU_ERROR("AudioHandoff: initialization failed: {}",e.what());}
 }

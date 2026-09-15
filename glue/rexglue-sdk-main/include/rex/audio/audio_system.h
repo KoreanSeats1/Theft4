@@ -40,7 +40,7 @@ class AudioSystem : public system::IAudioSystem {
 
   memory::Memory* memory() const { return memory_; }
   runtime::FunctionDispatcher* function_dispatcher() const { return function_dispatcher_; }
-  XmaDecoder* xma_decoder() const { return xma_decoder_.get(); }
+  XmaDecoder* xma_decoder() override { return xma_decoder_.get(); }
 
   virtual X_STATUS Setup(system::KernelState* kernel_state);
   virtual void Shutdown();

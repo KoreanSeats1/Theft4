@@ -1,5 +1,10 @@
 # Theft4: real AOT startup bring-up
 
+> **For normal use, start with [Release build and play](IOS_RELEASE_BUILD.md).**
+> The current Release app has reached full 3D, decoded audio, and the first
+> player-control state. Debug, silent-XMA and missing-graphics descriptions below
+> are historical. Dependency-build commands remain developer reference material.
+
 Development sessions: 2026-09-14 through 2026-09-15. This extends the earlier
 loader-only result in [IOS_APP_BUILD.md](IOS_APP_BUILD.md). XeniOS is a separate
 reference project and is not embedded here.

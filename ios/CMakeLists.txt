@@ -254,6 +254,17 @@ set_target_properties(Theft4 PROPERTIES
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
     XCODE_ATTRIBUTE_ENABLE_BITCODE NO
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/theft4")
+
+# Publish a Release play scheme from the Release preset, not Xcode's implicit
+# Debug launch default. Debug remains available in its separate build tree.
+if(CMAKE_CONFIGURATION_TYPES STREQUAL "Release")
+    set_target_properties(Theft4 PROPERTIES
+        XCODE_GENERATE_SCHEME TRUE
+        XCODE_SCHEME_LAUNCH_CONFIGURATION Release
+        XCODE_SCHEME_ENABLE_GPU_FRAME_CAPTURE_MODE Disabled
+        XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+        XCODE_SCHEME_ENABLE_GPU_SHADER_VALIDATION OFF)
+endif()
 if(THEFT4_SIGN_DEVICE AND NOT CMAKE_OSX_SYSROOT MATCHES "(iphonesimulator|iPhoneSimulator)")
     if(NOT LIBERTY_IOS_DEVELOPMENT_TEAM)
         message(FATAL_ERROR "THEFT4_SIGN_DEVICE requires LIBERTY_IOS_DEVELOPMENT_TEAM")

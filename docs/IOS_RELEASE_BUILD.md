@@ -1,0 +1,195 @@
+# Theft4 — build and play the Release app
+
+Use **Release for normal play**. Debug is for development, not representative
+performance. Both configurations build the same Theft4 application: native AOT
+game code plus the ReXGlue runtime and Vulkan → MoltenVK → Metal graphics path.
+No CPU JIT setup or debugger attachment is required to play.
+
+The latest on-device Release tests reached the opening 3D cutscene and the first
+driving/player-control state on an M5 iPad Pro, with substantially improved audio.
+This remains experimental: heavy views can be slow; other devices, long sessions,
+controller combinations and lifecycle recovery need further validation.
+
+## What is and isn't provided
+
+- Source and an Xcode-project generator, **not a signed IPA or TestFlight release**.
+- Real game startup, rendering and audio, not just the old core probe.
+- No ISO, title update, extracted game files, saves or private shader caches.
+- No requirement to run XeniOS alongside Theft4. Its public MoltenVK build is
+  currently a build-time dependency source, described below.
+- This guide's generator routing has automated checks. It does **not** establish
+  a successful clean-machine build of the entire dependency stack.
+
+## 1. Requirements and source
+
+Use a Mac with full Xcode, its command-line tools and a physical ARM64 iPad/iPhone
+configured for development. The tested setup used Xcode 27 / Apple Clang 21 and
+an M5 iPad on iPadOS 27; the generator sets deployment minimum 26.0. That minimum
+does not prove every iOS 26 device is supported. CMake 3.29+ and Python 3.10+ must
+be on PATH. Supply your own Apple development-team ID and device signing account.
+
+```sh
+git clone --recurse-submodules https://github.com/KoreanSeats1/Theft4.git
+cd Theft4
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+```
+
+For an existing clone, pull your branch normally first. Do not discard local
+changes to update. The generator runs the repository's pinned-dependency setup
+and verification; plain GitHub ZIP downloads do not contain submodule sources.
+
+## 2. Graphics dependency prerequisite
+
+Before running the generator, build the public iOS MoltenVK archives described
+near the top of [IOS_GAME_STARTUP.md](IOS_GAME_STARTUP.md). The default lookup is
+the sibling `../XeniOS/build-ios-xcode/obj/iOS/Release` directory. It must contain:
+
+```text
+libMoltenVK.a
+libMoltenVK_ShaderConverter.a
+libMoltenVK_Common.a
+libspirv-cross.a
+libSPIRV-Tools.a
+```
+
+Alternatively point at your compatible **iPhoneOS ARM64 Release** archives:
+
+```sh
+export THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries
+```
+
+Do not substitute macOS or simulator archives. The helper checks presence, not
+full binary compatibility; incompatible archives will fail at link/run time.
+Do not overwrite an unrelated working XeniOS build to experiment with Theft4.
+Self-contained dependency packaging is still pending.
+
+## 3. Generate, build and sign Release
+
+```sh
+./Generate-Theft4-Xcode.command YOUR_TEAM_ID
+```
+
+The default selects `ios-device-release`, enables the game-code/runtime startup
+targets, configures development signing, and opens:
+
+```text
+out/build/ios-device-release/LibertyRecomp-ALL.xcodeproj
+```
+
+In Xcode:
+
+1. Select the **Theft4** scheme and your connected physical device, not a simulator
+   or the aggregate ALL_BUILD target.
+2. In **Product → Scheme → Edit Scheme → Run → Info**, verify **Release** and
+   **uncheck Debug executable**. Release optimization and debugger attachment
+   are separate settings. The generator does not automatically uncheck this box.
+3. Leave Metal capture, API/shader validation, sanitizers and profiling tools off
+   for ordinary play. The Release-generated scheme disables Metal capture and
+   API/shader validation by default. If reusing an old scheme, check it manually.
+4. Build/install. If signing fails, resolve your account/team/device provisioning
+   in Xcode; no personal signing identity is shipped in this repository.
+
+An equivalent terminal build after generating:
+
+```sh
+cmake --build --preset theft4-device-release --parallel 4 -- -allowProvisioningUpdates
+```
+
+Output: `out/build/ios-device-release/theft4/Release/Theft4.app`.
+Release is still **development signed**, not an App Store/distribution build.
+Symbol information and ordinary startup logs may remain; that does not make it
+a Debug build. No `get-task-allow` entitlement should be confused with CPU JIT.
+
+You can install without attaching Xcode's debugger:
+
+```sh
+xcrun devicectl list devices
+xcrun devicectl device install app --device YOUR_DEVICE_ID \
+  out/build/ios-device-release/theft4/Release/Theft4.app
+```
+
+## 4. Prepare and transfer your game files
+
+Use your legally obtained supported Xbox 360 USA retail base (media ID
+`6AC07221`) and the matching TU8 patch for **0.0.0.5 → 0.0.8.5**. An ISO working
+in an emulator is not sufficient proof of this exact version match. Intermediate
+updates are unnecessary for that validated patch. Never bypass identity checks.
+
+The current iOS shell expects a **prepared installation**, not a raw ISO or TU
+package. The repository installer validates/stages the game and update; the
+developer `theft4_inspect`/`theft4_stage` tools and their earlier simulator usage
+are documented in [IOS_APP_BUILD.md](IOS_APP_BUILD.md). There is not yet a polished
+on-device ISO import flow. If you do not have a validated prepared installation,
+complete that developer staging step first; copying an ISO into Files won't boot.
+
+The transferred layout must be:
+
+```text
+Theft4 Documents/
+  game/
+    default.xex
+    default.xexp
+    update/
+    ...the rest of the validated game installation...
+```
+
+Launch Theft4 once to create its Documents directory. On the Mac, open
+**Finder → your iPad → Files → Theft4** and copy the prepared folder named
+**game**. Wait until transfer finishes. Do not nest it under another `game`
+folder. Preserve the original ISO/update and existing saves.
+
+The current startup path stores runtime user/save/cache data under
+`Library/Application Support/Theft4/startup`, not a transferred `Documents/User`
+folder. Copying `User` alongside `game` does not import those saves automatically.
+Game files are not baked into the application by this build path.
+
+## 5. Start and play without a debugger
+
+Open Theft4 on the iPad and tap **Attempt game startup**. Some UI text still
+describes the older bring-up phase; this button invokes the real AOT game.
+**Prepare transferred game** is validation/loading only and deliberately stops
+before execution. **Restart core probe** does not restart the running game;
+close and reopen the app for a fresh game launch.
+
+For a direct terminal launch after transfer:
+
+```sh
+xcrun devicectl device process launch --device YOUR_DEVICE_ID --activate \
+  com.theft4.bringup --theft4-start-game
+```
+
+Use the default bundle ID above unless you changed it when configuring. Start
+from a closed app for this one-shot startup path. Pair a compatible controller;
+the GameController backend is connected, but the shell has no touch driving
+controls and controller acceptance coverage remains limited.
+
+For normal play, do **not** add the opt-in flags `THEFT4_DIAGNOSTICS`,
+`THEFT4_AUDIO_TIMING`, `THEFT4_TRACE_SCENE`, `THEFT4_FRAME_CAPTURE_DIR`, or
+`THEFT4_RASTER_OPEN`. Do not copy old experimental environment overrides into
+your scheme. Leave XMA/recovery, render-target and occlusion settings at their
+source defaults. Raster-open intentionally renders incorrectly; it is not a fix.
+
+If Xcode stops on a guest memory protection fault, stop that debugging session
+and launch without the debugger as above. Do not globally suppress every signal
+as a workaround. If the independently launched app actually exits, retain its
+runtime log and report the failure; not all faults are intentional.
+
+## 6. Debug is optional and separate
+
+Developers who specifically need Debug can request it:
+
+```sh
+THEFT4_BUILD_CONFIGURATION=Debug ./Generate-Theft4-Xcode.command YOUR_TEAM_ID
+```
+
+This generates `out/build/ios-device-debug/LibertyRecomp-ALL.xcodeproj` without
+changing the Release build tree. Do not use Debug FPS as a Release benchmark.
+Missing team ID produces an unsigned project, not an installable device app.
+
+## Known limits / next work
+
+The Release code contains the current audio and aspect improvements. The next
+shader-cache loading fix and subsequent graphics optimization passes are only
+planned: see [the performance plan](../THEFT4_3D_PERFORMANCE_PLAN.md). Preloading
+is not yet proven to work correctly across launches. Do not advertise this as a
+finished, full-speed or clean-machine-validated public binary release.

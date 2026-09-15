@@ -1,5 +1,10 @@
 # Theft4: M2 iOS application shell
 
+> **Historical milestone notes, not the current play guide.** For the optimized
+> full-game build, use [Release build and play instructions](IOS_RELEASE_BUILD.md).
+> The current app has reached full 3D and decoded audio; the Debug/probe-only
+> limitations below record earlier development stages.
+
 **Latest result:** the subsequent [real AOT startup bring-up](IOS_GAME_STARTUP.md)
 now runs the recompiled GTA IV entry point on the physical M5 iPad. It stops at
 an explicit missing-graphics guard; no gameplay frame is rendered. The historical

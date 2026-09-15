@@ -6,6 +6,14 @@ cd "$script_dir"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
+# Normal play uses the optimized build. Debug is an explicit developer choice.
+build_configuration="${THEFT4_BUILD_CONFIGURATION:-Release}"
+case "$build_configuration" in
+  Release) device_preset=ios-device-release ;;
+  Debug) device_preset=ios-device-debug ;;
+  *) print -u2 "THEFT4_BUILD_CONFIGURATION must be Release or Debug."; exit 1 ;;
+esac
+
 if command -v cmake >/dev/null 2>&1; then
   cmake_bin="$(command -v cmake)"
 elif [[ -x /Applications/CMake.app/Contents/bin/cmake ]]; then
@@ -48,13 +56,13 @@ if (( missing_graphics )); then
   print -u2 "The current bring-up uses public MoltenVK archives built by XeniOS."
   print -u2 "Build the XeniOS iOS reference checkout first, or set"
   print -u2 "THEFT4_MOLTENVK_IOS_LIB_DIR to a directory containing the five archives above."
-  print -u2 "See docs/IOS_GAME_STARTUP.md."
+  print -u2 "See docs/IOS_RELEASE_BUILD.md (graphics dependency prerequisite)."
   exit 1
 fi
 
 team_id="${1:-${THEFT4_DEVELOPMENT_TEAM:-}}"
 configure_args=(
-  --preset ios-device-debug
+  --preset "$device_preset"
   -DREXGLUE_RUNTIME_ONLY=ON
   -DREXGLUE_HEADLESS_KERNEL=ON
   -DTHEFT4_BUILD_GAME_CODE=ON
@@ -76,12 +84,17 @@ fi
 
 "$cmake_bin" "${configure_args[@]}"
 
-project_path="$script_dir/out/build/ios-device-debug/LibertyRecomp-ALL.xcodeproj"
+project_path="$script_dir/out/build/$device_preset/LibertyRecomp-ALL.xcodeproj"
 if [[ ! -d "$project_path" ]]; then
   print -u2 "CMake completed without producing the expected Xcode project: $project_path"
   exit 1
 fi
 
 print "Generated: $project_path"
-print "Open the Theft4 scheme, select your iPad, and build."
+print "Configuration: $build_configuration. Select the Theft4 scheme and your iPad."
+if [[ "$build_configuration" == Release ]]; then
+  print "For normal play, uncheck Run > Info > Debug executable in Edit Scheme,"
+  print "or install the app and launch it from the iPad without Xcode attached."
+fi
+print "Game-file transfer and launch instructions: docs/IOS_RELEASE_BUILD.md"
 open "$project_path"

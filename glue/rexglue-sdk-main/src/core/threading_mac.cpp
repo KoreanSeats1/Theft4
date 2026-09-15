@@ -9,7 +9,7 @@
 #include <rex/platform.h>
 #include <rex/thread.h>
 
-static_assert(REX_PLATFORM_MAC, "This file is macOS-only");
+static_assert(REX_PLATFORM_DARWIN, "This file uses Darwin pthread APIs");
 
 #include <signal.h>
 

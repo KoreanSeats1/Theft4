@@ -50,6 +50,11 @@ class Surface {
 
   virtual TypeIndex GetType() const = 0;
 
+  // Optional native presentation object. Apple surfaces expose their
+  // CAMetalLayer through this common seam so embedded UIKit hosts don't need
+  // to manufacture an SDL window solely for Vulkan WSI.
+  virtual void* GetNativePresentationHandle() const { return nullptr; }
+
   // Returns the up-to-date size (and true), or zeros (and false) if not ready
   // to open a presentation connection yet. The size preferably should be
   // exactly the dimensions of the surface in physical pixels of the display

@@ -13,7 +13,6 @@
 #if REX_PLATFORM_IOS
 
 #import  <Foundation/Foundation.h>
-#import  <UIKit/UIKit.h>
 
 #include <mach-o/dyld.h>
 
@@ -90,7 +89,7 @@ std::filesystem::path GetExecutableFolder() {
 std::filesystem::path GetUserFolder() {
   @autoreleasepool {
     NSFileManager* fm = [NSFileManager defaultManager];
-    NSArray<NSURL*>* urls = [fm URLsForDirectory:NSDocumentDirectory
+    NSArray<NSURL*>* urls = [fm URLsForDirectory:NSApplicationSupportDirectory
                                        inDomains:NSUserDomainMask];
     NSURL* first = [urls firstObject];
     if (first) {
@@ -198,14 +197,15 @@ class IosFileHandle : public FileHandle {
 };
 
 std::unique_ptr<FileHandle> FileHandle::OpenExisting(const std::filesystem::path& path,
-                                                     uint32_t desired_access) {
-  int open_access = 0;
-  if (desired_access & FileAccess::kGenericRead)    open_access |= O_RDONLY;
-  if (desired_access & FileAccess::kGenericWrite)   open_access |= O_WRONLY;
-  if (desired_access & FileAccess::kGenericExecute) open_access |= O_RDONLY;
-  if (desired_access & FileAccess::kGenericAll)     open_access |= O_RDWR;
-  if (desired_access & FileAccess::kFileReadData)   open_access |= O_RDONLY;
-  if (desired_access & FileAccess::kFileWriteData)  open_access |= O_WRONLY;
+                                                     uint32_t desired_access,
+                                                     bool /*allow_share_delete*/) {
+  // POSIX permits unlinking an open file. O_RDONLY is zero, so OR-ing it
+  // with O_WRONLY would accidentally make a read/write request write-only.
+  const bool read = desired_access & (FileAccess::kGenericRead | FileAccess::kGenericExecute |
+                                      FileAccess::kGenericAll | FileAccess::kFileReadData);
+  const bool write = desired_access & (FileAccess::kGenericWrite | FileAccess::kGenericAll |
+                                       FileAccess::kFileWriteData | FileAccess::kFileAppendData);
+  int open_access = write ? (read ? O_RDWR : O_WRONLY) : O_RDONLY;
   if (desired_access & FileAccess::kFileAppendData) open_access |= O_APPEND;
 
   int handle = open(path.c_str(), open_access);

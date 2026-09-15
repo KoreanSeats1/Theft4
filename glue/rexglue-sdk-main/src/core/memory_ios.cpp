@@ -44,8 +44,14 @@
 #endif
 
 #include <rex/math.h>
+#include <rex/filesystem.h>
 #include <rex/memory/utils.h>
 #include <rex/string.h>
+
+// iOS sandbox path helper implemented by filesystem_ios.mm.
+namespace rex::filesystem {
+std::filesystem::path GetTemporaryFolder();
+}
 
 namespace rex {
 namespace memory {
@@ -76,18 +82,6 @@ inline int StripExec(int prot) {
 }
 
 }  // namespace
-
-// Convert filesystem path to a valid shm_open name.
-static std::string MakeShmName(const std::filesystem::path& path) {
-  std::string name = path.string();
-  for (char& c : name) {
-    if (c == '/') c = '_';
-  }
-  if (name.empty() || name[0] != '/') {
-    name.insert(name.begin(), '/');
-  }
-  return name;
-}
 
 size_t page_size() {
   return getpagesize();
@@ -229,26 +223,34 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
   }
   (void)commit;
 
-  oflag |= O_CREAT;
-  auto full_path = MakeShmName(path);
-  // iOS sandboxed shm_open: the name is scoped to the app's container,
-  // which is exactly what we want — no cross-app sharing.
-  int ret = shm_open(full_path.c_str(), oflag, 0777);
+  (void)path;
+  (void)oflag;
+  // POSIX named shared memory isn't app-container-scoped. Use a private
+  // temporary backing file for the guest's aliased MAP_SHARED views instead.
+  // Unlink immediately: the descriptor owns its lifetime even after a crash.
+  std::string file_template =
+      (rex::filesystem::GetTemporaryFolder() / "theft4-guest-memory-XXXXXX").string();
+  int ret = mkstemp(file_template.data());
   if (ret < 0) {
+    std::fprintf(stderr, "Guest memory backing creation failed: %s\n", std::strerror(errno));
+    return kFileMappingHandleInvalid;
+  }
+  if (unlink(file_template.c_str()) != 0) {
+    std::fprintf(stderr, "Guest memory backing unlink failed: %s\n", std::strerror(errno));
+    close(ret);
     return kFileMappingHandleInvalid;
   }
   if (ftruncate(ret, static_cast<off_t>(length)) != 0) {
+    std::fprintf(stderr, "Guest memory backing resize failed: %s\n", std::strerror(errno));
     close(ret);
-    shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
   return static_cast<FileMappingHandle>(ret);
 }
 
 void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
+  (void)path;
   close(static_cast<int>(handle));
-  auto full_path = MakeShmName(path);
-  shm_unlink(full_path.c_str());
 }
 
 void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,

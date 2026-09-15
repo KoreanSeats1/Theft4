@@ -128,6 +128,15 @@ class VulkanCommandProcessor : public CommandProcessor {
   };
 
   VulkanCommandProcessor(VulkanGraphicsSystem* graphics_system, system::KernelState* kernel_state);
+  // Embedded hosts such as Theft4 own their application lifecycle and Vulkan
+  // device. This keeps the production command processor reusable without
+  // requiring a desktop GraphicsSystem/provider/presenter graph.
+  VulkanCommandProcessor(memory::Memory* memory, RegisterFile* register_file,
+                         system::KernelState* kernel_state,
+                         std::function<void(uint32_t, uint32_t)> interrupt_dispatcher,
+                         ui::vulkan::VulkanDevice* vulkan_device,
+                         GraphicsSystem* graphics_system = nullptr,
+                         ui::Presenter* presenter = nullptr);
   ~VulkanCommandProcessor();
 
   void ClearCaches() override;
@@ -139,10 +148,7 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   void RestoreEdramSnapshot(const void* snapshot) override;
 
-  ui::vulkan::VulkanDevice* GetVulkanDevice() const {
-    return static_cast<const ui::vulkan::VulkanProvider*>(graphics_system_->provider())
-        ->vulkan_device();
-  }
+  ui::vulkan::VulkanDevice* GetVulkanDevice() const { return vulkan_device_; }
 
   bool CompileGlslToSpirv(VkShaderStageFlagBits stage, std::string_view source,
                           std::vector<uint32_t>& spirv_out, std::string& error_out) const;
@@ -280,6 +286,14 @@ class VulkanCommandProcessor : public CommandProcessor {
   void InitializeTrace() override;
 
  private:
+  // Non-owning. The provider owns this in the desktop graph; embedded hosts
+  // must keep their injected device alive until after command processor
+  // shutdown.
+  ui::vulkan::VulkanDevice* vulkan_device_ = nullptr;
+  // Non-owning. Desktop obtains this through GraphicsSystem; embedded UIKit
+  // hosts inject their presenter without adopting the desktop app graph.
+  ui::Presenter* embedded_presenter_ = nullptr;
+
   struct CommandBuffer {
     VkCommandPool pool;
     VkCommandBuffer buffer;

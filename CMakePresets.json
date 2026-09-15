@@ -236,6 +236,23 @@
             }
         },
         {
+            "name": "ios-device-debug",
+            "inherits": "ios-base",
+            "cacheVariables": {
+                "LIBERTY_RECOMP_IOS_CORE_ONLY": "ON",
+                "CMAKE_OSX_SYSROOT": "iphoneos",
+                "CMAKE_CONFIGURATION_TYPES": "Debug",
+                "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO"
+            }
+        },
+        {
+            "name": "ios-simulator-debug",
+            "inherits": "ios-device-debug",
+            "cacheVariables": {
+                "CMAKE_OSX_SYSROOT": "iphonesimulator"
+            }
+        },
+        {
             "name": "ios-debug",
             "displayName": "iOS-Debug",
             "inherits": "ios-base",
@@ -467,6 +484,30 @@
         }
     ],
     "buildPresets": [
+        {
+            "name": "theft4-device-debug",
+            "configurePreset": "ios-device-debug",
+            "configuration": "Debug",
+            "targets": ["Theft4"]
+        },
+        {
+            "name": "theft4-simulator-debug",
+            "configurePreset": "ios-simulator-debug",
+            "configuration": "Debug",
+            "targets": ["Theft4", "theft4_bridge_tests"]
+        },
+        {
+            "name": "ios-device-debug",
+            "configurePreset": "ios-device-debug",
+            "configuration": "Debug",
+            "targets": ["rexcore_link_smoke"]
+        },
+        {
+            "name": "ios-simulator-debug",
+            "configurePreset": "ios-simulator-debug",
+            "configuration": "Debug",
+            "targets": ["rexcore_link_smoke"]
+        },
         {
             "name": "x64-Clang-Debug",
             "configurePreset": "x64-Clang-Debug"

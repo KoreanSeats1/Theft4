@@ -2,6 +2,7 @@
 
 # Core UI sources
 set(REXUI_CORE_SOURCES
+    display_config.cpp
     graphics_upload_buffer_pool.cpp
     graphics_util.cpp
     image_decode.cpp

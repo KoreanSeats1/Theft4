@@ -305,11 +305,13 @@ Presenter::~Presenter() {
 #endif  // XE_PLATFORM
 
   if (window_) {
+#if !REX_PLATFORM_IOS
     Window* old_window = window_;
     // Null the pointer to prevent an infinite loop between SetPresenter and
     // SetWindowSurfaceFromUIThread calling each other.
     window_ = nullptr;
     old_window->SetPresenter(nullptr);
+#endif
   }
 }
 
@@ -346,11 +348,13 @@ void Presenter::SetWindowSurfaceFromUIThread(Window* new_window, Surface* new_su
   // it if needed.
   assert_false(is_executing_ui_drawers_);
 
-  // There can't be a valid surface pointer without a window, as a surface is
-  // created and owned by the window.
+  // Desktop surfaces are owned by Window. Embedded iOS hosts instead own a
+  // CAMetalLayer in UIKit and attach it without creating the SDL window graph.
+#if !REX_PLATFORM_IOS
   assert_false(new_surface && !new_window);
+#endif
 
-  if (window_ == new_window && (!window_ || surface_ == new_surface)) {
+  if (window_ == new_window && surface_ == new_surface) {
     // Nothing has changed (or a recursive SetWindowSurfaceFromUIThread >
     // SetPresenter > SetWindowSurfaceFromUIThread call).
     return;
@@ -382,11 +386,15 @@ void Presenter::SetWindowSurfaceFromUIThread(Window* new_window, Surface* new_su
     // detaching. SetPresenter for the new window might have been called without
     // it having been called with nullptr for the old window.
     if (window_) {
+#if !REX_PLATFORM_IOS
       Window* old_window = window_;
       // Null the pointer to prevent an infinite loop between SetPresenter and
       // SetWindowSurfaceFromUIThread calling each other.
       window_ = nullptr;
       old_window->SetPresenter(nullptr);
+#else
+      window_ = nullptr;
+#endif
     }
 
     // Attach to the new one.
@@ -405,7 +413,7 @@ void Presenter::SetWindowSurfaceFromUIThread(Window* new_window, Surface* new_su
     UpdateSurfacePaintConnectionFromUIThread(&request_repaint, true);
     // Request to paint as soon as possible in the UI thread if connected
     // successfully.
-    if (request_repaint) {
+    if (request_repaint && window_) {
       RequestPaintOrConnectionRecoveryViaWindow(true);
     }
   }
@@ -1558,7 +1566,7 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
   if (!REXCVAR_GET(host_present_from_non_ui_thread)) {
     return PaintMode::kUIThreadOnRequest;
   }
-  if (surface_paint_connection_has_implicit_vsync_) {
+  if (surface_paint_connection_has_implicit_vsync_ && window_) {
     // Don't be causing host vertical sync CPU waits in the thread generating
     // the guest output.
     return PaintMode::kUIThreadOnRequest;
@@ -1670,8 +1678,10 @@ bool Presenter::RequestPaintOrConnectionRecoveryViaWindow(bool force_ui_thread_p
   // and it's known to have a Surface that will be the same throughout this
   // call - not doing any checks whether this request can be satisfied
   // theoretically. For safety, check whether the window exists unconditionally.
-  assert_not_null(window_);
   assert_not_null(surface_);
+  if (!window_) {
+    return false;
+  }
   if (ui_thread_paint_requested_.exchange(true, std::memory_order_relaxed)) {
     // Invalidation pending already, no need to do it twice.
     return false;

@@ -157,11 +157,13 @@ endif()
 target_compile_options(xxhash PRIVATE -w)
 
 # disasm - PowerPC disassembler (existing local library)
-if(NOT TARGET disasm)
+if(NOT REXGLUE_CORE_ONLY AND NOT TARGET disasm)
     add_subdirectory(disasm)
 endif()
 # Suppress warnings in disasm
-target_compile_options(disasm PRIVATE -w)
+if(TARGET disasm)
+    target_compile_options(disasm PRIVATE -w)
+endif()
 
 #=============================================================================
 # fmt - Formatting library (must come before spdlog)
@@ -188,19 +190,25 @@ target_compile_options(spdlog PRIVATE -w)
 #=============================================================================
 # snappy - Fast compression/decompression (GPU traces)
 #=============================================================================
-set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(SNAPPY_INSTALL ON CACHE BOOL "" FORCE)
-add_subdirectory(snappy)
-target_compile_options(snappy PRIVATE -w)
-if(APPLE AND IS_ARM64)
-    target_compile_options(snappy PRIVATE -march=armv8-a+crc)
+if(NOT REXGLUE_CORE_ONLY)
+    set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(SNAPPY_INSTALL ON CACHE BOOL "" FORCE)
+    add_subdirectory(snappy)
+    target_compile_options(snappy PRIVATE -w)
+    if(APPLE AND IS_ARM64)
+        target_compile_options(snappy PRIVATE -march=armv8-a+crc)
+    endif()
 endif()
 
 #=============================================================================
 # utfcpp - UTF-8 string library (header-only)
 #=============================================================================
 add_subdirectory(utfcpp)
+
+if(REXGLUE_CORE_ONLY)
+    return()
+endif()
 
 #=============================================================================
 # Vulkan dependencies (only when Vulkan backend is enabled)

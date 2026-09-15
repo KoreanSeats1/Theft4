@@ -13,6 +13,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -578,21 +580,37 @@ const VkDescriptorPoolSize VulkanCommandProcessor::kDescriptorPoolSizeTextures[2
 
 VulkanCommandProcessor::VulkanCommandProcessor(VulkanGraphicsSystem* graphics_system,
                                                system::KernelState* kernel_state)
-    : CommandProcessor(graphics_system, kernel_state),
+    : VulkanCommandProcessor(
+          graphics_system->memory(), graphics_system->register_file(), kernel_state,
+          [graphics_system](uint32_t source, uint32_t cpu) {
+            graphics_system->DispatchInterruptCallback(source, cpu);
+          },
+          static_cast<const ui::vulkan::VulkanProvider*>(graphics_system->provider())
+              ->vulkan_device(),
+          graphics_system, graphics_system->presenter()) {}
+
+VulkanCommandProcessor::VulkanCommandProcessor(
+    memory::Memory* memory, RegisterFile* register_file,
+    system::KernelState* kernel_state,
+    std::function<void(uint32_t, uint32_t)> interrupt_dispatcher,
+    ui::vulkan::VulkanDevice* vulkan_device, GraphicsSystem* graphics_system,
+    ui::Presenter* presenter)
+    : CommandProcessor(memory, register_file, kernel_state,
+                       std::move(interrupt_dispatcher), graphics_system),
+      vulkan_device_(vulkan_device),
+      embedded_presenter_(presenter),
       deferred_command_buffer_(*this),
       transient_descriptor_allocator_uniform_buffer_(
-          static_cast<const ui::vulkan::VulkanProvider*>(graphics_system->provider())
-              ->vulkan_device(),
+          vulkan_device,
           &kDescriptorPoolSizeUniformBuffer, 1, kLinkedTypeDescriptorPoolSetCount),
       transient_descriptor_allocator_storage_buffer_(
-          static_cast<const ui::vulkan::VulkanProvider*>(graphics_system->provider())
-              ->vulkan_device(),
+          vulkan_device,
           &kDescriptorPoolSizeStorageBuffer, 1, kLinkedTypeDescriptorPoolSetCount),
       transient_descriptor_allocator_textures_(
-          static_cast<const ui::vulkan::VulkanProvider*>(graphics_system->provider())
-              ->vulkan_device(),
+          vulkan_device,
           kDescriptorPoolSizeTextures, uint32_t(rex::countof(kDescriptorPoolSizeTextures)),
           kLinkedTypeDescriptorPoolSetCount) {
+  assert_not_null(vulkan_device_);
   legacy_readback_memexport_cvar_name_ = "vulkan_readback_memexport";
 }
 
@@ -2297,7 +2315,11 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
       frame_flow_swap_count_ <= 8 || frame_flow_swap_count_ == 16 ||
       frame_flow_swap_count_ == 32 || frame_flow_swap_count_ == 64 ||
       frame_flow_swap_count_ == 128 || frame_flow_swap_count_ == 256 ||
-      frame_flow_swap_count_ == 512 || frame_flow_swap_count_ == 1024;
+      frame_flow_swap_count_ == 512 || frame_flow_swap_count_ == 1024
+#if REX_PLATFORM_IOS
+      || (frame_flow_swap_count_ % 300 == 0)
+#endif
+      ;
   auto should_log_frame_flow = [this, frontbuffer_width, frontbuffer_height,
                                 frame_flow_milestone](uint8_t outcome) {
     return frame_flow_milestone || !frame_flow_have_previous_swap_ ||
@@ -2342,13 +2364,39 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     frame_flow_resolve_dest_format_ = 0;
   };
 
-  if (!graphics_system_)
+  ui::Presenter* presenter = nullptr;
+#if REX_PLATFORM_IOS
+  presenter = embedded_presenter_;
+  if (!presenter) {
+    // Keep the proven non-presenting device path as a diagnostic fallback if
+    // UIKit did not provide a surface during startup.
+    if (!BeginSubmission(true)) {
+      REXGPU_ERROR("Theft4 embedded Vulkan swap: BeginSubmission failed");
+      return;
+    }
+    if (should_log_frame_flow(kFrameFlowOutcomePublished)) {
+      REXGPU_INFO(
+          "[FrameFlow] swap={} outcome=embedded_submit frame={} fb=0x{:08X} "
+          "packet={}x{} draws={} submitted={} placeholders={} copies={}",
+          frame_flow_swap_count_, frame_current_, frontbuffer_ptr,
+          frontbuffer_width, frontbuffer_height, frame_flow_draw_calls_,
+          frame_flow_draw_submitted_, frame_flow_draw_placeholders_,
+          frame_flow_copy_calls_);
+    }
+    finish_frame_flow(kFrameFlowOutcomePublished);
+    EndSubmission(true);
     return;
-  ui::Presenter* presenter = graphics_system_->presenter();
+  }
+#else
+  if (!graphics_system_) {
+    return;
+  }
+  presenter = graphics_system_->presenter();
   if (!presenter) {
     REXGPU_ERROR("XELOG_GPU PRESENT: NO PRESENTER");
     return;
   }
+#endif
 
   // In case the swap command is the only one in the frame.
   if (!BeginSubmission(true)) {
@@ -3112,6 +3160,54 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         frame_flow_resolve_dump_dispatches_, pipeline_cache_->IsCreatingPipelines(),
         guest_output_refreshed);
   }
+#if REX_PLATFORM_IOS
+  // Diagnostic only: keep the renderer and presentation settings unchanged.
+  // Capture a known startup frame and three depth-heavy world frames, then stop.
+  // Public capture acquires the mailbox and submits a readback after refresh's
+  // release barriers. It may briefly synchronize the GPU; never enable by default.
+  static uint64_t first_world_swap = 0;
+  static unsigned capture_count = 0;
+  const char* capture_dir = std::getenv("THEFT4_FRAME_CAPTURE_DIR");
+  if (capture_dir && *capture_dir && guest_output_refreshed) {
+    if (!first_world_swap && frame_flow_depth_only_draws_ > 100)
+      first_world_swap = frame_flow_swap_count_;
+    const bool capture_frame = frame_flow_swap_count_ == 128 ||
+        (first_world_swap && (frame_flow_swap_count_ == first_world_swap ||
+         frame_flow_swap_count_ == first_world_swap + 120 ||
+         frame_flow_swap_count_ == first_world_swap + 300));
+    if (capture_frame && capture_count < 4) {
+      ++capture_count;
+      REXGPU_INFO("[Theft4Capture] begin swap={} depth_only={} capture={}",
+                  frame_flow_swap_count_, frame_flow_depth_only_draws_, capture_count);
+      ui::RawImage image;
+      if (presenter->CaptureGuestOutput(image)) {
+        const auto path = std::filesystem::path(capture_dir) /
+            ("guest-" + std::to_string(frame_flow_swap_count_) + ".ppm");
+        std::ofstream file(path, std::ios::binary);
+        file << "P6\n" << image.width << " " << image.height << "\n255\n";
+        uint64_t nonzero = 0, checksum = 14695981039346656037ull;
+        std::vector<char> row(size_t(image.width) * 3);
+        for (uint32_t y = 0; y < image.height; ++y) {
+          for (uint32_t x = 0; x < image.width; ++x) {
+            const auto* pixel = image.data.data() + size_t(y) * image.stride + size_t(x) * 4;
+            nonzero += (pixel[0] | pixel[1] | pixel[2]) != 0;
+            for (unsigned c = 0; c < 3; ++c) {
+              row[size_t(x) * 3 + c] = char(pixel[c]);
+              checksum = (checksum ^ pixel[c]) * 1099511628211ull;
+            }
+          }
+          file.write(row.data(), std::streamsize(row.size()));
+        }
+        file.close();
+        REXGPU_INFO("[Theft4Capture] complete swap={} size={}x{} nonzero={}/{} hash={:016X} saved={} path={}",
+                    frame_flow_swap_count_, image.width, image.height, nonzero,
+                    uint64_t(image.width) * image.height, checksum, bool(file), path.string());
+      } else {
+        REXGPU_WARN("[Theft4Capture] failed swap={}", frame_flow_swap_count_);
+      }
+    }
+  }
+#endif
   finish_frame_flow(frame_flow_outcome);
 
   // End the frame even if did not present for any reason (the image refresher
@@ -5297,9 +5393,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
     ++fences_awaited;
   }
   if (device_lost_) {
+#if !REX_PLATFORM_IOS
     if (graphics_system_) {
       graphics_system_->OnHostGpuLossFromAnyThread(true);
     }
+#endif
     return;
   }
   if (!fences_awaited) {
@@ -5723,9 +5821,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
       if (submit_result == VK_ERROR_DEVICE_LOST && !device_lost_) {
         device_lost_ = true;
+#if !REX_PLATFORM_IOS
         if (graphics_system_) {
           graphics_system_->OnHostGpuLossFromAnyThread(true);
         }
+#endif
       }
       return false;
     }

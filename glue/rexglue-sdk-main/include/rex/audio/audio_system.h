@@ -45,9 +45,9 @@ class AudioSystem : public system::IAudioSystem {
   virtual X_STATUS Setup(system::KernelState* kernel_state);
   virtual void Shutdown();
 
-  X_STATUS RegisterClient(uint32_t callback, uint32_t callback_arg, size_t* out_index);
-  void UnregisterClient(size_t index);
-  void SubmitFrame(size_t index, uint32_t samples_ptr);
+  X_STATUS RegisterClient(uint32_t callback, uint32_t callback_arg, size_t* out_index) override;
+  void UnregisterClient(size_t index) override;
+  void SubmitFrame(size_t index, uint32_t samples_ptr) override;
 
   bool Save(stream::ByteStream* stream);
   bool Restore(stream::ByteStream* stream);

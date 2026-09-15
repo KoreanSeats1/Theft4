@@ -4,6 +4,7 @@ set(REXSYSTEM_SOURCES
     achievement_manager.cpp
     achievements.cpp
     kernel_state.cpp
+    guest_spinlock.cpp
     xmemory.cpp
     kernel_module.cpp
     user_module.cpp
@@ -52,7 +53,11 @@ set(REXSYSTEM_SOURCES
     xex_module.cpp
 )
 
-add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
+if(REXGLUE_RUNTIME_ONLY)
+    add_library(rexruntime STATIC ${REXSYSTEM_SOURCES})
+else()
+    add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
+endif()
 add_library(rex::runtime ALIAS rexruntime)
 add_library(rex::system ALIAS rexruntime)
 add_library(rex::kernel ALIAS rexruntime)
@@ -81,12 +86,16 @@ target_link_libraries(rexruntime
         fmt::fmt
         spdlog::spdlog
         tomlplusplus
-        SDL3::SDL3
     PRIVATE
         aes128
         mspack
         xxHash::xxhash
 )
+if(REXGLUE_RUNTIME_ONLY)
+    target_link_libraries(rexruntime PUBLIC rexcore PRIVATE rexfilesystem)
+else()
+    target_link_libraries(rexruntime PUBLIC SDL3::SDL3)
+endif()
 
 if(REXGLUE_ENABLE_TRACY)
     target_link_libraries(rexruntime PUBLIC TracyClient)

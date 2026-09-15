@@ -1,21 +1,9 @@
 /**
- * @file        core/fiber_ios.cpp
- * @brief       iOS backend for rex::thread::Fiber
- *
- * makecontext / swapcontext / getcontext are deprecated on macOS since 10.6
- * and completely unavailable on iOS (the ucontext.h symbols resolve at build
- * time but every call returns an error at runtime, and on arm64 the saved
- * context does not include the FPU/SIMD state needed for guest code). We
- * therefore take the same approach as the Switch backend (fiber_switch.cpp):
- * save/restore callee-saved integer + SIMD registers via setjmp/longjmp and
- * perform an explicit AArch64 stack pivot for the first trampoline call.
- *
- * This works on both arm64 and arm64e devices. On arm64e the stack pivot is
- * a plain `mov sp, x*` which does not interact with pointer authentication;
- * the subsequent `br` to the trampoline uses an unsigned (raw) function
- * pointer so no PAC discriminator is needed.
- *
- * @license     BSD 3-Clause License
+ * iOS experimental Fiber backend. Uses the public setjmp/longjmp interface
+ * to resume suspended calls and an ARM64 stack pivot for first entry.
+ * Compiling this backend does not establish device context-switch safety.
+ * M3 must validate registers, stack lifetime, TLS and repeated switches.
+ * BSD 3-Clause License; see the SDK LICENSE.
  */
 
 #include <rex/platform.h>
@@ -27,22 +15,17 @@
 #include <cassert>
 #include <csetjmp>
 #include <cstdlib>
-#include <cstring>
 
-// The fiber struct reserves 512 bytes for the jmp_buf. Darwin's jmp_buf on
-// arm64 is (14 * 8) + (8 * 8) + 8 + 8 = 192 bytes, but _JBLEN is platform
-// dependent — check at compile time.
-static_assert(sizeof(jmp_buf) <= 512, "jmp_buf exceeds Fiber::jmpbuf_ storage");
+#if !defined(__aarch64__) || defined(__arm64e__)
+#error The experimental iOS fiber backend supports arm64, not arm64e or x86.
+#endif
 
 namespace rex::thread {
 
 thread_local Fiber* Fiber::tls_current_ = nullptr;
 
-#define FIBER_JMP_BUF(f) (*reinterpret_cast<jmp_buf*>((f)->jmpbuf_))
-
 Fiber* Fiber::ConvertCurrentThread() {
   auto* f = new Fiber();
-  std::memset(f->jmpbuf_, 0, sizeof(f->jmpbuf_));
   f->is_thread_fiber_ = true;
   f->started_ = true;  // already running on this OS thread
   tls_current_ = f;
@@ -58,7 +41,6 @@ Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
   if (!stack) return nullptr;
 
   auto* f = new Fiber();
-  std::memset(f->jmpbuf_, 0, sizeof(f->jmpbuf_));
   f->stack_ = stack;
   f->stack_size_ = stack_size;
   f->entry_ = entry;
@@ -85,9 +67,9 @@ void Fiber::SwitchTo(Fiber* target) {
   tls_current_ = target;
 
   // setjmp returns 0 on the direct call, non-zero when longjmp'd back.
-  if (setjmp(FIBER_JMP_BUF(from)) == 0) {
+  if (setjmp(from->context_) == 0) {
     if (target->started_) {
-      longjmp(FIBER_JMP_BUF(target), 1);
+      longjmp(target->context_, 1);
     } else {
       // First switch — pivot SP to the fiber's private stack and tail-call
       // the trampoline. AArch64 stack grows downward, SP must be 16-byte
@@ -96,20 +78,13 @@ void Fiber::SwitchTo(Fiber* target) {
       uintptr_t sp =
           (reinterpret_cast<uintptr_t>(target->stack_) + target->stack_size_) & ~uintptr_t(15);
       void (*trampoline)() = &Fiber::Trampoline;
-#if defined(__aarch64__)
       __asm__ volatile(
           "mov sp, %[newsp]\n\t"  // pivot to the fiber's stack
           "br  %[func]\n\t"       // tail-call trampoline (never returns)
           :
           : [newsp] "r"(sp), [func] "r"(trampoline)
           : "memory");
-#else
-      // iOS simulator on x86_64 (development only) — fall back to a direct
-      // call. This will grow the thread's own stack, but the simulator does
-      // not actually run guest code, it's for UI/build smoke tests.
-      (void)sp;
-      trampoline();
-#endif
+
       __builtin_unreachable();
     }
   }
@@ -127,7 +102,5 @@ void Fiber::Destroy() {
 }
 
 }  // namespace rex::thread
-
-#undef FIBER_JMP_BUF
 
 #endif  // REX_PLATFORM_IOS

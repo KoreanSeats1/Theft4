@@ -12,8 +12,9 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
+#include <rex/platform.h>
 
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
 #include <sys/mman.h>
 #endif
 
@@ -148,8 +149,8 @@ bool Memory::Initialize() {
     return false;
   }
 
-#if REX_PLATFORM_MAC
-  // On macOS, reserve a contiguous host range first, then carve guest views
+#if REX_PLATFORM_DARWIN
+  // On Darwin, reserve a contiguous host range first, then carve guest views
   // into it with MAP_SHARED|MAP_FIXED so all views share the same backing fd.
   if (MapViewsMac()) {
     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
@@ -308,7 +309,7 @@ static const struct {
         0x0000000100000000ull,
     },
 };
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
 int Memory::MapViewsMac() {
   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
 
@@ -352,7 +353,7 @@ int Memory::MapViewsMac() {
 
   return 0;
 }
-#endif  // REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_DARWIN
 
 int Memory::MapViews(uint8_t* mapping_base) {
   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));

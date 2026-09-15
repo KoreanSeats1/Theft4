@@ -1,144 +1,140 @@
 <p align="center">
-    <img src="docs/images/banner_repo.png" alt="Liberty Recompiled" width="800"/>
+  <img src="docs/images/banner_repo.png" alt="Liberty Recompiled" width="800">
 </p>
 
----
+# Theft4
 
-> [!CAUTION]
-> This recompilation is in early development and is NOT meant for public use. This is a work-in-progress fork based on the MarathonRecomp framework.
+Theft4 is an experimental, title-specific static ahead-of-time recompilation of
+the Xbox 360 release of Grand Theft Auto IV for ARM64 iOS and iPadOS. The
+original PowerPC game instructions are translated to C++ ahead of time and
+compiled into the signed application. Theft4 does not generate or download CPU
+code at runtime and does not require a JIT entitlement.
 
-Liberty Recompiled is an unofficial PC port of the Xbox 360 version of Grand Theft Auto IV created through the process of static recompilation. The port aims to offer Windows, Linux, and macOS support.
+This is not a source port and it is not a complete Xbox 360 emulator. It combines
+ahead-of-time translated game code with a compatibility runtime that recreates
+the Xbox services the title expects. The existing Xenos renderer translates the
+game's graphics workload through Vulkan and MoltenVK to Metal.
 
-**This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build Liberty Recompiled.**
+> [!WARNING]
+> Theft4 is an early research build, not a playable public release. It currently
+> targets developers comfortable with Xcode, CMake, dependency patching, and
+> device logs. Expect crashes, incomplete services, rendering defects, missing
+> audio, and major performance work.
 
-The runtime is powered by a fork of the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) ([our fork](https://github.com/sonicnext-dev/rexglue-sdk)), which handles PowerPC → C++ recompilation and Xenos shader translation. The development of static recompilation tooling in this space was directly inspired by [N64: Recompiled](https://github.com/N64Recomp/N64Recomp), which was used to create [Zelda 64: Recompiled](https://github.com/Zelda64Recomp/Zelda64Recomp).
+## Current status
 
-## Table of Contents
+The following has been demonstrated on a physical ARM64 iPad:
 
-- [Project Status](#project-status)
-- [Installation](#installation)
-- [Mod Support](#mod-support)
-- [Building](#building)
-- [Documentation](#documentation)
+- a development-signed UIKit application containing the statically compiled GTA IV AOT code;
+- Xbox guest memory, kernel, threading, filesystem, XEX loading, and TU8 patch application;
+- execution reaching and continuing beyond the recompiled title entry point;
+- real GTA IV PM4 command processing and on-device Xenos shader translation;
+- Vulkan shader and pipeline creation through statically linked MoltenVK;
+- a UIKit-owned `CAMetalLayer`, three-image swapchain, and repeated Metal presentation;
+- native GameController and RemoteIO integration at the host boundary.
 
-## Project Status
+The game has visibly booted on the test iPad, but this does **not** mean the port
+is complete or generally playable. Physical-controller acceptance, real XMA
+decoding, frontend/import UX, correctness, compatibility, performance, and
+long-duration stability remain active work.
 
-This project is in **early development**. Current progress:
+## Architecture
 
-### Completed
-- [x] ReXGlue SDK integration for PowerPC → C++ translation and shader conversion
-- [x] Cross-platform build system (Windows, Linux, macOS)
-- [x] Installer wizard with ISO/folder/XContent support
-- [x] Shader extraction pipeline (RAGE FXC → Xbox 360 → platform-native)
-- [x] Platform-specific install directory support
-- [x] FusionFix-compatible mod overlay system
-
-### In Progress
-- [ ] RAGE engine structure reverse engineering
-- [ ] GPU/rendering pipeline implementation
-- [ ] Game-specific patches and fixes
-
-### Completed (Previously TODO)
-- [x] Audio system implementation (XMA decoder, SDL2 driver)
-- [x] Save data handling (full save system with GTA IV format support)
-- [x] Input remapping for GTA IV controls (SDL HID driver, GTA4 input patches)
-- [x] Network/multiplayer stubs (NetDll_XNetStartup, XLive stubs)
-- [x] Online multiplayer via GameNetworkingSockets (P2P with NAT traversal, no VPN required)
-- [x] File system and RPF archive handling (VFS)
-
-## Installation
-
-### Platform Install Directories
-
-| Platform | Install Directory |
-|----------|-------------------|
-| Windows | `%LOCALAPPDATA%\LibertyRecomp\` |
-| Linux | `~/.local/share/LibertyRecomp/` |
-| macOS | `~/Library/Application Support/LibertyRecomp/` |
-
-### Game Files Required
-
-You need a legal copy of GTA IV for Xbox 360. Supported formats:
-- Xbox 360 disc images (`.iso`)
-- Extracted game folders
-- XContent packages
-
-See [Dumping Guide](/docs/DUMPING-en.md) for detailed extraction instructions.
-
-### Launch Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `--install` | Force reinstallation (useful if game files were modified) |
-| `--install-dlc` | Force DLC installation only |
-| `--install-check` | Verify file integrity |
-
-## Mod Support
-
-Liberty Recompiled includes **FusionFix-compatible mod loading**. Mods can override game files by placing them in overlay folders.
-
-### Quick Start
-
-1. Create an `update/` folder next to the LibertyRecomp executable
-2. Place mod files inside, mirroring the game's folder structure
-3. Launch the game - mod files automatically override base files
-
-```
-LibertyRecomp/
-├── game/           # Extracted game files
-└── update/         # Place mods here
-    └── common/
-        └── data/
-            └── handling.dat  # Overrides base handling.dat
+```text
+Theft4 UIKit application
+        |
+        v
+Versioned C bridge and iOS lifecycle adapters
+        |
+        v
+LibertyRecomp / ReXGlue compatibility runtime
+        |
+        +--> statically recompiled GTA IV code (PowerPC -> C++ -> ARM64)
+        +--> Xbox kernel, memory, threading, filesystem, input and audio services
+        +--> Xenos command processor and shader translation
+                         |
+                         v
+                  Vulkan / MoltenVK
+                         |
+                         v
+                       Metal
 ```
 
-### Supported Overlay Locations
+The iOS application owns `UIApplication`/`UIScene`, the visible view and
+`CAMetalLayer`, device storage, user interaction, and lifecycle. The runtime is
+embedded in-process as statically linked code behind a small C interface.
 
-| Priority | Location | Description |
-|----------|----------|-------------|
-| 100 | `mods/update/` | Highest priority |
-| 50 | `update/` | Standard FusionFix location |
-| 40 | `GTAIV.EFLC.FusionFix/update/` | Alternative location |
+## No game files are included
 
-See [MOD_SUPPORT.md](/docs/MOD_SUPPORT.md) for detailed documentation.
+This repository contains no ISO, title update, extracted game assets, saves, or
+Rockstar Games source code. You must supply files from your own legally obtained
+Xbox 360 copy. Do not open issues requesting copyrighted game files, download
+links, signature-check bypasses, or prebuilt bundles containing game data.
+
+The currently validated input is the supported USA retail Xbox 360 base and its
+matching title update. Input validation is intentionally strict; files accepted
+by an emulator are not automatically compatible with this title-specific AOT
+build.
 
 ## Building
 
-Install the [platform prerequisites](docs/BUILDING.md#1-install-prerequisites), then:
+Initialize the pinned public dependencies and apply the reviewed dependency
+patches:
 
-```bash
-git clone https://github.com/OZORDI/LibertyRecomp.git
-cd LibertyRecomp
+```sh
+git clone --recurse-submodules https://github.com/KoreanSeats1/Theft4.git
+cd Theft4
 python3 tools/setup_repo.py
+python3 tools/setup_repo.py --check
 ```
 
-Setup fetches all pinned dependencies and applies the required source patches.
-On Windows use `py -3` instead of `python3`. After pulling an update:
+On macOS, `Generate-Theft4-Xcode.command` validates the dependencies and
+generates the portable Xcode project. Pass your Apple development-team ID as
+its optional first argument to configure device signing:
 
-```bash
-git -c submodule.recurse=false pull --ff-only
-python3 tools/setup_repo.py
+```sh
+./Generate-Theft4-Xcode.command YOUR_TEAM_ID
 ```
 
-See [Building Liberty Recompiled](docs/BUILDING.md) for build presets, CMake 4 support,
-prerequisites, and recovery from incomplete/manual dependency downloads.
+The current graphics bring-up expects the documented public MoltenVK archives;
+the generator fails with an explicit explanation if they have not been built.
+Then follow:
 
-## Documentation
+- [iOS core build](docs/IOS_CORE_BUILD.md)
+- [iOS application and device build](docs/IOS_APP_BUILD.md)
+- [real AOT startup status](docs/IOS_GAME_STARTUP.md)
+- [desktop/upstream build guide](docs/BUILDING.md)
+- [lawful dumping guide](docs/DUMPING-en.md)
 
-| Document | Description |
-|----------|-------------|
-| [Building Guide](/docs/BUILDING.md) | Build instructions for all platforms |
-| [Dumping Guide](/docs/DUMPING-en.md) | How to extract game files from Xbox 360 |
-| [Mod Support](/docs/MOD_SUPPORT.md) | FusionFix-compatible mod loading |
-| [Installation Architecture](/docs/INSTALLATION_ARCHITECTURE.md) | Platform paths and install flow |
-| [Online Multiplayer Guide](/docs/ONLINE_MULTIPLAYER.md) | Setup guide for online play |
+The Xcode project is generated by CMake under `out/build/ios-device-debug/`.
+Generated Xcode project settings are not the source of truth and should not be
+edited in place.
 
-## Performance Comparison
+GitHub's automatic source ZIP does not contain the contents of Git submodules.
+For a complete checkout, use the recursive clone command above. A signed IPA is
+not distributed: every developer must build and sign with their own Apple
+account, and the application never contains game files.
 
-Performance comparison of GTA IV running on macOS using different methods:
+## Origins and credits
 
-| Method | Screenshot |
-|--------|------------|
-| **Crossover (Wine)** | ![Crossover Performance](docs/images/perf_crossover.png) |
-| **Xenia (Xbox 360 Emulator)** | ![Xenia Performance](docs/images/perf_xenia.png) |
-| **RPCS3 (PS3 Emulator)** | ![RPCS3 Performance](docs/images/perf_rpcs3.png) |
+Theft4 is built on substantial existing open-source work. It began as an iOS
+porting branch of [LibertyRecomp](https://github.com/OZORDI/LibertyRecomp) and
+preserves that project's Git history and GPL license. The runtime and translation
+stack draws heavily from ReXGlue and Xenia; its ahead-of-time approach was
+inspired by XenonRecomp; graphics uses XenosRecomp, Vulkan, SPIR-V tooling, and
+MoltenVK. FFmpeg, SDL, and numerous smaller libraries are included or referenced
+through pinned dependencies.
+
+See [Third-party projects and attribution](docs/ATTRIBUTION.md) and the license
+files in each dependency for details. XeniOS was used as an iOS behavior and
+debugging reference during bring-up; XeniOS is not embedded as Theft4's runtime.
+
+## License and trademarks
+
+The project-level license is [GPL-3.0](COPYING), inherited from LibertyRecomp.
+Vendored and submodule dependencies retain their respective licenses.
+
+Theft4 is an unofficial community research project. It is not affiliated with or
+endorsed by Rockstar Games, Take-Two Interactive, Microsoft, Xbox, Apple, or the
+maintainers of the upstream projects. Grand Theft Auto, GTA, Xbox, iOS, iPadOS,
+Metal, and other names are trademarks of their respective owners.

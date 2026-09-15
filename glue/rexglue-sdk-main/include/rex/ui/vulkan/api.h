@@ -51,7 +51,7 @@
 #endif
 #endif
 
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
 #ifndef VK_USE_PLATFORM_METAL_EXT
 #define VK_USE_PLATFORM_METAL_EXT
 #endif

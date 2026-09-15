@@ -23,13 +23,21 @@
 #include <rex/ui/vulkan/instance.h>
 #include <rex/ui/vulkan/presenter.h>
 
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_IOS
 #include "vulkan_moltenvk.h"
+#endif
+
+#if REX_PLATFORM_IOS
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetInstanceProcAddr(VkInstance instance, const char* name);
+extern "C" VKAPI_ATTR void VKAPI_CALL
+vkDestroyInstance(VkInstance instance,
+                  const VkAllocationCallbacks* allocator);
 #endif
 
 REXCVAR_DEFINE_BOOL(vulkan_log_debug_messages, true, "UI/Vulkan", "Log Vulkan debug messages");
 
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_IOS
 REXCVAR_DEFINE_BOOL(vulkan_moltenvk_synchronous_queue_submits, false, "UI/Vulkan",
                     "Process Vulkan queue submissions synchronously in MoltenVK");
 #endif
@@ -44,7 +52,9 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
 
   // Load the RenderDoc API if connected.
 
+#if !REX_PLATFORM_IOS
   vulkan_instance->renderdoc_api_ = RenderDocAPI::CreateIfConnected();
+#endif
 
   // Load the loader library.
 
@@ -52,7 +62,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
 
   bool functions_loaded = true;
   bool loader_loaded = false;
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_IOS
+  // iOS applications statically link MoltenVK. Dynamic loader discovery is
+  // unavailable in the app sandbox and unnecessary when these exported entry
+  // points are already part of the executable.
+  ifn.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
+  ifn.vkDestroyInstance = &vkDestroyInstance;
+  loader_loaded = true;
+#elif REX_PLATFORM_MAC
   const MacOSVulkanRuntimePaths macos_runtime_paths = DetectMacOSVulkanRuntimePaths();
   ConfigureMacOSVulkanEnvironment(macos_runtime_paths);
 
@@ -89,11 +106,13 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   }
 #endif
 
+#if !REX_PLATFORM_IOS
 #define XE_VULKAN_LOAD_LOADER_FUNCTION(name) \
   functions_loaded &= (ifn.name = vulkan_instance->loader_.GetSymbol<PFN_##name>(#name)) != nullptr;
   XE_VULKAN_LOAD_LOADER_FUNCTION(vkGetInstanceProcAddr);
   XE_VULKAN_LOAD_LOADER_FUNCTION(vkDestroyInstance);
 #undef XE_VULKAN_LOAD_LOADER_FUNCTION
+#endif
   if (!functions_loaded) {
     REXLOG_ERROR("Failed to get Vulkan loader function pointers");
     return nullptr;
@@ -130,7 +149,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   // Name pointers from `requested_extensions` will be used in the enabled
   // extensions vector.
   std::unordered_map<std::string, bool*> requested_extensions;
-#if REX_PLATFORM_MAC && defined(VK_EXT_layer_settings)
+#if REX_PLATFORM_DARWIN && defined(VK_EXT_layer_settings)
   bool extension_ext_layer_settings = false;
   requested_extensions.emplace(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME,
                                &extension_ext_layer_settings);
@@ -360,7 +379,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   VkInstanceCreateInfo instance_create_info;
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   instance_create_info.pNext = nullptr;
-#if REX_PLATFORM_MAC && defined(VK_EXT_layer_settings)
+#if REX_PLATFORM_DARWIN && defined(VK_EXT_layer_settings)
   VkBool32 moltenvk_synchronous_queue_submits =
       REXCVAR_GET(vulkan_moltenvk_synchronous_queue_submits) ? VK_TRUE : VK_FALSE;
   VkLayerSettingEXT moltenvk_queue_setting{};

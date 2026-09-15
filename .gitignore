@@ -626,6 +626,7 @@ crash_log.txt
 *_FINDINGS_*.md
 *_VERIFICATION.md
 *_PLAN.md
+!LIBERTYRECOMP_IOS_PLAN.md
 Claude_export_*.jsonl
 gemini-env/
 review/
@@ -749,3 +750,12 @@ CMakeUserPresets.json
 /.github/workflows/*
 !/.github/workflows/repository-checks.yml
 !/.github/workflows/build-macos.yml
+
+# Reproducible iOS core build and artifact validation.
+!/docs/IOS_CORE_BUILD.md
+!/tests/ios/verify_core_artifact.py
+!/tests/ios/run_shell_smoke.py
+!/tests/ios/verify_shell_log.py
+!/docs/IOS_APP_BUILD.md
+!/docs/IOS_GAME_STARTUP.md
+!/docs/ATTRIBUTION.md

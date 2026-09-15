@@ -65,6 +65,13 @@ inline constexpr const char* kVulkanLoader = "libvulkan.so.1";
 inline constexpr const char* kRenderDoc = "librenderdoc.so";
 inline constexpr const char* kSpirvToolsSdkPath = "bin/libSPIRV-Tools-shared.so";
 
+#elif REX_PLATFORM_IOS
+
+// iOS engine code is linked into the application; optional plugins are absent.
+inline constexpr const char* kVulkanLoader = nullptr;
+inline constexpr const char* kRenderDoc = nullptr;
+inline constexpr const char* kSpirvToolsSdkPath = nullptr;
+
 #elif REX_PLATFORM_MAC
 
 inline constexpr const char* kVulkanLoader = "libvulkan.1.dylib";

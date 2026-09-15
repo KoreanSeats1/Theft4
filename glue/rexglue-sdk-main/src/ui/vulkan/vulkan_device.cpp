@@ -32,11 +32,11 @@ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // Apple Silicon / MoltenVK does not expose geometryShader or fillModeNonSolid;
 // default both to false on macOS so the device can still be selected.
-REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader, !REX_PLATFORM_MAC, "UI/Vulkan",
+REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader, !REX_PLATFORM_DARWIN, "UI/Vulkan",
                     "Require geometryShader support for Vulkan GPU emulation (disable to allow "
                     "fallback primitive emulation paths)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_MAC, "UI/Vulkan",
+REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_DARWIN, "UI/Vulkan",
                     "Require fillModeNonSolid support for Vulkan GPU emulation (disable to "
                     "allow fallback to solid fill for line/point polygon modes)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

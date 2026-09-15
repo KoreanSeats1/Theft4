@@ -1,7 +1,11 @@
 # rexcore - Core utilities library
 # Foundation types, data structures, and threading primitives
 
-add_library(rexcore OBJECT
+set(REXCORE_LIBRARY_TYPE OBJECT)
+if(REXGLUE_CORE_ONLY)
+    set(REXCORE_LIBRARY_TYPE STATIC)
+endif()
+add_library(rexcore ${REXCORE_LIBRARY_TYPE}
     arena.cpp
     bit_map.cpp
     bit_stream.cpp
@@ -49,6 +53,28 @@ if(WIN32)
         threading_win.cpp
     )
     target_compile_definitions(rexcore PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_sources(rexcore PRIVATE
+        atomic_posix.cpp
+        clock_posix.cpp
+        dbg_mac.cpp
+        dynlib_ios.cpp
+        exception_handler_mac.cpp
+        filesystem_ios.mm
+        fiber_ios.cpp
+        logging_ios.mm
+        mapped_memory_mac.cpp
+        math_gcc.cpp
+        memory_ios.cpp
+        platform/console_posix.cpp
+        platform/env_posix.cpp
+        seh_posix.cpp
+        socket_posix.cpp
+        system_posix.cpp
+        threading_mac.cpp
+    )
+    set_source_files_properties(filesystem_ios.mm logging_ios.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(rexcore PUBLIC "-framework Foundation")
 elseif(APPLE)
     target_sources(rexcore PRIVATE
         atomic_posix.cpp

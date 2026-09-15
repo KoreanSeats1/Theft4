@@ -24,6 +24,24 @@ project("LibertyRecomp-ALL")
 # Reproduce the source fixes carried for pinned upstream dependencies.
 liberty_apply_dependency_patches("${CMAKE_CURRENT_SOURCE_DIR}")
 
+option(LIBERTY_RECOMP_IOS_CORE_ONLY "Build the iOS core and link probe without game assets" OFF)
+if(LIBERTY_RECOMP_IOS_CORE_ONLY)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckIOSToolchain.cmake")
+    set(REXGLUE_CORE_ONLY ON CACHE BOOL "Build only core platform libraries" FORCE)
+    set(REXGLUE_USE_VULKAN OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_USE_D3D12 OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_ENABLE_TRACY OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_ENABLE_PERF_COUNTERS OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_BUILD_GTA4_RECOMP OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_HEADLESS_RENDER_AUDIO ON CACHE BOOL "" FORCE)
+    set(REXGLUE_HEADLESS_INPUT ON CACHE BOOL "" FORCE)
+    add_subdirectory(glue/rexglue-sdk-main)
+    add_subdirectory(tests/ios)
+    add_subdirectory(ios)
+    return()
+endif()
+
 set(LIBERTY_RECOMP_GRAINE_MAC OFF)
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
    (NOT DEFINED LIBERTY_RECOMP_TARGET_PLATFORM OR

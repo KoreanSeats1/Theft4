@@ -23,7 +23,6 @@
 #include <rex/chrono/clock.h>
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/flags.h>
-#include <rex/graphics/graphics_system.h>
 #include <rex/graphics/pipeline/shader/shader.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/sampler_info.h>
@@ -116,13 +115,17 @@ ReadbackResolveMode ParseReadbackResolveMode(std::string_view value) {
 
 }  // namespace
 
-CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
-                                   system::KernelState* kernel_state)
-    : memory_(graphics_system->memory()),
+CommandProcessor::CommandProcessor(
+    memory::Memory* memory, RegisterFile* register_file,
+    system::KernelState* kernel_state,
+    std::function<void(uint32_t, uint32_t)> interrupt_dispatcher,
+    GraphicsSystem* graphics_system)
+    : memory_(memory),
       kernel_state_(kernel_state),
       graphics_system_(graphics_system),
-      register_file_(graphics_system_->register_file()),
-      trace_writer_(graphics_system->memory()->physical_membase()),
+      register_file_(register_file),
+      interrupt_dispatcher_(std::move(interrupt_dispatcher)),
+      trace_writer_(memory->physical_membase()),
       worker_running_(true),
       write_ptr_index_event_(rex::thread::Event::CreateAutoResetEvent(false)),
       write_ptr_index_(0) {
@@ -1197,8 +1200,8 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
   uint32_t cpu_mask = reader->ReadAndSwap<uint32_t>();
   for (int n = 0; n < 6; n++) {
     if (cpu_mask & (1 << n)) {
-      if (graphics_system_) {
-        graphics_system_->DispatchInterruptCallback(1, n);
+      if (interrupt_dispatcher_) {
+        interrupt_dispatcher_(1, n);
       }
     }
   }

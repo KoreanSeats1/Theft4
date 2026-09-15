@@ -83,6 +83,10 @@ class CommandProcessor {
   };
 
   CommandProcessor(GraphicsSystem* graphics_system, system::KernelState* kernel_state);
+  CommandProcessor(memory::Memory* memory, RegisterFile* register_file,
+                   system::KernelState* kernel_state,
+                   std::function<void(uint32_t, uint32_t)> interrupt_dispatcher,
+                   GraphicsSystem* graphics_system = nullptr);
   virtual ~CommandProcessor();
 
   uint32_t counter() const { return counter_; }
@@ -258,6 +262,7 @@ class CommandProcessor {
   system::KernelState* kernel_state_ = nullptr;
   GraphicsSystem* graphics_system_ = nullptr;
   RegisterFile* register_file_ = nullptr;
+  std::function<void(uint32_t, uint32_t)> interrupt_dispatcher_;
 
   TraceWriter trace_writer_;
   enum class TraceState {

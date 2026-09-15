@@ -62,7 +62,7 @@ REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                     "Clear render pass during presentation");
 
 REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_immediate,
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
                     false,
 #else
                     true,
@@ -77,7 +77,7 @@ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
                     "Allow FIFO relaxed present mode");
 
 REXCVAR_DEFINE_BOOL(vulkan_prefer_present_mode_fifo,
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
                     true,
 #else
                     false,
@@ -568,7 +568,7 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
     type_flags |= Surface::kTypeFlag_Win32Hwnd;
   }
 #endif
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
   if (instance_extensions.ext_EXT_metal_surface) {
     type_flags |= Surface::kTypeFlag_CAMetalLayer;
   }
@@ -1002,14 +1002,17 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
       } break;
 #endif
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       case Surface::kTypeIndex_CAMetalLayer: {
-        auto& metal_surface = static_cast<const CAMetalLayerSurface&>(new_surface);
         VkMetalSurfaceCreateInfoEXT surface_create_info;
         surface_create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
         surface_create_info.pNext = nullptr;
         surface_create_info.flags = 0;
-        surface_create_info.pLayer = metal_surface.layer();
+        surface_create_info.pLayer = new_surface.GetNativePresentationHandle();
+        if (!surface_create_info.pLayer) {
+          REXLOG_ERROR("VulkanPresenter: CAMetalLayer surface has no native layer");
+          return SurfacePaintConnectResult::kFailureSurfaceUnusable;
+        }
         vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
       } break;
@@ -2749,7 +2752,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   PaintContext::Submission::DiagnosticSwapchainProbe& swapchain_probe =
       paint_submission.diagnostic_swapchain_probe();
   if (paint_context_.swapchain_probe_enabled) {
-    if (log_tv_paint || frame_probe_selected) {
+    if (log_tv_paint || frame_probe_selected
+#if REX_PLATFORM_IOS
+        || (std::getenv("THEFT4_FRAME_CAPTURE_DIR") &&
+            current_paint_submission_index % 300 == 0)
+#endif
+        ) {
       const VkDeviceSize pixel_stride = swapchain_probe.mapping
                                             ? GetDiagnosticSwapchainProbePixelStride(
                                                   paint_context_.swapchain_render_pass_format)
@@ -3043,6 +3051,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                      guest_output_mailbox_index==UINT32_MAX ? 0 : guest_output_images_[guest_output_mailbox_index].version,
                      guest_output_image ? guest_output_properties.provenance.submitted_frame : 0,
                      int32_t(present_result));
+
+#if REX_PLATFORM_IOS
+  // This is intentionally independent of the optional presenter diagnostics
+  // policy. During iOS bring-up, a successful queue present is the boundary
+  // between merely producing guest images and actually handing them to the
+  // CAMetalLayer-backed swapchain.
+  static uint64_t theft4_present_count = 0;
+  ++theft4_present_count;
+  const bool theft4_present_milestone =
+      theft4_present_count <= 8 || theft4_present_count == 16 ||
+      theft4_present_count == 32 || theft4_present_count == 64 ||
+      theft4_present_count == 128 || theft4_present_count == 256 ||
+      theft4_present_count == 512 || theft4_present_count == 1024 ||
+      theft4_present_count % 300 == 0;
+  if (theft4_present_milestone || present_result != VK_SUCCESS) {
+    REXLOG_INFO(
+        "[Theft4Present] present={} guest_image={} guest={}x{} effects={} "
+        "swapchain={}x{} image={} acquire={} submit={} queue_present={}",
+        theft4_present_count, guest_output_image != nullptr,
+        guest_output_properties.frontbuffer_width,
+        guest_output_properties.frontbuffer_height, guest_output_effect_count,
+        paint_context_.swapchain_extent.width,
+        paint_context_.swapchain_extent.height, swapchain_image_index,
+        int32_t(acquire_result), int32_t(submit_result),
+        int32_t(present_result));
+  }
+#endif
 
   if (log_tv_paint) {
     const auto& provenance = tv_trace_provenance;

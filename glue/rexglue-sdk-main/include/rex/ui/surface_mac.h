@@ -31,6 +31,7 @@ class CAMetalLayerSurface final : public Surface {
 
   TypeIndex GetType() const override { return kTypeIndex_CAMetalLayer; }
   void* layer() const { return layer_; }
+  void* GetNativePresentationHandle() const override { return layer_; }
 
  protected:
   bool GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const override;

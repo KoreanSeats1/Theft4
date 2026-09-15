@@ -28,7 +28,9 @@
 #include <TargetConditionals.h>
 #endif
 
-#if defined(TARGET_OS_MAC) && TARGET_OS_MAC
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+#define REX_PLATFORM_IOS 1
+#elif defined(TARGET_OS_MAC) && TARGET_OS_MAC
 #define REX_PLATFORM_MAC 1
 #elif defined(WIN32) || defined(_WIN32)
 #define REX_PLATFORM_WIN32 1
@@ -44,6 +46,9 @@
 
 // Ensure all platform macros are always defined (0 when inactive)
 // so they can be used in static_assert and regular expressions.
+#ifndef REX_PLATFORM_IOS
+#define REX_PLATFORM_IOS 0
+#endif
 #ifndef REX_PLATFORM_MAC
 #define REX_PLATFORM_MAC 0
 #endif
@@ -59,6 +64,9 @@
 #ifndef REX_PLATFORM_LINUX
 #define REX_PLATFORM_LINUX 0
 #endif
+
+#define REX_PLATFORM_DARWIN (REX_PLATFORM_MAC || REX_PLATFORM_IOS)
+#define REX_PLATFORM_POSIX (REX_PLATFORM_DARWIN || REX_PLATFORM_LINUX)
 
 #if defined(__clang__)
 #define REX_COMPILER_CLANG 1

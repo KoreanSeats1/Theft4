@@ -58,17 +58,25 @@ extern PPCFuncMapping PPCFuncMappings[];
 
 #define DECLARE_REX_FUNC(name) \
   REX_EXTERN(name);            \
-  REX_EXTERN(__imp__##name)
+  REX_EXTERN(__imp__##name);    \
+  REX_EXTERN(REX_ORIGINAL_FUNC(name))
 
 #if defined(__APPLE__)
-#define DEFINE_REX_FUNC(name)                                                       \
-  extern "C" void __imp__##name(PPCContext& __restrict, uint8_t*);                  \
-  __attribute__((weak, noinline)) extern "C" void name(                             \
-      [[maybe_unused]] PPCContext& __restrict ctx, uint8_t* base) {                 \
-    __imp__##name(ctx, base);                                                       \
-  }                                                                                 \
-  extern "C" void __imp__##name([[maybe_unused]] PPCContext& __restrict ctx, uint8_t* base)
+// Mach-O has no ELF function aliases. Keep the generated body in a separate
+// namespace: an Xbox export such as __imp__RtlAllocateHeap must not intercept
+// the wrapper for the game's statically linked RtlAllocateHeap implementation.
+#define REX_ORIGINAL_FUNC(name) rex_generated_##name
+#define DEFINE_REX_FUNC(name)                                                   \
+  REX_EXTERN(REX_ORIGINAL_FUNC(name));                                          \
+  extern "C" __attribute__((weak, noinline)) REX_FUNC(name) {                   \
+    REX_ORIGINAL_FUNC(name)(ctx, base);                                         \
+  }                                                                           \
+  extern "C" __attribute__((weak, noinline)) REX_FUNC(__imp__##name) {          \
+    REX_ORIGINAL_FUNC(name)(ctx, base);                                         \
+  }                                                                           \
+  REX_EXTERN(REX_ORIGINAL_FUNC(name))
 #else
+#define REX_ORIGINAL_FUNC(name) __imp__##name
 #define DEFINE_REX_FUNC(name)                                  \
   __attribute__((alias("__imp__" #name))) REX_WEAK_FUNC(name); \
   REX_EXTERN(__imp__##name)
@@ -112,7 +120,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 // Memory Access
 //=============================================================================
 
-#if REX_PLATFORM_WIN32 || REX_PLATFORM_MAC
+#if REX_PLATFORM_WIN32 || REX_PLATFORM_DARWIN
 #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
 #else
 #define REX_PHYS_HOST_OFFSET(addr) 0u

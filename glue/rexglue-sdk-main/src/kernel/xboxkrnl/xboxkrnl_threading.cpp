@@ -945,45 +945,6 @@ u32 NtSignalAndWaitForSingleObjectEx_entry(u32 signal_handle, u32 wait_handle, u
   return result;
 }
 
-// Guest-memory IRQL helpers - read/write current_irql directly from PCR.
-// Take PPCContext* explicitly so they work from any thread (including host threads
-// during InitializeGuestObject, dispatch thread creation, etc.).
-static unsigned char xeKfRaiseIrql(PPCContext* ctx, unsigned char new_irql) {
-  auto* mem = rex::system::kernel_state()->memory();
-  auto pcr = mem->TranslateVirtual<X_KPCR*>(static_cast<uint32_t>(ctx->r13.u64));
-  uint8_t old_irql = pcr->current_irql;
-  pcr->current_irql = new_irql;
-  return old_irql;
-}
-
-static void xeKfLowerIrql(PPCContext* ctx, unsigned char new_irql) {
-  auto* mem = rex::system::kernel_state()->memory();
-  auto pcr = mem->TranslateVirtual<X_KPCR*>(static_cast<uint32_t>(ctx->r13.u64));
-  pcr->current_irql = new_irql;
-}
-
-// Guest-memory spinlock helpers - store PCR address as owner (matching xenia).
-// PPCContext* provides r13 (PCR address) without needing XThread::GetCurrentThread().
-uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_irql) {
-  uint32_t old_irql = change_irql ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
-  uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
-  const uint32_t self = rex::byte_swap(pcr_addr);
-  assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
-  while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
-    rex::thread::MaybeYield();
-  }
-  return old_irql;
-}
-
-void xeKeKfReleaseSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, uint32_t old_irql,
-                           bool change_irql) {
-  assert_true(lock->prcb_of_owner == static_cast<uint32_t>(ctx->r13.u64));
-  rex::thread::atomic_store_release(0u, &lock->prcb_of_owner.value);
-  if (change_irql && old_irql < IRQL_DISPATCH) {
-    xeKfLowerIrql(ctx, static_cast<unsigned char>(old_irql));
-  }
-}
-
 // Guest-memory APC helpers
 void xeKeInitializeApc(XAPC* apc, uint32_t thread_ptr, uint32_t kernel_routine,
                        uint32_t rundown_routine, uint32_t normal_routine, uint32_t apc_mode,

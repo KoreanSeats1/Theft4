@@ -64,6 +64,37 @@ std::string Lowercase(std::string_view value) {
   return result;
 }
 
+// Disc paths and archive paths can differ only in case (for example,
+// interiors/Generic on disc and interiors/generic in xbox360.rpf). Merge
+// using the Xbox filesystem's case-insensitive identity, while retaining the
+// existing spelling. This also avoids simulator stat/mkdir disagreements on
+// a case-insensitive host volume. Reject ambiguous paths and symlinks.
+std::optional<std::filesystem::path> OutputChild(const std::filesystem::path& parent,
+                                                std::string_view name, std::string& error) {
+  std::optional<std::filesystem::path> existing;
+  std::error_code ec;
+  std::filesystem::directory_iterator entries(parent, ec);
+  if (ec) {
+    error = "Cannot inspect extraction directory " + parent.string() + ": " + ec.message();
+    return std::nullopt;
+  }
+  for (auto end = std::filesystem::directory_iterator(); entries != end; entries.increment(ec)) {
+    if (ec) break;
+    if (Lowercase(entries->path().filename().string()) != Lowercase(name)) continue;
+    if (existing || entries->is_symlink(ec)) {
+      error = "Ambiguous or symbolic-link extraction path: " + (parent / name).string();
+      return std::nullopt;
+    }
+    if (ec) break;
+    existing = entries->path();
+  }
+  if (ec) {
+    error = "Cannot enumerate extraction directory " + parent.string() + ": " + ec.message();
+    return std::nullopt;
+  }
+  return existing.value_or(parent / name);
+}
+
 uint32_t ReadU32(std::span<const uint8_t> data, size_t offset) {
   return static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8) |
          (static_cast<uint32_t>(data[offset + 2]) << 16) |
@@ -342,7 +373,7 @@ bool WriteEntry(const std::filesystem::path& archive_path, const TocEntry& entry
   std::error_code fs_error;
   std::filesystem::create_directories(output_path.parent_path(), fs_error);
   if (fs_error) {
-    error = "Could not create an RPF extraction directory: " + fs_error.message();
+    error = "Could not create RPF extraction directory " + output_path.parent_path().string() + ": " + fs_error.message();
     return false;
   }
   std::ofstream destination(output_path, std::ios::binary | std::ios::trunc);
@@ -473,14 +504,21 @@ bool ExtractDirectory(const std::filesystem::path& archive_path, const Archive& 
       return false;
     }
     const auto& entry = archive.entries[child];
-    const auto output_path = output_root / entry.name;
+    const auto resolved_path = OutputChild(output_root, entry.name, error);
+    if (!resolved_path) return false;
+    const auto& output_path = *resolved_path;
     if (entry.is_directory) {
       std::error_code fs_error;
       std::filesystem::create_directories(output_path, fs_error);
       if (fs_error || !ExtractDirectory(archive_path, archive, child, output_path, active, visited,
                                         nested_archives, progress, depth + 1, error)) {
         if (error.empty()) {
-          error = "Could not create an RPF extraction directory: " + fs_error.message();
+          error = "Could not create RPF extraction directory " + output_path.string() +
+              " from " + archive_path.string() + ": " + fs_error.message();
+          std::error_code detail_error;
+          if (std::filesystem::is_regular_file(output_path, detail_error)) {
+            error += " (existing file bytes=" + std::to_string(std::filesystem::file_size(output_path, detail_error)) + ")";
+          }
         }
         return false;
       }
@@ -527,7 +565,7 @@ bool ExtractOne(const std::filesystem::path& archive_path, const std::filesystem
   std::error_code fs_error;
   std::filesystem::create_directories(output_root, fs_error);
   if (fs_error) {
-    error = "Could not create an RPF extraction directory: " + fs_error.message();
+    error = "Could not create RPF extraction directory " + output_root.string() + ": " + fs_error.message();
     return false;
   }
   std::vector<bool> active(archive->entries.size());

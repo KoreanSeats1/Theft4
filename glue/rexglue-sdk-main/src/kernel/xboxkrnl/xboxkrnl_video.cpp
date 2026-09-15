@@ -15,6 +15,10 @@
 #include <algorithm>
 #include <atomic>
 #include <string>
+#if defined(REXGLUE_HEADLESS_KERNEL)
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -79,6 +83,13 @@ float GetConfiguredVideoModeRefreshRate() {
 }
 
 void WarnNoGpuEmulation(const char* export_name, std::atomic<bool>& warned) {
+#if defined(REXGLUE_HEADLESS_KERNEL)
+  REXKRNL_ERROR("HEADLESS STARTUP BLOCKED: {} requires a graphics backend", export_name);
+  std::fprintf(stderr, "HEADLESS STARTUP BLOCKED: %s requires a graphics backend\n", export_name);
+  std::fflush(stderr);
+  rex::FlushLogging();
+  std::abort();
+#endif
   if (!warned.exchange(true)) {
     REXKRNL_WARN("{}: no GPU emulation loaded (gpu_plugin not set); call ignored", export_name);
   }

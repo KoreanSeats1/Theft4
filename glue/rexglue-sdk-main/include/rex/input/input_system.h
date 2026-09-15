@@ -40,15 +40,17 @@ class InputSystem : public system::IInputSystem {
   void AttachWindow(rex::ui::Window* window);
   void SetActiveCallback(std::function<bool()> callback);
 
-  X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags, X_INPUT_CAPABILITIES* out_caps);
-  X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state);
+  X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags,
+                           X_INPUT_CAPABILITIES* out_caps) override;
+  X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state) override;
   // Returns the most recent state produced by GetState without polling any
   // driver. Game-specific bridges use this to observe controller buttons at a
   // deterministic guest poll boundary without consuming transient input a
   // second time.
   bool TryGetLastState(uint32_t user_index, X_INPUT_STATE* out_state);
-  X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
-  X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+  X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) override;
+  X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
+                        X_INPUT_KEYSTROKE* out_keystroke) override;
   bool TryGetMotionState(uint32_t user_index, MotionState* out_state);
 
  private:

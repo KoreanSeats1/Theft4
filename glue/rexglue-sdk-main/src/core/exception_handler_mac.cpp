@@ -17,7 +17,7 @@
 
 #include <rex/exception_handler.h>
 
-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#if REX_PLATFORM_LINUX || REX_PLATFORM_DARWIN
 
 #include <signal.h>
 
@@ -36,7 +36,7 @@ namespace rex::arch {
 bool signal_handlers_installed_ = false;
 struct sigaction original_sigill_handler_;
 struct sigaction original_sigsegv_handler_;
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
 struct sigaction original_sigbus_handler_;
 #endif
 
@@ -56,7 +56,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   HostThreadContext thread_context;
 
 #if REX_ARCH_AMD64
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
   thread_context.rip = uint64_t(mcontext->__ss.__rip);
   thread_context.eflags = uint32_t(mcontext->__ss.__rflags);
   // The REG_ order may be different than the register indices in the
@@ -104,7 +104,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
               sizeof(thread_context.xmm_registers));
 #endif
 #elif REX_ARCH_ARM64
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
   // macOS ARM64: mcontext_t is __darwin_mcontext64* (pointer, not value)
   std::memcpy(thread_context.x, mcontext->__ss.__x, sizeof(mcontext->__ss.__x));
 #if __DARWIN_OPAQUE_ARM_THREAD_STATE64
@@ -153,7 +153,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     thread_context.fpcr = mcontext_fpsimd->fpcr;
     std::memcpy(thread_context.v, mcontext_fpsimd->vregs, sizeof(thread_context.v));
   }
-#endif  // REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_DARWIN
 #endif  // REX_ARCH
 
   Exception ex;
@@ -165,7 +165,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       // On macOS, SIGBUS (KERN_PROTECTION_FAILURE) is raised for writes to
       // read-protected pages — the same scenario that raises SIGSEGV on Linux.
       // Fall through to treat it as an access violation.
-#if !REX_PLATFORM_MAC
+#if !REX_PLATFORM_DARWIN
       // On non-Mac POSIX, SIGBUS is a bus error (misaligned access), not a
       // protection fault — don't handle it here.
       assert_unhandled_case(signal_number);
@@ -177,7 +177,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
 #if REX_ARCH_AMD64
       // x86_pf_error_code::X86_PF_WRITE
       constexpr uint64_t kX86PageFaultErrorCodeWrite = UINT64_C(1) << 1;
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       access_violation_operation = (uint64_t(mcontext->__es.__err) & kX86PageFaultErrorCodeWrite)
                                        ? Exception::AccessViolationOperation::kWrite
                                        : Exception::AccessViolationOperation::kRead;
@@ -191,7 +191,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       // Exception Level, 0b100101 without a change in the Exception Level),
       // bit 6 is 0 for reading from a memory location, 1 for writing to a
       // memory location.
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       {
         uint32_t mac_esr = mcontext->__es.__esr;
         if (((mac_esr >> 26) & 0b111110) == 0b100100) {
@@ -242,7 +242,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
           access_violation_operation = Exception::AccessViolationOperation::kUnknown;
         }
       }
-#endif  // REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_DARWIN
 #else
       access_violation_operation = Exception::AccessViolationOperation::kUnknown;
 #endif  // REX_ARCH
@@ -258,7 +258,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     if (handlers_[i].first(&ex, handlers_[i].second)) {
       // Exception handled.
 #if REX_ARCH_AMD64
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       mcontext->__ss.__rip = thread_context.rip;
       mcontext->__ss.__rflags = thread_context.eflags;
       uint32_t modified_register_index;
@@ -350,7 +350,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
 #elif REX_ARCH_ARM64
       uint32_t modified_register_index;
       uint32_t modified_x_registers_remaining = ex.modified_x_registers();
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       while (rex::bit_scan_forward(modified_x_registers_remaining, &modified_register_index)) {
         modified_x_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
         if (modified_register_index < 29) {
@@ -406,7 +406,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
           mcontext.regs[modified_register_index] = thread_context.x[modified_register_index];
         }
       }
-#endif  // REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_DARWIN
 #endif  // REX_ARCH
       return;
     }
@@ -427,7 +427,7 @@ void ExceptionHandler::Install(Handler fn, void* data) {
     if (sigaction(SIGSEGV, &signal_handler, &original_sigsegv_handler_) != 0) {
       assert_always("Failed to install new SIGSEGV handler");
     }
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
     if (sigaction(SIGBUS, &signal_handler, &original_sigbus_handler_) != 0) {
       assert_always("Failed to install new SIGBUS handler");
     }
@@ -472,7 +472,7 @@ void ExceptionHandler::Uninstall(Handler fn, void* data) {
       if (sigaction(SIGSEGV, &original_sigsegv_handler_, NULL) != 0) {
         assert_always("Failed to restore original SIGSEGV handler");
       }
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_DARWIN
       if (sigaction(SIGBUS, &original_sigbus_handler_, NULL) != 0) {
         assert_always("Failed to restore original SIGBUS handler");
       }
@@ -484,4 +484,4 @@ void ExceptionHandler::Uninstall(Handler fn, void* data) {
 
 }  // namespace rex::arch
 
-#endif  // REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_LINUX || REX_PLATFORM_DARWIN

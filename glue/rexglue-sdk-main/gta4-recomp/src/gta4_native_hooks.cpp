@@ -5201,7 +5201,7 @@ extern "C" void sub_82A441F8(PPCContext& ctx, uint8_t* base) {
 extern "C" void D3DResource_Release(PPCContext& ctx, uint8_t* base) {
   const bool native_mode = IsNativeMode();
   const uint32_t resource = ctx.r3.u32;
-  __imp__D3DResource_Release(ctx, base);
+  REX_ORIGINAL_FUNC(D3DResource_Release)(ctx, base);
 
   // The generated implementation returns zero only after the guest reference
   // count reaches zero and the resource destructor has run. Notify the native

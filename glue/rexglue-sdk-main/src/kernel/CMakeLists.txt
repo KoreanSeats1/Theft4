@@ -63,7 +63,48 @@ set(REXKERNEL_SOURCES
     crt/threading.cpp
 )
 
+if(REXGLUE_HEADLESS_KERNEL)
+    # Retain the real filesystem, memory, threading, loader and XAM services.
+    # These four units require concrete media/desktop-UI implementations.
+    # Their exports must stop the experiment, never pretend to succeed.
+    set(_headless_unavailable_sources
+        xam/xam_input.cpp xam/xam_ui.cpp
+        xboxkrnl/xboxkrnl_audio.cpp xboxkrnl/xboxkrnl_audio_xma.cpp)
+    if(REXGLUE_HEADLESS_RENDER_AUDIO)
+        list(REMOVE_ITEM _headless_unavailable_sources xboxkrnl/xboxkrnl_audio.cpp)
+        # The complete decoder depends on the desktop audio/FFmpeg target. Use
+        # a deterministic silent XMA service during embedded bring-up so the
+        # guest-visible buffer protocol remains live without that dependency.
+        list(REMOVE_ITEM _headless_unavailable_sources xboxkrnl/xboxkrnl_audio_xma.cpp)
+        list(REMOVE_ITEM REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma.cpp)
+        list(APPEND REXKERNEL_SOURCES xboxkrnl/xboxkrnl_audio_xma_headless.cpp)
+    endif()
+    if(REXGLUE_HEADLESS_INPUT)
+        list(REMOVE_ITEM _headless_unavailable_sources xam/xam_input.cpp)
+    endif()
+    set(HEADLESS_EXPORT_GUARDS "")
+    foreach(_source IN LISTS _headless_unavailable_sources)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _export_source)
+        string(REGEX MATCHALL "REX_EXPORT[A-Z_]*\\(__imp__[A-Za-z0-9_]+" _exports "${_export_source}")
+        foreach(_export IN LISTS _exports)
+            string(REGEX REPLACE "^REX_EXPORT[A-Z_]*\\(" "" _name "${_export}")
+            string(APPEND HEADLESS_EXPORT_GUARDS "REX_HEADLESS_UNAVAILABLE(${_name})\n")
+        endforeach()
+    endforeach()
+    list(REMOVE_ITEM REXKERNEL_SOURCES ${_headless_unavailable_sources})
+    configure_file(headless_exports.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/headless_exports.cpp" @ONLY)
+    target_sources(rexruntime PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/headless_exports.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../ui/display_config.cpp")
+    target_compile_definitions(rexruntime PRIVATE REXGLUE_HEADLESS_KERNEL=1)
+endif()
+
 list(TRANSFORM REXKERNEL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 target_sources(rexruntime PRIVATE ${REXKERNEL_SOURCES})
 
-target_link_libraries(rexruntime PRIVATE o1heap rexcore rexfilesystem rexui rexaudio rexinput imgui)
+target_link_libraries(rexruntime PRIVATE o1heap rexcore rexfilesystem)
+if(NOT REXGLUE_HEADLESS_KERNEL)
+    target_link_libraries(rexruntime PRIVATE rexui rexaudio rexinput imgui)
+endif()

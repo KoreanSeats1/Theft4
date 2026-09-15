@@ -1,8 +1,7 @@
 # iOS CMake Toolchain
 # Requirements:
-#   - macOS host with Xcode (xcode-select --install)
-#   - iOS SDK >= 9.0 (bundled with Xcode)
-#   - SDL2 iOS project files (in thirdparty/SDL2)
+#   - macOS host with full Xcode and iPhoneOS/iPhoneSimulator SDKs
+#   - Select Xcode with DEVELOPER_DIR or xcode-select
 #
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=toolchains/ios.cmake \
@@ -26,7 +25,7 @@ if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
                     "Other generators may not handle code signing correctly.")
 endif()
 
-# We use Metal on iOS (same path as macOS)
+# The legacy iOS consumer prefers Plume Metal; the desktop uses another graph.
 set(LIBERTY_RECOMP_METAL ON CACHE BOOL "Use Metal renderer" FORCE)
 set(LIBERTY_RECOMP_D3D12 OFF CACHE BOOL "" FORCE)
 set(LIBERTY_RECOMP_VULKAN OFF CACHE BOOL "" FORCE)

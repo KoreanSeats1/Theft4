@@ -1,0 +1,22 @@
+// Diagnostic-only exports for the opt-in headless kernel. These are not
+// implementations: any call terminates with the exact API and guest caller.
+#include <rex/hook.h>
+#include <cstdio>
+#include <cstdlib>
+
+REXCVAR_DEFINE_BOOL(headless, true, "UI", "Disable host dialogs in the headless startup build");
+
+#define REX_HEADLESS_UNAVAILABLE(name)                                      \
+  REX_HOOK_RAW(name) {                                                     \
+    (void)base;                                                           \
+    REXKRNL_ERROR("HEADLESS STARTUP BLOCKED: {} (guest LR={:08X})",         \
+                  #name, uint32_t(ctx.lr));                               \
+    std::fprintf(stderr, "HEADLESS STARTUP BLOCKED: %s (guest LR=%08x)\n", \
+                 #name, uint32_t(ctx.lr));                                \
+    std::fflush(stderr);                                                  \
+    rex::FlushLogging();                                                  \
+    std::abort();                                                         \
+  }                                                                       \
+  static rex::ppc::detail::PPCFuncRegistrar _headless_##name(#name, &name);
+
+@HEADLESS_EXPORT_GUARDS@

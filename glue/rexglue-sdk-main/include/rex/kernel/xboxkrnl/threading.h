@@ -31,6 +31,8 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
 uint32_t xeKeSetEvent(rex::system::X_KEVENT* event_ptr, uint32_t increment, uint32_t wait);
 
 // Guest-memory spinlock helpers (PPCContext* for r13/PCR access)
+unsigned char xeKfRaiseIrql(PPCContext* ctx, unsigned char new_irql);
+void xeKfLowerIrql(PPCContext* ctx, unsigned char new_irql);
 uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, rex::X_KSPINLOCK* lock, bool change_irql = true);
 void xeKeKfReleaseSpinLock(PPCContext* ctx, rex::X_KSPINLOCK* lock, uint32_t old_irql,
                            bool change_irql = true);

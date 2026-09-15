@@ -14,6 +14,11 @@
 #include <rex/platform.h>
 #include <cstddef>
 
+#if REX_PLATFORM_IOS
+#include <csetjmp>
+#include <cstdint>
+#endif
+
 #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
 #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
 // Darwin hides the deprecated ucontext APIs unless _XOPEN_SOURCE is defined
@@ -56,6 +61,15 @@ struct Fiber {
 #if REX_PLATFORM_WIN32
   void* handle_ = nullptr;
   bool is_thread_fiber_ = false;
+#elif REX_PLATFORM_IOS
+  jmp_buf context_{};
+  void* stack_ = nullptr;
+  size_t stack_size_ = 0;
+  void (*entry_)(void*) = nullptr;
+  void* arg_ = nullptr;
+  bool is_thread_fiber_ = false;
+  bool started_ = false;
+  [[noreturn]] static void Trampoline();
 #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
   ucontext_t context_{};
   std::vector<uint8_t> stack_;

@@ -12,7 +12,6 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
-#include <rex/audio/audio_system.h>
 #include <rex/diagnostics/gta4_transition.h>
 #include <rex/kernel/xboxkrnl/private.h>
 #include <rex/logging.h>
@@ -66,8 +65,10 @@ u32 XAudioRegisterRenderDriverClient_entry(mapped_u32 callback_ptr, mapped_u32 d
   }
   uint32_t callback_arg = callback_ptr[1];
 
-  auto* audio_system =
-      static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system());
+  auto* audio_system = REX_KERNEL_STATE()->emulator()->audio_system();
+  if (!audio_system) {
+    return X_STATUS_NOT_IMPLEMENTED;
+  }
 
   size_t index;
   auto result = audio_system->RegisterClient(callback, callback_arg, &index);
@@ -83,8 +84,10 @@ u32 XAudioRegisterRenderDriverClient_entry(mapped_u32 callback_ptr, mapped_u32 d
 u32 XAudioUnregisterRenderDriverClient_entry(mapped_void driver_ptr) {
   assert_true((driver_ptr.guest_address() & 0xFFFF0000) == 0x41550000);
 
-  auto* audio_system =
-      static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system());
+  auto* audio_system = REX_KERNEL_STATE()->emulator()->audio_system();
+  if (!audio_system) {
+    return X_STATUS_NOT_IMPLEMENTED;
+  }
   audio_system->UnregisterClient(driver_ptr.guest_address() & 0x0000FFFF);
   return X_ERROR_SUCCESS;
 }
@@ -99,8 +102,10 @@ u32 XAudioSubmitRenderDriverFrame_entry(mapped_void driver_ptr, mapped_void samp
     submit_krnl_count++;
   }
 
-  auto* audio_system =
-      static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system());
+  auto* audio_system = REX_KERNEL_STATE()->emulator()->audio_system();
+  if (!audio_system) {
+    return X_STATUS_NOT_IMPLEMENTED;
+  }
   diagnostics::gta4_transition::Record(
       diagnostics::gta4_transition::EventSource::kAudio,
       diagnostics::gta4_transition::EventType::kAudioSubmit, 0, 0, 0,

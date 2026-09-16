@@ -28,6 +28,9 @@ REXCVAR_DECLARE(bool, draw_extent_estimator_diagnostics);
 REXCVAR_DECLARE(bool, vulkan_ownership_transfer_diagnostics);
 REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+#endif
 
 extern const rex::PPCImageInfo PPCImageConfig;
 extern "C" void gta4_transition_hooks_link_anchor();
@@ -103,6 +106,21 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXCVAR_SET(gta4_transition_diagnostics, "metadata");
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+        // Launch-only stability A/B. Two slots remains the normal optimized
+        // configuration; one serializes native frame resources to distinguish
+        // cross-frame reuse bugs from command/shader failures.
+        if (const char* frames = std::getenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT"); frames) {
+            const std::string_view value(frames);
+            if (value != "1" && value != "2") {
+                throw std::runtime_error(
+                    "THEFT4_NATIVE_FRAMES_IN_FLIGHT must be 1 or 2");
+            }
+            const uint32_t count = value == "1" ? 1u : 2u;
+            REXCVAR_SET(gta4_native_frames_in_flight, count);
+            REXLOG_INFO("Theft4 native frame-resource slots overridden to {}", count);
+        }
+#endif
         rex::Runtime runtime(game_directory, support / "user",
                              std::filesystem::path(game_directory) / "update",
                              support / "cache", {}, support / "marketplace", support / "saves");

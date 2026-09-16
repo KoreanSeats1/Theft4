@@ -24,6 +24,28 @@ the public native-renderer and performance-documentation checkpoint.
 
 ### Experimental — native transport batching and device-loss reproduction
 
+- Added a launch-only `THEFT4_NATIVE_FRAMES_IN_FLIGHT=1|2` control for the
+  next resource-lifetime A/B. The normal optimized default remains two slots;
+  `1` serializes native frame resources to test whether the reproducible Metal
+  Invalid Resource failure depends on cross-frame reuse. Invalid values fail
+  startup explicitly, and the selected override is recorded in the runtime log.
+- **Promising bounded result:** the signed Release one-slot run remained GPU-clean
+  for approximately three minutes, passed the earlier roughly 100-second failure
+  window, reached gameplay and the apartment's second cutscene, and advanced to
+  presenter count 5,400. No GPU wait, device loss, publish failure, or producer
+  stall was recorded. Audio reached block 33,792 with zero underruns, rebuffers,
+  drops, clipping, or non-finite samples. The user reported only small frame drops.
+- That run ended for a separate, deterministic reason: GTA IV requested
+  `XamShowDeviceSelectorUI` after entering the apartment, and the current headless
+  kernel intentionally aborts every export from `xam_ui.cpp`. The device crash
+  report confirms `SIGABRT`/`abort() called`; this was not a renderer failure and
+  Codex did not terminate the app. Implementing the existing dummy storage-device
+  selection behavior in the embedded kernel is the next platform-service blocker.
+- The one-slot survival strongly implicates cross-frame native resource reuse,
+  but it is not yet proof of a complete renderer fix: the unrelated selector
+  abort prevented a longer run. Normal icon launches still default to native
+  rendering with two slots; the serialized mode remains an explicit diagnostic.
+
 - Follow-up failure recording captured Metal **Invalid Resource (code 9)** at
   14:51:11 in both the swapchain acquisition command buffer and native frame
   1696/submission 1714, followed by GPU timeouts and the device-loss latch. User

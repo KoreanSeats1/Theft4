@@ -447,7 +447,17 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
 
   // Volatile for the WAIT_REG_MEM loop.
   const_cast<volatile uint32_t&>(regs.values[index]) = value;
-  if (!regs.GetRegisterInfo(index)) {
+  // The register metadata switch is diagnostic-only and is measurably hot for
+  // GTA IV. Resolve whether GPU debug messages are enabled once per process;
+  // a debug-level launch retains the original unknown-register reporting.
+  static const bool log_unknown_registers = [] {
+    if (!rex::diagnostics::IsEnabled(rex::diagnostics::Category::kLogging)) {
+      return false;
+    }
+    auto* logger = rex::GetLoggerRaw(rex::log::gpu());
+    return logger && logger->should_log(spdlog::level::debug);
+  }();
+  if (log_unknown_registers && !regs.GetRegisterInfo(index)) {
     REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
   }
 

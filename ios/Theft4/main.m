@@ -30,6 +30,10 @@
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
     UIScrollView *_bringupOverlay;
+    UILabel *_fpsLabel;
+    NSTimer *_fpsTimer;
+    uint64_t _fpsLastFrames;
+    CFTimeInterval _fpsLastTime;
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -148,6 +152,29 @@ static void bootEvent(void *context, const char *event) {
         [stack.trailingAnchor constraintEqualToAnchor:_bringupOverlay.contentLayoutGuide.trailingAnchor constant:-28],
         [stack.widthAnchor constraintEqualToAnchor:_bringupOverlay.frameLayoutGuide.widthAnchor constant:-56]
     ]];
+    _fpsLabel = [UILabel new];
+    _fpsLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _fpsLabel.text = @"--.- FPS";
+    _fpsLabel.textAlignment = NSTextAlignmentCenter;
+    _fpsLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold];
+    _fpsLabel.textColor = UIColor.whiteColor;
+    _fpsLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.58];
+    _fpsLabel.layer.cornerRadius = 7.0;
+    _fpsLabel.layer.masksToBounds = YES;
+    _fpsLabel.hidden = YES;
+    _fpsLabel.accessibilityIdentifier = @"game.fps";
+    [self.view addSubview:_fpsLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [_fpsLabel.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
+        [_fpsLabel.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
+        [_fpsLabel.widthAnchor constraintEqualToConstant:92],
+        [_fpsLabel.heightAnchor constraintEqualToConstant:32]
+    ]];
+    _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                target:self
+                                              selector:@selector(refreshFrameRate)
+                                              userInfo:nil
+                                               repeats:YES];
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -235,7 +262,24 @@ static void bootEvent(void *context, const char *event) {
     }];
     [self setNeedsStatusBarAppearanceUpdate];
     [self setNeedsUpdateOfHomeIndicatorAutoHidden];
+    _fpsLastFrames = theft4_frame_counter_published_frames();
+    _fpsLastTime = CACurrentMediaTime();
+    _fpsLabel.text = @"--.- FPS";
+    _fpsLabel.hidden = NO;
     [self record:@"ui.game_presentation_mode"];
+}
+
+- (void)refreshFrameRate {
+    if (_fpsLabel.hidden) return;
+    const uint64_t frames = theft4_frame_counter_published_frames();
+    const CFTimeInterval now = CACurrentMediaTime();
+    const CFTimeInterval elapsed = now - _fpsLastTime;
+    if (elapsed >= 0.2) {
+        const double fps = (double)(frames - _fpsLastFrames) / elapsed;
+        _fpsLabel.text = [NSString stringWithFormat:@"%4.1f FPS", fps];
+        _fpsLastFrames = frames;
+        _fpsLastTime = now;
+    }
 }
 
 - (BOOL)prefersStatusBarHidden { return _executionAttempted; }
@@ -379,6 +423,7 @@ static void bootEvent(void *context, const char *event) {
     // Scene disconnect normally releases it first. No callback may access a
     // partially deallocated controller; scene ownership requires shutdown.
     NSCAssert(_core == NULL, @"Scene must shut down its core before release");
+    [_fpsTimer invalidate];
     theft4_metal_unbind_layer((__bridge void *)_metalView.layer);
 }
 @end

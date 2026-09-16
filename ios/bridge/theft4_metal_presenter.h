@@ -40,6 +40,12 @@ bool theft4_metal_renderer_end_frame(uint32_t frontbuffer_ptr,
 uint64_t theft4_metal_renderer_submitted_frames(void);
 uint64_t theft4_metal_renderer_completed_frames(void);
 
+// Counts distinct guest images successfully handed to the iOS Vulkan/Metal
+// swapchain. UIKit samples this monotonically increasing value for the small
+// on-screen FPS indicator; no logging or GPU readback is involved.
+void theft4_frame_counter_note_published(void);
+uint64_t theft4_frame_counter_published_frames(void);
+
 #ifdef __cplusplus
 }
 #endif

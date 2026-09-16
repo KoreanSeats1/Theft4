@@ -23,8 +23,11 @@
 #include <utility>
 
 #if defined(__APPLE__) && defined(__MACH__)
+#include <TargetConditionals.h>
 #include <mach/mach.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
 #include <mach/vm_region.h>
 #include <mach/vm_statistics.h>
 #include <malloc/malloc.h>
@@ -57,6 +60,7 @@
 #include <rex/math.h>
 #include <rex/memory.h>
 #include <rex/system/function_dispatcher.h>
+#include <rex/ui/surface.h>
 #include <rex/ui/vulkan/presenter.h>
 #include <rex/ui/image_decode.h>
 #include <rex/ui/vulkan/provider.h>
@@ -1035,6 +1039,14 @@ NativeProcessMemorySnapshot QueryNativeProcessMemorySnapshot(bool include_vm_reg
     return snapshot;
   }
 
+#if TARGET_OS_IPHONE
+  // The public iOS SDK intentionally rejects <mach/mach_vm.h> and doesn't
+  // expose mach_vm_region_recurse. TASK_VM_INFO and malloc zone statistics
+  // above remain available, so retain those counters and omit only the
+  // optional, low-frequency per-region diagnostic walk on iOS.
+  return snapshot;
+#else
+
   const auto classify_region = [](uint32_t tag, uint8_t share_mode) {
     using ProcessVmCategory = memory::ProcessVmCategory;
     switch (tag) {
@@ -1103,6 +1115,7 @@ NativeProcessMemorySnapshot QueryNativeProcessMemorySnapshot(bool include_vm_reg
     }
     address += size;
   }
+#endif  // TARGET_OS_IPHONE
 #endif
   return snapshot;
 }
@@ -3027,6 +3040,14 @@ size_t Gta4NativeGraphicsSystem::NativeSharedConstantSemanticKeyHash::operator()
 
 Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem() = default;
 
+Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem(
+    std::unique_ptr<ui::GraphicsProvider> provider,
+    std::unique_ptr<ui::Presenter> presenter,
+    std::unique_ptr<ui::Surface> external_surface)
+    : external_surface_(std::move(external_surface)),
+      provider_(std::move(provider)),
+      presenter_(std::move(presenter)) {}
+
 Gta4NativeGraphicsSystem::~Gta4NativeGraphicsSystem() {
   Shutdown();
 }
@@ -4029,16 +4050,19 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       texture_resources_.erase(registration.resource);
       dirty_texture_handles_.erase(registration.resource);
     }
-    REXLOG_INFO(
-        "gta4-native-virtual-resource: point=register handle={:08X} kind={} wrapper={:08X} "
-        "companion={:08X} backing={}x{} logical={}x{} physical={}x{} domain={} "
-        "caller={:08X} lifetime={} result={} packed-depth-source={:08X}",
-        registration.resource, uint32_t(registration.kind), registration.wrapper,
-        registration.companion, registration.guest_backing_width, registration.guest_backing_height,
-        registration.logical_width, registration.logical_height, registration.physical_width,
-        registration.physical_height, uint32_t(registration.scale_domain),
-        registration.constructor_caller, record ? record->lifetime : 0, uint32_t(result),
-        registration.packed_depth_source);
+    if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
+      REXLOG_INFO(
+          "gta4-native-virtual-resource: point=register handle={:08X} kind={} wrapper={:08X} "
+          "companion={:08X} backing={}x{} logical={}x{} physical={}x{} domain={} "
+          "caller={:08X} lifetime={} result={} packed-depth-source={:08X}",
+          registration.resource, uint32_t(registration.kind), registration.wrapper,
+          registration.companion, registration.guest_backing_width,
+          registration.guest_backing_height, registration.logical_width,
+          registration.logical_height, registration.physical_width,
+          registration.physical_height, uint32_t(registration.scale_domain),
+          registration.constructor_caller, record ? record->lifetime : 0,
+          uint32_t(result), registration.packed_depth_source);
+    }
   }
 
   if (header.type == CommandType::kResourceUnlock) {
@@ -4076,12 +4100,14 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       std::lock_guard buffer_lock(buffer_resource_mutex_);
       dirty_buffer_handles_.insert(unlock.resource);
     }
-    REXLOG_INFO(
-        "gta4-native-virtual-resource: point=unlock handle={:08X} access={} flags={:08X} "
-        "range={}+{} lock-caller={:08X} unlock-caller={:08X} lifetime={} decision={}",
-        unlock.resource, uint32_t(unlock.access), unlock.flags, unlock.range_offset,
-        unlock.range_length, unlock.lock_caller, unlock.unlock_caller, virtual_lifetime,
-        uint32_t(decision));
+    if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
+      REXLOG_INFO(
+          "gta4-native-virtual-resource: point=unlock handle={:08X} access={} flags={:08X} "
+          "range={}+{} lock-caller={:08X} unlock-caller={:08X} lifetime={} decision={}",
+          unlock.resource, uint32_t(unlock.access), unlock.flags, unlock.range_offset,
+          unlock.range_length, unlock.lock_caller, unlock.unlock_caller, virtual_lifetime,
+          uint32_t(decision));
+    }
   }
 
   if (header.type == CommandType::kReleaseResource) {
@@ -4650,7 +4676,8 @@ Gta4NativeGraphicsSystem::CreateResolvedTextureResource(const ResolveCommand& co
   texture_resources_[command.destination_texture] = resource;
   dirty_texture_handles_.erase(command.destination_texture);
   virtual_resource_registry_.PublishHostWrite(command.destination_texture);
-  if (virtual_lifetime) {
+  if (virtual_lifetime &&
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
     REXLOG_INFO(
         "gta4-native-virtual-resource: point=resolve-publish handle={:08X} lifetime={} "
         "generation={} size={}x{} format={}",
@@ -19060,7 +19087,8 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   if (alpha_test_requested && use_late_module) {
     specialization_value = PackAlphaTestSpecialization(fixed_function_state.alpha_function);
   }
-  if (state.pixel_shader_resource) {
+  if (state.pixel_shader_resource &&
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
     const std::string_view diagnostic_category =
         ClassifyTranslucentDiagnosticShader(selected_pixel.filename);
     if (fixed_function_state.alpha_test_enable || !diagnostic_category.empty()) {
@@ -21817,7 +21845,8 @@ bool Gta4NativeGraphicsSystem::RecordResolveConversion(
   constants.destination_height = destination_height;
   constants.flags = xenos_float16_pack ? kResolveConversionFlagXenosFloat16Pack : 0u;
   constants.flags |= (uint32_t(color_exponent) & 63u) << 8;
-  if (color_exponent) {
+  if (color_exponent &&
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
     static std::atomic<uint32_t> output_resolve_records{0};
     if (output_resolve_records.fetch_add(1, std::memory_order_relaxed) < 64) {
       REXLOG_INFO("gta4-native-color-resolve: frame={} source={:08X} destination={:08X} "
@@ -33111,6 +33140,7 @@ void Gta4NativeGraphicsSystem::Shutdown() {
     }
   }
   provider_.reset();
+  external_surface_.reset();
   app_context_ = nullptr;
   memory_ = nullptr;
 }

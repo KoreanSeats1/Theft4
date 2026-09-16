@@ -21,6 +21,12 @@
 REXCVAR_DECLARE(bool, vulkan_presenter_probe_swapchain_pixels);
 REXCVAR_DECLARE(std::string, render_target_path_vulkan);
 REXCVAR_DECLARE(bool, vulkan_dynamic_rendering);
+REXCVAR_DECLARE(bool, vulkan_submit_on_primary_buffer_end);
+REXCVAR_DECLARE(bool, execute_unclipped_draw_vs_on_cpu);
+REXCVAR_DECLARE(bool, execute_unclipped_draw_vs_on_cpu_with_scissor);
+REXCVAR_DECLARE(bool, draw_extent_estimator_diagnostics);
+REXCVAR_DECLARE(bool, vulkan_ownership_transfer_diagnostics);
+REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 
 extern const rex::PPCImageInfo PPCImageConfig;
@@ -115,7 +121,18 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // Keep GPU-visible resolve data coherent with guest memory. XeniOS uses
         // delayed ("fast") resolve readback by default; ReXGlue defaults to
         // disabling it, which can leave GTA IV waiting on stale scene data.
-        REXCVAR_SET(readback_resolve, "fast");
+        const char* readback_resolve_override =
+            std::getenv("THEFT4_READBACK_RESOLVE");
+        const std::string_view readback_resolve_mode =
+            readback_resolve_override ? readback_resolve_override : "fast";
+        if (readback_resolve_mode != "none" &&
+            readback_resolve_mode != "some" &&
+            readback_resolve_mode != "fast" &&
+            readback_resolve_mode != "full") {
+            throw std::runtime_error(
+                "THEFT4_READBACK_RESOLVE must be none, some, fast, or full");
+        }
+        REXCVAR_SET(readback_resolve, std::string(readback_resolve_mode));
         // ReXGlue's current Vulkan occlusion implementation synchronously waits
         // for every query result. Keep the established fake-result fallback as
         // the default, but allow a bounded device experiment with the real path
@@ -137,10 +154,75 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         if (const char* legacy = std::getenv("THEFT4_LEGACY_RENDER_PASS");
             legacy && std::string_view(legacy) == "1")
             REXCVAR_SET(vulkan_dynamic_rendering, false);
-        REXLOG_INFO("Theft4 graphics settings: render_targets={} resolve={} occlusion={} dynamic_rendering={}",
+        // Xenia's default closes a Vulkan submission at each guest primary PM4
+        // buffer boundary. On MoltenVK that can turn one guest frame into
+        // multiple Metal command-buffer/fence cycles. Keep the upstream value
+        // by default and expose a controlled comparison without a source fork.
+        if (const char* submit_primary = std::getenv("THEFT4_SUBMIT_PRIMARY_END");
+            submit_primary) {
+            const std::string_view value(submit_primary);
+            if (value != "0" && value != "1")
+                throw std::runtime_error("THEFT4_SUBMIT_PRIMARY_END must be 0 or 1");
+            REXCVAR_SET(vulkan_submit_on_primary_buffer_end, value == "1");
+        }
+        if (const char* draw_bounds = std::getenv("THEFT4_DRAW_BOUNDS"); draw_bounds) {
+            const std::string_view value(draw_bounds);
+            if (value != "0" && value != "1")
+                throw std::runtime_error("THEFT4_DRAW_BOUNDS must be 0 or 1");
+            const bool enabled = value == "1";
+            REXCVAR_SET(execute_unclipped_draw_vs_on_cpu, enabled);
+            // The broader scissored mode is deliberately excluded from this
+            // experiment because it can execute many UI vertices on the CPU.
+            REXCVAR_SET(execute_unclipped_draw_vs_on_cpu_with_scissor, false);
+        }
+        // Keep the mechanism and its diagnostic logging independently
+        // controllable so a scored Release run doesn't pay for periodic log
+        // formatting. The metrics switch is only for short mechanism checks.
+        if (const char* draw_bounds_metrics =
+                std::getenv("THEFT4_DRAW_BOUNDS_METRICS");
+            draw_bounds_metrics) {
+            const std::string_view value(draw_bounds_metrics);
+            if (value != "0" && value != "1")
+                throw std::runtime_error(
+                    "THEFT4_DRAW_BOUNDS_METRICS must be 0 or 1");
+            REXCVAR_SET(draw_extent_estimator_diagnostics, value == "1");
+        }
+        if (const char* transfer_metrics =
+                std::getenv("THEFT4_TRANSFER_METRICS");
+            transfer_metrics) {
+            const std::string_view value(transfer_metrics);
+            if (value != "0" && value != "1")
+                throw std::runtime_error("THEFT4_TRANSFER_METRICS must be 0 or 1");
+            REXCVAR_SET(vulkan_ownership_transfer_diagnostics, value == "1");
+        }
+        if (const char* transfer_in_draw_pass =
+                std::getenv("THEFT4_TRANSFER_IN_DRAW_PASS");
+            transfer_in_draw_pass) {
+            const std::string_view value(transfer_in_draw_pass);
+            if (value != "0" && value != "1")
+                throw std::runtime_error(
+                    "THEFT4_TRANSFER_IN_DRAW_PASS must be 0 or 1");
+            REXCVAR_SET(vulkan_transfer_in_draw_pass, value == "1");
+        }
+        if (const char* tight_render_area =
+                std::getenv("THEFT4_TIGHT_RENDER_AREA");
+            tight_render_area) {
+            const std::string_view value(tight_render_area);
+            if (value != "0" && value != "1")
+                throw std::runtime_error(
+                    "THEFT4_TIGHT_RENDER_AREA must be 0 or 1");
+            REXCVAR_SET(vulkan_tight_render_area, value == "1");
+        }
+        REXLOG_INFO("Theft4 graphics settings: render_targets={} resolve={} occlusion={} dynamic_rendering={} submit_primary_end={} draw_bounds={} draw_bounds_metrics={} transfer_metrics={} transfer_in_draw_pass={} tight_render_area={}",
                     REXCVAR_GET(render_target_path_vulkan).empty() ? "host" : REXCVAR_GET(render_target_path_vulkan),
                     REXCVAR_GET(readback_resolve), REXCVAR_GET(occlusion_query_enable),
-                    REXCVAR_GET(vulkan_dynamic_rendering));
+                    REXCVAR_GET(vulkan_dynamic_rendering),
+                    REXCVAR_GET(vulkan_submit_on_primary_buffer_end),
+                    REXCVAR_GET(execute_unclipped_draw_vs_on_cpu),
+                    REXCVAR_GET(draw_extent_estimator_diagnostics),
+                    REXCVAR_GET(vulkan_ownership_transfer_diagnostics),
+                    REXCVAR_GET(vulkan_transfer_in_draw_pass),
+                    REXCVAR_GET(vulkan_tight_render_area));
         event(context, "Initializing Xbox services and registering the real AOT game functions");
         if (runtime.Setup(PPCImageConfig, std::move(config)) != 0)
             throw std::runtime_error("Xbox/AOT runtime setup failed");

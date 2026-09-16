@@ -262,7 +262,11 @@ class DeferredCommandBuffer {
   void CmdVkEndRenderPass() { WriteCommand(Command::kVkEndRenderPass, 0); }
 
   // Dynamic rendering (VK_KHR_dynamic_rendering / Vulkan 1.3).
-  void CmdVkBeginRendering(const VkRenderingInfo* rendering_info);
+  // Returns a stable command-stream index that may be used to conservatively
+  // tighten the render area before this deferred buffer is executed.
+  size_t CmdVkBeginRendering(const VkRenderingInfo* rendering_info);
+  void SetBeginRenderingRenderArea(size_t command_stream_index,
+                                   const VkRect2D& render_area);
   void CmdVkEndRendering() { WriteCommand(Command::kVkEndRendering, 0); }
 
   void CmdVkResetQueryPool(VkQueryPool query_pool, uint32_t first_query, uint32_t query_count) {

@@ -17,6 +17,7 @@ id<MTLCommandBuffer> frame_command_buffer = nil;
 dispatch_semaphore_t frame_slots = nil;
 std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
+std::atomic<uint64_t> published_game_frames{0};
 
 // Match XeniOS's iOS presentation policy. GTA IV renders a 1280x720 guest
 // image; using the iPad's native 2816x1940 drawable only makes MoltenVK scale
@@ -141,6 +142,14 @@ bool theft4_metal_present_clear(double red, double green, double blue,
     [buffer commit];
     return true;
   }
+}
+
+void theft4_frame_counter_note_published(void) {
+  published_game_frames.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t theft4_frame_counter_published_frames(void) {
+  return published_game_frames.load(std::memory_order_relaxed);
 }
 
 bool theft4_metal_renderer_initialize(uint64_t guest_memory_size,

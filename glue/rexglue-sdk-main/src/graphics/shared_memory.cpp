@@ -573,6 +573,31 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
   return UploadRanges(upload_ranges_);
 }
 
+bool SharedMemory::IsRangeGpuWritten(uint32_t start, uint32_t length) {
+  if (!length || start >= kBufferSize || length > kBufferSize - start) {
+    return false;
+  }
+  const uint32_t page_first = start >> page_size_log2_;
+  const uint32_t page_last = (start + length - 1) >> page_size_log2_;
+  const uint32_t block_first = page_first >> 6;
+  const uint32_t block_last = page_last >> 6;
+
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t block = block_first; block <= block_last; ++block) {
+    uint64_t range_bits = UINT64_MAX;
+    if (block == block_first) {
+      range_bits &= ~((uint64_t(1) << (page_first & 63)) - 1);
+    }
+    if (block == block_last && (page_last & 63) != 63) {
+      range_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+    }
+    if (system_page_flags_valid_and_gpu_written_[block] & range_bits) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   std::pair<uint32_t, uint32_t> range(start, length);
   return RequestRanges(&range, 1);

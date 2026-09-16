@@ -372,8 +372,11 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
   }
 }
 
-void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering_info) {
+size_t DeferredCommandBuffer::CmdVkBeginRendering(
+    const VkRenderingInfo* rendering_info) {
   assert_null(rendering_info->pNext);
+
+  const size_t command_stream_index = command_stream_.size();
 
   size_t arguments_size =
       rex::align(sizeof(ArgsVkBeginRendering), alignof(VkRenderingAttachmentInfo));
@@ -411,6 +414,20 @@ void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering
     std::memcpy(args_ptr + stencil_attachment_offset, rendering_info->pStencilAttachment,
                 sizeof(VkRenderingAttachmentInfo));
   }
+  return command_stream_index;
+}
+
+void DeferredCommandBuffer::SetBeginRenderingRenderArea(
+    size_t command_stream_index, const VkRect2D& render_area) {
+  assert_true(command_stream_index + kCommandHeaderSizeElements <
+              command_stream_.size());
+  const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(
+      command_stream_.data() + command_stream_index);
+  assert_true(header.command == Command::kVkBeginRendering);
+  auto& args = *reinterpret_cast<ArgsVkBeginRendering*>(
+      command_stream_.data() + command_stream_index +
+      kCommandHeaderSizeElements);
+  args.render_area = render_area;
 }
 
 void* DeferredCommandBuffer::WriteCommand(Command command, size_t arguments_size_bytes) {

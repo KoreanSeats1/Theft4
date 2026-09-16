@@ -766,5 +766,6 @@ CMakeUserPresets.json
 !/docs/IOS_PERFORMANCE_CHECKPOINT.md
 !/tools/analyze_intro_frame_log.py
 !/tools/summarize_ios_time_profile.py
+!/tools/summarize_ios_game_trace.py
 !/docs/IOS_RELEASE_BUILD.md
 !/tests/ios/test_xcode_generator.py

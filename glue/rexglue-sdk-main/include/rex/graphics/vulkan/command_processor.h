@@ -51,6 +51,9 @@ class VulkanCommandProcessor : public CommandProcessor {
   enum class SingleTransientDescriptorLayout {
     kStorageBufferCompute,
     kStorageBufferPairCompute,
+    // Uniform buffer at binding 1 for direct host resolve shaders. Binding 0
+    // remains available for the resolve push-constant ABI.
+    kUniformBufferComputeB1,
     kCount,
   };
 
@@ -149,6 +152,7 @@ class VulkanCommandProcessor : public CommandProcessor {
   void RestoreEdramSnapshot(const void* snapshot) override;
 
   ui::vulkan::VulkanDevice* GetVulkanDevice() const { return vulkan_device_; }
+  VulkanSharedMemory* GetSharedMemory() const { return shared_memory_.get(); }
 
   bool CompileGlslToSpirv(VkShaderStageFlagBits stage, std::string_view source,
                           std::vector<uint32_t>& spirv_out, std::string& error_out) const;
@@ -512,6 +516,8 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   void UpdateDynamicState(const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
                           reg::RB_DEPTHCONTROL normalized_depth_control);
+  void AccumulateTightRenderArea(const VkRect2D& draw_area);
+  void FinalizeTightRenderAreaPass();
   void UpdateSystemConstantValues(
       bool primitive_polygonal,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -554,6 +560,20 @@ class VulkanCommandProcessor : public CommandProcessor {
   std::vector<VkSemaphore> current_submission_wait_semaphores_;
   std::vector<VkPipelineStageFlags> current_submission_wait_stage_masks_;
   std::vector<VkFence> submissions_in_flight_fences_;
+
+  // Opt-in, aggregate iOS bring-up timing. Kept dormant in normal Release
+  // launches so benchmark results don't include clock or logging overhead.
+  bool theft4_gpu_timing_enabled_ = false;
+  uint64_t theft4_gpu_timing_frame_start_ns_ = 0;
+  uint64_t theft4_gpu_timing_frames_ = 0;
+  uint64_t theft4_gpu_timing_frame_wall_ns_ = 0;
+  uint64_t theft4_gpu_timing_end_submission_ns_ = 0;
+  uint64_t theft4_gpu_timing_encode_ns_ = 0;
+  uint64_t theft4_gpu_timing_submit_ns_ = 0;
+  uint64_t theft4_gpu_timing_submit_calls_ = 0;
+  uint64_t theft4_gpu_timing_fence_wait_ns_ = 0;
+  uint64_t theft4_gpu_timing_fences_waited_ = 0;
+  uint64_t theft4_gpu_timing_max_in_flight_ = 0;
   std::deque<std::pair<uint64_t, VkSemaphore>> submissions_in_flight_semaphores_;
 
   static constexpr uint32_t kMaxFramesInFlight = 3;
@@ -587,6 +607,22 @@ class VulkanCommandProcessor : public CommandProcessor {
   uint64_t frame_flow_resolve_dump_failures_ = 0;
   uint64_t frame_flow_resolve_dump_rectangles_ = 0;
   uint64_t frame_flow_resolve_dump_dispatches_ = 0;
+  uint64_t frame_flow_ownership_transfer_calls_ = 0;
+  uint64_t frame_flow_ownership_transfer_passes_ = 0;
+  uint64_t frame_flow_ownership_transfer_objects_ = 0;
+  uint64_t frame_flow_ownership_transfer_rectangles_ = 0;
+  uint64_t frame_flow_ownership_transfer_pixels_ = 0;
+  uint64_t frame_flow_ownership_transfer_merged_passes_ = 0;
+  uint64_t frame_flow_ownership_transfer_merged_objects_ = 0;
+  uint64_t frame_flow_ownership_transfer_merged_rectangles_ = 0;
+  uint64_t frame_flow_ownership_transfer_merged_pixels_ = 0;
+  uint64_t frame_flow_ownership_transfer_queue_fallbacks_ = 0;
+  uint64_t frame_flow_render_area_passes_ = 0;
+  uint64_t frame_flow_render_area_tightened_passes_ = 0;
+  uint64_t frame_flow_render_area_full_pixels_ = 0;
+  uint64_t frame_flow_render_area_tight_pixels_ = 0;
+  VulkanRenderTargetCache::OwnershipTransferTelemetry
+      frame_flow_previous_ownership_transfer_telemetry_;
   uint32_t frame_flow_resolve_address_ = 0;
   uint32_t frame_flow_resolve_length_ = 0;
   uint32_t frame_flow_resolve_source_ = 0;
@@ -856,6 +892,10 @@ class VulkanCommandProcessor : public CommandProcessor {
   VkRenderPass current_render_pass_;
   const VulkanRenderTargetCache::Framebuffer* current_framebuffer_;
   bool in_render_pass_ = false;
+  size_t tight_render_area_command_stream_index_ = SIZE_MAX;
+  VkRect2D tight_render_area_full_ = {};
+  VkRect2D tight_render_area_accumulated_ = {};
+  bool tight_render_area_has_bounds_ = false;
 
   // Currently bound graphics pipeline, either from the pipeline cache (with
   // potentially deferred creation - current_external_graphics_pipeline_ is

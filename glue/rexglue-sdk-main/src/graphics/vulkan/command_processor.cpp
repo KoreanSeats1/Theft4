@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -72,11 +73,22 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
                     "device (falls back to render passes otherwise)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    vulkan_tight_render_area, false, "GPU/Vulkan",
+    "Restrict deferred dynamic guest render passes to the union of draw scissors")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(bool, native_renderer_oracle_capture);
 
 namespace rex::graphics::vulkan {
 
 namespace {
+
+uint64_t Theft4GpuTimingNowNs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
 
 // glslang default built-in resource limits.
 constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
@@ -615,6 +627,12 @@ VulkanCommandProcessor::VulkanCommandProcessor(
           kLinkedTypeDescriptorPoolSetCount) {
   assert_not_null(vulkan_device_);
   legacy_readback_memexport_cvar_name_ = "vulkan_readback_memexport";
+  const char* theft4_gpu_timing = std::getenv("THEFT4_GPU_TIMING");
+  theft4_gpu_timing_enabled_ =
+      theft4_gpu_timing != nullptr && std::string_view(theft4_gpu_timing) == "1";
+  if (theft4_gpu_timing_enabled_) {
+    REXGPU_INFO("Theft4 aggregate GPU timing enabled");
+  }
 }
 
 VulkanCommandProcessor::~VulkanCommandProcessor() = default;
@@ -920,6 +938,22 @@ bool VulkanCommandProcessor::SetupContext() {
     REXGPU_ERROR(
         "Failed to create a Vulkan descriptor set layout for two storage "
         "buffers bound to the compute shader");
+    return false;
+  }
+  // Transient: one uniform buffer at binding 1. XeniOS's direct host resolve
+  // shaders use binding 0 for D3D-style root constants and this small UBO for
+  // per-dispatch source geometry.
+  descriptor_set_layout_binding_transient.binding = 1;
+  descriptor_set_layout_binding_transient.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  descriptor_set_layout_create_info.bindingCount = 1;
+  descriptor_set_layout_create_info.pBindings = &descriptor_set_layout_binding_transient;
+  if (dfn.vkCreateDescriptorSetLayout(
+          device, &descriptor_set_layout_create_info, nullptr,
+          &descriptor_set_layouts_single_transient_[size_t(
+              SingleTransientDescriptorLayout::kUniformBufferComputeB1)]) != VK_SUCCESS) {
+    REXGPU_ERROR(
+        "Failed to create a Vulkan descriptor set layout for a uniform buffer "
+        "at binding 1 in the compute shader");
     return false;
   }
 
@@ -2314,6 +2348,42 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   constexpr uint8_t kFrameFlowOutcomePublished = 3;
   constexpr uint8_t kFrameFlowOutcomeRefreshFailed = 4;
   ++frame_flow_swap_count_;
+  const VulkanRenderTargetCache::OwnershipTransferTelemetry
+      ownership_transfer_telemetry =
+          render_target_cache_->GetOwnershipTransferTelemetry();
+  frame_flow_ownership_transfer_calls_ =
+      ownership_transfer_telemetry.calls -
+      frame_flow_previous_ownership_transfer_telemetry_.calls;
+  frame_flow_ownership_transfer_passes_ =
+      ownership_transfer_telemetry.standalone_passes -
+      frame_flow_previous_ownership_transfer_telemetry_.standalone_passes;
+  frame_flow_ownership_transfer_objects_ =
+      ownership_transfer_telemetry.transfer_objects -
+      frame_flow_previous_ownership_transfer_telemetry_.transfer_objects;
+  frame_flow_ownership_transfer_rectangles_ =
+      ownership_transfer_telemetry.rectangles -
+      frame_flow_previous_ownership_transfer_telemetry_.rectangles;
+  frame_flow_ownership_transfer_pixels_ =
+      ownership_transfer_telemetry.pixels -
+      frame_flow_previous_ownership_transfer_telemetry_.pixels;
+  frame_flow_ownership_transfer_merged_passes_ =
+      ownership_transfer_telemetry.merged_passes -
+      frame_flow_previous_ownership_transfer_telemetry_.merged_passes;
+  frame_flow_ownership_transfer_merged_objects_ =
+      ownership_transfer_telemetry.merged_transfer_objects -
+      frame_flow_previous_ownership_transfer_telemetry_
+          .merged_transfer_objects;
+  frame_flow_ownership_transfer_merged_rectangles_ =
+      ownership_transfer_telemetry.merged_rectangles -
+      frame_flow_previous_ownership_transfer_telemetry_.merged_rectangles;
+  frame_flow_ownership_transfer_merged_pixels_ =
+      ownership_transfer_telemetry.merged_pixels -
+      frame_flow_previous_ownership_transfer_telemetry_.merged_pixels;
+  frame_flow_ownership_transfer_queue_fallbacks_ =
+      ownership_transfer_telemetry.queue_fallbacks -
+      frame_flow_previous_ownership_transfer_telemetry_.queue_fallbacks;
+  frame_flow_previous_ownership_transfer_telemetry_ =
+      ownership_transfer_telemetry;
   const bool frame_flow_milestone =
       frame_flow_swap_count_ <= 8 || frame_flow_swap_count_ == 16 ||
       frame_flow_swap_count_ == 32 || frame_flow_swap_count_ == 64 ||
@@ -2365,6 +2435,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     frame_flow_resolve_source_base_ = 0;
     frame_flow_resolve_source_format_ = 0;
     frame_flow_resolve_dest_format_ = 0;
+    frame_flow_render_area_passes_ = 0;
+    frame_flow_render_area_tightened_passes_ = 0;
+    frame_flow_render_area_full_pixels_ = 0;
+    frame_flow_render_area_tight_pixels_ = 0;
   };
 
   ui::Presenter* presenter = nullptr;
@@ -3140,7 +3214,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         "placeholders={} raster={} color={} depth_only={} textured={} no_effect={} "
         "rt_draws={}/{}/{}/{} converted={} strip_restart={} copies={} copy_ok={}/{} "
         "resolve=0x{:08X}+0x{:X} resolve_src={}@0x{:X} resolve_fmt={}->{} "
-        "direct={}/{}/{} dump={}/{}/{}/{} dump_work={}/{} pipelines_creating={} refresh={}",
+        "direct={}/{}/{} dump={}/{}/{}/{} dump_work={}/{} ownership={}/{}/{}/{}/{} "
+        "ownership_merged={}/{}/{}/{} ownership_fallbacks={} "
+        "render_area={}/{}/{}/{} "
+        "pipelines_creating={} refresh={}",
         frame_flow_swap_count_, guest_output_refreshed ? "published" : "refresh_failed",
         frame_current_, frontbuffer_ptr, frontbuffer_width, frontbuffer_height,
         frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_width_unscaled,
@@ -3160,8 +3237,23 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         frame_flow_resolve_direct_fallbacks_, frame_flow_resolve_dump_calls_,
         frame_flow_resolve_dump_empty_, frame_flow_resolve_dump_successes_,
         frame_flow_resolve_dump_failures_, frame_flow_resolve_dump_rectangles_,
-        frame_flow_resolve_dump_dispatches_, pipeline_cache_->IsCreatingPipelines(),
-        guest_output_refreshed);
+        frame_flow_resolve_dump_dispatches_, frame_flow_ownership_transfer_calls_,
+        frame_flow_ownership_transfer_passes_, frame_flow_ownership_transfer_objects_,
+        frame_flow_ownership_transfer_rectangles_, frame_flow_ownership_transfer_pixels_,
+        frame_flow_ownership_transfer_merged_passes_,
+        frame_flow_ownership_transfer_merged_objects_,
+        frame_flow_ownership_transfer_merged_rectangles_,
+        frame_flow_ownership_transfer_merged_pixels_,
+        frame_flow_ownership_transfer_queue_fallbacks_,
+        frame_flow_render_area_passes_,
+        frame_flow_render_area_tightened_passes_,
+        frame_flow_render_area_full_pixels_,
+        frame_flow_render_area_tight_pixels_,
+        pipeline_cache_->IsCreatingPipelines(), guest_output_refreshed);
+    if (frame_flow_milestone) {
+      render_target_cache_->LogOwnershipTransferFormatTelemetry(
+          frame_flow_swap_count_);
+    }
   }
 #if REX_PLATFORM_IOS
   // Diagnostic only: keep the renderer and presentation settings unchanged.
@@ -3172,6 +3264,15 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   static uint64_t first_world_swap = 0;
   static unsigned capture_count = 0;
   static bool recovered_world_frame_captured = false;
+  static const uint64_t trace_scene_offset = [] {
+    const char* value = std::getenv("THEFT4_TRACE_SCENE_OFFSET");
+    if (!value || !*value) {
+      return uint64_t(120);
+    }
+    char* end = nullptr;
+    const auto parsed = std::strtoull(value, &end, 10);
+    return end != value && *end == '\0' ? uint64_t(parsed) : uint64_t(120);
+  }();
   const char* capture_dir = std::getenv("THEFT4_FRAME_CAPTURE_DIR");
   if (capture_dir && *capture_dir && guest_output_refreshed) {
     if (!first_world_swap && frame_flow_depth_only_draws_ > 100)
@@ -3181,7 +3282,9 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     // and is only written when this additional diagnostic switch is enabled.
     const char* trace_scene = std::getenv("THEFT4_TRACE_SCENE");
     if (trace_scene && std::strcmp(trace_scene, "1") == 0 && first_world_swap &&
-        frame_flow_swap_count_ == first_world_swap + 120) {
+        frame_flow_swap_count_ == first_world_swap + trace_scene_offset) {
+      REXGPU_INFO("[Theft4Trace] arming at swap={} offset={} exact output follows",
+                  frame_flow_swap_count_, trace_scene_offset);
       REXCVAR_SET(trace_gpu_prefix, std::string(capture_dir));
       REXCVAR_SET(native_renderer_oracle_capture, true);
       ArmNativeRendererOracleCapture();
@@ -3190,10 +3293,11 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         (first_world_swap && (frame_flow_swap_count_ == first_world_swap ||
          frame_flow_swap_count_ == first_world_swap + 120 ||
          frame_flow_swap_count_ == first_world_swap + 300)) ||
+        native_renderer_oracle_active_ ||
         (first_world_swap && !recovered_world_frame_captured &&
          frame_flow_swap_count_ > first_world_swap + 300 &&
          frame_flow_color_draws_ >= 400);
-    if (capture_frame && capture_count < 5) {
+    if (capture_frame && capture_count < 6) {
       if (first_world_swap && frame_flow_swap_count_ > first_world_swap + 300 &&
           frame_flow_color_draws_ >= 400) {
         recovered_world_frame_captured = true;
@@ -3415,6 +3519,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   }
 
   if (in_render_pass_) {
+    FinalizeTightRenderAreaPass();
     if (use_dynamic_rendering) {
       deferred_command_buffer_.CmdVkEndRendering();
     } else {
@@ -3449,7 +3554,17 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     rendering_info.pColorAttachments = color_attachment_count ? color_attachments : nullptr;
     rendering_info.pDepthAttachment = has_depth ? &depth_attachment : nullptr;
     rendering_info.pStencilAttachment = has_stencil ? &stencil_attachment : nullptr;
-    deferred_command_buffer_.CmdVkBeginRendering(&rendering_info);
+    const bool tighten_render_area =
+        REXCVAR_GET(vulkan_tight_render_area) &&
+        !REXCVAR_GET(vulkan_transfer_in_draw_pass);
+    const size_t begin_index =
+        deferred_command_buffer_.CmdVkBeginRendering(&rendering_info);
+    if (tighten_render_area) {
+      tight_render_area_command_stream_index_ = begin_index;
+      tight_render_area_full_ = rendering_info.renderArea;
+      tight_render_area_accumulated_ = {};
+      tight_render_area_has_bounds_ = false;
+    }
   } else {
     VkRenderPassBeginInfo render_pass_begin_info;
     render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3489,6 +3604,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   }
 
   if (in_render_pass_) {
+    FinalizeTightRenderAreaPass();
     if (use_dynamic_rendering) {
       deferred_command_buffer_.CmdVkEndRendering();
     } else {
@@ -3566,6 +3682,7 @@ void VulkanCommandProcessor::EndRenderPass() {
   if (!in_render_pass_) {
     return;
   }
+  FinalizeTightRenderAreaPass();
   if (current_render_pass_ == VK_NULL_HANDLE) {
     deferred_command_buffer_.CmdVkEndRendering();
   } else {
@@ -3574,6 +3691,92 @@ void VulkanCommandProcessor::EndRenderPass() {
   current_render_pass_ = VK_NULL_HANDLE;
   current_framebuffer_ = nullptr;
   in_render_pass_ = false;
+}
+
+void VulkanCommandProcessor::AccumulateTightRenderArea(
+    const VkRect2D& draw_area) {
+  if (tight_render_area_command_stream_index_ == SIZE_MAX ||
+      !current_framebuffer_) {
+    return;
+  }
+
+  const int64_t full_x0 = tight_render_area_full_.offset.x;
+  const int64_t full_y0 = tight_render_area_full_.offset.y;
+  const int64_t full_x1 =
+      full_x0 + int64_t(tight_render_area_full_.extent.width);
+  const int64_t full_y1 =
+      full_y0 + int64_t(tight_render_area_full_.extent.height);
+  const int64_t draw_x0 = draw_area.offset.x;
+  const int64_t draw_y0 = draw_area.offset.y;
+  const int64_t draw_x1 = draw_x0 + int64_t(draw_area.extent.width);
+  const int64_t draw_y1 = draw_y0 + int64_t(draw_area.extent.height);
+  const int64_t clipped_x0 = std::max(full_x0, draw_x0);
+  const int64_t clipped_y0 = std::max(full_y0, draw_y0);
+  const int64_t clipped_x1 = std::min(full_x1, draw_x1);
+  const int64_t clipped_y1 = std::min(full_y1, draw_y1);
+  if (clipped_x0 >= clipped_x1 || clipped_y0 >= clipped_y1) {
+    // An empty scissor writes no fragments. Leave the pass at the full-area
+    // fallback unless another draw contributes known non-empty coverage.
+    return;
+  }
+
+  if (!tight_render_area_has_bounds_) {
+    tight_render_area_accumulated_.offset.x = int32_t(clipped_x0);
+    tight_render_area_accumulated_.offset.y = int32_t(clipped_y0);
+    tight_render_area_accumulated_.extent.width =
+        uint32_t(clipped_x1 - clipped_x0);
+    tight_render_area_accumulated_.extent.height =
+        uint32_t(clipped_y1 - clipped_y0);
+    tight_render_area_has_bounds_ = true;
+  } else {
+    const int64_t accumulated_x0 =
+        tight_render_area_accumulated_.offset.x;
+    const int64_t accumulated_y0 =
+        tight_render_area_accumulated_.offset.y;
+    const int64_t accumulated_x1 =
+        accumulated_x0 +
+        int64_t(tight_render_area_accumulated_.extent.width);
+    const int64_t accumulated_y1 =
+        accumulated_y0 +
+        int64_t(tight_render_area_accumulated_.extent.height);
+    const int64_t union_x0 = std::min(accumulated_x0, clipped_x0);
+    const int64_t union_y0 = std::min(accumulated_y0, clipped_y0);
+    const int64_t union_x1 = std::max(accumulated_x1, clipped_x1);
+    const int64_t union_y1 = std::max(accumulated_y1, clipped_y1);
+    tight_render_area_accumulated_.offset.x = int32_t(union_x0);
+    tight_render_area_accumulated_.offset.y = int32_t(union_y0);
+    tight_render_area_accumulated_.extent.width =
+        uint32_t(union_x1 - union_x0);
+    tight_render_area_accumulated_.extent.height =
+        uint32_t(union_y1 - union_y0);
+  }
+  deferred_command_buffer_.SetBeginRenderingRenderArea(
+      tight_render_area_command_stream_index_,
+      tight_render_area_accumulated_);
+}
+
+void VulkanCommandProcessor::FinalizeTightRenderAreaPass() {
+  if (tight_render_area_command_stream_index_ == SIZE_MAX) {
+    return;
+  }
+  ++frame_flow_render_area_passes_;
+  const uint64_t full_pixels =
+      uint64_t(tight_render_area_full_.extent.width) *
+      tight_render_area_full_.extent.height;
+  uint64_t tight_pixels = full_pixels;
+  if (tight_render_area_has_bounds_) {
+    tight_pixels = uint64_t(tight_render_area_accumulated_.extent.width) *
+                   tight_render_area_accumulated_.extent.height;
+    if (tight_pixels < full_pixels) {
+      ++frame_flow_render_area_tightened_passes_;
+    }
+  }
+  frame_flow_render_area_full_pixels_ += full_pixels;
+  frame_flow_render_area_tight_pixels_ += tight_pixels;
+  tight_render_area_command_stream_index_ = SIZE_MAX;
+  tight_render_area_full_ = {};
+  tight_render_area_accumulated_ = {};
+  tight_render_area_has_bounds_ = false;
 }
 
 VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(
@@ -4484,6 +4687,36 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       render_target_cache_->last_update_render_pass(),
       render_target_cache_->last_update_framebuffer());
+
+  if (render_target_cache_->HasPendingDrawPassTransfers()) {
+    if (!render_target_cache_->EncodePendingDrawPassTransfers()) {
+      if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+        return draw_fail("flush_pending_draw_pass_transfers");
+      }
+      SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+          render_target_cache_->last_update_render_pass(),
+          render_target_cache_->last_update_framebuffer());
+    }
+
+    // Ownership-transfer draws bind external pipelines, layouts, descriptors
+    // and dynamic state. Restore the guest draw completely before emitting it.
+    deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                               pipeline);
+    current_guest_graphics_pipeline_ = pipeline;
+    current_external_graphics_pipeline_ = VK_NULL_HANDLE;
+    current_guest_graphics_pipeline_layout_ = pipeline_layout;
+    current_graphics_descriptor_sets_bound_up_to_date_ = 0;
+    UpdateDynamicState(viewport_info, primitive_polygonal,
+                       normalized_depth_control);
+    if (!UpdateBindings(vertex_shader, pixel_shader)) {
+      return draw_fail("restore_bindings_after_draw_pass_transfers");
+    }
+  }
+
+  // The scissor is a conservative upper bound on all fragment writes for this
+  // draw. The deferred begin-rendering command can therefore use the union of
+  // draw scissors without changing attachment allocation or resolution.
+  AccumulateTightRenderArea(dynamic_scissor_);
 
   // Draw.
   ++frame_flow_draw_submitted_;
@@ -5415,9 +5648,15 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
     // defined by vkQueueSubmit additionally include in the first
     // synchronization scope all commands that occur earlier in submission
     // order."
+    const uint64_t theft4_wait_start_ns =
+        theft4_gpu_timing_enabled_ ? Theft4GpuTimingNowNs() : 0;
     VkResult wait_result =
         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
+    if (theft4_gpu_timing_enabled_) {
+      theft4_gpu_timing_fence_wait_ns_ += Theft4GpuTimingNowNs() - theft4_wait_start_ns;
+      theft4_gpu_timing_fences_waited_ += await_submission - submission_completed_;
+    }
     if (wait_result == VK_SUCCESS) {
       fences_awaited += await_submission - submission_completed_;
     } else {
@@ -5564,6 +5803,9 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
   }
 
   if (is_opening_frame) {
+    if (theft4_gpu_timing_enabled_) {
+      theft4_gpu_timing_frame_start_ns_ = Theft4GpuTimingNowNs();
+    }
     // Update the completed frame index, also obtaining the actual completed
     // frame number (since the CPU may be actually less than 3 frames behind)
     // before reclaiming resources tracked with the frame number.
@@ -5677,6 +5919,8 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
 }
 
 bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+  const uint64_t theft4_end_submission_start_ns =
+      theft4_gpu_timing_enabled_ ? Theft4GpuTimingNowNs() : 0;
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
@@ -5832,7 +6076,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       REXGPU_ERROR("Failed to begin a Vulkan command buffer");
       return false;
     }
+    const uint64_t theft4_encode_start_ns =
+        theft4_gpu_timing_enabled_ ? Theft4GpuTimingNowNs() : 0;
     deferred_command_buffer_.Execute(command_buffer.buffer);
+    if (theft4_gpu_timing_enabled_) {
+      theft4_gpu_timing_encode_ns_ += Theft4GpuTimingNowNs() - theft4_encode_start_ns;
+    }
     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
       REXGPU_ERROR("Failed to end a Vulkan command buffer");
       return false;
@@ -5861,10 +6110,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       return false;
     }
     VkResult submit_result;
+    const uint64_t theft4_submit_start_ns =
+        theft4_gpu_timing_enabled_ ? Theft4GpuTimingNowNs() : 0;
     {
       ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
           vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);
       submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
+    }
+    if (theft4_gpu_timing_enabled_) {
+      theft4_gpu_timing_submit_ns_ += Theft4GpuTimingNowNs() - theft4_submit_start_ns;
+      ++theft4_gpu_timing_submit_calls_;
     }
     if (submit_result != VK_SUCCESS) {
       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
@@ -5888,6 +6143,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     command_buffers_writable_.pop_back();
     // Increments the current submission number, going to the next submission.
     submissions_in_flight_fences_.push_back(fence);
+    if (theft4_gpu_timing_enabled_) {
+      theft4_gpu_timing_max_in_flight_ =
+          std::max(theft4_gpu_timing_max_in_flight_,
+                   uint64_t(submissions_in_flight_fences_.size()));
+    }
     fences_free_.pop_back();
 
     submission_open_ = false;
@@ -5900,6 +6160,40 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     frame_open_ = false;
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] = GetCurrentSubmission() - 1;
+
+    if (theft4_gpu_timing_enabled_ && theft4_gpu_timing_frame_start_ns_ != 0) {
+      const uint64_t theft4_now_ns = Theft4GpuTimingNowNs();
+      theft4_gpu_timing_frame_wall_ns_ += theft4_now_ns - theft4_gpu_timing_frame_start_ns_;
+      theft4_gpu_timing_end_submission_ns_ +=
+          theft4_now_ns - theft4_end_submission_start_ns;
+      theft4_gpu_timing_frame_start_ns_ = 0;
+      ++theft4_gpu_timing_frames_;
+      if (theft4_gpu_timing_frames_ == 300) {
+        constexpr double kNsToMs = 1.0 / 1000000.0;
+        REXGPU_INFO(
+            "[Theft4GpuTiming] frames={} frame_wall_ms={:.3f} end_ms={:.3f} "
+            "encode_ms={:.3f} submit_ms={:.3f} submit_calls={} "
+            "fence_wait_ms={:.3f} fences_waited={} max_in_flight={}",
+            theft4_gpu_timing_frames_,
+            theft4_gpu_timing_frame_wall_ns_ * kNsToMs / theft4_gpu_timing_frames_,
+            theft4_gpu_timing_end_submission_ns_ * kNsToMs / theft4_gpu_timing_frames_,
+            theft4_gpu_timing_encode_ns_ * kNsToMs / theft4_gpu_timing_frames_,
+            theft4_gpu_timing_submit_ns_ * kNsToMs /
+                std::max(uint64_t(1), theft4_gpu_timing_submit_calls_),
+            theft4_gpu_timing_submit_calls_,
+            theft4_gpu_timing_fence_wait_ns_ * kNsToMs / theft4_gpu_timing_frames_,
+            theft4_gpu_timing_fences_waited_, theft4_gpu_timing_max_in_flight_);
+        theft4_gpu_timing_frames_ = 0;
+        theft4_gpu_timing_frame_wall_ns_ = 0;
+        theft4_gpu_timing_end_submission_ns_ = 0;
+        theft4_gpu_timing_encode_ns_ = 0;
+        theft4_gpu_timing_submit_ns_ = 0;
+        theft4_gpu_timing_submit_calls_ = 0;
+        theft4_gpu_timing_fence_wait_ns_ = 0;
+        theft4_gpu_timing_fences_waited_ = 0;
+        theft4_gpu_timing_max_in_flight_ = 0;
+      }
+    }
 
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
       cache_clear_requested_ = false;

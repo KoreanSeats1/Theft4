@@ -21,13 +21,16 @@
 
 namespace rex::graphics {
 
+class SharedMemory;
+
 class DrawExtentEstimator {
  public:
   DrawExtentEstimator(const RegisterFile& register_file, const memory::Memory& memory,
-                      TraceWriter* trace_writer)
+                      TraceWriter* trace_writer, SharedMemory* shared_memory = nullptr)
       : register_file_(register_file),
         memory_(memory),
         trace_writer_(trace_writer),
+        shared_memory_(shared_memory),
         shader_interpreter_(register_file, memory) {
     shader_interpreter_.SetTraceWriter(trace_writer);
   }
@@ -64,8 +67,19 @@ class DrawExtentEstimator {
   const RegisterFile& register_file_;
   const memory::Memory& memory_;
   TraceWriter* trace_writer_;
+  SharedMemory* shared_memory_;
 
   ShaderInterpreter shader_interpreter_;
+
+  // Low-rate diagnostics for the opt-in CPU draw-extent experiment. These are
+  // command-processor-thread counters, so atomics would only add overhead.
+  uint64_t diagnostic_eligible_count_ = 0;
+  uint64_t diagnostic_interpreted_count_ = 0;
+  uint64_t diagnostic_reduced_count_ = 0;
+  uint64_t diagnostic_vertex_fetch_accepted_count_ = 0;
+  uint64_t diagnostic_unsafe_input_rejected_count_ = 0;
+  uint64_t diagnostic_old_height_sum_ = 0;
+  uint64_t diagnostic_new_height_sum_ = 0;
 };
 
 }  // namespace rex::graphics

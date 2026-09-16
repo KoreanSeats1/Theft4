@@ -183,9 +183,10 @@ class RenderTargetCache {
  protected:
   RenderTargetCache(const RegisterFile& register_file, const memory::Memory& memory,
                     TraceWriter* trace_writer, uint32_t draw_resolution_scale_x,
-                    uint32_t draw_resolution_scale_y)
+                    uint32_t draw_resolution_scale_y,
+                    SharedMemory* shared_memory = nullptr)
       : register_file_(register_file),
-        draw_extent_estimator_(register_file, memory, trace_writer),
+        draw_extent_estimator_(register_file, memory, trace_writer, shared_memory),
         draw_resolution_scale_x_(draw_resolution_scale_x),
         draw_resolution_scale_y_(draw_resolution_scale_y) {
     assert_not_zero(draw_resolution_scale_x);

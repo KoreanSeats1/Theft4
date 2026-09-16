@@ -85,6 +85,7 @@ class FunctionDispatcher;
 namespace rex::ui {
 class GraphicsProvider;
 class Presenter;
+class Surface;
 class WindowedAppContext;
 namespace vulkan {
 class VulkanSubmissionTracker;
@@ -96,6 +97,9 @@ namespace rex::graphics::gta4_native {
 class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
  public:
   Gta4NativeGraphicsSystem();
+  Gta4NativeGraphicsSystem(std::unique_ptr<ui::GraphicsProvider> provider,
+                           std::unique_ptr<ui::Presenter> presenter,
+                           std::unique_ptr<ui::Surface> external_surface);
   ~Gta4NativeGraphicsSystem() override;
 
   X_STATUS SetupPresentation(ui::WindowedAppContext* app_context) override;
@@ -1619,6 +1623,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
 
   rex::memory::Memory* memory_ = nullptr;
   ui::WindowedAppContext* app_context_ = nullptr;
+  // Optional externally created presentation surface. Declared before the
+  // provider and presenter so those GPU objects are destroyed first.
+  std::unique_ptr<ui::Surface> external_surface_;
   std::unique_ptr<ui::GraphicsProvider> provider_;
   std::unique_ptr<ui::Presenter> presenter_;
 

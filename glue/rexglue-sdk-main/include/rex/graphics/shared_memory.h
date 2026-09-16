@@ -80,6 +80,11 @@ class SharedMemory {
   bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count);
   bool RequestRange(uint32_t start, uint32_t length);
 
+  // Whether any system page intersecting the range currently contains data
+  // newer on the GPU than in guest CPU memory. This is a read-only safety
+  // query for CPU-side interpreters; it never requests a download.
+  bool IsRangeGpuWritten(uint32_t start, uint32_t length);
+
   // Marks the range and, if not exact_range, potentially its surroundings
   // (to up to the first GPU-written page, as an access violation exception
   // count optimization) as modified by the CPU, also invalidating GPU-written

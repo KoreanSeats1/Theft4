@@ -25,6 +25,18 @@
       rex_log_ptr_->log(spdlog::source_loc{__FILE__, __LINE__, __FUNCTION__}, lvl, __VA_ARGS__); \
   } while (0)
 
+/* Like REX_LOG_IMPL, but evaluates the condition only after the category has
+   confirmed that the requested level would actually be emitted. This keeps
+   diagnostic-only predicates out of release hot paths. */
+#define REX_LOG_IMPL_IF(cat, lvl, condition, ...)                                                  \
+  do {                                                                                            \
+    if (!::rex::diagnostics::IsEnabled(::rex::diagnostics::Category::kLogging))                   \
+      break;                                                                                      \
+    auto* rex_log_ptr_ = ::rex::GetLoggerRaw(cat);                                                \
+    if (rex_log_ptr_ && rex_log_ptr_->should_log(lvl) && (condition))                             \
+      rex_log_ptr_->log(spdlog::source_loc{__FILE__, __LINE__, __FUNCTION__}, lvl, __VA_ARGS__);  \
+  } while (0)
+
 #define REX_LOG_NOISY_IMPL(cat, lvl, ...) \
   do {                                    \
     if (!::rex::diagnostics::IsEnabled(::rex::diagnostics::Category::kLogging)) \
@@ -39,6 +51,8 @@
 /** @{ */
 #define REXLOG_CAT_TRACE(cat, ...) REX_LOG_IMPL(cat, spdlog::level::trace, __VA_ARGS__)
 #define REXLOG_CAT_DEBUG(cat, ...) REX_LOG_IMPL(cat, spdlog::level::debug, __VA_ARGS__)
+#define REXLOG_CAT_DEBUG_IF(cat, condition, ...) \
+  REX_LOG_IMPL_IF(cat, spdlog::level::debug, condition, __VA_ARGS__)
 #define REXLOG_CAT_INFO(cat, ...) REX_LOG_IMPL(cat, spdlog::level::info, __VA_ARGS__)
 #define REXLOG_CAT_WARN(cat, ...) REX_LOG_IMPL(cat, spdlog::level::warn, __VA_ARGS__)
 #define REXLOG_CAT_ERROR(cat, ...) REX_LOG_IMPL(cat, spdlog::level::err, __VA_ARGS__)
@@ -84,6 +98,8 @@
 /** @{ GPU */
 #define REXGPU_TRACE(...) REXLOG_CAT_TRACE(::rex::log::gpu(), __VA_ARGS__)
 #define REXGPU_DEBUG(...) REXLOG_CAT_DEBUG(::rex::log::gpu(), __VA_ARGS__)
+#define REXGPU_DEBUG_IF(condition, ...) \
+  REXLOG_CAT_DEBUG_IF(::rex::log::gpu(), condition, __VA_ARGS__)
 #define REXGPU_INFO(...) REXLOG_CAT_INFO(::rex::log::gpu(), __VA_ARGS__)
 #define REXGPU_WARN(...) REXLOG_CAT_WARN(::rex::log::gpu(), __VA_ARGS__)
 #define REXGPU_ERROR(...) REXLOG_CAT_ERROR(::rex::log::gpu(), __VA_ARGS__)

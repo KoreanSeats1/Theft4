@@ -57,6 +57,9 @@
 #if REX_PLATFORM_MAC
 #include <rex/ui/surface_mac.h>
 #endif
+#if REX_PLATFORM_IOS
+extern "C" void theft4_frame_counter_note_published(void);
+#endif
 
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                     "Clear render pass during presentation");
@@ -3058,7 +3061,18 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   // between merely producing guest images and actually handing them to the
   // CAMetalLayer-backed swapchain.
   static uint64_t theft4_present_count = 0;
+  static uint64_t theft4_last_counted_mailbox_version = 0;
   ++theft4_present_count;
+  const uint64_t theft4_mailbox_version =
+      guest_output_mailbox_index == UINT32_MAX
+          ? 0
+          : guest_output_images_[guest_output_mailbox_index].version;
+  if (guest_output_image && theft4_mailbox_version &&
+      theft4_mailbox_version != theft4_last_counted_mailbox_version &&
+      (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR)) {
+    theft4_last_counted_mailbox_version = theft4_mailbox_version;
+    theft4_frame_counter_note_published();
+  }
   const bool theft4_present_milestone =
       theft4_present_count <= 8 || theft4_present_count == 16 ||
       theft4_present_count == 32 || theft4_present_count == 64 ||

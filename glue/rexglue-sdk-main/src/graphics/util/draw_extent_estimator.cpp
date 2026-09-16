@@ -19,8 +19,10 @@
 #include <rex/graphics/flags.h>
 #include <rex/graphics/format/ucode.h>
 #include <rex/graphics/registers.h>
+#include <rex/graphics/shared_memory.h>
 #include <rex/graphics/util/draw_extent_estimator.h>
 #include <rex/graphics/xenos.h>
+#include <rex/logging.h>
 #include <rex/memory.h>
 #include <rex/ui/graphics_util.h>
 
@@ -29,6 +31,9 @@ REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, false, "GPU",
 
 REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
                     "Execute unclipped draw VS on CPU with scissor");
+
+REXCVAR_DEFINE_BOOL(draw_extent_estimator_diagnostics, false, "GPU",
+                    "Log low-rate aggregate CPU draw extent estimator metrics");
 
 // DEFINE_bool(
 //     execute_unclipped_draw_vs_on_cpu, true,
@@ -304,7 +309,71 @@ uint32_t DrawExtentEstimator::EstimateMaxY(bool try_to_estimate_vertex_max_y,
         }
       }
       if (estimate_vertex_max_y) {
-        max_y = std::min(max_y, EstimateVertexMaxY(vertex_shader));
+        const uint32_t old_max_y = max_y;
+        ++diagnostic_eligible_count_;
+
+        // The interpreter reads guest CPU memory directly. Reject an estimate
+        // if any index or vertex range is invalid, or if the shared-memory page
+        // map says the GPU has newer data. Never force a synchronous download.
+        bool inputs_cpu_current = true;
+        const auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+        if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA) {
+          const uint64_t index_start = uint64_t(regs[XE_GPU_REG_VGT_DMA_BASE]);
+          const uint64_t index_length =
+              uint64_t(std::min(uint32_t(vgt_draw_initiator.num_indices),
+                                uint32_t(regs.Get<reg::VGT_DMA_SIZE>().num_words))) *
+              (vgt_draw_initiator.index_size == xenos::IndexFormat::kInt16 ? 2 : 4);
+          if (index_start >= SharedMemory::kBufferSize ||
+              index_length > SharedMemory::kBufferSize - index_start ||
+              (index_length && (!shared_memory_ || shared_memory_->IsRangeGpuWritten(
+                                                    uint32_t(index_start),
+                                                    uint32_t(index_length))))) {
+            inputs_cpu_current = false;
+          }
+        }
+        for (const Shader::VertexBinding& binding : vertex_shader.vertex_bindings()) {
+          const xenos::xe_gpu_vertex_fetch_t fetch =
+              regs.GetVertexFetch(binding.fetch_constant);
+          const uint64_t fetch_start = uint64_t(fetch.address) * sizeof(uint32_t);
+          const uint64_t fetch_length = uint64_t(fetch.size) * sizeof(uint32_t);
+          if (fetch.type != xenos::FetchConstantType::kVertex ||
+              fetch_start >= SharedMemory::kBufferSize ||
+              fetch_length > SharedMemory::kBufferSize - fetch_start ||
+              (fetch_length && (!shared_memory_ || shared_memory_->IsRangeGpuWritten(
+                                                    uint32_t(fetch_start),
+                                                    uint32_t(fetch_length))))) {
+            inputs_cpu_current = false;
+            break;
+          }
+        }
+        if (!inputs_cpu_current) {
+          ++diagnostic_unsafe_input_rejected_count_;
+        } else {
+          if (!vertex_shader.vertex_bindings().empty()) {
+            ++diagnostic_vertex_fetch_accepted_count_;
+          }
+          const uint32_t estimated_max_y = EstimateVertexMaxY(vertex_shader);
+          ++diagnostic_interpreted_count_;
+          max_y = std::min(max_y, estimated_max_y);
+          if (max_y < old_max_y) {
+            ++diagnostic_reduced_count_;
+            diagnostic_old_height_sum_ += old_max_y;
+            diagnostic_new_height_sum_ += max_y;
+          }
+        }
+
+        if (REXCVAR_GET(draw_extent_estimator_diagnostics) &&
+            (diagnostic_eligible_count_ == 1 ||
+             (diagnostic_eligible_count_ & 1023) == 0)) {
+          REXLOG_INFO(
+              "Draw extent estimator: eligible={} interpreted={} reduced={} "
+              "vertex_fetch_accepted={} unsafe_input_rejected={} "
+              "reduced_height_sum={}->{}",
+              diagnostic_eligible_count_, diagnostic_interpreted_count_,
+              diagnostic_reduced_count_, diagnostic_vertex_fetch_accepted_count_,
+              diagnostic_unsafe_input_rejected_count_, diagnostic_old_height_sum_,
+              diagnostic_new_height_sum_);
+        }
       }
     }
   } else {

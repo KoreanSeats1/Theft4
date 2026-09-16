@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -391,6 +392,7 @@ bool VulkanPipelineCache::Initialize() {
 
 void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_root,
                                                   uint32_t title_id, bool blocking) {
+  const auto storage_load_start = std::chrono::steady_clock::now();
   ShutdownShaderStorage();
   {
     std::lock_guard<std::mutex> lock(creation_request_lock_);
@@ -429,6 +431,23 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     return;
   }
   pipeline_storage_file_flush_needed_ = false;
+  if (!rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END)) {
+    REXGPU_ERROR("Failed to inspect the Vulkan pipeline storage file: {}",
+                 rex::path_to_utf8(pipeline_storage_file_path));
+    fclose(pipeline_storage_file_);
+    pipeline_storage_file_ = nullptr;
+    return;
+  }
+  const int64_t pipeline_storage_initial_bytes =
+      rex::filesystem::Tell(pipeline_storage_file_);
+  if (pipeline_storage_initial_bytes < 0 ||
+      !rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_SET)) {
+    REXGPU_ERROR("Failed to rewind the Vulkan pipeline storage file: {}",
+                 rex::path_to_utf8(pipeline_storage_file_path));
+    fclose(pipeline_storage_file_);
+    pipeline_storage_file_ = nullptr;
+    return;
+  }
   // 'XEPS'.
   const uint32_t pipeline_storage_magic = 0x53504558;
   const uint32_t pipeline_storage_magic_api = edram_fragment_shader_interlock ? 1u : 0u;
@@ -439,11 +458,17 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     uint32_t magic_api;
     uint32_t version_swapped;
   } pipeline_storage_file_header;
+  bool pipeline_storage_header_valid = false;
+  size_t pipeline_storage_read_count = 0;
+  size_t pipeline_storage_valid_count = 0;
+  size_t pipeline_storage_skipped_unsupported_count = 0;
+  size_t pipeline_storage_skipped_corrupted_count = 0;
   if (fread(&pipeline_storage_file_header, sizeof(pipeline_storage_file_header), 1,
-            pipeline_storage_file_) &&
+            pipeline_storage_file_) == 1 &&
       pipeline_storage_file_header.magic == pipeline_storage_magic &&
       pipeline_storage_file_header.magic_api == pipeline_storage_magic_api &&
       pipeline_storage_file_header.version_swapped == pipeline_storage_version_swapped) {
+    pipeline_storage_header_valid = true;
     rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END);
     int64_t pipeline_storage_told_end = rex::filesystem::Tell(pipeline_storage_file_);
     size_t pipeline_storage_told_count =
@@ -458,10 +483,8 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
       pipeline_stored_descriptions.resize(
           fread(pipeline_stored_descriptions.data(), sizeof(PipelineStoredDescription),
                 pipeline_storage_told_count, pipeline_storage_file_));
-      size_t pipeline_storage_read_count = pipeline_stored_descriptions.size();
+      pipeline_storage_read_count = pipeline_stored_descriptions.size();
       size_t pipeline_storage_kept_count = 0;
-      size_t pipeline_storage_skipped_unsupported_count = 0;
-      size_t pipeline_storage_skipped_corrupted_count = 0;
       for (size_t i = 0; i < pipeline_storage_read_count; ++i) {
         const PipelineStoredDescription pipeline_stored_description =
             pipeline_stored_descriptions[i];
@@ -471,9 +494,9 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
                         sizeof(pipeline_stored_description.description)) !=
             pipeline_stored_description.description_hash) {
           pipeline_storage_skipped_corrupted_count = pipeline_storage_read_count - i;
-          pipeline_storage_read_count = i;
           break;
         }
+        ++pipeline_storage_valid_count;
         if (!ArePipelineRequirementsMet(pipeline_stored_description.description)) {
           ++pipeline_storage_skipped_unsupported_count;
           continue;
@@ -498,6 +521,10 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
             pipeline_storage_skipped_corrupted_count);
       }
     }
+  } else if (pipeline_storage_initial_bytes > 0) {
+    REXGPU_WARN("Ignoring incompatible Vulkan pipeline storage header: {} ({} bytes)",
+                rex::path_to_utf8(pipeline_storage_file_path),
+                pipeline_storage_initial_bytes);
   }
 
   // Initialize the Xenos shader storage stream.
@@ -515,17 +542,43 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
   }
   ++shader_storage_index_;
   shader_storage_file_flush_needed_ = false;
+  if (!rex::filesystem::Seek(shader_storage_file_, 0, SEEK_END)) {
+    REXGPU_ERROR("Failed to inspect the guest shader storage file: {}",
+                 rex::path_to_utf8(shader_storage_file_path));
+    fclose(shader_storage_file_);
+    shader_storage_file_ = nullptr;
+    fclose(pipeline_storage_file_);
+    pipeline_storage_file_ = nullptr;
+    return;
+  }
+  const int64_t shader_storage_initial_bytes =
+      rex::filesystem::Tell(shader_storage_file_);
+  if (shader_storage_initial_bytes < 0 ||
+      !rex::filesystem::Seek(shader_storage_file_, 0, SEEK_SET)) {
+    REXGPU_ERROR("Failed to rewind the guest shader storage file: {}",
+                 rex::path_to_utf8(shader_storage_file_path));
+    fclose(shader_storage_file_);
+    shader_storage_file_ = nullptr;
+    fclose(pipeline_storage_file_);
+    pipeline_storage_file_ = nullptr;
+    return;
+  }
   struct {
     uint32_t magic;
     uint32_t version_swapped;
   } shader_storage_file_header;
   // 'XESH'.
   const uint32_t shader_storage_magic = 0x48534558;
+  bool shader_storage_header_valid = false;
+  size_t shader_storage_loaded_count = 0;
+  bool shader_storage_truncated_record = false;
+  uint64_t shader_storage_valid_bytes = 0;
   if (fread(&shader_storage_file_header, sizeof(shader_storage_file_header), 1,
-            shader_storage_file_) &&
+            shader_storage_file_) == 1 &&
       shader_storage_file_header.magic == shader_storage_magic &&
       rex::byte_swap(shader_storage_file_header.version_swapped) == ShaderStoredHeader::kVersion) {
-    uint64_t shader_storage_valid_bytes = sizeof(shader_storage_file_header);
+    shader_storage_header_valid = true;
+    shader_storage_valid_bytes = sizeof(shader_storage_file_header);
     // Load shaders written by previous runs until the end of the file or until
     // a corrupted one is detected.
     ShaderStoredHeader shader_header;
@@ -535,18 +588,25 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
       if (!fread(&shader_header, sizeof(shader_header), 1, shader_storage_file_)) {
         break;
       }
+      if (shader_header.ucode_dword_count > 0xFFFF) {
+        shader_storage_truncated_record = true;
+        break;
+      }
       size_t ucode_byte_count = shader_header.ucode_dword_count * sizeof(uint32_t);
       ucode_dwords.resize(shader_header.ucode_dword_count);
       if (shader_header.ucode_dword_count &&
           !fread(ucode_dwords.data(), ucode_byte_count, 1, shader_storage_file_)) {
+        shader_storage_truncated_record = true;
         break;
       }
       uint64_t ucode_data_hash = XXH3_64bits(ucode_dwords.data(), ucode_byte_count);
       if (shader_header.ucode_data_hash != ucode_data_hash) {
         // Validation failed.
+        shader_storage_truncated_record = true;
         break;
       }
       shader_storage_valid_bytes += sizeof(shader_header) + ucode_byte_count;
+      ++shader_storage_loaded_count;
       VulkanShader* shader = LoadShader(shader_header.type, ucode_dwords.data(),
                                         shader_header.ucode_dword_count, ucode_data_hash);
       if (shader->ucode_storage_index() == shader_storage_index_) {
@@ -556,8 +616,16 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
       // Loaded from the current storage - don't write again.
       shader->set_ucode_storage_index(shader_storage_index_);
     }
+    if (uint64_t(shader_storage_initial_bytes) > shader_storage_valid_bytes) {
+      shader_storage_truncated_record = true;
+    }
     rex::filesystem::TruncateStdioFile(shader_storage_file_, shader_storage_valid_bytes);
   } else {
+    if (shader_storage_initial_bytes > 0) {
+      REXGPU_WARN("Ignoring incompatible guest shader storage header: {} ({} bytes)",
+                  rex::path_to_utf8(shader_storage_file_path),
+                  shader_storage_initial_bytes);
+    }
     rex::filesystem::TruncateStdioFile(shader_storage_file_, 0);
     shader_storage_file_header.magic = shader_storage_magic;
     shader_storage_file_header.version_swapped = rex::byte_swap(ShaderStoredHeader::kVersion);
@@ -622,6 +690,7 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     pipeline_creations.push_back(creation_arguments);
   }
 
+  size_t created_pipeline_count_final = 0;
   if (!pipeline_creations.empty()) {
     {
       std::lock_guard<std::mutex> lock(creation_request_lock_);
@@ -682,6 +751,7 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
 
     REXGPU_INFO("Created {} graphics pipelines from Vulkan storage ({} requested)",
                 created_pipeline_count.load(), pipeline_creations.size());
+    created_pipeline_count_final = created_pipeline_count.load();
     {
       std::lock_guard<std::mutex> lock(creation_request_lock_);
       startup_loading_ = false;
@@ -693,8 +763,8 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
   rex::filesystem::TruncateStdioFile(
       pipeline_storage_file_,
       uint64_t(sizeof(pipeline_storage_file_header) +
-               sizeof(PipelineStoredDescription) * pipeline_stored_descriptions.size()));
-  if (pipeline_stored_descriptions.empty()) {
+               sizeof(PipelineStoredDescription) * pipeline_storage_valid_count));
+  if (!pipeline_storage_header_valid) {
     rex::filesystem::TruncateStdioFile(pipeline_storage_file_, 0);
     pipeline_storage_file_header.magic = pipeline_storage_magic;
     pipeline_storage_file_header.magic_api = pipeline_storage_magic_api;
@@ -702,6 +772,26 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     fwrite(&pipeline_storage_file_header, sizeof(pipeline_storage_file_header), 1,
            pipeline_storage_file_);
   }
+
+  // Both streams use append/update mode. Reads above must begin at offset zero,
+  // while all writes must resume at EOF after validation and any repair.
+  rex::filesystem::Seek(shader_storage_file_, 0, SEEK_END);
+  rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END);
+
+  const auto storage_load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - storage_load_start)
+                                   .count();
+  REXGPU_INFO(
+      "VulkanPipelineCache: Storage preload in {} ms: pipeline_bytes={} header={} "
+      "read={} valid={} accepted={} unsupported={} corrupt_tail={} requested={} created={}; "
+      "shader_bytes={} header={} loaded={} truncated_tail={}",
+      storage_load_ms, pipeline_storage_initial_bytes, pipeline_storage_header_valid,
+      pipeline_storage_read_count, pipeline_storage_valid_count,
+      pipeline_stored_descriptions.size(), pipeline_storage_skipped_unsupported_count,
+      pipeline_storage_skipped_corrupted_count, pipeline_creations.size(),
+      created_pipeline_count_final, shader_storage_initial_bytes,
+      shader_storage_header_valid, shader_storage_loaded_count,
+      shader_storage_truncated_record);
 
   shader_storage_cache_root_ = cache_root;
   shader_storage_title_id_ = title_id;

@@ -4,6 +4,12 @@ set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 developme
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
 set(THEFT4_ARM64_TUNE "apple-m5" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
+option(THEFT4_ENABLE_THIN_LTO
+    "Enable Release ThinLTO for Theft4-owned AOT, bridge, and app targets" OFF)
+option(THEFT4_COMPILE_GTA4_NATIVE_BACKEND
+    "Compile-check LibertyRecomp's GTA IV native renderer for iOS without selecting it" OFF)
+option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
+    "Embed the GTA IV native renderer behind THEFT4_GRAPHICS_BACKEND=native" OFF)
 
 # Compile the actual checked-in AOT title, not a synthetic PPC fixture. Keep
 # this separate until the kernel/runtime imports can be linked into the host.
@@ -36,6 +42,10 @@ if(THEFT4_BUILD_GAME_CODE)
         PROPERTIES COMPILE_OPTIONS "-O0;-fno-global-isel")
     set_target_properties(theft4_game_code PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/game-code")
+    if(THEFT4_ENABLE_THIN_LTO)
+        set_property(TARGET theft4_game_code PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    endif()
 endif()
 
 if(REXGLUE_RUNTIME_ONLY)
@@ -105,6 +115,110 @@ if(THEFT4_ENABLE_GAME_STARTUP)
     add_subdirectory(
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/glslang"
         "${CMAKE_BINARY_DIR}/theft4-glslang" EXCLUDE_FROM_ALL)
+
+    # Compile the mature GTA-IV-specific renderer as an inert archive before
+    # attempting to select it from the iOS runtime. This target intentionally
+    # has no consumer yet: it lets Apple Clang identify actual portability
+    # blockers without disturbing the known-working generic Xenos backend.
+    if(THEFT4_COMPILE_GTA4_NATIVE_BACKEND OR THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+        set(THEFT4_GTA4_NATIVE_ROOT
+            "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+        set(THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT
+            "${CMAKE_SOURCE_DIR}/LibertyRecompLib")
+        set(THEFT4_GTA4_NATIVE_SMOLV_ROOT
+            "${CMAKE_SOURCE_DIR}/tools/XenosRecomp/thirdparty/smol-v/source")
+        set(THEFT4_GTA4_NATIVE_ZSTD_ROOT
+            "${CMAKE_SOURCE_DIR}/tools/XenosRecomp/thirdparty/zstd")
+        set(THEFT4_GTA4_RECOMP_SOURCE_ROOT
+            "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src")
+
+        add_library(theft4_gta4_native_compile STATIC EXCLUDE_FROM_ALL
+            "${THEFT4_GTA4_NATIVE_ROOT}/graphics_system.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/modern_shader_options.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_buffer_arena.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_descriptor_backend.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_frame_context.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_gpu_attribution.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_memory_samples.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_performance_samples.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/native_submission_lifetime.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/postfx_resource_pool.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/smaa_pipeline.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/split_postfx_pass.cpp"
+            "${THEFT4_GTA4_NATIVE_ROOT}/sun_shafts_pass.cpp"
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_aspect_hooks.cpp"
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_font_selection_trace.cpp"
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_native_hooks.cpp"
+            "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
+            "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}/smolv.cpp")
+        target_include_directories(theft4_gta4_native_compile PRIVATE
+            "${THEFT4_GTA4_NATIVE_ROOT}"
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}"
+            "${THEFT4_GENERATED_DIR}"
+            "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}"
+            "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}"
+            "${THEFT4_GTA4_NATIVE_ZSTD_ROOT}/lib"
+            "${CMAKE_SOURCE_DIR}/thirdparty/json/include"
+            "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/spirv-headers/include"
+            "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/vulkan-headers/include"
+            "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/vulkan-memory-allocator/include")
+        target_link_libraries(theft4_gta4_native_compile PRIVATE
+            rex::runtime
+            xxHash::xxhash)
+        target_compile_definitions(theft4_gta4_native_compile PRIVATE
+            REX_HAS_VULKAN=1
+            REXGLUE_BUILD_CONFIG="$<CONFIG>"
+            GTA4_NATIVE_FONT_ASSET_ROOT="${CMAKE_SOURCE_DIR}/LibertyRecompLib/font_atlases")
+        target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
+        target_compile_options(theft4_gta4_native_compile PRIVATE
+            -Wno-unused-variable)
+        set_source_files_properties(
+            "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
+            PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+        if(THEFT4_ARM64_TUNE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+            target_compile_options(theft4_gta4_native_compile PRIVATE
+                "-mtune=${THEFT4_ARM64_TUNE}")
+        endif()
+
+        if(THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+            target_sources(theft4_gta4_native_compile PRIVATE
+                bridge/theft4_empty_shader_overrides.cpp)
+
+            if(NOT TARGET libzstd_static)
+                set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+                set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+                set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+                set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+                set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+                add_subdirectory("${THEFT4_GTA4_NATIVE_ZSTD_ROOT}/build/cmake"
+                    "${CMAKE_BINARY_DIR}/theft4-gta4-native-zstd" EXCLUDE_FROM_ALL)
+            endif()
+            target_link_libraries(theft4_gta4_native_compile PRIVATE libzstd_static)
+
+            target_sources(theft4_core_bridge PRIVATE
+                bridge/theft4_gta4_native_graphics.cpp
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/image_decode.cpp"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/immediate_drawer.cpp"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/windowed_app_context.cpp"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_immediate_drawer.cpp"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/vulkan/vulkan_provider.cpp")
+            target_include_directories(theft4_core_bridge PRIVATE
+                "${THEFT4_GTA4_NATIVE_ROOT}"
+                "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}"
+                "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}"
+                "${THEFT4_GTA4_NATIVE_ZSTD_ROOT}/lib"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/stb")
+            target_link_libraries(theft4_core_bridge PRIVATE
+                theft4_gta4_native_compile libzstd_static)
+            target_compile_definitions(theft4_core_bridge PRIVATE
+                THEFT4_HAS_GTA4_NATIVE_BACKEND=1)
+            # The native hook wrappers intentionally interpose weak generated
+            # AOT entry points, so every archive object must be retained.
+            target_link_options(theft4_core_bridge INTERFACE
+                "LINKER:-force_load,$<TARGET_FILE:theft4_gta4_native_compile>")
+        endif()
+    endif()
 
     target_sources(theft4_core_bridge PRIVATE
         bridge/theft4_startup.cpp
@@ -208,6 +322,11 @@ if(THEFT4_ENABLE_GAME_STARTUP)
     set(THEFT4_XENIOS_IOS_LIB_DIR
         "${CMAKE_SOURCE_DIR}/../XeniOS/build-ios-xcode/obj/iOS/Release"
         CACHE PATH "Optional XeniOS iOS library directory for MoltenVK validation")
+    set(THEFT4_XENIOS_GENERATED_SHADER_DIR
+        "${CMAKE_SOURCE_DIR}/../XeniOS/build-ios-xcode/generated"
+        CACHE PATH "Optional XeniOS generated shader directory for direct resolve experiments")
+    option(THEFT4_ENABLE_XENIOS_DIRECT_RESOLVE
+           "Build the experimental XeniOS-derived direct host resolve path" OFF)
     if(EXISTS "${THEFT4_XENIOS_IOS_LIB_DIR}/libMoltenVK.a")
         target_sources(theft4_core_bridge PRIVATE
             bridge/theft4_vulkan_probe.cpp
@@ -220,6 +339,16 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         target_compile_definitions(theft4_core_bridge PRIVATE
             THEFT4_HAS_MOLTENVK_PROBE=1
             REX_HAS_VULKAN=1)
+        if(THEFT4_ENABLE_XENIOS_DIRECT_RESOLVE AND EXISTS
+           "${THEFT4_XENIOS_GENERATED_SHADER_DIR}/xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_host_color_32bpp_1xmsaa_cs.h")
+            # Experimental bridge to XeniOS's public, generated SPIR-V. Only
+            # the GTA IV variants included by render_target_cache.cpp are
+            # compiled; all unsupported cases retain the existing EDRAM path.
+            target_include_directories(theft4_core_bridge PRIVATE
+                "${THEFT4_XENIOS_GENERATED_SHADER_DIR}")
+            target_compile_definitions(theft4_core_bridge PRIVATE
+                THEFT4_XENIOS_DIRECT_RESOLVE_SHADERS=1)
+        endif()
         target_link_libraries(theft4_core_bridge PRIVATE
             "${THEFT4_XENIOS_IOS_LIB_DIR}/libMoltenVK.a"
             "${THEFT4_XENIOS_IOS_LIB_DIR}/libMoltenVK_ShaderConverter.a"
@@ -246,6 +375,12 @@ target_link_libraries(Theft4 PRIVATE theft4_core_bridge
     "-framework AVFoundation" "-framework AudioToolbox")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
 target_compile_options(Theft4 PRIVATE -fobjc-arc)
+if(THEFT4_ENABLE_THIN_LTO)
+    set_property(TARGET theft4_core_bridge PROPERTY
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set_property(TARGET Theft4 PROPERTY
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
 set_target_properties(Theft4 PROPERTIES
     LINKER_LANGUAGE CXX
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Info.plist.in"

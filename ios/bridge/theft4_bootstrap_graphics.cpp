@@ -1,5 +1,8 @@
 #include "theft4_bootstrap_graphics.h"
 #include "theft4_metal_presenter.h"
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+#include "theft4_gta4_native_graphics.h"
+#endif
 #ifdef THEFT4_HAS_MOLTENVK_PROBE
 #include "theft4_rex_vulkan_gate.h"
 #include "theft4_vulkan_probe.h"
@@ -7,11 +10,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <thread>
 #include <unordered_map>
+#include <string_view>
 
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/pipeline/shader/spirv.h>
@@ -457,5 +462,16 @@ class Theft4BootstrapGraphics final : public rex::system::IGraphicsSystem {
 
 std::unique_ptr<rex::system::IGraphicsSystem>
 theft4_create_bootstrap_graphics() {
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+  if (const char* backend = std::getenv("THEFT4_GRAPHICS_BACKEND");
+      backend && std::string_view(backend) == "native") {
+    if (auto native = theft4_create_gta4_native_graphics()) {
+      return native;
+    }
+    REXLOG_WARN(
+        "Theft4 gta4-native initialization failed; retaining the generic "
+        "Xenos/Vulkan fallback");
+  }
+#endif
   return std::make_unique<Theft4BootstrapGraphics>();
 }

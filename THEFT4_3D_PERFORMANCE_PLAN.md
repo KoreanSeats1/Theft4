@@ -1,6 +1,17 @@
 # Theft4 — intro and 3D performance execution plan
 
-Checkpoint: 2026-09-15. Status: **PLAN ONLY; optimization execution is not authorized yet.**
+Latest checkpoint: 2026-09-16. Status: **diagnosis complete; implementation paused.**
+
+The current next-experiment guide is
+[THEFT4_GPU_DIAGNOSTIC_2026-09-16.md](THEFT4_GPU_DIAGNOSTIC_2026-09-16.md).
+It supersedes the earlier assumption that black native-Metal replay established
+cross-fork incompatibility: the replay leaves async compilation on, and its
+XeniOS Vulkan control does not restore EDRAM. It also adds a trace-derived eligibility
+check for the draw-bounds candidate, the upstream transfer-merging opportunity,
+whole-pass render-area bounds, and the profiling GPU-condition caveat.
+
+The September 15 baseline analysis below is historical. Later execution notes
+record completed cache/audio/renderer work; do not repeat already resolved steps.
 
 The user requested an intro-performance analysis, then asked to quit the app and
 prepare the attack without implementing it. Theft4 PID 1528 was sent SIGTERM;
@@ -548,5 +559,227 @@ M5-only ISA changes; automatic lowering of audio quality; global readback remova
 disabling incomplete-frame protection; system-cache deletion; XeniOS changes;
 distribution of game-derived cache/assets. None is necessary for the next pass.
 
-**Resume here:** read this plan and the newest handoff section, confirm execution
-authorization, then P0 → P1. The installed build is unchanged and Theft4 is closed.
+## 9. Execution ledger — 2026-09-16
+
+- P0 baseline/cache archives created under `out/perf-baseline-20260916/` and
+  `out/perf-cache-backup-20260916/`.
+- P1 cache reader/preload correction kept; warm storage preload created all 332
+  requested pipelines in the representative run.
+- P2 opt-in GPU timing kept. CPU preparation/encoding was small relative to
+  completion waits in heavy 3D. Normal launches do not enable the clocks/logs.
+- One-submission-per-frame candidate rejected (2–4% slower).
+- Real direct-host resolve candidate rejected as the default: correct output and
+  fewer EDRAM dumps, but no frame-rate win. It is compile- and launch-opt-in only.
+- Release/no-debugger/no-diagnostic build restored, installed over existing app
+  data, and launched normally on the physical iPad.
+
+**Resume here:** perform the P2/P4 scene-matched Metal capture that attributes
+texture uploads/cache misses, render-pass/barrier churn, command-buffer duration
+and translated draw count. Use that result to choose one targeted fast path.
+Do not revive the direct-resolve or one-submission candidates without new evidence.
+
+### Diagnostic checkpoint and next moves — 2026-09-16, paused on request
+
+User requested one or two diagnosis passes, a plan, then STOP. The two passes
+below are complete. No renderer fix from this checkpoint has been implemented;
+no new binary was built or installed. The existing FSI environment override was
+used for one diagnostic launch, then Theft4 PID 2593 was stopped. Device process
+listing confirms both Theft4 and MetalReplay are absent. Normal manual launches
+use the established host-render-target Release path. Game files/saves remain.
+
+#### Pass 1: FSI correctness — rejected
+
+Fresh FSI test on the now-working AOT build used
+`THEFT4_RENDER_TARGET_PATH=fsi`, `THEFT4_DIAGNOSTICS=1`, and
+`THEFT4_GPU_TIMING=1`. The prior FSI test predated the working 3D fix, so this
+was a necessary revalidation rather than evidence that the old issue persisted.
+
+Evidence: `out/perf-fsi-20260916/runtime.log`, `fsi-1875.png`, `fsi-1918.png`.
+2D works; Niko geometry appears, but broad rectangular bands, texture-like
+overlays, and black output corrupt the 3D. User independently confirmed it.
+Swap 2100 has a fully black sampled swapchain despite 2,491 submitted draws and
+no pipeline placeholders. The later log also contains cold pipeline stalls;
+this is not a valid performance comparison. Reject FSI as a shipping option.
+Its corruption has not been localized to the translator, EDRAM addressing,
+MSAA packing, or MoltenVK interlock semantics. Do not claim any one cause yet.
+
+#### Pass 2: actual Apple GPU attribution — rendering dominates this sample
+
+Evidence: `out/perf-p3-20260916/game-performance.trace`, `encoders.xml`,
+`gpu_intervals.xml`, `submissions.xml`, `summary-correlated.json`.
+`tools/summarize_ios_game_trace.py` now joins command buffers to Apple frame IDs
+and encoder labels, and distinguishes elapsed span from active interval union.
+It is explicitly allowed in `.gitignore` so the reproducible analyzer can be
+reviewed/committed later. No private trace data is added to source control.
+
+The trace records 10 seconds with meaningful Metal rows concentrated in its
+last approximately one second. It is NOT a full-intro or unprofiled benchmark.
+The recording's exact scene is not proven by an accompanying screenshot.
+Eight GPU buffers have no matching submission row (capture boundaries).
+Boundary frames are partial, and encoder attribution is incomplete.
+
+- 23 Apple submission frame groups; median 1,085 encoders and 7 submissions.
+- Median CPU encoder duration per grouped frame: 15.84 ms.
+- Correlated GPU frame span: median 45.20 ms including gaps; active union:
+  median 36.38 ms. Neither is equivalent to display frame cadence by itself.
+- Matched interior frames (IDs 3..15 with GPU rows, 12 samples): median GPU
+  active union for dynamic render encoders 31.07 ms, compute dispatches 6.41 ms,
+  buffer blits 1.24 ms, buffer-to-image blits 1.15 ms. Categories can overlap;
+  do not add them to claim total frame time.
+- Median CPU-to-GPU latency per command buffer: 90.33 ms. This is queue delay,
+  not shader execution time, and does not prove that translation alone is slow.
+
+Source evidence supporting the next experiment:
+
+- `src/graphics/util/draw_extent_estimator.cpp:27` defaults
+  `execute_unclipped_draw_vs_on_cpu` to **false**. The sibling XeniOS source
+  `src/xenia/gpu/draw_extent_estimator.cc:24` defaults it to **true**.
+- `EstimateMaxY` only invokes it for appropriate unclipped draws; by default
+  it restricts CPU interpretation to the unbounded-scissor case. Unsupported
+  vertex shaders conservatively return the full extent.
+- `src/graphics/pipeline/render_target/cache.cpp:571` uses that estimate to
+  determine EDRAM ownership ranges. Overestimation can therefore cause extra
+  render-target transfers. The number of qualifying GTA IV draws is UNKNOWN.
+- `VulkanCommandProcessor::SubmitBarriers` ends the render pass whenever it
+  has pending barriers. Texture loading does compute conversion and a
+  buffer-to-image copy; both force render-pass termination. This explains a
+  possible mechanism for pass churn, not its measured frequency by cause.
+- Dynamic rendering uses full `framebuffer->host_extent` with LOAD/STORE.
+  Actual attachment traffic and whether the driver trims it need measurement.
+
+#### Ordered next moves (planned only; resume on user instruction)
+
+1. **A/B existing draw-bounds estimator on the correct host renderer.** Add an
+   opt-in launch setting in `ios/bridge/theft4_startup.cpp`; keep default off
+   until measured. Reuse `DrawExtentEstimator` and its conservative fallback.
+   Add bounded counts for qualifying draws, successful reductions, reduced
+   EDRAM ownership/transfer ranges, and CPU time. Keep the with-scissor option
+   off initially. If the estimator never applies, stop this candidate promptly.
+   Warm both runs, compare the same intro checkpoints and first driving state,
+   screenshots/audio, GPU work and unprofiled presented-frame intervals. Reject
+   any corruption or CPU regression. This is the first recommended experiment,
+   not a claim that changing the default will fix 30 FPS.
+2. **Attribute and reduce render-pass breaks.** In Vulkan command processor,
+   render-target cache, shared memory and texture cache, count breaks caused by
+   attachment changes, ownership transfer, uploads, memexport and submission.
+   Give diagnostic encoders/pass groups meaningful labels. Obtain a bounded
+   representative capture at a known visual checkpoint. Optimize the dominant
+   *proven* redundant transition; preserve all real data hazards. Candidate
+   work includes batching independent texture preparation or ownership
+   transfers before a draw group. Do not simply delete barriers.
+3. **Bound attachment work if the capture proves wasted regions.** Inspect
+   full attachment extent versus guest draw/transfer bounds and tile load/store
+   work. Consider render-area bounds only with coverage across every draw in a
+   pass, resolve use, depth/stencil and later reads proven. Do not use DONT_CARE
+   as a generic speed switch or shrink areas around only the first draw.
+4. **Return to native Metal only after an actual parity oracle.** The later
+   visible XTR (`out/metal-replay-20260916/visible-scene.xtr`, 1,960 draws) has
+   correct original output `vulkan-exact-2060.png`, but replay through BOTH
+   XeniOS Metal and its Vulkan control is black. That implicates cross-fork
+   trace/capture compatibility, not Metal specifically. Repair/revalidate
+   trace state and readback before comparing warm timings or integrating it.
+5. **Final acceptance remains full intro through playable state.** Confirm
+   visible, unique game frames paced at 33.3 ms under ordinary Release launch,
+   no debugger/validation/captures, unchanged 720p/16:9/detail/effects, intact
+   audio, no hangs or visible tearing/stutter. Use repeated warm runs and a
+   sustained thermal run. Current evidence does NOT satisfy this goal.
+
+Do not resume automatic builds, launches, FSI repairs or backend integration
+from this checkpoint until the user requests continuation.
+
+### User-requested long-shot probe: native Metal replay (initial checkpoint; superseded above)
+
+`tools/ios-metal-replay/` builds an isolated iOS app using the public XeniOS
+native Metal backend, with a null CPU backend and no game executable/JIT. A fresh
+Theft4 XTR containing 880 draws completed shader translation and 1280x720 output
+on the M5. Evidence is private under `out/metal-replay-20260916/`.
+
+Both the native Metal output and nearby original capture are nearly black;
+the current trace trigger caught an early transition. This is only a trace
+integration proof, not correct visible 3D or improved FPS. Cold replay including
+compilation/readback/file output was 7,231 ms, not a steady-state measurement.
+
+Next gate: later visible scene + exact original output, renderer parity, then
+warm identical-trace GPU timing. Keep the production backend unchanged unless
+that comparison justifies an integration effort. Both Theft4 and the separate
+replay app were stopped after this experiment; user game data remains intact.
+
+## 2026-09-16 native GTA IV renderer checkpoint
+
+This checkpoint supersedes the earlier instruction above to defer backend
+integration. Repository forensics found a mature GTA-IV-specific Vulkan
+renderer in `glue/rexglue-sdk-main/src/graphics/gta4_native/`. Unlike the
+generic Xenos command processor, it consumes the title's known graphics hooks
+and cached native shaders. It remains Vulkan -> MoltenVK -> Metal, so this is a
+game-aware renderer change rather than a speculative direct-Metal rewrite.
+
+The renderer now compiles and links into the iPhoneOS ARM64 Release app behind
+the opt-in launch selector `THEFT4_GRAPHICS_BACKEND=native`. The generic
+renderer remains the default and fallback. The physical M5 iPad accepted all
+required Vulkan features, created a 1280x720 three-image swapchain, selected
+`gta4-native`, loaded 1,356 cached shaders (11,599,741 SPIR-V bytes), applied
+TU8, and entered title-specific 3D/deferred-light rendering. There was no
+startup crash. A bounded log sample advanced frames 865 through 874 in roughly
+0.31 seconds, consistent with the configured 30 FPS limiter, but visual
+correctness and sustained playable-state pacing still require a witnessed,
+ordinary Release run before acceptance.
+
+Known follow-ups:
+
+- Package or deliberately disable the optional native font-atlas assets; the
+  first probe logged missing font image paths.
+- Reduce the extremely verbose native diagnostic logging before performance
+  comparison; it is not representative of a shipping run.
+- Run a visually witnessed A/B through the same intro/playable checkpoint,
+  comparing the generic backend with the opt-in native backend.
+- Measure presented-frame cadence and GPU time without debugger, validation,
+  trace capture, or verbose diagnostics. Do not infer sustained 30 FPS from
+  the short frame-limiter sample.
+- Preserve the generic path until native output parity, stability, audio, save
+  loading, and controller behavior are verified.
+
+Device hygiene is a hard requirement: Theft4 must remain terminated whenever
+a device test is not actively collecting evidence. Every future probe must be
+bounded as launch -> capture result -> terminate -> verify no Theft4 process.
+The app was terminated and absence verified after this checkpoint.
+
+## 10. Retail-fidelity native renderer measurement — 2026-09-16
+
+The first native-renderer probe exposed desktop-enhancement defaults that were
+far above the original Xbox workload: 1080p mirror/water reflections, 1024-square
+environment reflections, doubled shadow distance, forced highest LOD, tripled
+draw distance, and a 20,000-reference drawable limit. The iOS shell now uses the
+original resource sizes and title-equivalent limits while keeping 1280x720 output,
+16:9 presentation, SMAA, vsync, and a 30 FPS guest cap. Optional vector font
+atlases are disabled because their replacement assets are not packaged; stock
+game fonts remain active.
+
+High-volume native resource/resolve/declaration trace messages are now gated by
+the explicit native-trace category. This removes diagnostic formatting and I/O
+from normal Release runs without deleting the diagnostic path.
+
+Both unsigned and development-signed ARM64 iPhoneOS Release builds linked. The
+latest bounded M5 iPad run selected `gta4-native`, created a 1280x720 three-image
+swapchain, loaded 1,356 cached shaders (11,599,741 SPIR-V bytes), applied TU8,
+and crossed into title-specific 3D/deferred rendering.
+
+Presentation milestones provide the following direct cadence evidence:
+
+- present 900 at 13:17:47.092 to present 1024 at 13:17:51.227:
+  124 frames / 4.135 seconds = 29.99 FPS;
+- present 1024 at 13:17:51.227 to present 1200 at 13:17:57.096:
+  176 frames / 5.869 seconds = 29.99 FPS.
+
+The 3D transition began inside these windows. Audio reached block 8,192 with
+zero underrun frames, rebuffers, dropped blocks, clipped samples, or non-finite
+samples. `VK_SUBOPTIMAL_KHR` was reported for the UIKit layer's current extent,
+but presentation remained active; it is not a queue-present failure.
+
+**Acceptance is still pending.** This exact retail-fidelity build has not yet
+been visually watched through the full 2D intro, 3D cutscene, and first playable
+state. The next bounded run must confirm correct pixels, no tearing/corruption,
+the on-screen distinct-frame counter at the heavy scene checkpoints, and healthy
+mixed audio. Then terminate the app and verify process absence immediately.
+
+The full public implementation record, switches, file map, rejected experiments,
+and evidence limitations are maintained in [CHANGELOG.md](CHANGELOG.md).

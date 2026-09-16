@@ -262,7 +262,14 @@ uint32_t GraphicsSystem::ReadRegister(uint32_t addr) {
       return (viewport_width << 16) | viewport_height;
     }
     default:
-      if (!register_file_.GetRegisterInfo(r)) {
+      static const bool log_unknown_registers = [] {
+        if (!rex::diagnostics::IsEnabled(rex::diagnostics::Category::kLogging)) {
+          return false;
+        }
+        auto* logger = rex::GetLoggerRaw(rex::log::gpu());
+        return logger && logger->should_log(spdlog::level::debug);
+      }();
+      if (log_unknown_registers && !register_file_.GetRegisterInfo(r)) {
         REXGPU_DEBUG("GPU: Read from unknown register ({:04X})", r);
       }
   }

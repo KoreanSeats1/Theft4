@@ -129,6 +129,38 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
         dump_dispatch_count_};
   }
 
+  // Cumulative, passive counters for render-target ownership transfers. They
+  // are populated only when vulkan_ownership_transfer_diagnostics is enabled,
+  // allowing mechanism runs to quantify work without imposing per-transfer
+  // rectangle enumeration on scored runs.
+  struct OwnershipTransferTelemetry {
+    uint64_t calls = 0;
+    uint64_t standalone_passes = 0;
+    uint64_t transfer_objects = 0;
+    uint64_t rectangles = 0;
+    uint64_t pixels = 0;
+    uint64_t merged_passes = 0;
+    uint64_t merged_transfer_objects = 0;
+    uint64_t merged_rectangles = 0;
+    uint64_t merged_pixels = 0;
+    uint64_t queue_fallbacks = 0;
+  };
+  OwnershipTransferTelemetry GetOwnershipTransferTelemetry() const {
+    return OwnershipTransferTelemetry{
+        ownership_transfer_call_count_, ownership_transfer_standalone_pass_count_,
+        ownership_transfer_object_count_, ownership_transfer_rectangle_count_,
+        ownership_transfer_pixel_count_, ownership_transfer_merged_pass_count_,
+        ownership_transfer_merged_object_count_,
+        ownership_transfer_merged_rectangle_count_,
+        ownership_transfer_merged_pixel_count_,
+        ownership_transfer_queue_fallback_count_};
+  }
+  // Diagnostic-only cumulative breakdown of ownership transfers by source and
+  // destination format and by the layout properties required for direct image
+  // reuse. Called only at sparse FrameFlow milestones while transfer metrics
+  // are enabled.
+  void LogOwnershipTransferFormatTelemetry(uint64_t swap_index) const;
+
   // Returns true if any downloads were submitted to the command processor.
   bool InitializeTraceSubmitDownloads();
   void InitializeTraceCompleteDownloads();
@@ -140,6 +172,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   RenderPassKey last_update_render_pass_key() const { return last_update_render_pass_key_; }
   VkRenderPass last_update_render_pass() const { return last_update_render_pass_; }
   const Framebuffer* last_update_framebuffer() const { return last_update_framebuffer_; }
+  bool HasPendingDrawPassTransfers() const {
+    return pending_draw_pass_transfer_mask_ != 0;
+  }
+  bool EncodePendingDrawPassTransfers();
+  bool FlushPendingDrawPassTransfers();
   void GetLastUpdateRenderingAttachments(VkRenderingAttachmentInfo* color_attachments,
                                          uint32_t* color_attachment_count_out,
                                          VkRenderingAttachmentInfo* depth_attachment,
@@ -664,6 +701,12 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     }
   };
 
+  struct TransferRectanglePlan {
+    std::array<Transfer::Rectangle, Transfer::kMaxRectanglesWithCutout>
+        rectangles;
+    uint32_t rectangle_count = 0;
+  };
+
   union DumpPipelineKey {
     uint32_t key;
     struct {
@@ -781,30 +824,17 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     }
   };
 
-  struct DirectResolvePushConstants {
-    draw_util::ResolveCopyShaderConstants resolve;
-    uint32_t source_base_tiles;
-    uint32_t source_pitch_tiles;
-    uint32_t dispatch_first_tile;
+  struct DirectHostResolveShaderCode {
+    const uint32_t* code;
+    size_t size_bytes;
+    const char* debug_name;
   };
 
-  struct DirectResolvePipelineKey {
-    DumpPipelineKey dump_pipeline_key;
-    draw_util::ResolveCopyShaderIndex copy_shader;
-    bool draw_resolution_scaled;
-    uint64_t packed() const {
-      return uint64_t(dump_pipeline_key.key) | (uint64_t(size_t(copy_shader)) << 32) |
-             (uint64_t(draw_resolution_scaled ? 1 : 0) << 40);
-    }
-    struct Hasher {
-      size_t operator()(const DirectResolvePipelineKey& key) const {
-        return std::hash<uint64_t>{}(key.packed());
-      }
-    };
-    bool operator==(const DirectResolvePipelineKey& other_key) const {
-      return packed() == other_key.packed();
-    }
-  };
+  static constexpr size_t kDirectHostResolveBppCount = 2;
+  static constexpr size_t kDirectHostResolveMsaaCount = 3;
+  static constexpr size_t kDirectHostResolveScaledCount = 2;
+  static constexpr size_t kDirectHostResolveSourceUintCount = 2;
+  static constexpr size_t kDirectHostResolveFullDestCount = 5;
 
   // Returns the framebuffer object, or VK_NULL_HANDLE if failed to create.
   const Framebuffer* GetHostRenderTargetsFramebuffer(
@@ -817,6 +847,12 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   // samples. If there was a failure to create a pipeline, returns nullptr.
   VkPipeline const* GetTransferPipelines(TransferPipelineKey key);
 
+  static TransferMode GetTransferMode(bool is_stencil_bit_pass,
+                                      bool dest_is_depth,
+                                      bool source_is_depth,
+                                      bool has_host_depth_source,
+                                      bool host_depth_source_is_copy);
+
   // Do ownership transfers for render targets - each render target / vector may
   // be null / empty in case there's nothing to do for them.
   // resolve_clear_rectangle is expected to be provided by
@@ -826,13 +862,35 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* render_target_transfers,
       const uint64_t* render_target_resolve_clear_values = nullptr,
-      const Transfer::Rectangle* resolve_clear_rectangle = nullptr);
+      const Transfer::Rectangle* resolve_clear_rectangle = nullptr,
+      bool in_current_render_pass = false);
+
+  void ClearPendingDrawPassTransfers();
+  bool CanQueueDrawPassTransfers(uint32_t render_target_index,
+                                 RenderTarget* const* render_targets,
+                                 const std::vector<Transfer>& transfers) const;
+  bool BuildTransferRectanglePlans(
+      RenderTargetKey dest_key, const std::vector<Transfer>& transfers,
+      std::vector<TransferRectanglePlan>& transfer_rectangles_out) const;
+  bool PreflightPendingDrawPassTransfers(RenderPassKey render_pass_key);
+  void PreparePendingDrawPassTransferBarriers();
 
   VkPipeline GetDumpPipeline(DumpPipelineKey key);
-  VkPipeline GetDirectResolvePipeline(DirectResolvePipelineKey key);
-  bool TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
-                              draw_util::ResolveCopyShaderIndex copy_shader,
-                              bool draw_resolution_scaled);
+  VkPipeline GetDirectHostResolvePipeline(bool is_64bpp,
+                                          xenos::MsaaSamples msaa_samples,
+                                          bool scaled, bool source_is_uint);
+  VkPipeline GetDirectHostColorFullResolvePipeline(
+      xenos::MsaaSamples msaa_samples, bool scaled, bool source_is_uint,
+      draw_util::ResolveCopyShaderIndex copy_shader);
+  VkPipeline GetDirectHostDepthResolvePipeline(xenos::MsaaSamples msaa_samples,
+                                               bool scaled);
+  bool TryDirectHostResolveCopy(
+      const draw_util::ResolveInfo& resolve_info,
+      const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+      draw_util::ResolveCopyShaderIndex copy_shader, uint32_t dump_base,
+      uint32_t dump_row_length_used, uint32_t dump_rows, uint32_t dump_pitch,
+      VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache,
+      uint32_t& written_address_out, uint32_t& written_length_out);
 
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
@@ -880,21 +938,43 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   // Compute pipelines for copying host render target contents to the EDRAM
   // buffer. VK_NULL_HANDLE if failed to create.
   std::unordered_map<DumpPipelineKey, VkPipeline, DumpPipelineKey::Hasher> dump_pipelines_;
-  VkPipelineLayout direct_resolve_pipeline_layout_color_ = VK_NULL_HANDLE;
-  VkPipelineLayout direct_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
-  std::unordered_map<DirectResolvePipelineKey, VkPipeline, DirectResolvePipelineKey::Hasher>
-      direct_resolve_pipelines_;
+  VkPipelineLayout direct_host_resolve_pipeline_layout_color_ = VK_NULL_HANDLE;
+  VkPipelineLayout direct_host_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
+  static const DirectHostResolveShaderCode kDirectHostResolveColorShaders
+      [kDirectHostResolveBppCount][kDirectHostResolveMsaaCount]
+      [kDirectHostResolveScaledCount][kDirectHostResolveSourceUintCount];
+  static const DirectHostResolveShaderCode kDirectHostResolveColorFullShaders
+      [kDirectHostResolveMsaaCount][kDirectHostResolveScaledCount]
+      [kDirectHostResolveSourceUintCount][kDirectHostResolveFullDestCount];
+  static const DirectHostResolveShaderCode
+      kDirectHostResolveDepthShaders[kDirectHostResolveMsaaCount]
+                                    [kDirectHostResolveScaledCount];
+  VkPipeline direct_host_resolve_pipelines_
+      [kDirectHostResolveBppCount][kDirectHostResolveMsaaCount]
+      [kDirectHostResolveScaledCount][kDirectHostResolveSourceUintCount] = {};
+  VkPipeline direct_host_color_full_resolve_pipelines_
+      [kDirectHostResolveMsaaCount][kDirectHostResolveScaledCount]
+      [kDirectHostResolveSourceUintCount][kDirectHostResolveFullDestCount] = {};
+  VkPipeline
+      direct_host_depth_resolve_pipelines_[kDirectHostResolveMsaaCount]
+                                          [kDirectHostResolveScaledCount] = {};
+  std::unique_ptr<ui::vulkan::VulkanUploadBufferPool>
+      direct_host_resolve_constants_pool_;
 
   // Temporary storage for Resolve.
   std::vector<Transfer> clear_transfers_[2];
 
   // Temporary storage for PerformTransfersAndResolveClears.
   std::vector<TransferInvocation> current_transfer_invocations_;
+  std::array<RenderTarget*, 1 + xenos::kMaxColorRenderTargets>
+      pending_draw_pass_render_targets_ = {};
+  std::array<std::vector<Transfer>, 1 + xenos::kMaxColorRenderTargets>
+      pending_draw_pass_transfers_;
+  uint32_t pending_draw_pass_transfer_mask_ = 0;
 
   // Temporary storage for DumpRenderTargets.
   std::vector<ResolveCopyDumpRectangle> dump_rectangles_;
   std::vector<DumpInvocation> dump_invocations_;
-  std::vector<ResolveCopyDispatch> direct_resolve_dispatches_;
   uint64_t direct_resolve_attempt_count_ = 0;
   uint64_t direct_resolve_success_count_ = 0;
   uint64_t direct_resolve_fallback_count_ = 0;
@@ -904,6 +984,35 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   uint64_t dump_failure_count_ = 0;
   uint64_t dump_rectangle_count_ = 0;
   uint64_t dump_dispatch_count_ = 0;
+  uint64_t ownership_transfer_call_count_ = 0;
+  uint64_t ownership_transfer_standalone_pass_count_ = 0;
+  uint64_t ownership_transfer_object_count_ = 0;
+  uint64_t ownership_transfer_rectangle_count_ = 0;
+  uint64_t ownership_transfer_pixel_count_ = 0;
+  uint64_t ownership_transfer_merged_pass_count_ = 0;
+  uint64_t ownership_transfer_merged_object_count_ = 0;
+  uint64_t ownership_transfer_merged_rectangle_count_ = 0;
+  uint64_t ownership_transfer_merged_pixel_count_ = 0;
+  uint64_t ownership_transfer_queue_fallback_count_ = 0;
+  struct OwnershipTransferFormatTelemetryEntry {
+    uint8_t source_format = 0;
+    uint8_t destination_format = 0;
+    uint8_t source_msaa = 0;
+    uint8_t destination_msaa = 0;
+    bool source_is_depth = false;
+    bool destination_is_depth = false;
+    bool same_base = false;
+    bool same_pitch = false;
+    uint64_t transfer_objects = 0;
+    uint64_t pixels = 0;
+  };
+  static constexpr size_t kOwnershipTransferFormatTelemetryEntryCount = 64;
+  std::array<OwnershipTransferFormatTelemetryEntry,
+             kOwnershipTransferFormatTelemetryEntryCount>
+      ownership_transfer_format_telemetry_ = {};
+  size_t ownership_transfer_format_telemetry_count_ = 0;
+  uint64_t ownership_transfer_format_telemetry_overflow_objects_ = 0;
+  uint64_t ownership_transfer_format_telemetry_overflow_pixels_ = 0;
 
   // For traces.
   VkBuffer edram_snapshot_download_buffer_ = VK_NULL_HANDLE;

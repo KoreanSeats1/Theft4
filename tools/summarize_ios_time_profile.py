@@ -16,7 +16,7 @@ def resolve(element):
     return ids.get(element.get("ref"), element)
 
 
-if len(sys.argv) > 2:
+if len(sys.argv) > 2 and sys.argv[2] != "-":
     binary_path = sys.argv[2]
     binary = next(e for e in root.iter("binary") if e.get("name") == "Theft4")
     uuid = subprocess.check_output(["xcrun", "dwarfdump", "--uuid", binary_path], text=True)
@@ -42,6 +42,8 @@ if len(sys.argv) > 2:
 threads = collections.Counter()
 leaves = collections.defaultdict(collections.Counter)
 inclusive = collections.defaultdict(collections.Counter)
+caller_target = sys.argv[3] if len(sys.argv) > 3 else None
+callers = collections.defaultdict(collections.Counter)
 for row in root.iter("row"):
     state = resolve(row.find("thread-state"))
     if state is None or state.text != "Running":
@@ -61,6 +63,8 @@ for row in root.iter("row"):
     frames = [resolve(f).get("name", resolve(f).get("addr", "?")) for f in stack.findall("frame")]
     if frames:
         leaves[name][frames[0]] += seconds
+        if caller_target and frames[0] == caller_target and len(frames) > 1:
+            callers[name][frames[1]] += seconds
     for frame in set(frames):
         inclusive[name][frame] += seconds
 
@@ -72,3 +76,7 @@ for name, total in threads.most_common(12):
     print("  INCLUSIVE")
     for function, seconds in inclusive[name].most_common(8):
         print(f"    {seconds:.3f} {function}")
+    if caller_target and callers[name]:
+        print(f"  CALLERS OF {caller_target}")
+        for function, seconds in callers[name].most_common(12):
+            print(f"    {seconds:.3f} {function}")

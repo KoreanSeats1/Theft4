@@ -12,8 +12,9 @@ code at runtime and does not require a JIT entitlement.
 
 This is not a source port and it is not a complete Xbox 360 emulator. It combines
 ahead-of-time translated game code with a compatibility runtime that recreates
-the Xbox services the title expects. The existing Xenos renderer translates the
-game's graphics workload through Vulkan and MoltenVK to Metal.
+the Xbox services the title expects. Graphics can use the generic Xenos command
+processor or an experimental GTA-IV-specific renderer; both currently present
+through Vulkan and MoltenVK to Metal.
 
 > [!WARNING]
 > Theft4 is an experimental source release, not a packaged or broadly validated release. It currently
@@ -35,10 +36,35 @@ The following has been demonstrated on a physical ARM64 iPad:
 - real XMA decoding, improved audio delivery, and centered 16:9 presentation;
 - the full opening 3D sequence and first player-control state in a Release build.
 
+The latest opt-in GTA-IV-specific renderer build has also initialized on the M5
+iPad, loaded its 1,356-shader SPIR-V cache, entered title-specific 3D rendering,
+and measured approximately 30 presented game frames per second across a bounded
+3D-transition window with zero logged audio underruns. That exact build still
+needs a visually witnessed run through player control before this is treated as
+a sustained, correct 30 FPS result.
+
 The game has visibly booted on the test iPad, but this does **not** mean the port
 is complete or generally playable. Broader physical-controller acceptance,
 frontend/import UX, correctness, compatibility, performance, and
 long-duration stability remain active work.
+
+## Engineering record
+
+The project keeps a detailed public record of implementation work, experiments,
+measured outcomes, rejected approaches, and remaining verification:
+
+- [Engineering changelog](CHANGELOG.md) — the running, file-mapped technical record;
+- [3D performance execution plan](THEFT4_3D_PERFORMANCE_PLAN.md) — ordered work and
+  the latest renderer checkpoint;
+- [September 16 GPU diagnosis](THEFT4_GPU_DIAGNOSTIC_2026-09-16.md) — trace-backed
+  generic-renderer analysis and experiment design;
+- [iOS architecture report](LIBERTYRECOMP_IOS_ARCHITECTURE.md) and
+  [implementation plan](LIBERTYRECOMP_IOS_PLAN.md) — the original port audit and
+  milestone architecture.
+
+The changelog distinguishes validated defaults from opt-in experiments and
+records failed approaches so they are not rediscovered. Private game data,
+captures, logs, device identifiers, and signing material are deliberately excluded.
 
 ## Architecture
 
@@ -53,13 +79,15 @@ LibertyRecomp / ReXGlue compatibility runtime
         |
         +--> statically recompiled GTA IV code (PowerPC -> C++ -> ARM64)
         +--> Xbox kernel, memory, threading, filesystem, input and audio services
-        +--> Xenos command processor and shader translation
-                         |
-                         v
-                  Vulkan / MoltenVK
-                         |
-                         v
-                       Metal
+        +--> generic Xenos command processor + runtime shader translation
+        |
+        +--> opt-in GTA-IV-specific renderer + cached native SPIR-V
+                                   |
+                                   v
+                            Vulkan / MoltenVK
+                                   |
+                                   v
+                                 Metal
 ```
 
 The iOS application owns `UIApplication`/`UIScene`, the visible view and
@@ -121,6 +149,11 @@ app directly on the iPad. Leave capture/validation and opt-in diagnostic flags o
 The new guide covers signing, game-file transfer, starting the game, and the
 explicit Debug opt-in. CMake files, not generated project build settings, remain
 the source of truth.
+
+The GTA-IV-specific renderer is currently an experimental build/launch option,
+not the broadly validated default. Its switches, exact measured result, retail
+fidelity settings, and fallback behavior are documented in the
+[engineering changelog](CHANGELOG.md).
 
 GitHub's automatic source ZIP does not contain the contents of Git submodules.
 For a complete checkout, use the recursive clone command above. A signed IPA is

@@ -3699,7 +3699,7 @@ bool SubmitNativeVertexDeclaration(uint8_t* base, uint32_t device, uint32_t decl
   }
 
   bool log_declaration = false;
-  {
+  if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
     std::lock_guard lock(g_vertex_declaration_diagnostic_mutex);
     if (g_logged_vertex_declarations.size() < kVertexDeclarationDiagnosticLimit) {
       log_declaration = g_logged_vertex_declarations.emplace(declaration, true).second;

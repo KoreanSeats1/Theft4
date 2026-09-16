@@ -1336,6 +1336,11 @@ constexpr uint32_t kVectorFontAtlasExtentMinusOne = 2047;
 constexpr uint32_t kVectorFontMipLevelCount = 5;
 constexpr uint32_t kCompletedFrameOffset = 16552;
 constexpr size_t kMaximumQueuedCommands = 65536;
+// Heavy GTA IV frames contain thousands of large NativeCommand objects. Keep
+// their stable frame storage off the allocation hot path and amortize the
+// producer/consumer mutex while retaining strict FIFO command order.
+constexpr size_t kInitialFrameCommandCapacity = 8192;
+constexpr size_t kRenderWorkerBatchCommands = 64;
 constexpr size_t kIndexedFrameDetailedCommandLimit = 256;
 constexpr size_t kIndexedFrameProgressInterval = 128;
 constexpr uint32_t kSpirvMagic = 0x07230203;
@@ -3578,11 +3583,30 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     const uint64_t queue_lock_begin = profile_transport ? profile::CpuTick() : 0;
     std::unique_lock lock(render_mutex_);
     const uint64_t queue_lock_end = profile_transport ? profile::CpuTick() : 0;
-    producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands || queued_title_presents_ >= 2;
-    render_condition_.wait(lock, [this]() {
+    const auto producer_can_submit = [this]() {
       return !render_worker_running_ ||
              (render_queue_.size() < kMaximumQueuedCommands && queued_title_presents_ < 2);
-    });
+    };
+    producer_waiting_ = !producer_can_submit();
+    if (producer_waiting_) {
+      const auto wait_started = std::chrono::steady_clock::now();
+      uint32_t timeout_count = 0;
+      while (!producer_can_submit()) {
+        if (render_condition_.wait_for(lock, std::chrono::milliseconds(500)) ==
+            std::cv_status::timeout) {
+          ++timeout_count;
+          if (timeout_count == 1 || !(timeout_count % 8)) {
+            const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - wait_started);
+            REXLOG_WARN(
+                "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
+                "queued-presents={} next-sequence={} worker-running={}",
+                waited.count(), render_queue_.size(), queued_title_presents_,
+                diagnostic_submit_sequence_ + 1, render_worker_running_.load());
+          }
+        }
+      }
+    }
     const uint64_t backpressure_end = profile_transport ? profile::CpuTick() : 0;
     producer_waiting_ = false;
     if (!render_worker_running_) {
@@ -5523,6 +5547,9 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
   if (render_worker_running_.exchange(true)) {
     return;
   }
+  if (current_frame_.capacity() < kInitialFrameCommandCapacity) {
+    current_frame_.reserve(kInitialFrameCommandCapacity);
+  }
   {
     std::lock_guard lock(deferred_diagnostic_mutex_);
     deferred_diagnostic_shutdown_ = false;
@@ -5584,6 +5611,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   std::vector<std::pair<RenderPhase, uint32_t>> render_phase_stack;
   uint64_t startup_texture_lock_count = 0;
   bool startup_present_follows_texture_lock_flush = false;
+  size_t queued_after_batch_transfer = 0;
   auto log_frame_batch = [this](std::string_view boundary, const NativeCommand& boundary_command,
                                 uint32_t submitted_frame, size_t queued_after_boundary) {
     if (!rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
@@ -5658,7 +5686,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     const bool profile_transport = g_native_profile_transport_active.load(std::memory_order_acquire) ||
         g_native_profile_capture_requested.load(std::memory_order_acquire);
     const uint64_t idle_begin = profile_transport ? profile::CpuTick() : 0;
-    {
+    if (worker_batch_.empty()) {
       std::unique_lock lock(render_mutex_);
       render_condition_.wait(
           lock, [this]() { return !render_worker_running_ || !render_queue_.empty(); });
@@ -5668,12 +5696,35 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         }
         continue;
       }
-      command = std::move(render_queue_.front());
-      render_queue_.pop_front();
-      QueueTextureProtection(command, false);
-      queued_after_pop = render_queue_.size();
+      const size_t transfer_count =
+          std::min(kRenderWorkerBatchCommands, render_queue_.size());
+      for (size_t index = 0; index < transfer_count; ++index) {
+        worker_batch_.push_back(std::move(render_queue_.front()));
+        render_queue_.pop_front();
+        const NativeCommand& staged = worker_batch_.back();
+        VisitProtectedTextureGenerations(staged, [&](uint64_t generation) {
+          const bool released = queued_texture_protection_.Release(generation);
+          const bool retained = worker_batch_texture_protection_.Retain(generation);
+          if (!released || !retained) {
+            REXLOG_ERROR(
+                "gta4-native-protection: batch transfer invariant failed generation={} "
+                "released={} retained={}",
+                generation, released, retained);
+          }
+        });
+      }
+      queued_after_batch_transfer = render_queue_.size();
       wake_producer = producer_waiting_ && queued_title_presents_ < 2;
     }
+    command = std::move(worker_batch_.front());
+    worker_batch_.pop_front();
+    VisitProtectedTextureGenerations(command, [&](uint64_t generation) {
+      if (!worker_batch_texture_protection_.Release(generation)) {
+        REXLOG_ERROR(
+            "gta4-native-protection: batch release invariant failed generation={}", generation);
+      }
+    });
+    queued_after_pop = queued_after_batch_transfer + worker_batch_.size();
     active_worker_command_ = &command;
     const auto clear_active_command = MakeScopeExit([&] { active_worker_command_ = nullptr; });
     if (wake_producer) render_condition_.notify_all();
@@ -6137,6 +6188,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     queued_title_presents_ = 0;
     producer_waiting_ = false;
   }
+  worker_batch_.clear();
+  worker_batch_texture_protection_.Reset();
   DestroyVulkanWorkerObjects();
 }
 
@@ -17165,12 +17218,20 @@ std::unordered_set<uint64_t> Gta4NativeGraphicsSystem::CollectProtectedTextureGe
 
   std::unordered_set<uint64_t> generations = frame_texture_protection_;
   if (active_worker_command_) AddProtectedTextureGenerations(*active_worker_command_, generations);
+  if (worker_batch_texture_protection_.valid()) {
+    worker_batch_texture_protection_.AppendTo(generations);
+  } else {
+    for (const auto& command : worker_batch_) {
+      AddProtectedTextureGenerations(command, generations);
+    }
+  }
   {
     std::lock_guard lock(render_mutex_);
     AppendQueuedTextureProtection(generations);
     if (REXCVAR_GET(gta4_validate_native_hot_caches)) {
       std::unordered_set<uint64_t> expected;
       for (const auto& command : current_frame_) AddProtectedTextureGenerations(command, expected);
+      for (const auto& command : worker_batch_) AddProtectedTextureGenerations(command, expected);
       for (const auto& command : render_queue_) AddProtectedTextureGenerations(command, expected);
       if (active_worker_command_) AddProtectedTextureGenerations(*active_worker_command_, expected);
       if (expected != generations) {

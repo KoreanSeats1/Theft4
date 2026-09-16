@@ -463,14 +463,23 @@ class Theft4BootstrapGraphics final : public rex::system::IGraphicsSystem {
 std::unique_ptr<rex::system::IGraphicsSystem>
 theft4_create_bootstrap_graphics() {
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
-  if (const char* backend = std::getenv("THEFT4_GRAPHICS_BACKEND");
-      backend && std::string_view(backend) == "native") {
+  // The GTA-IV-specific renderer is the production iOS path when it is
+  // compiled into the app. Environment variables supplied by devicectl are
+  // not persistent across later icon launches, so requiring an opt-in here
+  // silently returned manual Release launches to the much slower generic
+  // Xenos translator. Keep the generic renderer as an explicit recovery path.
+  const char* backend = std::getenv("THEFT4_GRAPHICS_BACKEND");
+  const bool force_generic = backend && std::string_view(backend) == "generic";
+  if (!force_generic) {
     if (auto native = theft4_create_gta4_native_graphics()) {
+      REXLOG_INFO("Theft4 selected the GTA IV native renderer");
       return native;
     }
     REXLOG_WARN(
         "Theft4 gta4-native initialization failed; retaining the generic "
         "Xenos/Vulkan fallback");
+  } else {
+    REXLOG_INFO("Theft4 explicitly selected the generic Xenos/Vulkan fallback");
   }
 #endif
   return std::make_unique<Theft4BootstrapGraphics>();

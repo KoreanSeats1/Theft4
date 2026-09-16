@@ -17,7 +17,146 @@ Status labels used below:
 Private game files, title updates, saves, screenshots, GPU captures, signing
 material, and device logs are never part of this changelog or repository.
 
-## Unreleased — work after `16e76b9e` — 2026-09-16
+## Unreleased — work after `440d505c` — 2026-09-16
+
+Comparison base: [`440d505c`](https://github.com/KoreanSeats1/Theft4/commit/440d505c964bbe4cb51a0217e162bf1eaa4de23e),
+the public native-renderer and performance-documentation checkpoint.
+
+### Experimental — native transport batching and device-loss reproduction
+
+- Follow-up failure recording captured Metal **Invalid Resource (code 9)** at
+  14:51:11 in both the swapchain acquisition command buffer and native frame
+  1696/submission 1714, followed by GPU timeouts and the device-loss latch. User
+  reports this visual failure coincided with starting iPad screen recording.
+  Recording-specific causation remains unproven pending a no-recording control.
+  MoltenVK maps this error through its generic out-of-device-memory result;
+  that wrapper does not establish actual memory exhaustion. The bounded trace
+  and runtime log were saved locally, and the frozen app was terminated.
+- A subsequent ordinary-play control with no screen recording reproduced the
+  visual freeze, so recording is not the root cause. The run remained healthy
+  through native frame 2989. At 14:57:42 GPU submission 2994 stopped completing
+  (tracker completed 2993); the producer queue reached 13,592 commands, and
+  recovery received `VK_ERROR_DEVICE_LOST` five seconds later. The native
+  renderer latched off while the process and audio remained alive. This makes
+  native GPU resource/submission correctness the highest-priority blocker.
+- Audio was clean throughout that control: 19,456 reported blocks, an 8,192-frame
+  queue, and zero underrun frames, rebuffers, dropped blocks, clipped samples,
+  or non-finite samples. The app was terminated only after the freeze and its
+  complete runtime log was preserved locally.
+
+- The render worker now dequeues up to 64 title commands per queue-lock
+  acquisition, keeping staged texture generations protected until consumed.
+  Initial frame storage reserves 8,192 commands. Producer backpressure logs
+  bounded stall breadcrumbs after 500 ms and periodically thereafter. These
+  changes built successfully in signed iPhoneOS Release; their individual
+  performance contribution has not been isolated in an A/B test.
+- iOS now selects the GTA-IV-specific native renderer on normal launches when
+  compiled in. `THEFT4_GRAPHICS_BACKEND=generic` retains the generic control.
+  Both paths remain AOT CPU execution and Vulkan → MoltenVK → Metal graphics.
+  The faster native default is **experimental, not stability-qualified**.
+- The 14:40:59 native session reached the playable car scene. The user reported
+  better visuals and approximately 25–30 FPS while turning the camera, then a
+  frozen image with continuing audio. This is human-observed performance, not
+  a sustained instrumented 30-FPS acceptance result.
+- At 14:42:16 the render worker failed to complete GPU submission 2274
+  (completed 2273). Recovery subsequently received `VK_ERROR_DEVICE_LOST`
+  (`-4`) from device-idle and permanently disabled native rendering at frame
+  2270. The process remained alive. Later renderer-initialization messages are
+  consequences of that failure latch, not evidence that initial setup failed.
+- This supersedes a CPU-only transport/livelock explanation for this run.
+  The original Metal fault is not in the ordinary runtime log; a GPU resource
+  lifetime, invalid command, shader fault, or timeout is not yet distinguished.
+  Surface-address-alias diagnostics alone do not prove the cause.
+- Saved the failure log locally and terminated the frozen process. Next test
+  uses the existing opt-in, bounded GPU flight recorder and Vulkan error
+  callback without changing rendering quality, frame overlap, or shader code.
+  Do not mask device loss by treating failed fences as completed.
+
+### Validated — full-intro visual test exposed a deterministic heavy-scene stall
+
+- Ran the ordinary ARM64 iPhoneOS Release build on an M5 iPad with the native
+  GTA-IV-specific backend, retail-equivalent resource sizes, 1280×720 output,
+  16:9 presentation, SMAA, vsync, and the 30 FPS cap. No diagnostic renderer
+  switch or GPU timing instrumentation was enabled for the launch.
+- Human observation confirmed materially improved texture quality and smooth
+  motion for approximately the first 20 seconds of the 3D intro. The first
+  expensive wide ship view triggered a pause; execution advanced to a later
+  ship-interior frame and then stopped publishing images.
+- Before the stall, the on-screen counter held near 20 FPS while motion appeared
+  notably smooth and evenly paced. This counter advances only for a new guest
+  mailbox version and is the best available measure of newly rendered game
+  frames in this build.
+- The present milestone log advanced at approximately 30 calls per second:
+  presents 900→1024 took 4.139 seconds, 1024→1200 took 5.864 seconds, and
+  1200→1500 took 10.004 seconds. Source review after the visual test confirmed
+  that this log counts every successful presenter invocation, including repeated
+  presentation of the same guest mailbox version. It is swapchain handoff cadence,
+  **not** distinct game FPS. Earlier 30-FPS interpretations of this telemetry are
+  superseded by the approximately 20-FPS on-screen measurement.
+- Audio reached block 9,216 with zero underrun frames, rebuffers, dropped blocks,
+  clipped samples, or non-finite samples.
+- Two device captures taken around a 10-second profile showed the same intact
+  game frame and a 0.0 FPS counter. The process remained alive; this was a hang
+  in forward frame production, not a crash, black frame, or corrupt output.
+- A 10-second Time Profiler attachment recorded 4.359 CPU-seconds on the busy
+  title command-submission thread and 3.986 CPU-seconds on the native render
+  worker, including 3.950 CPU-seconds under `RenderWorkerMain`. Recurrent hot
+  paths included pthread mutex slow paths, `ValidateAndCopyCommand`,
+  `NativeCommand` move/destruction, shared-pointer array movement, XXH3 fixed-
+  function hashing, `CaptureBufferResource`, `CaptureTextureResource`, and
+  pipeline/target lookup.
+- **Leading diagnosis, not yet a final root cause:** the heavy scene saturates or
+  livelocks the CPU-side producer/consumer command path through lock contention
+  and per-command capture/copy/hash work. The profile does not look like a sleeping
+  deadlock or a process/GPU crash. A short correlated Metal trace is still needed
+  to prove whether the GPU becomes idle while the CPU path fails to publish.
+- **Next scoped experiment:** add bounded queue-depth, producer-wait, consumer-
+  wait, commands-per-frame, copied-byte, resource-capture, and pipeline-lookup
+  counters; reproduce the same transition; then remove the dominant verified
+  ownership/copy or lock cost without changing draw contents, shaders, textures,
+  effects, resolution, or synchronization semantics.
+- No renderer code, game data, save data, or device configuration changed during
+  this test. The app was terminated after evidence collection and process absence
+  was verified.
+
+### Validated — generic-renderer gameplay control and live CPU diagnosis
+
+- A subsequent manual app launch selected the production Liberty Vulkan command
+  processor (generic Xenos/PM4 translation through Vulkan → MoltenVK → Metal),
+  not the GTA-IV-specific native backend. The runtime log explicitly records
+  `Theft4 selected the production Liberty Vulkan command processor`.
+- Human validation reached stable controller-driven open-world gameplay. The
+  on-screen distinct-frame counter generally reported 8–12 FPS, with occasional
+  zero-FPS pauses followed by recovery. This establishes a slower but substantially
+  more robust gameplay control path for comparison with the faster native backend.
+- Representative gameplay frames contained roughly 2,000–7,700 draw attempts,
+  commonly more than 5,000 submitted raster draws, and 41–45 recurring resolve/
+  copy/dump operations. New pipeline combinations continued to appear during
+  traversal; affected frames temporarily reported placeholder skips and recovered
+  after asynchronous pipeline creation.
+- A 12-second on-device Time Profiler recording measured 9.851 CPU-seconds on a
+  major AOT guest thread and 8.426 CPU-seconds on `GPU Commands`. The five largest
+  MoltenVK/Metal driver worker entries shown by the summary consumed another
+  10.904 CPU-seconds combined. This is a heavily CPU-parallel workload, not proof
+  of an exclusively GPU-limited frame.
+- Generic GPU-command hot paths included `_platform_memmove`, base and Vulkan
+  register writes, `VulkanCommandProcessor::UpdateBindings`, Type-0 packet
+  execution, and `RenderTargetCache::Update`. Driver workers repeatedly created
+  Metal render/compute contexts and encoded MoltenVK command buffers.
+- Audio degradation correlated with the worst gameplay intervals: the ring fell
+  to 256 queued frames and recovery added 256 underrun frames plus one rebuffer
+  repeatedly, sometimes several times per second. The cumulative session reached
+  83,712 underrun frames and 327 rebuffers while retaining zero dropped blocks,
+  clipped samples, or non-finite samples. This supports CPU starvation as a major
+  contributor to audible chopping rather than a malformed audio stream.
+- A broader Apple Game Performance capture failed to finalize and a follow-up
+  Metal System Trace could not reattach to the still-running process. No GPU-time
+  or limiter conclusion is claimed from those failed captures.
+- No code or settings changed during this diagnostic. The app was deliberately
+  left running because the user was actively playing it; normal bounded-test
+  termination remains the rule when the user is not using the app.
+
+## Public checkpoint `440d505c` — 2026-09-16
 
 Comparison base: [`16e76b9e`](https://github.com/KoreanSeats1/Theft4/commit/16e76b9ea230920317436159258c745df706361b),
 the last commit on `origin/main` when this entry was prepared.

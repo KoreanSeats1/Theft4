@@ -1634,6 +1634,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::pmr::synchronized_pool_resource snapshot_pool_;
   std::deque<NativeCommand> render_queue_;
   NativeTextureProtectionIndex queued_texture_protection_; // render_mutex_ owns this.
+  // Render-worker-owned staging. Moving a bounded batch out of render_queue_
+  // amortizes the queue mutex without changing command order. Texture
+  // generations stay protected until each staged command becomes active.
+  std::deque<NativeCommand> worker_batch_;
+  NativeTextureProtectionIndex worker_batch_texture_protection_;
   uint32_t queued_title_presents_ = 0;
   bool producer_waiting_ = false;
   uint64_t diagnostic_submit_sequence_ = 0;

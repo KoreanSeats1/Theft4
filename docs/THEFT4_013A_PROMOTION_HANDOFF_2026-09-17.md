@@ -4,15 +4,21 @@ Source branch: `codex/ipad-m5-mcla-experiments`
 
 Source base: `814905f975d70972d81b2c7c06c3e18340145b0f`
 
-Current source head: `cde6fe2b6fcef76bdc1a5d7076c6a262693e2357`
+Candidate source commit: `cde6fe2b6fcef76bdc1a5d7076c6a262693e2357`
+
+Correction after user review: `cde6fe2b` was never installed or tested on the
+iPad. Host tests, a host microbenchmark, and a signed iOS build do not establish
+device correctness or a frame-pacing improvement. The earlier recommendation
+to promote its shared hunks before device testing was premature. Hold this
+candidate in Lab until device acceptance is complete.
 
 Do not merge this branch wholesale. It contains Lab identity/build machinery,
 diagnostics, an unresolved texture-cache experiment and asynchronous pipeline
 behavior that may omit draws while compilation finishes.
 
-## Release-safe shared renderer patches
+## Shared renderer candidates and validation status
 
-### 1. Promote `b4563d5d` in full
+### 1. `b4563d5d`: exercised on device in combined Lab builds
 
 `b4563d5d5e5b6ec327d3360f14a30ef22f43b6c3` changes only
 `graphics_system.cpp`:
@@ -24,10 +30,13 @@ behavior that may omit draws while compilation finishes.
 
 This is semantics-preserving, compiled in every subsequent signed device Lab
 build, and was exercised during all reported device runs.
+Its isolated performance benefit and the exact release combination have not
+been established by a matched device comparison.
 
-### 2. Promote only the shared renderer and test files from `cde6fe2b`
+### 2. `cde6fe2b`: hold pending device testing
 
-Use these paths from `cde6fe2b6fcef76bdc1a5d7076c6a262693e2357`:
+The shared candidate consists of these paths from
+`cde6fe2b6fcef76bdc1a5d7076c6a262693e2357`:
 
 - `glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp`
 - `glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h`
@@ -51,10 +60,10 @@ Validation:
   passed strict code-sign verification.
 - Signed artifact receipt:
   `out/m5-lab/artifacts/cde6fe2b6fce-20260917T234453Z/receipt.json`.
-- This exact candidate was deliberately not installed after the release
-  promotion decision, so it still needs a normal-app smoke run after promotion.
+- This exact candidate was not installed. There is no device gameplay, visual
+  correctness, frame-pacing, or save/load result for this change.
 
-Suggested extraction rather than a whole-commit cherry-pick:
+Extraction for an isolated test candidate, not release approval:
 
 ```sh
 git show --format= cde6fe2b -- \
@@ -66,8 +75,9 @@ git show --format= cde6fe2b -- \
   | git apply -3
 ```
 
-The release owner should inspect the staged diff, run the host unit suite and
-build/sign the ordinary `com.theft4.bringup` app before committing.
+Inspect the candidate diff and validate it in the isolated Lab before deciding
+whether to promote it. The full archived `cde6fe2b` Lab also contains the earlier
+unresolved experiments, so it is not the proposed release combination.
 
 ## Optional release tooling
 
@@ -137,9 +147,13 @@ route, 21 complete 300-frame windows measured:
 - final eight windows: 23.90, 23.37, 26.84, 28.43, 23.34, 25.57, 22.80 and
   23.96 FPS.
 
-That session logged 32 pipeline deferrals, zero producer stalls at the existing
-500 ms threshold, zero publish failures and zero fatal errors. The later
-sustained 22-26 FPS periods did not coincide with new pipeline deferrals. Audio
+That session contains 32 pipeline-deferral log entries, zero producer stalls at
+the existing 500 ms reporting threshold, zero publish failures and zero fatal
+errors. Deferral logging emits the first 32 events and then every 1,024th event;
+32 entries do not establish that exactly 32 draws were deferred or that no
+deferrals happened during later slowdowns. The FPS figures are averages over
+300-frame windows, not individual frame times, minimum instantaneous FPS, or
+1% lows. Shorter stalls and the CPU/GPU bottleneck remain unresolved. Audio
 summaries remained free of underruns, rebuffers, drops, clipping and nonfinite
 samples. Evidence:
 `out/m5-lab/validation/async-pipelines/live-fps-4.log`.
@@ -157,16 +171,18 @@ profiler disconnect, no Theft4 process was running. No command in this final
 pass installed, launched, modified or removed the ordinary
 `com.theft4.bringup` app.
 
-## Release acceptance after promotion
+## Device acceptance before promotion
 
-For 0.1.3(a), build and install the ordinary Theft4 identity with only the two
-shared CPU patches above, then run:
+First build an isolated Lab candidate containing the proposed shared patches
+without the unresolved experiments. Compare against a matching control with
+the same settings, save, route, and cache conditions, then run:
 
 1. launch-to-scene smoke and save/load;
 2. the same fast-driving city route for at least five minutes;
 3. present-window FPS plus frame-time tail collection;
 4. checks for visual/resource errors and audio underruns.
 
-Acceptance remains a paced 30 FPS with no new stalls or visual regressions. The
-current evidence supports the shared CPU reductions, but it does not establish
-that they alone produce a locked frame rate.
+Acceptance remains a paced 30 FPS with no new stalls or visual regressions.
+There is currently no on-device acceptance for `cde6fe2b`, and no locked-30
+result for the proposed release combination. Promote only after the relevant
+device checks pass; then verify the actual release build separately.

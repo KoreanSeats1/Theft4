@@ -1375,7 +1375,11 @@ enum class NativeWorkerDiagnosticPhase : uint32_t {
   kUploadCapacity,
   kCommandSetup,
   kTexturePreparation,
-  kFrameRecording,
+  kFramePlanning,
+  kFrameCommandLoop,
+  kPipelineWait,
+  kPipelineBuild,
+  kPresentCopy,
   kFinalization,
   kQueueSubmission,
 };
@@ -1402,8 +1406,16 @@ constexpr const char* NativeWorkerDiagnosticPhaseName(NativeWorkerDiagnosticPhas
       return "command-setup";
     case NativeWorkerDiagnosticPhase::kTexturePreparation:
       return "texture-preparation";
-    case NativeWorkerDiagnosticPhase::kFrameRecording:
-      return "frame-recording";
+    case NativeWorkerDiagnosticPhase::kFramePlanning:
+      return "frame-planning";
+    case NativeWorkerDiagnosticPhase::kFrameCommandLoop:
+      return "frame-command-loop";
+    case NativeWorkerDiagnosticPhase::kPipelineWait:
+      return "pipeline-wait";
+    case NativeWorkerDiagnosticPhase::kPipelineBuild:
+      return "pipeline-build";
+    case NativeWorkerDiagnosticPhase::kPresentCopy:
+      return "present-copy";
     case NativeWorkerDiagnosticPhase::kFinalization:
       return "finalization";
     case NativeWorkerDiagnosticPhase::kQueueSubmission:
@@ -1417,6 +1429,9 @@ std::atomic<uint32_t> g_native_worker_diagnostic_phase{
 std::atomic<uint32_t> g_native_worker_diagnostic_command_type{UINT32_MAX};
 std::atomic<uint64_t> g_native_worker_diagnostic_command_sequence{0};
 std::atomic<uint64_t> g_native_worker_diagnostic_phase_begin_ms{0};
+std::atomic<uint32_t> g_native_worker_diagnostic_frame_command_index{0};
+std::atomic<uint32_t> g_native_worker_diagnostic_frame_command_count{0};
+std::atomic<uint32_t> g_native_worker_diagnostic_frame_command_type{UINT32_MAX};
 
 uint64_t NativeWorkerDiagnosticNowMilliseconds() {
   return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1441,6 +1456,17 @@ void SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase phase) {
       phase,
       CommandType(g_native_worker_diagnostic_command_type.load(std::memory_order_relaxed)),
       g_native_worker_diagnostic_command_sequence.load(std::memory_order_relaxed));
+}
+
+void SetNativeWorkerDiagnosticFrameProgress(uint32_t command_index, uint32_t command_count,
+                                            CommandType command_type) {
+  if (!REXCVAR_GET(gta4_native_worker_stall_attribution)) {
+    return;
+  }
+  g_native_worker_diagnostic_frame_command_index.store(command_index, std::memory_order_relaxed);
+  g_native_worker_diagnostic_frame_command_count.store(command_count, std::memory_order_relaxed);
+  g_native_worker_diagnostic_frame_command_type.store(uint32_t(command_type),
+                                                       std::memory_order_release);
 }
 // Frame-local transient uploads grow in reusable 16 MiB blocks. The exact
 // byte value and block-count rounding are checked with Python in the renderer
@@ -3707,7 +3733,8 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
               REXLOG_WARN(
                   "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
                   "queued-presents={} next-sequence={} worker-running={} worker-phase={} "
-                  "worker-phase-ms={} worker-command={} worker-sequence={}",
+                  "worker-phase-ms={} worker-command={} worker-sequence={} "
+                  "frame-command={}/{} frame-command-type={}",
                   waited.count(), render_queue_.size(), queued_title_presents_,
                   diagnostic_submit_sequence_ + 1, render_worker_running_.load(),
                   NativeWorkerDiagnosticPhaseName(worker_phase),
@@ -3715,7 +3742,12 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
                       ? now_ms - worker_phase_begin_ms
                       : 0,
                   CommandTypeName(CommandType(worker_command_type)),
-                  g_native_worker_diagnostic_command_sequence.load(std::memory_order_relaxed));
+                  g_native_worker_diagnostic_command_sequence.load(std::memory_order_relaxed),
+                  g_native_worker_diagnostic_frame_command_index.load(std::memory_order_relaxed),
+                  g_native_worker_diagnostic_frame_command_count.load(std::memory_order_relaxed),
+                  CommandTypeName(CommandType(
+                      g_native_worker_diagnostic_frame_command_type.load(
+                          std::memory_order_acquire))));
             } else {
               REXLOG_WARN(
                   "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
@@ -5883,6 +5915,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     const auto clear_active_command = MakeScopeExit([&] { active_worker_command_ = nullptr; });
     SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch, command.type,
                                    command.diagnostic_submit_sequence);
+    SetNativeWorkerDiagnosticFrameProgress(0, 0, CommandType(UINT32_MAX));
     const auto clear_worker_diagnostic_phase = MakeScopeExit([&] {
       SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kIdle,
                                      CommandType(UINT32_MAX), 0);
@@ -19154,6 +19187,10 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     if (prewarm) {
       return VK_NULL_HANDLE;
     }
+    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
+    const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
+      SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+    });
     const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
     const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] { return native_pipeline_compiler_->compiler->Take(key, true); });
     RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
@@ -19551,6 +19588,10 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
             return result;
           }, !prewarm);
       if (queued && !prewarm) {
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
+        const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
+          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+        });
         const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
         const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] { return native_pipeline_compiler_->compiler->Take(key, true); });
         RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
@@ -19580,6 +19621,10 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
                        transition::kFlagBefore, diagnostic_draw_id_, key.vertex_shader_hash,
                        key.pixel_shader_hash);
   }
+  SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineBuild);
+  const auto restore_pipeline_build_phase = MakeScopeExit([&] {
+    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+  });
   const VkResult pipeline_result = profile::CpuCall(profile::CpuOp::kDriverPipeline, [&] { return vulkan_device->functions().vkCreateGraphicsPipelines(
       vulkan_device->device(), native_pipeline_cache_, 1, &pipeline_info, nullptr, &pipeline); });
   RecordNativePipelineTiming(rex::chrono::Clock::QueryHostTickCount() - pipeline_start);
@@ -25722,6 +25767,9 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data, bool hdr_output,
     float hdr_headroom, bool& presenter_transfer_written, bool& presenter_written,
     bool trace_stages, uint32_t trace_sequence, bool force_content_probe) {
+  SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFramePlanning);
+  SetNativeWorkerDiagnosticFrameProgress(0, uint32_t(current_frame_.size()),
+                                         CommandType(UINT32_MAX));
   const profile::CpuPhaseScope profile_phase(profile::CpuPhase::kRecording);
   const profile::CpuScope profile_scope(profile::CpuOp::kRecordFrame);
 
@@ -27175,8 +27223,11 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         phone_batch_trace->run, submitted_frame, current_frame_.size(), phone_probe_commands.size(),
         PhoneTraceConfig().readbacks));
   }
+  SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
   for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
     const NativeCommand& queued_command = current_frame_[command_index];
+    SetNativeWorkerDiagnosticFrameProgress(uint32_t(command_index), uint32_t(current_frame_.size()),
+                                           queued_command.type);
     const auto* profile_state = queued_command.pipeline_state.get();
     const profile::CpuContextScope detail_command_context({uint32_t(command_index), uint32_t(queued_command.render_phase),
         profile_state && profile_state->vertex_shader_resource ? profile_state->vertex_shader_resource->hash : 0,
@@ -32028,6 +32079,10 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   diagnostic_command_index_ = SIZE_MAX;
   fire_event_active_ = fire_frame_;
   if (present_source) {
+    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPresentCopy);
+    SetNativeWorkerDiagnosticFrameProgress(uint32_t(current_frame_.size()),
+                                           uint32_t(current_frame_.size()),
+                                           CommandType::kPresent);
     if (NativeRendererEventTraceEnabled()) {
     TraceNativeRendererEvent(
         "present-begin",
@@ -32775,7 +32830,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               rex::chrono::Clock::QueryHostTickCount() - native_profile_texture_begin;
         }
 
-        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameRecording);
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFramePlanning);
         bool presenter_transfer_written = false;
         bool presenter_written = false;
         detail_callback_phase.Set(profile::CpuPhase::kRecording);

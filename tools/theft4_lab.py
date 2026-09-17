@@ -90,6 +90,21 @@ def clone_directory(source, destination):
     subprocess.run(["/bin/cp", "-cR", str(source), str(destination)], check=True)
 
 
+def strip_git_metadata(root):
+    # A frozen source export may contain repository metadata. Only remove it
+    # from the newly created private copy; never follow directory symlinks.
+    for parent, dirs, files in os.walk(root):
+        if ".git" in dirs:
+            path = Path(parent) / ".git"
+            if path.is_symlink():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+            dirs.remove(".git")
+        if ".git" in files:
+            (Path(parent) / ".git").unlink()
+
+
 def run(command, log=None, cwd=None):
     print("Running: " + str(command[0]) + " " + " ".join(map(str, command[1:5])), flush=True)
     env = dict(os.environ)
@@ -147,6 +162,8 @@ def prepare(args):
         print("Cloning frozen source and dependencies into private Lab files...", flush=True)
         clone_directory(baseline / "source", inside(lane / "source", lane))
         clone_directory(baseline / "dependencies", inside(lane / "dependencies", lane))
+        strip_git_metadata(lane / "source")
+        strip_git_metadata(lane / "dependencies")
         state = {"baseline": str(baseline), "baseline_identity_sha256": sha(identity_path)}
     before = tracked_files(args.base_commit)
     after = tracked_files(commit)

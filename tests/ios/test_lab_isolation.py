@@ -84,6 +84,21 @@ class IsolationTests(unittest.TestCase):
             (root / "code.cpp").unlink()
             self.assertNotEqual(first, lab.manifest_hash(lab.tree_manifest(root)))
 
+    def test_git_metadata_is_stripped_only_from_private_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "copy/.git").mkdir(parents=True)
+            (root / "copy/.git/HEAD").write_text("private copy")
+            (root / "copy/dependency").mkdir()
+            (root / "copy/dependency/.git").write_text("gitdir: ../../../working/.git")
+            (root / "working/.git").mkdir(parents=True)
+            (root / "working/.git/HEAD").write_text("preserve")
+            lab.strip_git_metadata(root / "copy")
+            self.assertEqual((root / "working/.git/HEAD").read_text(), "preserve")
+            self.assertFalse((root / "copy/.git").exists())
+            self.assertFalse((root / "copy/dependency/.git").exists())
+            lab.tree_manifest(root / "copy")
+
     def test_main_and_detached_head_cannot_prepare(self):
         for branch in ("main", "master", ""):
             with self.subTest(branch=branch), patch.object(lab, "git", return_value=branch):

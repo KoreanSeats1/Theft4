@@ -78,4 +78,5 @@ print "Building Theft4 $version ($build_version) for public iOS sideloading"
   -DTHEFT4_XENIOS_IOS_LIB_DIR="$library_dir" \
   -DTHEFT4_XENIOS_GENERATED_SHADER_DIR="$shader_dir"
 "$cmake_bin" --build --preset theft4-device-release --parallel "$build_jobs"
+python3 "$repo_root/tests/ios/verify_release_build.py" "$repo_root/out/build/ios-device-release"
 "$repo_root/tools/package_ios_ipa.sh" "$app_path" "$repo_root/dist"

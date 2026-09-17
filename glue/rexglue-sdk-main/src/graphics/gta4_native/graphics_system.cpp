@@ -5564,7 +5564,40 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
     std::lock_guard lock(deferred_diagnostic_mutex_);
     deferred_diagnostic_shutdown_ = false;
   }
+#if defined(__APPLE__) && defined(__MACH__)
+  // RecordNativeFrame has a large stack frame in release builds. The default
+  // iOS std::thread stack can hit its guard page before the first frame is
+  // recorded, leaving the producer blocked behind a dead render worker.
+  constexpr size_t kRenderWorkerStackSize = 2 * 1024 * 1024;
+  pthread_attr_t attributes;
+  const int attributes_result = pthread_attr_init(&attributes);
+  int create_result = attributes_result;
+  if (create_result == 0) {
+    create_result = pthread_attr_setstacksize(&attributes, kRenderWorkerStackSize);
+  }
+  if (create_result == 0) {
+    create_result = pthread_create(
+        &render_worker_, &attributes,
+        [](void* context) -> void* {
+          pthread_setname_np("Theft4 native render");
+          static_cast<Gta4NativeGraphicsSystem*>(context)->RenderWorkerMain();
+          return nullptr;
+        },
+        this);
+  }
+  if (attributes_result == 0) {
+    pthread_attr_destroy(&attributes);
+  }
+  if (create_result != 0) {
+    render_worker_running_.store(false, std::memory_order_release);
+    REXLOG_ERROR("gta4-native: failed to create render worker (pthread error {})",
+                 create_result);
+    return;
+  }
+  render_worker_joinable_ = true;
+#else
   render_worker_ = std::thread([this]() { RenderWorkerMain(); });
+#endif
 }
 
 void Gta4NativeGraphicsSystem::BeginModernShaderFrame() {
@@ -33312,9 +33345,16 @@ void Gta4NativeGraphicsSystem::DestroyVulkanWorkerObjects() {
 void Gta4NativeGraphicsSystem::Shutdown() {
   if (render_worker_running_.exchange(false)) {
     render_condition_.notify_all();
+#if defined(__APPLE__) && defined(__MACH__)
+    if (render_worker_joinable_) {
+      pthread_join(render_worker_, nullptr);
+      render_worker_joinable_ = false;
+    }
+#else
     if (render_worker_.joinable()) {
       render_worker_.join();
     }
+#endif
   }
   ShutdownDeferredDiagnosticWorker();
 

@@ -23,6 +23,10 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include <pthread.h>
+#endif
+
 #include <rex/graphics/gta4_native/title_commands.h>
 #include <rex/graphics/gta4_native/native_black_anomaly.h>
 #include <rex/graphics/gta4_native/surface_view.h>
@@ -1654,7 +1658,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t diagnostic_submit_sequence_ = 0;
   uint32_t diagnostic_producer_epoch_ = 1;
   std::atomic<bool> render_worker_running_{false};
+#if defined(__APPLE__) && defined(__MACH__)
+  pthread_t render_worker_{};
+  bool render_worker_joinable_ = false;
+#else
   std::thread render_worker_;
+#endif
   // Authoritative render-worker state. State commands mutate this object in
   // place; immutable snapshots are created only for commands that are retained
   // for later frame recording.

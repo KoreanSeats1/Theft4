@@ -44,6 +44,11 @@ reverifies the archived app's hash and accepts only the fixed Lab identity.
 No ordinary-app install, uninstall, launch or data-write operation exists in
 this tool. Direct manual Xcode/device commands do not inherit these guards.
 
+The source digest excludes `glue/rexglue-sdk-main/out`, where the SDK writes its
+generated runtime archive. That directory is inside Lab's private source copy;
+it cannot overwrite the original checkout's archive. Every other source file
+remains covered by the snapshot check.
+
 Each successful build is archived with a receipt containing source commit,
 source/dependency digests and executable/app hashes. Re-running prepare after
 a new commit refreshes the overlay, including deleted tracked files. Author

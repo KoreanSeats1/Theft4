@@ -23,6 +23,7 @@ LAB_ID = "com.theft4.m5lab"
 STABLE_ID = "com.theft4.bringup"
 LAB_NAME = "Theft4 Lab"
 BASE_COMMIT = "814905f9"
+SOURCE_OUTPUTS = ("glue/rexglue-sdk-main/out",)
 
 
 def sha(path):
@@ -61,11 +62,13 @@ def lane_path():
     return inside(ROOT / "out/m5-lab", ROOT)
 
 
-def tree_manifest(root):
+def tree_manifest(root, excluded=()):
     """Hash regular files and symlink text, rejecting any link out of the copy."""
     root = Path(root).resolve()
     result = {}
     for parent, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs
+                   if (Path(parent) / name).relative_to(root).as_posix() not in excluded]
         if ".git" in dirs or ".git" in files:
             raise ValueError(f"Build snapshot must not contain Git metadata: {parent}")
         for name in sorted(dirs + files):
@@ -77,6 +80,24 @@ def tree_manifest(root):
             elif path.is_file():
                 result[rel] = {"sha256": sha(path), "size": path.stat().st_size}
     return result
+
+
+def source_manifest(root):
+    # ReXGlue writes its runtime archive beneath its own out directory even
+    # with an external CMake binary directory. It is a private build product.
+    return tree_manifest(root, excluded=SOURCE_OUTPUTS)
+
+
+def verify_source_snapshot(lane, state):
+    expected = json.loads((lane / "source-manifest.json").read_text())
+    if manifest_hash(expected) != state["source_tree_sha256"]:
+        raise ValueError("Prepared source manifest changed")
+    # Accommodate receipts made before generated SDK output was distinguished
+    # from source. Every other recorded source byte must still match.
+    expected = {key: value for key, value in expected.items()
+                if not any(key == path or key.startswith(path + "/") for path in SOURCE_OUTPUTS)}
+    if source_manifest(lane / "source") != expected:
+        raise ValueError("Generated source changed; preserve those edits before recreating the Lab lane")
 
 
 def manifest_hash(manifest):
@@ -156,8 +177,7 @@ def prepare(args):
         if state["baseline"] != str(baseline) or state["baseline_identity_sha256"] != sha(identity_path):
             raise ValueError("Existing Lab lane belongs to a different frozen baseline")
         # Detect edits to the generated snapshot; author changes in the worktree.
-        if manifest_hash(tree_manifest(lane / "source")) != state["source_tree_sha256"]:
-            raise ValueError("Generated source changed; preserve those edits before recreating the Lab lane")
+        verify_source_snapshot(lane, state)
         if manifest_hash(tree_manifest(lane / "dependencies")) != state["dependency_tree_sha256"]:
             raise ValueError("Private dependencies changed; preserve them as a separately reviewed experiment")
     else:
@@ -194,13 +214,14 @@ def prepare(args):
             inside(destination, lane / "source")
         else:
             shutil.copy2(source, destination)
-    source_manifest = tree_manifest(lane / "source")
+    sources = source_manifest(lane / "source")
     dependency_manifest = tree_manifest(lane / "dependencies")
-    write_json(lane / "source-manifest.json", source_manifest)
+    write_json(lane / "source-manifest.json", sources)
     write_json(lane / "dependency-manifest.json", dependency_manifest)
     state.update(source_commit=commit, base_commit=git("rev-parse", args.base_commit),
                  overlay_paths=sorted(after), team=args.team, bundle_id=LAB_ID,
-                 display_name=LAB_NAME, source_tree_sha256=manifest_hash(source_manifest),
+                 display_name=LAB_NAME, source_tree_sha256=manifest_hash(sources),
+                 source_digest_excludes=list(SOURCE_OUTPUTS),
                  dependency_tree_sha256=manifest_hash(dependency_manifest),
                  prepared_at=datetime.now(timezone.utc).isoformat())
     write_json(state_file, state)
@@ -276,9 +297,9 @@ def build(args):
     lane, state = read_state()
     if commit != state["source_commit"]:
         raise ValueError("Commit changed; run prepare again before building")
-    for name, key in (("source", "source_tree_sha256"), ("dependencies", "dependency_tree_sha256")):
-        if manifest_hash(tree_manifest(lane / name)) != state[key]:
-            raise ValueError(f"Private {name} snapshot changed since preparation")
+    verify_source_snapshot(lane, state)
+    if manifest_hash(tree_manifest(lane / "dependencies")) != state["dependency_tree_sha256"]:
+        raise ValueError("Private dependencies changed since preparation")
     command = [state["cmake"], "--build", str(lane / "build"), "--config", "Release",
                "--target", "Theft4", "--parallel", str(args.jobs), "--", "-allowProvisioningUpdates"]
     write_json(lane / "build-command.json", command)
@@ -293,6 +314,7 @@ def build(args):
     clone_directory(app, artifact / "Theft4.app")
     result.update(source_commit=commit, base_commit=state["base_commit"],
                   source_tree_sha256=state["source_tree_sha256"],
+                  source_digest_excludes=list(SOURCE_OUTPUTS),
                   dependency_tree_sha256=state["dependency_tree_sha256"],
                   built_at=stamp, app=str(artifact / "Theft4.app"),
                   gameplay_acceptance="not tested")

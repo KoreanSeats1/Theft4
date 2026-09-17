@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the safeguards that keep Lab out of the working app and its files."""
 import importlib.util
+import json
 from pathlib import Path
 import plistlib
 import tempfile
@@ -98,6 +99,23 @@ class IsolationTests(unittest.TestCase):
             self.assertFalse((root / "copy/.git").exists())
             self.assertFalse((root / "copy/dependency/.git").exists())
             lab.tree_manifest(root / "copy")
+
+    def test_archive_rebuild_does_not_hide_real_source_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lane = Path(directory)
+            source = lane / 'source'
+            output = source / lab.SOURCE_OUTPUTS[0]
+            output.mkdir(parents=True)
+            (source / 'renderer.cpp').write_text('baseline')
+            (output / 'librexruntime.a').write_text('old build product')
+            manifest = lab.tree_manifest(source)  # First-generation receipt.
+            (lane / 'source-manifest.json').write_text(json.dumps(manifest))
+            state = {'source_tree_sha256': lab.manifest_hash(manifest)}
+            (output / 'librexruntime.a').write_text('new independent build product')
+            lab.verify_source_snapshot(lane, state)
+            (source / 'renderer.cpp').write_text('unrecorded edit')
+            with self.assertRaisesRegex(ValueError, 'Generated source changed'):
+                lab.verify_source_snapshot(lane, state)
 
     def test_main_and_detached_head_cannot_prepare(self):
         for branch in ("main", "master", ""):

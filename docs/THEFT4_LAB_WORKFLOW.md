@@ -75,8 +75,10 @@ Launcher success or a build passing does not count as gameplay acceptance.
 
 **Experiment and result discipline**
 
-Use one conceptual runtime change per commit. Where practical, add an opt-in
-switch with the baseline path as default. Do not stack unproven changes. Record:
+Use small runtime commits that can be integrated or reverted independently.
+The user authorized trying the initial candidates together before collecting
+further driving measurements. The texture-cache switch defaults on only in Lab;
+retain its baseline launch override for isolation. Record:
 
 | Field | Required evidence |
 |---|---|
@@ -86,9 +88,11 @@ switch with the baseline path as default. Do not stack unproven changes. Record:
 | Correctness | HUD, reflections, fonts, texture streaming, audio, save/load and lifecycle |
 | Decision | Keep/reject/defer, evidence links, limitations and rollback commit |
 
-The first performance candidate is guest sampler-only texture-content cache
-churn. Count it before implementing a cache-key change. Preserve existing 30 Hz
-pacing, filtering and FSR until measurements justify a separate experiment.
+The first implementation tests guest sampler-only texture-content cache churn
+and two small CPU overhead reductions. See
+[THEFT4_LAB_OPTIMIZATIONS_2026-09-17.md](THEFT4_LAB_OPTIMIZATIONS_2026-09-17.md)
+for commits, controls and results. Existing 30 Hz pacing, filtering and FSR
+remain unchanged. Build/startup success does not establish a performance gain.
 
 **Combining findings and merging back**
 

@@ -135,7 +135,7 @@ optional argument fails fast if the intended version and plist disagree:
 
 ```sh
 THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
-  ./tools/build_ios_release.sh 0.1.1
+  ./tools/build_ios_release.sh 0.1.2
 ```
 
 You can install without attaching Xcode's debugger:
@@ -171,10 +171,12 @@ Theft4 Documents/
     ...the rest of the validated game installation...
 ```
 
-Launch Theft4 once to create its Documents directory. On the Mac, open
-**Finder → your iPad → Files → Theft4** and copy the prepared folder named
-**game**. Wait until transfer finishes. Do not nest it under another `game`
-folder. Preserve the original ISO/update and existing saves.
+Launch Theft4 once. It creates **Files → On My iPhone/iPad → Theft4 → game**
+and a short instruction file automatically. Open `game` and copy the **contents**
+of the prepared game folder into it. On a Mac, the same location is available at
+**Finder → your device → Files → Theft4 → game**. Wait until transfer finishes.
+Do not create another nested `game` folder. Preserve the original ISO/update and
+existing saves.
 
 The current startup path stores runtime user/save/cache data under
 `Library/Application Support/Theft4/startup`, not a transferred `Documents/User`

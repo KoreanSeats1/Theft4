@@ -56,6 +56,7 @@
 - (void)startTransferredGame;
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
+- (void)initializeSharedGameDirectory;
 @end
 
 static void coreEvent(void *context, const char *event) {
@@ -176,11 +177,47 @@ static void bootEvent(void *context, const char *event) {
     } else {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
     }
-    // Finder File Sharing exposes Documents, not private Application Support.
-    [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask
-        appropriateForURL:nil create:YES error:nil];
+    [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
     [self createCore];
+}
+
+- (void)initializeSharedGameDirectory {
+    NSError *error = nil;
+    NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
+        inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
+    NSURL *game = [documents URLByAppendingPathComponent:@"game" isDirectory:YES];
+    if (!documents || !game || ![NSFileManager.defaultManager createDirectoryAtURL:game
+        withIntermediateDirectories:YES attributes:nil error:&error]) {
+        _failure = [NSString stringWithFormat:@"Cannot create the shared game folder: %@",
+            error.localizedDescription ?: @"Documents is unavailable"];
+        return;
+    }
+
+    NSURL *instructionsURL = [documents URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path]) {
+        NSString *instructions =
+            @"Theft4 game-file transfer\n\n"
+            @"Open the game folder next to this file and copy the CONTENTS of your prepared "
+            @"installation into it. The final layout must include game/default.xex, "
+            @"game/default.xexp, and game/update. A raw ISO will not work.\n\n"
+            @"Return to Theft4 and choose Verify Game Files when the transfer finishes.\n";
+        if (![instructions writeToURL:instructionsURL atomically:YES
+            encoding:NSUTF8StringEncoding error:&error]) {
+            _failure = [NSString stringWithFormat:@"Cannot create transfer instructions: %@",
+                error.localizedDescription ?: @"write failed"];
+            return;
+        }
+    }
+
+    [game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+    BOOL hasBase = [NSFileManager.defaultManager
+        fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xex"] path]];
+    BOOL hasUpdate = [NSFileManager.defaultManager
+        fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xexp"] path]];
+    _bootStatus = hasBase && hasUpdate
+        ? @"Game files detected. Verify them before starting."
+        : @"Transfer folder ready: Files → On My iPhone → Theft4 → game";
 }
 
 - (void)viewDidLayoutSubviews {

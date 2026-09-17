@@ -134,7 +134,7 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
         Copy(@"UNDER THE HOOD",13,YES),
         Copy(@"Native ARM64 game code. Your own game files. Your own city.",17,NO),
         _prepareButton,_restartButton,_detailLabel,
-        Copy(@"Import on your Mac: Finder → iPad → Files → Theft4. Copy the prepared game folder, then verify. Saves remain in the app’s private storage.",13,NO)
+        Copy(@"On first launch, Theft4 creates Files → On My iPhone → Theft4 → game. Copy the contents of your prepared game folder into game, then verify. Saves remain private.",13,NO)
     ],20);
     _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO;
     _scroll.alwaysBounceVertical = NO; [self addSubview:_scroll];

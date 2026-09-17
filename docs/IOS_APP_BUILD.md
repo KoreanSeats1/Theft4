@@ -346,11 +346,11 @@ private `Application Support/Theft4/game` directory as a complete installation.
 ### Manual Finder transfer
 
 Theft4 enables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`.
-After installing this build, use Finder → the connected iPad → Files → Theft4
-and copy the entire prepared folder **named `game`** from
-`out/game-staging/usa-tu8-ready/game`. The intended result is `Documents/game`
-inside the app (also visible in Files → On My iPad → Theft4 → game).
-Do not transfer the ISO instead, and do not flatten the directory structure.
+On first launch it creates `Documents/game` plus a visible instruction file.
+Use Finder → the connected device → Files → Theft4 → game and copy the
+**contents** of `out/game-staging/usa-tu8-ready/game` into that directory. The
+same location appears at Files → On My iPhone/iPad → Theft4 → game. Do not
+transfer the ISO, create `game/game`, or flatten the installation structure.
 
 Wait for copying to finish, then tap **Prepare transferred game**. This button
 uses the public Documents/game installation, not the incomplete private copy;

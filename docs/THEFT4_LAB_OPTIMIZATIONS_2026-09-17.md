@@ -145,3 +145,30 @@ Device evidence: `out/m5-lab/validation/stall-attribution/`.
 The next run should begin from a fresh Lab launch and repeat the same route. If
 a stall recurs, the warning will identify the render-worker phase to optimize.
 Gameplay acceptance remains pending until that run.
+
+**Stall-attribution test result**
+
+The fresh Lab process (`PID 1349`) ran from 17:05:44 through the final log
+sample at 17:10:59. The user felt a couple of stalls. One crossed the existing
+500 ms logging threshold:
+
+- At 17:08:24, producer backpressure reached 500 ms with 13,939 commands and
+  two presents queued.
+- The render worker had spent 506 ms in `frame-recording` for present command
+  sequence 44,712,518. This excludes frame-slot/GPU-fence waiting, texture
+  preparation, worker-side pipeline prewarm, finalization and queue submission
+  as the blocking phase for this event.
+- No additional 500 ms stall was logged through 17:10:59. Shorter hitches felt
+  by the user remain below the current logging threshold.
+- Audio continued with zero underrun frames, rebuffers, drops, clipping and
+  non-finite samples. No fatal error or failed publish occurred.
+
+The result narrows the issue to work performed inside `RecordNativeFrame`, but
+does not yet distinguish accumulated command-recording cost from a synchronous
+pipeline wait/build, render-target realization, descriptor work, buffer upload,
+or one slow Vulkan recording call. Raising queue or present limits would only
+hide this backpressure and increase latency. The next diagnostic should retain
+the lightweight phase marker and add the current frame-command index/total plus
+pipeline-wait and pipeline-build subphases before changing renderer behavior.
+
+Test evidence: `out/m5-lab/validation/stall-attribution/final-route-runtime.log`.

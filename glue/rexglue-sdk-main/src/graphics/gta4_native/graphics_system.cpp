@@ -120,6 +120,10 @@ REXCVAR_DEFINE_BOOL(gta4_native_worker_stall_attribution, false,
                     "GTA IV/Diagnostics",
                     "Add the active render-worker phase to producer-stall warnings")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(gta4_native_async_pipeline_no_wait, false,
+                    "GTA IV/Graphics/Native Renderer",
+                    "Skip a draw temporarily while its graphics pipeline compiles")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_trace_vector_fonts, true, "GTA IV/Diagnostics",
                     "Log the guest-to-Vulkan vector-font data path with bounded draw details");
 REXCVAR_DEFINE_BOOL(gta4_native_spatial_aa, true, "GTA IV/Graphics/Anti-Aliasing",
@@ -19176,6 +19180,19 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   if (pipeline_cache_hit) {
     return existing_pipeline->second.pipeline;
   }
+  const bool async_pipeline_no_wait =
+      !prewarm && REXCVAR_GET(gta4_native_async_pipeline_no_wait);
+  auto defer_pending_pipeline = [&state, primitive_type](const char* source) {
+    static std::atomic<uint64_t> pending_count{0};
+    const uint64_t count = ++pending_count;
+    if (count <= 32 || !(count % 1024)) {
+      REXLOG_INFO(
+          "gta4-native-pipeline: async-pending #{} source={} primitive={} "
+          "vs={:08X} ps={:08X} action=defer-draw",
+          count, source, primitive_type, state.vertex_shader, state.pixel_shader);
+    }
+    return VK_NULL_HANDLE;
+  };
   // Ordinary hot hits never acquire or scan the compiler queue. Only a miss
   // needs newly completed publications; frame/registration boundaries also
   // drain speculative work.
@@ -19187,18 +19204,31 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     if (prewarm) {
       return VK_NULL_HANDLE;
     }
-    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
-    const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
-      SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
-    });
-    const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
-    const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] { return native_pipeline_compiler_->compiler->Take(key, true); });
-    RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
-    if (compiled && compiled->pipeline) {
-      return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
-    }
-    if (compiled) {
+    if (async_pipeline_no_wait) {
+      const auto compiled = native_pipeline_compiler_->compiler->Take(key, false);
+      if (!compiled) {
+        return defer_pending_pipeline("queued");
+      }
+      if (compiled->pipeline) {
+        return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
+      }
       RecordNativePipelineTiming(compiled->ticks);
+    } else {
+      SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
+      const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+      });
+      const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
+      const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] {
+        return native_pipeline_compiler_->compiler->Take(key, true);
+      });
+      RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
+      if (compiled && compiled->pipeline) {
+        return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
+      }
+      if (compiled) {
+        RecordNativePipelineTiming(compiled->ticks);
+      }
     }
   }
   AddNativeGpuProfileCounter(performance::Counter::kPipelineMisses);
@@ -19588,21 +19618,38 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
             return result;
           }, !prewarm);
       if (queued && !prewarm) {
-        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
-        const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
-          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
-        });
-        const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
-        const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] { return native_pipeline_compiler_->compiler->Take(key, true); });
-        RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
-        if (compiled && compiled->pipeline) {
-          return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
-        }
-        if (compiled) {
+        if (async_pipeline_no_wait) {
+          const auto compiled = native_pipeline_compiler_->compiler->Take(key, false);
+          if (!compiled) {
+            return defer_pending_pipeline("first-use");
+          }
+          if (compiled->pipeline) {
+            return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
+          }
           RecordNativePipelineTiming(compiled->ticks);
+        } else {
+          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelineWait);
+          const auto restore_pipeline_wait_phase = MakeScopeExit([&] {
+            SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+          });
+          const uint64_t wait_begin = rex::chrono::Clock::QueryHostTickCount();
+          const auto compiled = profile::CpuCall(profile::CpuOp::kPipelineWait, [&] {
+            return native_pipeline_compiler_->compiler->Take(key, true);
+          });
+          RecordNativePipelineTiming(0, rex::chrono::Clock::QueryHostTickCount() - wait_begin);
+          if (compiled && compiled->pipeline) {
+            return PublishNativePipeline(key, compiled->pipeline, compiled->ticks);
+          }
+          if (compiled) {
+            RecordNativePipelineTiming(compiled->ticks);
+          }
+          // A failed background creation retains the original exact
+          // synchronous driver path, including its diagnostics and error
+          // handling.
         }
-        // A failed background creation retains the original exact synchronous
-        // driver path, including its diagnostics and error handling.
+      }
+      if (!queued && async_pipeline_no_wait) {
+        return defer_pending_pipeline("compiler-capacity");
       }
       if (prewarm) {
         return VK_NULL_HANDLE;

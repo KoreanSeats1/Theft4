@@ -65,3 +65,29 @@ TEST_CASE("pipeline compiler joins active work and contains callback failures",
   REQUIRE(completed.size() == 1);
   CHECK(completed.front().second == 20);
 }
+
+TEST_CASE("pipeline compiler supports a nonblocking first-use probe",
+          "[gta4-native][pipeline-compiler]") {
+  Compiler compiler(3);
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto gate = release.get_future().share();
+  REQUIRE(compiler.Enqueue(7, [&] {
+    entered.set_value();
+    gate.wait();
+    return 70;
+  }));
+  entered.get_future().wait();
+  REQUIRE(compiler.Enqueue(8, [] { return 80; }));
+  REQUIRE(compiler.Enqueue(9, [] { return 90; }));
+
+  CHECK_FALSE(compiler.Take(9, false));
+  CHECK(compiler.Contains(9));
+
+  release.set_value();
+  const auto compiled = compiler.Take(9, true);
+  REQUIRE(compiled);
+  CHECK(*compiled == 90);
+  CHECK_FALSE(compiler.Contains(9));
+  CHECK(compiler.Contains(8));
+}

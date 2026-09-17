@@ -35,6 +35,7 @@ REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
+REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -214,6 +215,20 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                     content_cache_override ? "launch override" : "Lab default");
         REXCVAR_SET(gta4_native_worker_stall_attribution, true);
         REXLOG_INFO("Theft4 Lab render-worker stall attribution enabled");
+        // New-area pipelines may still be compiling when their first draw is
+        // recorded. In the Lab, defer that draw instead of blocking the whole
+        // render worker. Set 0 to restore the exact synchronous wait path.
+        const char* async_pipeline_override =
+            std::getenv("THEFT4_LAB_ASYNC_PIPELINES");
+        const std::string_view async_pipelines =
+            async_pipeline_override ? async_pipeline_override : "1";
+        if (async_pipelines != "0" && async_pipelines != "1") {
+            throw std::runtime_error("THEFT4_LAB_ASYNC_PIPELINES must be 0 or 1");
+        }
+        REXCVAR_SET(gta4_native_async_pipeline_no_wait, async_pipelines == "1");
+        REXLOG_INFO("Theft4 Lab asynchronous pipelines: {} ({})",
+                    async_pipelines == "1" ? "defer pending draws" : "strict wait baseline",
+                    async_pipeline_override ? "launch override" : "Lab default");
 #endif
 #endif
         rex::Runtime runtime(game_directory, support / "user",

@@ -673,6 +673,8 @@ build-codegen/
 # Root-level scripts and logs (local dev only)
 *.sh
 !/tools/package_ios_ipa.sh
+!/tools/build_ios_release.sh
+/dist/
 *.py
 /tools/*.py
 !glue/rexglue-sdk-main/gta4-recomp/tools/derive_frontend_advanced_menu_layout.py

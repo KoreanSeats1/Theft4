@@ -21,6 +21,20 @@ if(APPLE AND NOT CMAKE_TOOLCHAIN_FILE)
 endif()
 project("LibertyRecomp-ALL")
 
+option(THEFT4_PUBLIC_BUILD
+    "Remove checkout-specific source paths from a public Theft4 binary" OFF)
+if(THEFT4_PUBLIC_BUILD)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang)$" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang)$")
+        message(FATAL_ERROR "THEFT4_PUBLIC_BUILD requires Clang-compatible prefix-map flags")
+    endif()
+    # Apply before any subdirectories create targets so every object linked
+    # into the app receives the same stable source and debug paths.
+    add_compile_options(
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4"
+        "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4")
+endif()
+
 # Reproduce the source fixes carried for pinned upstream dependencies.
 liberty_apply_dependency_patches("${CMAKE_CURRENT_SOURCE_DIR}")
 

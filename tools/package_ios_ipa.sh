@@ -99,9 +99,13 @@ if [[ -e "$staged_app/_CodeSignature" || -e "$staged_app/embedded.mobileprovisio
   exit 70
 fi
 
+# Avoid publishing Finder quarantine/resource-fork metadata as __MACOSX
+# entries. None of it is part of the iOS application payload.
+/usr/bin/xattr -cr "$staged_app"
+
 (
   cd "$stage_root"
-  /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$ipa_path"
+  /usr/bin/ditto -c -k --keepParent Payload "$ipa_path"
 )
 /usr/bin/unzip -tq "$ipa_path" >/dev/null
 

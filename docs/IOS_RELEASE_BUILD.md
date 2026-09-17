@@ -128,6 +128,16 @@ development-signed `.app` or export your signing certificate for this workflow.
 The resulting IPA is not directly installable by itself; AltStore, SideStore or
 another compatible tool must re-sign it for the destination device.
 
+For subsequent releases, after updating the two version keys in
+`ios/Theft4/Info.plist.in`, the checked-in pipeline performs the same configure,
+unsigned Release build, privacy audit and IPA packaging in one command. The
+optional argument fails fast if the intended version and plist disagree:
+
+```sh
+THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
+  ./tools/build_ios_release.sh 0.1.1
+```
+
 You can install without attaching Xcode's debugger:
 
 ```sh

@@ -10,20 +10,14 @@ option(THEFT4_COMPILE_GTA4_NATIVE_BACKEND
     "Compile-check LibertyRecomp's GTA IV native renderer for iOS without selecting it" OFF)
 option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
     "Embed the GTA IV native renderer behind THEFT4_GRAPHICS_BACKEND=native" OFF)
-option(THEFT4_PUBLIC_BUILD
-    "Remove checkout-specific source paths from a public Theft4 binary" OFF)
+
+set(THEFT4_NATIVE_FONT_ASSET_ROOT
+    "${CMAKE_SOURCE_DIR}/LibertyRecompLib/font_atlases")
 
 if(THEFT4_PUBLIC_BUILD)
-    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang)$" OR
-       NOT CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang)$")
-        message(FATAL_ERROR "THEFT4_PUBLIC_BUILD requires Clang-compatible prefix-map flags")
-    endif()
-    # __FILE__, diagnostics, and line tables otherwise expose the builder's
-    # account name and checkout location in the linked executable. Keep stable,
-    # useful source-relative paths without publishing that local information.
-    add_compile_options(
-        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4"
-        "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4")
+    # The source-tree fallback cannot exist on an installed iOS device, and
+    # embedding it as a string would disclose the builder's local checkout.
+    set(THEFT4_NATIVE_FONT_ASSET_ROOT "")
 endif()
 
 # Compile the actual checked-in AOT title, not a synthetic PPC fixture. Keep
@@ -184,7 +178,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         target_compile_definitions(theft4_gta4_native_compile PRIVATE
             REX_HAS_VULKAN=1
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
-            GTA4_NATIVE_FONT_ASSET_ROOT="${CMAKE_SOURCE_DIR}/LibertyRecompLib/font_atlases")
+            GTA4_NATIVE_FONT_ASSET_ROOT="${THEFT4_NATIVE_FONT_ASSET_ROOT}")
         target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
         target_compile_options(theft4_gta4_native_compile PRIVATE
             -Wno-unused-variable)

@@ -34,6 +34,7 @@ REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
+REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -211,6 +212,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 Lab texture content cache: {} ({})",
                     content_cache == "1" ? "enabled" : "strict baseline",
                     content_cache_override ? "launch override" : "Lab default");
+        REXCVAR_SET(gta4_native_worker_stall_attribution, true);
+        REXLOG_INFO("Theft4 Lab render-worker stall attribution enabled");
 #endif
 #endif
         rex::Runtime runtime(game_directory, support / "user",

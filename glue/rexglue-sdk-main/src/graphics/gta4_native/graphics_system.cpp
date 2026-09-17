@@ -116,6 +116,10 @@ REXCVAR_DEFINE_BOOL(gta4_native_texture_content_cache, false,
                     "GTA IV/Graphics/Native Renderer",
                     "Reuse CPU texture contents across sampler-only fetch changes")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(gta4_native_worker_stall_attribution, false,
+                    "GTA IV/Diagnostics",
+                    "Add the active render-worker phase to producer-stall warnings")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_trace_vector_fonts, true, "GTA IV/Diagnostics",
                     "Log the guest-to-Vulkan vector-font data path with bounded draw details");
 REXCVAR_DEFINE_BOOL(gta4_native_spatial_aa, true, "GTA IV/Graphics/Anti-Aliasing",
@@ -1359,6 +1363,85 @@ constexpr size_t kRenderWorkerBatchCommands = 64;
 constexpr size_t kIndexedFrameDetailedCommandLimit = 256;
 constexpr size_t kIndexedFrameProgressInterval = 128;
 constexpr uint32_t kSpirvMagic = 0x07230203;
+
+enum class NativeWorkerDiagnosticPhase : uint32_t {
+  kIdle,
+  kDispatch,
+  kStateSnapshot,
+  kPipelinePrewarm,
+  kPublishSetup,
+  kFrameSlotWait,
+  kHousekeeping,
+  kUploadCapacity,
+  kCommandSetup,
+  kTexturePreparation,
+  kFrameRecording,
+  kFinalization,
+  kQueueSubmission,
+};
+
+constexpr const char* NativeWorkerDiagnosticPhaseName(NativeWorkerDiagnosticPhase phase) {
+  switch (phase) {
+    case NativeWorkerDiagnosticPhase::kIdle:
+      return "idle";
+    case NativeWorkerDiagnosticPhase::kDispatch:
+      return "dispatch";
+    case NativeWorkerDiagnosticPhase::kStateSnapshot:
+      return "state-snapshot";
+    case NativeWorkerDiagnosticPhase::kPipelinePrewarm:
+      return "pipeline-prewarm";
+    case NativeWorkerDiagnosticPhase::kPublishSetup:
+      return "publish-setup";
+    case NativeWorkerDiagnosticPhase::kFrameSlotWait:
+      return "frame-slot-wait";
+    case NativeWorkerDiagnosticPhase::kHousekeeping:
+      return "housekeeping";
+    case NativeWorkerDiagnosticPhase::kUploadCapacity:
+      return "upload-capacity";
+    case NativeWorkerDiagnosticPhase::kCommandSetup:
+      return "command-setup";
+    case NativeWorkerDiagnosticPhase::kTexturePreparation:
+      return "texture-preparation";
+    case NativeWorkerDiagnosticPhase::kFrameRecording:
+      return "frame-recording";
+    case NativeWorkerDiagnosticPhase::kFinalization:
+      return "finalization";
+    case NativeWorkerDiagnosticPhase::kQueueSubmission:
+      return "queue-submission";
+  }
+  return "unknown";
+}
+
+std::atomic<uint32_t> g_native_worker_diagnostic_phase{
+    uint32_t(NativeWorkerDiagnosticPhase::kIdle)};
+std::atomic<uint32_t> g_native_worker_diagnostic_command_type{UINT32_MAX};
+std::atomic<uint64_t> g_native_worker_diagnostic_command_sequence{0};
+std::atomic<uint64_t> g_native_worker_diagnostic_phase_begin_ms{0};
+
+uint64_t NativeWorkerDiagnosticNowMilliseconds() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
+
+void SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase phase, CommandType command_type,
+                                    uint64_t command_sequence) {
+  if (!REXCVAR_GET(gta4_native_worker_stall_attribution)) {
+    return;
+  }
+  g_native_worker_diagnostic_command_type.store(uint32_t(command_type), std::memory_order_relaxed);
+  g_native_worker_diagnostic_command_sequence.store(command_sequence, std::memory_order_relaxed);
+  g_native_worker_diagnostic_phase_begin_ms.store(NativeWorkerDiagnosticNowMilliseconds(),
+                                                  std::memory_order_relaxed);
+  g_native_worker_diagnostic_phase.store(uint32_t(phase), std::memory_order_release);
+}
+
+void SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase phase) {
+  SetNativeWorkerDiagnosticPhase(
+      phase,
+      CommandType(g_native_worker_diagnostic_command_type.load(std::memory_order_relaxed)),
+      g_native_worker_diagnostic_command_sequence.load(std::memory_order_relaxed));
+}
 // Frame-local transient uploads grow in reusable 16 MiB blocks. The exact
 // byte value and block-count rounding are checked with Python in the renderer
 // implementation audit.
@@ -3613,11 +3696,33 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
           if (timeout_count == 1 || !(timeout_count % 8)) {
             const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - wait_started);
-            REXLOG_WARN(
-                "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
-                "queued-presents={} next-sequence={} worker-running={}",
-                waited.count(), render_queue_.size(), queued_title_presents_,
-                diagnostic_submit_sequence_ + 1, render_worker_running_.load());
+            if (REXCVAR_GET(gta4_native_worker_stall_attribution)) {
+              const auto worker_phase = NativeWorkerDiagnosticPhase(
+                  g_native_worker_diagnostic_phase.load(std::memory_order_acquire));
+              const uint32_t worker_command_type =
+                  g_native_worker_diagnostic_command_type.load(std::memory_order_relaxed);
+              const uint64_t worker_phase_begin_ms =
+                  g_native_worker_diagnostic_phase_begin_ms.load(std::memory_order_relaxed);
+              const uint64_t now_ms = NativeWorkerDiagnosticNowMilliseconds();
+              REXLOG_WARN(
+                  "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
+                  "queued-presents={} next-sequence={} worker-running={} worker-phase={} "
+                  "worker-phase-ms={} worker-command={} worker-sequence={}",
+                  waited.count(), render_queue_.size(), queued_title_presents_,
+                  diagnostic_submit_sequence_ + 1, render_worker_running_.load(),
+                  NativeWorkerDiagnosticPhaseName(worker_phase),
+                  worker_phase_begin_ms && now_ms >= worker_phase_begin_ms
+                      ? now_ms - worker_phase_begin_ms
+                      : 0,
+                  CommandTypeName(CommandType(worker_command_type)),
+                  g_native_worker_diagnostic_command_sequence.load(std::memory_order_relaxed));
+            } else {
+              REXLOG_WARN(
+                  "gta4-native-transport: producer-stall waited-ms={} queue-depth={} "
+                  "queued-presents={} next-sequence={} worker-running={}",
+                  waited.count(), render_queue_.size(), queued_title_presents_,
+                  diagnostic_submit_sequence_ + 1, render_worker_running_.load());
+            }
           }
         }
       }
@@ -5776,6 +5881,12 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     queued_after_pop = queued_after_batch_transfer + worker_batch_.size();
     active_worker_command_ = &command;
     const auto clear_active_command = MakeScopeExit([&] { active_worker_command_ = nullptr; });
+    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch, command.type,
+                                   command.diagnostic_submit_sequence);
+    const auto clear_worker_diagnostic_phase = MakeScopeExit([&] {
+      SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kIdle,
+                                     CommandType(UINT32_MAX), 0);
+    });
     if (wake_producer) render_condition_.notify_all();
     const uint64_t dequeued = (profile_transport || command.profile_transport.enqueued) ? profile::CpuTick() : 0;
     if(profile_transport || command.profile_transport.enqueued) {
@@ -6118,6 +6229,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
               command.present_source ? command.present_source->generation : 0);
         }
         log_frame_batch("present", command, present.submitted_frame, queued_after_pop);
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPublishSetup);
         const bool published =
             PublishFrame(present, command.present_source, command.environmental_data);
         {
@@ -6194,8 +6306,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                          CommandTypeName(command.type), device);
             break;
           }
+          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
           command.pipeline_state = SnapshotPipeline(command, true);
         } else {
+          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
           command.pipeline_state = SnapshotPipeline(command, false);
         }
         if (command.render_phase == RenderPhase::kCompositePostFx &&
@@ -6213,8 +6327,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         if (command.type == CommandType::kDrawPrimitive ||
             command.type == CommandType::kDrawPrimitiveUp ||
             command.type == CommandType::kDrawIndexedPrimitive) {
+          SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelinePrewarm);
           TryPrewarmDrawPipeline(command);
         }
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch);
         if (command.phone_trace) TracePhoneNativeCommand("worker-finalized", command);
         AddProtectedTextureGenerations(command, frame_texture_protection_);
         current_frame_.push_back(std::move(command));
@@ -32088,6 +32204,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
+  SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPublishSetup);
   const bool detail_requested = rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProfiler) &&
       !native_gpu_profile_state_.capture_complete && !native_gpu_profile_state_.export_started &&
       (REXCVAR_GET(gta4_profile_native_autostart) || native_gpu_profile_state_.capture_armed ||
@@ -32386,6 +32503,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         if (!ActivateNativeFrameSlot(selected_frame_slot)) {
           return false;
         }
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameSlotWait);
         detail_callback_phase.Set(profile::CpuPhase::kCompletion);
         const uint64_t native_profile_wait_begin =
             native_profiler_enabled ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32433,6 +32551,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         }
         frame_context_tokens_[active_frame_slot_] = *frame_token;
         frame_context_serials_[active_frame_slot_] = 0;
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kHousekeeping);
         detail_callback_phase.Set(profile::CpuPhase::kHousekeeping);
         const uint64_t native_profile_housekeeping_begin =
             native_profiler_enabled ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32469,6 +32588,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               native_profile_completion_processing_ticks +
               (rex::chrono::Clock::QueryHostTickCount() - native_profile_housekeeping_begin);
         }
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kUploadCapacity);
         detail_callback_phase.Set(profile::CpuPhase::kCapacity);
         const uint64_t native_profile_upload_capacity_begin =
             native_profiler_enabled ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32487,6 +32607,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               rex::chrono::Clock::QueryHostTickCount() - native_profile_upload_capacity_begin;
         }
 
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kCommandSetup);
         detail_callback_phase.Set(profile::CpuPhase::kSetup);
         const uint64_t native_profile_command_setup_begin =
             native_profiler_enabled ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32594,6 +32715,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                                  nullptr, 1, &acquire_barrier); });
 
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kTexturePreparation);
         detail_callback_phase.Set(profile::CpuPhase::kTextures);
         const uint64_t native_profile_texture_begin =
             native_profile_frame_started ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32653,6 +32775,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               rex::chrono::Clock::QueryHostTickCount() - native_profile_texture_begin;
         }
 
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameRecording);
         bool presenter_transfer_written = false;
         bool presenter_written = false;
         detail_callback_phase.Set(profile::CpuPhase::kRecording);
@@ -32686,6 +32809,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               presenter_written);
         }
 
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFinalization);
         detail_callback_phase.Set(profile::CpuPhase::kFinalize);
         const uint64_t native_profile_finalize_begin =
             native_profile_frame_started ? rex::chrono::Clock::QueryHostTickCount() : 0;
@@ -32739,6 +32863,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               rex::chrono::Clock::QueryHostTickCount() - native_profile_finalize_begin;
         }
 
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kQueueSubmission);
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;

@@ -5,6 +5,20 @@ performance. Both configurations build the same Theft4 application: native AOT
 game code plus the ReXGlue runtime and Vulkan → MoltenVK → Metal graphics path.
 No CPU JIT setup or debugger attachment is required to play.
 
+The device Release preset explicitly sets C/C++ flags to `-O3 -DNDEBUG`.
+The configuration name alone does not guarantee an optimized executable: an
+empty cached Release flag previously produced an `-O0` native renderer with an
+oversized stack frame, followed by very low gameplay FPS after its stack was
+enlarged. The release script now checks actual compiler response files for the
+AOT game, bridge, and native renderer before packaging. To check a local build:
+
+```sh
+python3 tests/ios/verify_release_build.py out/build/ios-device-release
+```
+
+The native render worker also has an explicit 2 MiB stack on Apple platforms.
+The native backend, two-frame resource ring, and motion-blur option are retained.
+
 The latest on-device Release tests reached the opening 3D cutscene and the first
 driving/player-control state on an M5 iPad Pro, with substantially improved audio.
 This remains experimental: heavy views can be slow; other devices, long sessions,
@@ -135,7 +149,7 @@ optional argument fails fast if the intended version and plist disagree:
 
 ```sh
 THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
-  ./tools/build_ios_release.sh 0.1.2
+  ./tools/build_ios_release.sh 0.1.3
 ```
 
 You can install without attaching Xcode's debugger:

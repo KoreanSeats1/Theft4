@@ -253,6 +253,8 @@
                 "LIBERTY_RECOMP_IOS_CORE_ONLY": "ON",
                 "CMAKE_OSX_SYSROOT": "iphoneos",
                 "CMAKE_CONFIGURATION_TYPES": "Release",
+                "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
                 "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO"
             }
         },

@@ -32,6 +32,8 @@ jobs:
         run: python tools/setup_repo.py --check-metadata
       - name: Exercise clone, pull, migration and recovery with local test remotes
         run: python tools/test_setup_repo.py
+      - name: Check iOS Release optimization regression guard
+        run: python tests/ios/test_release_build.py
 
   desktop:
     name: Clean dependencies and build (${{ matrix.os }})

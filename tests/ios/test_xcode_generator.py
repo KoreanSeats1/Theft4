@@ -73,6 +73,8 @@ pathlib.Path('opened.txt').write_text(sys.argv[1])
         args = self.arguments()
         self.assertEqual(args[:2], ['--preset', 'ios-device-release'])
         for arg in ('-DTHEFT4_SIGN_DEVICE=ON', '-DTHEFT4_BUILD_GAME_CODE=ON',
+                    '-DTHEFT4_COMPILE_GTA4_NATIVE_BACKEND=ON',
+                    '-DTHEFT4_ENABLE_GTA4_NATIVE_BACKEND=ON',
                     '-DTHEFT4_ENABLE_GAME_STARTUP=ON', '-DREXGLUE_HEADLESS_KERNEL=ON',
                     '-DREXGLUE_RUNTIME_ONLY=ON', '-DLIBERTY_IOS_DEVELOPMENT_TEAM=TESTTEAM'):
             self.assertIn(arg, args)

@@ -17,10 +17,28 @@ Status labels used below:
 Private game files, title updates, saves, screenshots, GPU captures, signing
 material, and device logs are never part of this changelog or repository.
 
-## Unreleased — work after `440d505c` — 2026-09-16
+## v0.1.3 — M5 stable iOS release — 2026-09-17
 
 Comparison base: [`440d505c`](https://github.com/KoreanSeats1/Theft4/commit/440d505c964bbe4cb51a0217e162bf1eaa4de23e),
 the public native-renderer and performance-documentation checkpoint.
+
+### Release checkpoint
+
+- Promoted the device-tested M5 iPad configuration without the isolated A19
+  experiments: native GTA IV renderer, two frames in flight, 1280×720 internal
+  render to 1920×1080 FSR1 quality output, and motion blur enabled by default.
+- Fixed the iOS native render worker startup failure by using an explicit 2 MiB
+  pthread stack on Apple platforms. The worker is joined through the matching
+  pthread lifetime path at shutdown.
+- Made the public iOS Release pipeline require the native backend and explicit
+  `-O3 -DNDEBUG` compiler flags. Packaging now rejects a build unless the actual
+  AOT game, core bridge, and native-renderer response files pass that check.
+- Preserved the checksummed dependency-patch manifest and pinned submodule
+  revisions needed to reproduce the linked MoltenVK/XeniOS stack. The public IPA
+  contains no retail game files, saves, signing identity, provisioning profile,
+  or machine-specific source paths.
+- Version 0.1.3 (build 5) is the GitHub/sideloading release checkpoint. The IPA
+  is unsigned by design and must be re-signed by the user's sideloading tool.
 
 ### Installed, device acceptance pending — motion-blur option — 2026-09-17
 

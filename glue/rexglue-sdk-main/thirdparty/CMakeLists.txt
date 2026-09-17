@@ -61,7 +61,14 @@ if(REXGLUE_BUILD_TESTS)
 endif()
 
 foreach(submodule ${REQUIRED_SUBMODULES})
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
+    if(REXGLUE_DEPENDENCY_SOURCE_EXPORT)
+        # A verified frozen export contains private source copies, without Git
+        # metadata that could refer back to another checkout's submodules.
+        file(GLOB source_entries "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/*")
+        if(NOT source_entries)
+            message(FATAL_ERROR "Dependency source export is empty: ${submodule}")
+        endif()
+    elseif(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
         message(FATAL_ERROR
             "Git submodule '${submodule}' is not initialized.\n"
             "Please run: git submodule update --init --recursive\n"

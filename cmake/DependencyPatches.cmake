@@ -29,6 +29,9 @@ function(liberty_apply_dependency_patches repository_root)
             "Dependency preparation failed. Preserve local changes, then run:\n"
             "  python3 tools/setup_repo.py\nSee docs/BUILDING.md.")
     endif()
+    if(THEFT4_LAB_BUILD)
+        set(REXGLUE_DEPENDENCY_SOURCE_EXPORT ON PARENT_SCOPE)
+    endif()
 endfunction()
 
 function(liberty_require_dependency_sources repository_root)

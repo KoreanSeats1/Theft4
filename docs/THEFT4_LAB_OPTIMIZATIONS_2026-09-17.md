@@ -75,6 +75,35 @@ after gameplay acceptance. Do not carry Lab's bundle identity into ordinary
 Theft4. Its current release version and independently advanced main history must
 be preserved during integration.
 
+**First device run**
+
+The optimized Lab was relaunched as a fresh process (`PID 1148`) after a
+different test had overlapped the preceding launch. The startup log confirms
+the Lab cache experiment was enabled, the Apple M5 GPU and native renderer were
+selected, and the recompiled game entered presentation mode.
+
+The user reported that entering the scene took longer and initially had heavy
+stuttering, then smoothed out. Once warm, it felt the same as the working build
+or slightly better. The log supports the warm-up boundary but does not establish
+the cause or a performance improvement:
+
+- 14 producer-stall warnings occurred between 16:30:06 and 16:32:02. Most were
+  about 500 ms; the same blocked episode was also reported at roughly 4 and 8
+  seconds.
+- The large initial cluster coincided with creation and alias registration for
+  scene, reflection and small render surfaces. This is correlation, not proof
+  that surface work caused every stall.
+- No further producer-stall warning appeared between 16:32:02 and the final log
+  sample at 16:33:02.
+- Audio counters reported zero underrun frames, rebuffers, dropped frames,
+  clipping and non-finite samples. No fatal error, exception or crash was found.
+
+Disposition: **keep installed for controlled comparison; do not merge yet**.
+The next discriminating test is the same cold launch and route with
+`THEFT4_LAB_TEXTURE_CONTENT_CACHE=0`, followed by the enabled mode with matching
+cache warmth. That isolates the texture-content key from the two smaller CPU
+overhead changes and from ordinary first-run pipeline/resource warm-up.
+
 **Installed artifact**
 
 Source: `b4563d5d5e5b6ec327d3360f14a30ef22f43b6c3`.

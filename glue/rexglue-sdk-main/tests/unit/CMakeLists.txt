@@ -27,6 +27,7 @@ add_executable(unit_tests
     graphics/native_draw_state_cache_test.cpp
     graphics/native_resource_content_policy_test.cpp
     graphics/native_sampler_cache_key_test.cpp
+    graphics/native_texture_content_key_test.cpp
     graphics/native_sampler_lod_bias_test.cpp
     graphics/smaa_source_sync_test.cpp
     graphics/lighting_semantics_test.cpp

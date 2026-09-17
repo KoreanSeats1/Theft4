@@ -33,6 +33,7 @@ REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -196,6 +197,21 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_frames_in_flight, native_frame_slots);
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
+#ifdef THEFT4_LAB_BUILD
+        // Lab-only default; a fresh launch with 0 restores strict fetch identity
+        // in the same executable for controlled A/B runs. Ordinary builds keep
+        // the renderer's conservative false default.
+        const char* content_cache_override = std::getenv("THEFT4_LAB_TEXTURE_CONTENT_CACHE");
+        const std::string_view content_cache =
+            content_cache_override ? content_cache_override : "1";
+        if (content_cache != "0" && content_cache != "1") {
+            throw std::runtime_error("THEFT4_LAB_TEXTURE_CONTENT_CACHE must be 0 or 1");
+        }
+        REXCVAR_SET(gta4_native_texture_content_cache, content_cache == "1");
+        REXLOG_INFO("Theft4 Lab texture content cache: {} ({})",
+                    content_cache == "1" ? "enabled" : "strict baseline",
+                    content_cache_override ? "launch override" : "Lab default");
+#endif
 #endif
         rex::Runtime runtime(game_directory, support / "user",
                              std::filesystem::path(game_directory) / "update",

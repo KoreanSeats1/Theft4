@@ -81,6 +81,7 @@
 #include "native_clip_control.h"
 #include "native_buffer_metadata.h"
 #include "native_descriptor_tuple_cache.h"
+#include "native_texture_content_key.h"
 #include "native_fixed_function_policy.h"
 #include "native_shader_booleans.h"
 #include "native_emission_trace.h"
@@ -110,6 +111,10 @@
 
 REXCVAR_DEFINE_BOOL(gta4_native_vector_fonts, true, "GTA IV/Graphics/Text",
                     "Replace stock compressed font atlases with licensed high-resolution atlases")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(gta4_native_texture_content_cache, false,
+                    "GTA IV/Graphics/Native Renderer",
+                    "Reuse CPU texture contents across sampler-only fetch changes")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_trace_vector_fonts, true, "GTA IV/Diagnostics",
                     "Log the guest-to-Vulkan vector-font data path with bounded draw details");
@@ -4293,13 +4298,15 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
   }
   if (header.type == CommandType::kPresent) {
     const auto& present = *static_cast<const PresentCommand*>(command);
-    auto fetch_matches = [&present](const NativeTextureResource& resource) {
-      return resource.fetch.dword_0 == present.frontbuffer_fetch[0] &&
-             resource.fetch.dword_1 == present.frontbuffer_fetch[1] &&
-             resource.fetch.dword_2 == present.frontbuffer_fetch[2] &&
-             resource.fetch.dword_3 == present.frontbuffer_fetch[3] &&
-             resource.fetch.dword_4 == present.frontbuffer_fetch[4] &&
-             resource.fetch.dword_5 == present.frontbuffer_fetch[5];
+    xenos::xe_gpu_texture_fetch_t frontbuffer_fetch{};
+    std::memcpy(&frontbuffer_fetch, present.frontbuffer_fetch, sizeof(frontbuffer_fetch));
+    const bool content_cache = REXCVAR_GET(gta4_native_texture_content_cache);
+    auto fetch_matches = [&frontbuffer_fetch, content_cache](const NativeTextureResource& resource) {
+      // A reused CPU snapshot retains its original fetch. Present source
+      // selection must use the same content identity as capture. Keep the
+      // existing strict fallback for GPU-produced resources.
+      return NativeTextureContentMatches(resource.fetch, frontbuffer_fetch,
+                                         content_cache && !resource.gpu_produced);
     };
     bool direct_dirty = false;
     bool direct_fetch_match = false;
@@ -4911,6 +4918,7 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   }
 
   TextureInfo info{};
+  const bool content_cache = REXCVAR_GET(gta4_native_texture_content_cache);
   bool cache_entry_present = false;
   bool cache_entry_dirty = false;
   bool cache_fetch_matches = false;
@@ -5188,10 +5196,7 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
         cache_width = resource->info.width + 1;
         cache_height = resource->info.height + 1;
         cache_format = uint32_t(resource->info.format);
-        cache_fetch_matches =
-            resource->fetch.dword_0 == fetch.dword_0 && resource->fetch.dword_1 == fetch.dword_1 &&
-            resource->fetch.dword_2 == fetch.dword_2 && resource->fetch.dword_3 == fetch.dword_3 &&
-            resource->fetch.dword_4 == fetch.dword_4 && resource->fetch.dword_5 == fetch.dword_5;
+        cache_fetch_matches = NativeTextureContentMatches(resource->fetch, fetch, content_cache);
         cache_gpu_image_matches =
             resource->gpu_produced && resource->info.dimension == info.dimension &&
             resource->info.format == info.format && resource->info.width == info.width &&
@@ -5432,10 +5437,8 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   auto existing = texture_resources_.find(handle);
   if (existing != texture_resources_.end()) {
     const auto& resource = existing->second;
-    if (resource && resource->fetch.dword_0 == fetch.dword_0 &&
-        resource->fetch.dword_1 == fetch.dword_1 && resource->fetch.dword_2 == fetch.dword_2 &&
-        resource->fetch.dword_3 == fetch.dword_3 && resource->fetch.dword_4 == fetch.dword_4 &&
-        resource->fetch.dword_5 == fetch.dword_5 && resource->content_hash == content_hash &&
+    if (resource && NativeTextureContentMatches(resource->fetch, fetch, content_cache) &&
+        resource->content_hash == content_hash &&
         resource->vector_font_id == vector_font_id &&
         resource->vector_font_replacement == wants_vector_font &&
         (resource->vector_font_replacement || resource->payload == payload)) {

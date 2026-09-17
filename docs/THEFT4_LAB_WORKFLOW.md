@@ -95,8 +95,11 @@ pacing, filtering and FSR until measurements justify a separate experiment.
 1. Keep accepted experiments as small commits and attach their test evidence.
    Revert rejected experiments in Lab; preserve their findings in the report.
 2. Create a new integration worktree/branch from the then-current main. Resolve
-   the original eight uncommitted M5 changes against `814905f9` explicitly; do
-   not reset the original checkout or blindly replay the baseline snapshot.
+   the original M5 snapshot against `814905f9` explicitly; those changes may
+   already be committed on main. For example, main advanced independently to
+   release `90a7746f` (0.1.3) during Lab setup. Preserve main's current release
+   version, original Theft4 name and bundle ID. Do not reset the original
+   checkout or blindly replay the baseline snapshot.
 3. Cherry-pick accepted feature commits into integration. A whole-branch merge
    is appropriate only if every included change is intended. Lab tooling may
    merge separately because its default build identity remains ordinary Theft4.

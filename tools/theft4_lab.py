@@ -262,7 +262,7 @@ def verify_app(app, team):
     if info.get("CFBundleIdentifier") != LAB_ID:
         raise ValueError("Refusing to process the ordinary Theft4 app")
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
-    result = subprocess.run(["/usr/bin/codesign", "-d", "--entitlements", "-", str(app)],
+    result = subprocess.run(["/usr/bin/codesign", "-d", "--entitlements", "-", "--xml", str(app)],
                             capture_output=True, check=True)
     entitlements = plistlib.loads(result.stdout)
     verify_identity(info, entitlements, team)

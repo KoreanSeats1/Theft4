@@ -184,6 +184,7 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)initializeSharedGameDirectory {
     NSError *error = nil;
+    NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
     NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
     NSURL *game = [documents URLByAppendingPathComponent:@"game" isDirectory:YES];
@@ -196,12 +197,13 @@ static void bootEvent(void *context, const char *event) {
 
     NSURL *instructionsURL = [documents URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
     if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path]) {
-        NSString *instructions =
-            @"Theft4 game-file transfer\n\n"
+        NSString *instructions = [NSString stringWithFormat:
+            @"%@ game-file transfer\n\n"
             @"Open the game folder next to this file and copy the CONTENTS of your prepared "
             @"installation into it. The final layout must include game/default.xex, "
             @"game/default.xexp, and game/update. A raw ISO will not work.\n\n"
-            @"Return to Theft4 and choose Verify Game Files when the transfer finishes.\n";
+            @"Return to %@ and choose Verify Game Files when the transfer finishes.\n",
+            displayName, displayName];
         if (![instructions writeToURL:instructionsURL atomically:YES
             encoding:NSUTF8StringEncoding error:&error]) {
             _failure = [NSString stringWithFormat:@"Cannot create transfer instructions: %@",
@@ -217,7 +219,7 @@ static void bootEvent(void *context, const char *event) {
         fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xexp"] path]];
     _bootStatus = hasBase && hasUpdate
         ? @"Game files detected. Verify them before starting."
-        : @"Transfer folder ready: Files → On My iPhone → Theft4 → game";
+        : [NSString stringWithFormat:@"Transfer folder ready: Files → On My iPhone/iPad → %@ → game", displayName];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -249,7 +251,9 @@ static void bootEvent(void *context, const char *event) {
 - (void)record:(NSString *)event {
     static os_log_t log;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ log = os_log_create("com.theft4.bringup", "lifecycle"); });
+    dispatch_once(&once, ^{
+        log = os_log_create(NSBundle.mainBundle.bundleIdentifier.UTF8String, "lifecycle");
+    });
     NSMutableDictionary *entry = [@{@"event":event, @"time":@([NSDate timeIntervalSinceReferenceDate]),
         @"pid":@(NSProcessInfo.processInfo.processIdentifier)} mutableCopy];
     theft4_core_snapshot snapshot = {.struct_size = sizeof(snapshot), .abi_version = THEFT4_CORE_ABI_VERSION};

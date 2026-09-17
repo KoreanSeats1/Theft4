@@ -1,6 +1,17 @@
 # Theft4's native host is independent of the legacy desktop/SDL application.
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 development bundle ID")
+set(THEFT4_DISPLAY_NAME "Theft4" CACHE STRING "Name shown on the device")
+option(THEFT4_LAB_BUILD "Identify an isolated experimental app" OFF)
+if(THEFT4_LAB_BUILD)
+    if(NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.m5lab" OR
+       NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4 Lab")
+        message(FATAL_ERROR "Lab builds require com.theft4.m5lab and display name Theft4 Lab")
+    endif()
+    set(THEFT4_LAB_PLIST_VALUE "<true/>")
+else()
+    set(THEFT4_LAB_PLIST_VALUE "<false/>")
+endif()
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
 set(THEFT4_ARM64_TUNE "apple-m5" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")

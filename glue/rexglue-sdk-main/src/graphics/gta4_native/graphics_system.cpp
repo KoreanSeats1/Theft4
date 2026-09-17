@@ -4402,7 +4402,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       return reject(header.type, "device-state-translation");
     }
     const std::span<const uint8_t> device_state(device_memory, kGuestDeviceSize);
-    const std::string state_transport = REXCVAR_GET(gta4_native_state_transport);
+    const std::string& state_transport = REXCVAR_GET(gta4_native_state_transport);
     const bool compare_transport = state_transport == "compare";
     const bool diagnostic_snapshot =
         rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace) ||
@@ -5414,7 +5414,10 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   }
 
   const uint64_t content_hash = XXH3_64bits(payload.data(), payload.size());
-  const size_t stock_identity_size = std::min(payload.size(), kStockFontIdentityPayloadSize);
+  // Only recognized font atlases use the prefix hash. Ordinary textures already
+  // have their full payload hash above and never consume this second hash.
+  const size_t stock_identity_size =
+      vector_font_index ? std::min(payload.size(), kStockFontIdentityPayloadSize) : 0;
   const uint64_t stock_identity_hash =
       stock_identity_size ? XXH3_64bits(payload.data(), stock_identity_size) : 0;
   VectorFontSet vector_font_set = VectorFontSet::kGta4;

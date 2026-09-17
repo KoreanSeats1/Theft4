@@ -56,12 +56,55 @@ long-duration stability remain active work.
 
 ## Engineering record
 
+### Before starting the game
+
+The **After Hours** launcher places a procedural 3D city and suspension bridge
+behind Play / Display / System navigation. Drag the city to change the view.
+Its scene and effects are released before the game runtime starts.
+
+**Display** offers remembered settings: **Frame counter** (on), **Touch controls**
+(off), **Texture filtering · 4×** (on), **Motion blur** (on), **1080p enhanced output** (on) and
+**Experimental FSR Boost** (off). These are defaults; existing preferences are
+retained. Both FSR modes keep scene rendering at 720p and add spatial
+upscaling/sharpening at presentation—not native-resolution detail or frame
+generation. Boost targets a native-pixel 16:9 image for the current window,
+bounded from 1080p to 4K; it may cost performance. Output is selected at launch.
+User feedback on 1080p is positive; Boost still needs device visual/performance
+validation. See [launcher and Boost notes](docs/THEFT4_LAUNCHER_AND_FSR_BOOST.md)
+and the [1080p A/B playtest plan](THEFT4_1080P_OUTPUT_TEST_PLAN.md).
+Motion blur applies at the next game launch. Turning it off selects the stock
+non-blur composite variant; it does not disable depth of field or the entire
+post-processing pass. Device visual/performance acceptance is pending. See the
+[motion-blur and fast-driving test plan](docs/THEFT4_MOTION_BLUR_AND_STREAMING.md).
+
+Enable touch controls for
+a movement stick, swipe-to-look on empty screen space, Xbox buttons/triggers,
+D-pad, and L3/R3. Physical controllers remain supported with either setting.
+The compact touch layout is adapted from XeniOS; its attribution and license
+are bundled with Theft4. The full XeniOS layout editor is not included.
+
+Touch gameplay and save/reload are still undergoing device verification.
+GPU freezes during extended play and app switching are known issues; the
+input/display switches do not change renderer stability settings.
+
+Theft4 now defaults to **one native frame in flight**, including normal app-icon
+launches and tests. This is the current stability setting, not proof that all
+GPU freezes are fixed. The default output remains 720p. Developers
+can explicitly set `THEFT4_NATIVE_FRAMES_IN_FLIGHT=2` for a two-slot diagnostic
+comparison; otherwise leave the variable unset (or set it to `1`).
+
 The project keeps a detailed public record of implementation work, experiments,
 measured outcomes, rejected approaches, and remaining verification:
 
 - [Engineering changelog](CHANGELOG.md) — the running, file-mapped technical record;
 - [3D performance execution plan](THEFT4_3D_PERFORMANCE_PLAN.md) — ordered work and
   the latest renderer checkpoint;
+- [CPU-first native-renderer audit](docs/THEFT4_CPU_PERFORMANCE_AUDIT.md) — the
+  current 1080p city CPU profile, logging/validation costs, safe optimization
+  experiments and paced-30 acceptance criteria;
+- [Current paced-30 implementation plan](docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md)
+  — ordered CPU optimization passes, tests and keep/revert gates; planned,
+  not yet implemented;
 - [September 16 GPU diagnosis](THEFT4_GPU_DIAGNOSTIC_2026-09-16.md) — trace-backed
   generic-renderer analysis and experiment design;
 - [iOS architecture report](LIBERTYRECOMP_IOS_ARCHITECTURE.md) and

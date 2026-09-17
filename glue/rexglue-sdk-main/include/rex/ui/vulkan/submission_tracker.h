@@ -126,6 +126,9 @@ class VulkanSubmissionTracker {
   // If false is returned, it's also not guaranteed that GetCompletedSubmission
   // will return a value >= submission_index.
   bool AwaitSubmissionCompletion(uint64_t submission_index);
+  // Bounded variant for interactive hosts that must turn a wedged GPU fence
+  // into diagnosable failure instead of blocking their render thread forever.
+  bool AwaitSubmissionCompletion(uint64_t submission_index, uint64_t timeout_nanoseconds);
   bool AwaitAllSubmissionsCompletion() {
     return AwaitSubmissionCompletion(submission_current_ - 1);
   }
@@ -134,8 +137,8 @@ class VulkanSubmissionTracker {
 
  private:
   // Tracker mutation is intentionally externally serialized by the owning
-  // queue thread. AwaitSubmissionCompletion may block indefinitely, so an
-  // internal coarse lock would deadlock any design that submits elsewhere.
+  // queue thread. The default AwaitSubmissionCompletion may block indefinitely,
+  // so an internal coarse lock would deadlock any design that submits elsewhere.
   const VulkanDevice* vulkan_device_;
   uint64_t submission_current_ = 1;
   // Last submission with a successful fence signal as well as a successful

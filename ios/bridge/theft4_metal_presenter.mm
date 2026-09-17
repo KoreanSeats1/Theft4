@@ -19,11 +19,8 @@ std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
 
-// Match XeniOS's iOS presentation policy. GTA IV renders a 1280x720 guest
-// image; using the iPad's native 2816x1940 drawable only makes MoltenVK scale
-// and present almost six times as many pixels without adding guest detail.
-constexpr double kIOSDrawableWidth = 1280.0;
-constexpr double kIOSDrawableHeight = 720.0;
+// Protected by presenter_lock. Scene resolution stays 720p in every mode.
+theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
 
 void EnsureDeviceLocked() {
   if (!metal_device) metal_device = MTLCreateSystemDefaultDevice();
@@ -81,11 +78,29 @@ void theft4_metal_resize_layer(void* raw_layer, double width, double height,
                                double scale) {
   CAMetalLayer* layer = (__bridge CAMetalLayer*)raw_layer;
   if (!layer || width <= 0.0 || height <= 0.0 || scale <= 0.0) return;
-  // The UIView still owns final placement on screen. Keep the Vulkan surface
-  // at the stable 720p-class size used by XeniOS rather than tying GPU work to
-  // the physical Retina pixel count.
+  // UIKit owns placement, but never silently changes the chosen pixel budget.
+  const auto output = theft4_metal_get_output_policy();
   layer.contentsScale = 1.0;
-  layer.drawableSize = CGSizeMake(kIOSDrawableWidth, kIOSDrawableHeight);
+  layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
+}
+
+void theft4_metal_set_output_mode(theft4_output_mode mode,
+                                uint32_t native_width, uint32_t native_height) {
+  os_unfair_lock_lock(&presenter_lock);
+  launch_output = theft4_output_policy_for_mode(mode, native_width, native_height);
+  const auto output = launch_output;
+  if (bound_layer) {
+    bound_layer.contentsScale = 1.0;
+    bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
+  }
+  os_unfair_lock_unlock(&presenter_lock);
+}
+
+theft4_output_policy theft4_metal_get_output_policy(void) {
+  os_unfair_lock_lock(&presenter_lock);
+  const auto output = launch_output;
+  os_unfair_lock_unlock(&presenter_lock);
+  return output;
 }
 
 bool theft4_metal_has_layer(void) {

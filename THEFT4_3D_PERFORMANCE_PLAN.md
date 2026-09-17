@@ -1,5 +1,26 @@
 # Theft4 — intro and 3D performance execution plan
 
+## Current execution order — September 16 evening
+
+Use the [paced-30 implementation plan](docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md)
+for the current native-renderer/1080p build, supported by the
+[new CPU audit](docs/THEFT4_CPU_PERFORMANCE_AUDIT.md). User follow-up adds an
+early one-vs-two-frame overlap A/B after resource-lifetime preflight. The first
+P0b builds demonstrated near-30 FPS but the initial and texture-quarantine
+candidates both failed with Metal Invalid Resource. Texture causation is not
+proven. The next [buffer-quiescence experiment](docs/THEFT4_TWO_FRAME_RESOURCE_LIFETIME.md)
+is installed with device acceptance pending. Two remains the test default and one the
+retained rollback/control. Next code work, only after this decision,
+is cheaper integrity fingerprints with checks retained, command transport, then
+warm preparation, each independently measured.
+
+The renderer, resolution, build identity and next-experiment descriptions below
+are historical. In particular, they do not supersede the current native backend,
+720p scene → 1080p FSR and 4× filtering. The historical reference uses one
+frame slot; the current P0b candidate uses two.
+
+## Earlier execution record
+
 Latest checkpoint: 2026-09-16. Status: **diagnosis complete; implementation paused.**
 
 The current next-experiment guide is

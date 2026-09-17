@@ -342,6 +342,16 @@ namespace {
 namespace transition = rex::diagnostics::gta4_transition;
 namespace gpu_flight = rex::diagnostics::gpu_flight;
 
+// iOS must never leave the user-facing render thread in an unobservable,
+// infinite Vulkan fence wait. Five seconds is far beyond a healthy GTA IV GPU
+// submission while remaining below a human-scale permanent freeze. Preserve
+// the existing desktop policy; this experiment is specifically for iOS.
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+constexpr uint64_t kNativeFenceWaitNanoseconds = 5'000'000'000ull;
+#else
+constexpr uint64_t kNativeFenceWaitNanoseconds = UINT64_MAX;
+#endif
+
 bool IsNativeFlightVerboseLoggingEnabled() {
   return rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace) ||
          rex::diagnostics::IsEnabled(rex::diagnostics::Category::kVulkan);
@@ -7270,19 +7280,52 @@ bool Gta4NativeGraphicsSystem::CreateNativeUploadBuffer(VkDeviceSize capacity,
 }
 
 void Gta4NativeGraphicsSystem::DestroyNativeUploadBuffer(NativeUploadBuffer& upload_buffer) {
-  TraceNativeFlightMutation("destroy", NativeFlightResourceKind::kUploadBuffer,
-                            NativeVulkanHandleIdentity(upload_buffer.buffer));
-  if (upload_buffer.buffer || upload_buffer.memory) {
-    RecordNativeMemoryLifecycle(
-        memory::ResourceKind::kUploadBuffer, memory::LifecycleAction::kDestroy,
-        memory::LifecycleReason::kNone, 1, upload_buffer.capacity, 0, upload_buffer.capacity,
-        upload_buffer.capacity, upload_buffer.allocation_size, active_texture_frame_);
+  RetireNativeBuffer({upload_buffer, 0});
+  upload_buffer = {};
+}
+
+void Gta4NativeGraphicsSystem::RetireNativeBuffer(NativeRetiredBuffer buffer) {
+  if (!buffer.storage.buffer && !buffer.storage.memory) {
+    return;
   }
+#if defined(__APPLE__) && defined(__MACH__)
+  // Do not unmap, destroy, or remove residency yet. MoltenVK may have declared
+  // this allocation in the other slot, or earlier in the current recording,
+  // without a corresponding explicit native shader use. A last-use delay is
+  // insufficient: subsequent draws declare it again until vkDestroyBuffer.
+  if (retired_native_buffers_.empty()) {
+    first_retired_native_buffer_submission_ =
+        submission_tracker_ ? submission_tracker_->GetCurrentSubmission() : 0;
+  }
+  const uint64_t bytes = buffer.storage.allocation_size;
+  retired_native_buffer_bytes_ +=
+      std::min(bytes, UINT64_MAX - retired_native_buffer_bytes_);
+  gpu_flight::Record("native.buffer-retire", NativeVulkanHandleIdentity(buffer.storage.buffer),
+                     first_retired_native_buffer_submission_, active_texture_frame_, bytes,
+                     buffer.persistent_block_id);
+  retired_native_buffers_.push_back(buffer);
+#else
+  DestroyNativeBufferNow(buffer);
+#endif
+}
+
+void Gta4NativeGraphicsSystem::DestroyNativeBufferNow(const NativeRetiredBuffer& buffer) {
+  const NativeUploadBuffer& upload_buffer = buffer.storage;
+  const bool persistent = buffer.persistent_block_id != 0;
+  TraceNativeFlightMutation("destroy", persistent ? NativeFlightResourceKind::kPersistentBuffer
+                                                  : NativeFlightResourceKind::kUploadBuffer,
+                            NativeVulkanHandleIdentity(upload_buffer.buffer));
+  RecordNativeMemoryLifecycle(
+      persistent ? memory::ResourceKind::kPersistentBuffer : memory::ResourceKind::kUploadBuffer,
+      memory::LifecycleAction::kDestroy,
+      persistent ? memory::LifecycleReason::kUnused : memory::LifecycleReason::kNone,
+      persistent ? buffer.persistent_block_id : 1, upload_buffer.capacity, 0,
+      upload_buffer.capacity, upload_buffer.capacity, upload_buffer.allocation_size,
+      active_texture_frame_, upload_buffer.memory_type);
   auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
   const ui::vulkan::VulkanDevice* vulkan_device =
       vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
   if (!vulkan_device) {
-    upload_buffer = {};
     return;
   }
   const auto& dfn = vulkan_device->functions();
@@ -7296,7 +7339,58 @@ void Gta4NativeGraphicsSystem::DestroyNativeUploadBuffer(NativeUploadBuffer& upl
   if (upload_buffer.memory) {
     profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkFreeMemory(device, upload_buffer.memory, nullptr); });
   }
-  upload_buffer = {};
+}
+
+void Gta4NativeGraphicsSystem::DestroyRetiredNativeBuffers() {
+  // Caller has completed both native slots before recording, or has proved
+  // completion/device loss as part of the existing renderer teardown path.
+  for (const NativeRetiredBuffer& buffer : retired_native_buffers_) {
+    DestroyNativeBufferNow(buffer);
+  }
+  retired_native_buffers_.clear();
+  retired_native_buffer_bytes_ = 0;
+  first_retired_native_buffer_submission_ = 0;
+}
+
+bool Gta4NativeGraphicsSystem::DrainRetiredNativeBuffersBeforeRecording(
+    uint64_t* profile_processing_ticks, uint64_t* actual_wait_ticks) {
+  const uint64_t current_submission =
+      submission_tracker_ ? submission_tracker_->GetCurrentSubmission() : 0;
+  const bool other_slot_pending =
+      secondary_command_buffer_submission_ > completed_command_buffer_submission_;
+  if (!ShouldDrainNativeRetiredBuffers(
+          retired_native_buffers_.size(), retired_native_buffer_bytes_,
+          first_retired_native_buffer_submission_, current_submission, other_slot_pending)) {
+    return true;
+  }
+  // Never release from inside an in-progress recording. This function is
+  // called after capacity/housekeeping work, before vkBeginCommandBuffer.
+  if (command_buffer_submission_) {
+    REXLOG_ERROR("gta4-native-buffers: attempted retirement with active submission {}",
+                 command_buffer_submission_);
+    return false;
+  }
+  gpu_flight::Record("native.buffer-drain-begin", retired_native_buffers_.size(),
+                     current_submission, active_texture_frame_, retired_native_buffer_bytes_,
+                     secondary_command_buffer_submission_);
+  const uint64_t wait_ticks_before = actual_wait_ticks ? *actual_wait_ticks : 0;
+  if (!CompleteSecondaryNativeFrameSlot(profile_processing_ticks, actual_wait_ticks)) {
+    // Keep every allocation alive if the completion proof fails.
+    return false;
+  }
+  if (gpu_flight::IsEnabled()) {
+    const uint64_t wait_ticks = actual_wait_ticks ? *actual_wait_ticks - wait_ticks_before : 0;
+    REXLOG_INFO(
+        "gta4-native-buffers: quiescent-drain frame={} submission={} buffers={} bytes={} "
+        "extra-wait-us={:.1f}",
+        active_texture_frame_, current_submission, retired_native_buffers_.size(),
+        retired_native_buffer_bytes_,
+        double(wait_ticks) * 1000000.0 / rex::chrono::Clock::QueryHostTickFrequency());
+  }
+  DestroyRetiredNativeBuffers();
+  gpu_flight::Record("native.buffer-drain-end", 0, current_submission, active_texture_frame_,
+                     completed_command_buffer_submission_);
+  return true;
 }
 
 bool Gta4NativeGraphicsSystem::CreateNativePersistentBufferBlock(uint64_t block_id,
@@ -7389,29 +7483,16 @@ void Gta4NativeGraphicsSystem::DestroyNativePersistentBufferBlock(uint64_t block
   if (block_entry == persistent_buffer_blocks_.end()) {
     return;
   }
-  NativePersistentBufferBlock& block = block_entry->second;
-  TraceNativeFlightMutation("destroy", NativeFlightResourceKind::kPersistentBuffer,
-                            NativeVulkanHandleIdentity(block.buffer));
-  RecordNativeMemoryLifecycle(memory::ResourceKind::kPersistentBuffer,
-                              memory::LifecycleAction::kDestroy, memory::LifecycleReason::kUnused,
-                              block_id, block.capacity, 0, block.capacity, block.capacity,
-                              block.allocation_size, active_texture_frame_, block.memory_type);
-  auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
-  const ui::vulkan::VulkanDevice* vulkan_device =
-      vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
-  if (vulkan_device) {
-    const auto& dfn = vulkan_device->functions();
-    const VkDevice device = vulkan_device->device();
-    if (block.mapping && block.memory) {
-      profile::CpuCall(profile::CpuOp::kDriverMemory, [&] { return dfn.vkUnmapMemory(device, block.memory); });
-    }
-    if (block.buffer) {
-      profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyBuffer(device, block.buffer, nullptr); });
-    }
-    if (block.memory) {
-      profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkFreeMemory(device, block.memory, nullptr); });
-    }
-  }
+  const NativePersistentBufferBlock& block = block_entry->second;
+  NativeUploadBuffer storage{};
+  storage.buffer = block.buffer;
+  storage.memory = block.memory;
+  storage.mapping = block.mapping;
+  storage.device_address = block.device_address;
+  storage.capacity = block.capacity;
+  storage.allocation_size = block.allocation_size;
+  storage.memory_type = block.memory_type;
+  RetireNativeBuffer({storage, block_id});
   persistent_buffer_blocks_.erase(block_entry);
 }
 
@@ -7650,14 +7731,10 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
     return arena.index.SetByteCapacity(size_t(arena.storage.capacity));
   }
   if (arena.storage.capacity < required_capacity) {
-    if (required_capacity >
-        std::numeric_limits<VkDeviceSize>::max() - (kNativeConstantArenaGrowthGranularity - 1)) {
-      return false;
-    }
-    const VkDeviceSize desired_capacity =
-        rex::round_up(std::max(required_capacity, kNativeConstantArenaMinimumSize),
-                      kNativeConstantArenaGrowthGranularity);
-    if (desired_capacity > maximum_capacity) {
+    const VkDeviceSize desired_capacity = NativeConstantArenaGrowthCapacity(
+        arena.storage.capacity, required_capacity, kNativeConstantArenaMinimumSize,
+        kNativeConstantArenaGrowthGranularity, maximum_capacity);
+    if (!desired_capacity) {
       return false;
     }
     NativeUploadBuffer replacement{};
@@ -7895,7 +7972,10 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
 
   gpu_flight::Record("native.slot-wait-begin", slot, submission, active_texture_frame_);
   const uint64_t wait_begin = actual_wait_ticks ? rex::chrono::Clock::QueryHostTickCount() : 0;
-  const bool completed = profile::CpuCall(profile::CpuOp::kFenceWait, [&] { return submission_tracker_->AwaitSubmissionCompletion(submission); });
+  const bool completed = profile::CpuCall(profile::CpuOp::kFenceWait, [&] {
+    return submission_tracker_->AwaitSubmissionCompletion(
+        submission, kNativeFenceWaitNanoseconds);
+  });
   if (actual_wait_ticks) {
     *actual_wait_ticks += rex::chrono::Clock::QueryHostTickCount() - wait_begin;
   }
@@ -9608,6 +9688,12 @@ void Gta4NativeGraphicsSystem::EndNativeGpuProfileFrame(VkCommandBuffer command_
     upload_capacity += arena.storage.capacity;
     upload_allocation += arena.storage.allocation_size;
   }
+  for (const NativeRetiredBuffer& buffer : retired_native_buffers_) {
+    if (!buffer.persistent_block_id) {
+      upload_capacity += buffer.storage.capacity;
+      upload_allocation += buffer.storage.allocation_size;
+    }
+  }
   builder.SetCounter(performance::Counter::kUploadBufferCapacityBytes, upload_capacity);
   builder.SetCounter(performance::Counter::kUploadBufferAllocationBytes, upload_allocation);
   builder.SetCounter(performance::Counter::kPendingTextureReleases,
@@ -9998,6 +10084,17 @@ void Gta4NativeGraphicsSystem::CaptureNativeRetainedResources(uint32_t submitted
     resource.last_used_frame = active_texture_frame_;
     append(resource);
   }
+  for (const NativeRetiredBuffer& buffer : retired_native_buffers_) {
+    memory::RetainedResource resource;
+    resource.kind = buffer.persistent_block_id ? memory::ResourceKind::kPersistentBuffer
+                                               : memory::ResourceKind::kUploadBuffer;
+    resource.identity = NativeVulkanHandleIdentity(buffer.storage.buffer);
+    resource.generation = first_retired_native_buffer_submission_;
+    resource.retained_bytes = buffer.storage.capacity;
+    resource.allocation_bytes = buffer.storage.allocation_size;
+    resource.last_used_frame = active_texture_frame_;
+    append(resource);
+  }
   {
     std::lock_guard event_lock(state.event_mutex);
     state.dropped_retained += local_dropped;
@@ -10347,17 +10444,32 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
     upload_capacity_bytes += arena.storage.capacity;
     upload_buffer_count += uint64_t(arena.storage.memory != VK_NULL_HANDLE);
   }
+  for (const NativeRetiredBuffer& buffer : retired_native_buffers_) {
+    if (!buffer.persistent_block_id) {
+      upload_allocation_bytes += buffer.storage.allocation_size;
+      upload_capacity_bytes += buffer.storage.capacity;
+      upload_buffer_count += uint64_t(buffer.storage.memory != VK_NULL_HANDLE);
+    }
+  }
   set_usage(memory::Category::kGpuUpload, upload_allocation_bytes, upload_capacity_bytes,
             upload_buffer_count);
   uint64_t persistent_geometry_bytes = 0;
   uint64_t persistent_geometry_logical_bytes = 0;
+  uint64_t persistent_geometry_count = persistent_buffer_blocks_.size();
   for (const auto& [block_id, block] : persistent_buffer_blocks_) {
     (void)block_id;
     persistent_geometry_bytes += block.allocation_size;
     persistent_geometry_logical_bytes += block.capacity;
   }
+  for (const NativeRetiredBuffer& buffer : retired_native_buffers_) {
+    if (buffer.persistent_block_id) {
+      persistent_geometry_bytes += buffer.storage.allocation_size;
+      persistent_geometry_logical_bytes += buffer.storage.capacity;
+      ++persistent_geometry_count;
+    }
+  }
   set_usage(memory::Category::kGpuPersistentGeometry, persistent_geometry_bytes,
-            persistent_geometry_logical_bytes, persistent_buffer_blocks_.size());
+            persistent_geometry_logical_bytes, persistent_geometry_count);
   uint64_t probe_allocation_bytes = texture_readback_.memory_size;
   uint64_t probe_logical_bytes = texture_readback_.capacity;
   uint64_t probe_buffer_count = uint64_t(texture_readback_.memory != VK_NULL_HANDLE);
@@ -15462,6 +15574,14 @@ void Gta4NativeGraphicsSystem::RetireNativeTextureImage(std::unique_ptr<NativeTe
   if (image->resource.view) {
     InvalidateCachedDescriptors(image->descriptor_lifetime);
   }
+  // The image may no longer be referenced by the frame being recorded, while
+  // MoltenVK still retains it in the Metal argument buffer of the other frame
+  // slot. Quarantine retirement through the latest committed submission. This
+  // preserves two-frame CPU/GPU overlap without destroying resources under a
+  // pending command buffer.
+  image->last_used_submission = NativeTextureRetirementSubmission(
+      image->last_used_submission,
+      submission_tracker_ ? submission_tracker_->GetCurrentSubmission() : 0);
   RetireNativeTextureDescriptor(*image);
   const uint64_t last_submission = image->last_used_submission;
   retired_texture_images_[last_submission].push_back(std::move(image));
@@ -32319,6 +32439,10 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         if (!EnsureFrameConstantArenaCapacity()) {
           return false;
         }
+        if (!DrainRetiredNativeBuffersBeforeRecording(
+                &native_profile_completion_processing_ticks, &native_profile_wait_ticks)) {
+          return false;
+        }
         if (native_profiler_enabled) {
           native_profile_upload_capacity_ticks =
               rex::chrono::Clock::QueryHostTickCount() - native_profile_upload_capacity_begin;
@@ -33025,6 +33149,7 @@ void Gta4NativeGraphicsSystem::DestroyNativeRendererObjects() {
   secondary_overflow_upload_buffers_.clear();
   DestroyNativeFrameConstantArenas();
   DestroyNativePersistentBuffers();
+  DestroyRetiredNativeBuffers();
   DestroyContentProbeBuffer();
   DestroyLightStencilHistogramBuffers();
   DestroyLightColorDeltaBuffers();

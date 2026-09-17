@@ -2,6 +2,8 @@
 #include "theft4_bootstrap_audio.h"
 #include "theft4_bootstrap_graphics.h"
 #include "theft4_bootstrap_input.h"
+#include "theft4_metal_presenter.h"
+#include "theft4_motion_blur.h"
 #include "gta4_installer.h"
 #include <rex/image_info.h>
 #include <rex/cvar.h>
@@ -14,6 +16,7 @@
 #include <rex/system/xex_module.h>
 #include <rex/system/xthread.h>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -30,6 +33,14 @@ REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
+REXCVAR_DECLARE(int32_t, video_mode_width);
+REXCVAR_DECLARE(int32_t, video_mode_height);
+REXCVAR_DECLARE(std::string, gta4_native_upscaler);
+REXCVAR_DECLARE(std::string, gta4_fsr1_quality);
+REXCVAR_DECLARE(std::string, present_effect);
+REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
+REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
 #endif
 
 extern const rex::PPCImageInfo PPCImageConfig;
@@ -74,6 +85,20 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         logging.log_file = log_path.c_str();
         logging.log_to_console = true;
         rex::InitLogging(logging);
+        if (const char* flight = std::getenv("THEFT4_GPU_FLIGHT_TRACE");
+            flight && std::string_view(flight) == "1") {
+            if (!std::getenv("REX_GPU_FLIGHT_TRACE_PATH")) {
+                const auto trace_id = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                const auto flight_path =
+                    support / ("gpu-flight-" + std::to_string(trace_id) + ".jsonl");
+                setenv("REX_GPU_FLIGHT_TRACE_PATH", flight_path.c_str(), 1);
+                REXLOG_INFO("Theft4 failure-triggered GPU flight trace armed: {}",
+                            flight_path.string());
+            } else {
+                REXLOG_INFO("Theft4 failure-triggered GPU flight trace using supplied path");
+            }
+        }
         // Audio timing is an opt-in engineering capture, never a normal-play
         // cost. Remove a previous bounded trace before deciding whether this
         // launch needs one so device testing cannot accumulate large CSVs.
@@ -107,19 +132,70 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
-        // Launch-only stability A/B. Two slots remains the normal optimized
-        // configuration; one serializes native frame resources to distinguish
-        // cross-frame reuse bugs from command/shader failures.
-        if (const char* frames = std::getenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT"); frames) {
+        // Match the desktop FSR setup, with a deliberately fixed 720p scene.
+        // Native hooks derive input = output / 1.5 for FSR's Quality mode:
+        // 1920x1080 / 1.5 = 1280x720. The CAMetalLayer is already sized on
+        // the main thread, before Vulkan constructs the output swapchain.
+        const int motion_blur = theft4::motion_blur::ParseSetting(std::getenv("THEFT4_MOTION_BLUR"));
+        if (motion_blur < 0)
+            throw std::runtime_error("THEFT4_MOTION_BLUR must be 0 or 1");
+        const char* blur_trace = std::getenv("THEFT4_MOTION_BLUR_TRACE");
+        theft4::motion_blur::Configure(motion_blur != 0,
+            blur_trace && std::string_view(blur_trace) == "1");
+        REXLOG_INFO("Theft4 motion blur: {} (stock composite-pass selection)",
+                    motion_blur ? "on" : "off");
+        const auto output = theft4_metal_get_output_policy();
+        // Boost expands only the swapchain. Raising this logical video mode
+        // would also raise the render target through the game's FSR hooks.
+        REXCVAR_SET(video_mode_width, int32_t(output.video_width));
+        REXCVAR_SET(video_mode_height, int32_t(output.video_height));
+        REXCVAR_SET(gta4_native_upscaler, output.fsr1 ? "fsr1" : "native");
+        REXCVAR_SET(gta4_fsr1_quality, "quality");
+        REXCVAR_SET(present_effect, output.fsr1 ? "fsr" : "bilinear");
+        REXCVAR_SET(present_fsr_sharpness_reduction,
+                    REXCVAR_GET(gta4_fsr1_sharpness_reduction));
+        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} upscaler={} "
+                    "quality=quality sharpness-reduction={} fps-counter=content-sequence",
+                    output.render_width, output.render_height,
+                    output.output_width, output.output_height,
+                    output.fsr1 ? "fsr1" : "native",
+                    REXCVAR_GET(present_fsr_sharpness_reduction));
+        // A same-scene iPad A/B showed that forced 8x filtering introduced
+        // visible frame-time instability in heavy views for only a marginal
+        // image-quality gain. Use 4x as the balanced iOS default and retain an
+        // explicit launch override for controlled device comparisons.
+        const char* anisotropy_override = std::getenv("THEFT4_ANISOTROPY");
+        const std::string_view anisotropy =
+            anisotropy_override ? anisotropy_override : "4x";
+        if (anisotropy != "1x" && anisotropy != "2x" &&
+            anisotropy != "4x" && anisotropy != "8x" &&
+            anisotropy != "16x") {
+            throw std::runtime_error(
+                "THEFT4_ANISOTROPY must be 1x, 2x, 4x, 8x, or 16x");
+        }
+        REXCVAR_SET(gta4_anisotropic_filtering, std::string(anisotropy));
+        REXLOG_INFO("Theft4 material anisotropic filtering set to {} ({})",
+                    anisotropy,
+                    anisotropy_override ? "launch override" : "iOS default");
+
+        // Use both independently owned native frame slots so the CPU can record
+        // frame n+1 while the GPU completes frame n.  The renderer keeps command
+        // buffers, upload storage, descriptors, constants, query/readback state
+        // and submission fences per slot.  Preserve the launch override so a
+        // device run can immediately return to the one-slot stability baseline.
+        uint32_t native_frame_slots = 2;
+        const char* frames = std::getenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT");
+        if (frames) {
             const std::string_view value(frames);
             if (value != "1" && value != "2") {
                 throw std::runtime_error(
                     "THEFT4_NATIVE_FRAMES_IN_FLIGHT must be 1 or 2");
             }
-            const uint32_t count = value == "1" ? 1u : 2u;
-            REXCVAR_SET(gta4_native_frames_in_flight, count);
-            REXLOG_INFO("Theft4 native frame-resource slots overridden to {}", count);
+            native_frame_slots = value == "1" ? 1u : 2u;
         }
+        REXCVAR_SET(gta4_native_frames_in_flight, native_frame_slots);
+        REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
+                    native_frame_slots, frames ? "launch override" : "iOS default");
 #endif
         rex::Runtime runtime(game_directory, support / "user",
                              std::filesystem::path(game_directory) / "update",

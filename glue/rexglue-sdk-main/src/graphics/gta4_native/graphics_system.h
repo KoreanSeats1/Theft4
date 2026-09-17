@@ -459,6 +459,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t memory_type = UINT32_MAX;
   };
 
+  struct NativeRetiredBuffer {
+    NativeUploadBuffer storage;
+    uint64_t persistent_block_id = 0;  // Zero denotes an upload/constant buffer.
+  };
+
   struct NativeRoomLightInputTexture {
     NativeRoomLightInputBinding binding;
     uint32_t probe_stage = UINT32_MAX;
@@ -1290,6 +1295,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void RecordNativePipelineTiming(uint64_t compile_ticks, uint64_t wait_ticks = 0);
   bool CreateNativeUploadBuffer(VkDeviceSize capacity, NativeUploadBuffer& upload_buffer);
   void DestroyNativeUploadBuffer(NativeUploadBuffer& upload_buffer);
+  void RetireNativeBuffer(NativeRetiredBuffer buffer);
+  void DestroyNativeBufferNow(const NativeRetiredBuffer& buffer);
+  void DestroyRetiredNativeBuffers();
+  bool DrainRetiredNativeBuffersBeforeRecording(uint64_t* profile_processing_ticks,
+                                               uint64_t* actual_wait_ticks);
   bool EnsureFrameUploadCapacity(
       const std::shared_ptr<const NativeTextureResource>& present_source);
   bool InitializeContentProbeBuffer(NativeContentProbeBuffer* buffer = nullptr);
@@ -1715,6 +1725,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   NativeUploadBuffer secondary_upload_buffer_;
   std::vector<NativeUploadBuffer> overflow_upload_buffers_;
   std::vector<NativeUploadBuffer> secondary_overflow_upload_buffers_;
+  std::vector<NativeRetiredBuffer> retired_native_buffers_;
+  uint64_t retired_native_buffer_bytes_ = 0;
+  uint64_t first_retired_native_buffer_submission_ = 0;
   std::unique_ptr<NativeBufferArena> persistent_buffer_arena_;
   std::shared_ptr<NativeOwnerRetirementQueue<NativePersistentBufferEntry>>
       persistent_buffer_retirements_;

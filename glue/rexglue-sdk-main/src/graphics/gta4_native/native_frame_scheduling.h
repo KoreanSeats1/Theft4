@@ -25,6 +25,53 @@ inline constexpr uint32_t kNativeBufferCacheLimitMiB = 256;
 inline constexpr size_t kNativeMaximumVertexConversionsPerBuffer = 2;
 inline constexpr uint32_t kNativeUploadShrinkObservationFrames = 120;
 
+// MoltenVK declares every live device-address buffer on draws that use physical
+// storage addresses. Logical last-use fences alone therefore cannot justify
+// destroying a VkBuffer while another native command buffer is pending. Batch
+// physical destruction at a pre-recording, all-native-slots-complete boundary.
+// These are drain triggers, not a hard allocation cap: one recording may retire
+// more than the byte threshold before the next safe boundary is reached.
+inline constexpr uint64_t kNativeRetiredBufferDrainBytes = 32 * 1024 * 1024;
+inline constexpr size_t kNativeRetiredBufferDrainCount = 256;
+inline constexpr uint64_t kNativeRetiredBufferDrainSubmissions = 120;
+
+constexpr bool ShouldDrainNativeRetiredBuffers(size_t count, uint64_t bytes,
+                                               uint64_t first_submission,
+                                               uint64_t current_submission,
+                                               bool other_slot_pending) {
+  if (!count) {
+    return false;
+  }
+  return !other_slot_pending || bytes >= kNativeRetiredBufferDrainBytes ||
+         count >= kNativeRetiredBufferDrainCount || current_submission < first_submission ||
+         current_submission - first_submission >= kNativeRetiredBufferDrainSubmissions;
+}
+
+// Amortize arena growth so gradually rising scene complexity does not require
+// a new addressable buffer (and eventual all-slot drain) every few frames.
+// The extra capacity holds identical constants; it does not alter draw data.
+constexpr uint64_t NativeConstantArenaGrowthCapacity(uint64_t current, uint64_t required,
+                                                     uint64_t minimum, uint64_t granularity,
+                                                     uint64_t maximum) {
+  if (!granularity || !required || required > maximum || current > maximum) {
+    return 0;
+  }
+  uint64_t desired = required > minimum ? required : minimum;
+  const uint64_t growth = current > maximum - current ? maximum : current * 2;
+  if (growth > desired) {
+    desired = growth;
+  }
+  if (desired > maximum) {
+    desired = maximum;
+  }
+  const uint64_t remainder = desired % granularity;
+  if (remainder) {
+    const uint64_t padding = granularity - remainder;
+    desired = padding > maximum - desired ? maximum : desired + padding;
+  }
+  return desired;
+}
+
 // Internal lock flushes submit GPU work but are not title presents. Keep the
 // resource-maintenance clock on the most recent title frame. A real present
 // with frame zero (startup, reset, or wrap) remains a real clock observation.
@@ -241,6 +288,21 @@ constexpr bool ShouldShrinkNativeUploadBuffer(uint64_t current_capacity,
 constexpr bool ShouldRetireSupersededNativeTextureGeneration(uint64_t previous_generation,
                                                               uint64_t replacement_generation) {
   return previous_generation && previous_generation != replacement_generation;
+}
+
+// Per-frame descriptor pages are independently owned, but MoltenVK may keep
+// their Metal argument-buffer resource references alive through the most
+// recently committed submission. A texture retired while another frame is in
+// flight must therefore outlive both its last explicit use and that committed
+// frame. The submission tracker exposes the next submission to record, so the
+// latest committed submission is current_submission - 1.
+constexpr uint64_t NativeTextureRetirementSubmission(uint64_t last_used_submission,
+                                                     uint64_t current_submission) {
+  const uint64_t latest_committed_submission =
+      current_submission ? current_submission - 1 : 0;
+  return last_used_submission > latest_committed_submission
+             ? last_used_submission
+             : latest_committed_submission;
 }
 
 enum class NativeTextureReleaseAction : uint8_t {

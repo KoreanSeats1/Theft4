@@ -126,6 +126,11 @@ uint64_t VulkanSubmissionTracker::UpdateAndGetCompletedSubmission() {
 }
 
 bool VulkanSubmissionTracker::AwaitSubmissionCompletion(uint64_t submission_index) {
+  return AwaitSubmissionCompletion(submission_index, UINT64_MAX);
+}
+
+bool VulkanSubmissionTracker::AwaitSubmissionCompletion(uint64_t submission_index,
+                                                        uint64_t timeout_nanoseconds) {
   // The tracker itself can't give a submission index for a submission that
   // hasn't even started being recorded yet, the client has provided a
   // completely invalid value or has done overly optimistic math if such an
@@ -161,12 +166,19 @@ bool VulkanSubmissionTracker::AwaitSubmissionCompletion(uint64_t submission_inde
         // Wait if requested.
         gpu_flight::Record("fence.wait-begin", uint64_t(uintptr_t(pending_pair.second)),
                            pending_pair.first, 0, uint64_t(uintptr_t(this)), submission_index);
-        const VkResult wait_result =
-            dfn.vkWaitForFences(device, 1, &pending_pair.second, VK_TRUE, UINT64_MAX);
+        const VkResult wait_result = dfn.vkWaitForFences(
+            device, 1, &pending_pair.second, VK_TRUE, timeout_nanoseconds);
         gpu_flight::Record("fence.wait-end", uint64_t(uintptr_t(pending_pair.second)),
                            pending_pair.first, 0, uint64_t(uintptr_t(this)), submission_index,
                            int32_t(wait_result));
-        if (wait_result < VK_SUCCESS) {
+        if (wait_result == VK_TIMEOUT) {
+          // A positive Vulkan timeout isn't an API error, but it is a terminal
+          // diagnostic event for callers that explicitly requested a bounded
+          // wait. Freeze and dump the preceding resource/submission history.
+          gpu_flight::Fail("fence.wait-timeout", int32_t(wait_result),
+                           uint64_t(uintptr_t(pending_pair.second)), pending_pair.first,
+                           submission_index);
+        } else if (wait_result < VK_SUCCESS) {
           gpu_flight::Fail("fence.wait", int32_t(wait_result),
                            uint64_t(uintptr_t(pending_pair.second)), pending_pair.first);
         }

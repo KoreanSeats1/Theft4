@@ -2231,6 +2231,28 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
         paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
         max_framebuffer_extent.height, guest_output_paint_config);
     guest_output_effect_count = guest_output_flow.effect_count;
+#if REX_PLATFORM_IOS && defined(REX_HAS_FIDELITYFX_FSR1)
+    // One startup witness of the selected passes and actual extents, rather
+    // than assuming a requested launcher mode reached the GPU presenter.
+    if (!ios_output_route_logged_ && guest_output_effect_count) {
+      bool easu = false;
+      bool rcas = false;
+      for (size_t i = 0; i < guest_output_effect_count; ++i) {
+        const auto effect = guest_output_flow.effects[i];
+        easu |= effect == GuestOutputPaintEffect::kFsrEasu;
+        rcas |= effect == GuestOutputPaintEffect::kFsrRcas ||
+                effect == GuestOutputPaintEffect::kFsrRcasDither;
+      }
+      REXLOG_INFO("Theft4 output route: guest={}x{} swapchain={}x{} "
+                  "effects={} fsr-easu={} fsr-rcas={}",
+                  guest_output_properties.frontbuffer_width,
+                  guest_output_properties.frontbuffer_height,
+                  paint_context_.swapchain_extent.width,
+                  paint_context_.swapchain_extent.height,
+                  guest_output_effect_count, easu, rcas);
+      ios_output_route_logged_ = true;
+    }
+#endif
     if (frame_probe.valid() && guest_output_flow.effect_count) {
       const size_t last = guest_output_flow.effect_count - 1;
       frame_region = MapFramePixelProbe(frame_probe, guest_output_flow.output_x, guest_output_flow.output_y,
@@ -3061,16 +3083,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   // between merely producing guest images and actually handing them to the
   // CAMetalLayer-backed swapchain.
   static uint64_t theft4_present_count = 0;
-  static uint64_t theft4_last_counted_mailbox_version = 0;
   ++theft4_present_count;
-  const uint64_t theft4_mailbox_version =
-      guest_output_mailbox_index == UINT32_MAX
-          ? 0
-          : guest_output_images_[guest_output_mailbox_index].version;
-  if (guest_output_image && theft4_mailbox_version &&
-      theft4_mailbox_version != theft4_last_counted_mailbox_version &&
-      (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR)) {
-    theft4_last_counted_mailbox_version = theft4_mailbox_version;
+  // Allocation versions start at zero and recur whenever a mailbox image is
+  // reused. Count fresh published content instead, including the first image.
+  if (guest_output_image && ios_guest_frame_counter_.NotePresented(
+          guest_output_properties.content_sequence,
+          present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR)) {
     theft4_frame_counter_note_published();
   }
   const bool theft4_present_milestone =
@@ -3087,14 +3105,16 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
        present_result != VK_SUBOPTIMAL_KHR)) {
     REXLOG_INFO(
         "[Theft4Present] present={} guest_image={} guest={}x{} effects={} "
-        "swapchain={}x{} image={} acquire={} submit={} queue_present={}",
+        "swapchain={}x{} image={} acquire={} submit={} queue_present={} "
+        "content={} unique={}",
         theft4_present_count, guest_output_image != nullptr,
         guest_output_properties.frontbuffer_width,
         guest_output_properties.frontbuffer_height, guest_output_effect_count,
         paint_context_.swapchain_extent.width,
         paint_context_.swapchain_extent.height, swapchain_image_index,
         int32_t(acquire_result), int32_t(submit_result),
-        int32_t(present_result));
+        int32_t(present_result), guest_output_properties.content_sequence,
+        ios_guest_frame_counter_.count());
   }
 #endif
 

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "theft4_output_policy.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,11 @@ extern "C" {
 // retains it only while bound and never assumes ownership of the UIView.
 void theft4_metal_bind_layer(void* layer);
 void theft4_metal_unbind_layer(void* layer);
+// Main thread, before runtime/presenter creation only. Latches the launch mode;
+// subsequent UIKit layout keeps this size rather than reverting to 720p.
+void theft4_metal_set_output_mode(theft4_output_mode mode,
+                                  uint32_t native_width, uint32_t native_height);
+theft4_output_policy theft4_metal_get_output_policy(void);
 void theft4_metal_resize_layer(void* layer, double width, double height,
                                double scale);
 bool theft4_metal_has_layer(void);
@@ -40,7 +46,7 @@ bool theft4_metal_renderer_end_frame(uint32_t frontbuffer_ptr,
 uint64_t theft4_metal_renderer_submitted_frames(void);
 uint64_t theft4_metal_renderer_completed_frames(void);
 
-// Counts distinct guest images successfully handed to the iOS Vulkan/Metal
+// Counts distinct content publications successfully handed to the iOS Vulkan/Metal
 // swapchain. UIKit samples this monotonically increasing value for the small
 // on-screen FPS indicator; no logging or GPU readback is involved.
 void theft4_frame_counter_note_published(void);

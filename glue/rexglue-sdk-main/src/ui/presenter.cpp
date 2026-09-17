@@ -656,6 +656,11 @@ bool Presenter::RefreshGuestOutput(
     guest_output_active_last_refresh_ = false;
   }
 
+  // Only successful refreshes reach this point. Carry freshness with the
+  // mailbox under the existing release/acquire protocol, not in a global
+  // latest-frame value or the allocation version used by resource caches.
+  writable_properties.content_sequence = guest_output_content_sequence_.Publish(is_active);
+
   // Make the new image the next to present on the host (the "ready" one),
   // replacing the one already specified as the next (dropping it instead of
   // enqueueing the new image after it) to achieve the lowest latency (also,

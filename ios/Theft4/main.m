@@ -2,8 +2,11 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/log.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "theft4_core.h"
 #include "theft4_metal_presenter.h"
+#import "Theft4TouchControls.h"
+#import "Theft4LauncherView.h"
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
@@ -29,11 +32,19 @@
     UIButton *_start;
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
-    UIScrollView *_bringupOverlay;
+    Theft4LauncherView *_bringupOverlay;
     UILabel *_fpsLabel;
     NSTimer *_fpsTimer;
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
+    UISwitch *_showFPS;
+    UISwitch *_showControls;
+    UISwitch *_anisotropicFiltering;
+    UISwitch *_enhancedOutput;
+    UISwitch *_fsrBoost;
+    UISwitch *_motionBlur;
+    Theft4TouchControls *_touchControls;
+    BOOL _gamePresentation;
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -65,6 +76,14 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [NSUserDefaults.standardUserDefaults registerDefaults:@{
+        @"Theft4ShowFPS": @YES,
+        @"Theft4ShowTouchControls": @NO,
+        @"Theft4AnisotropicFiltering": @YES,
+        @"Theft4EnhancedOutput1080p": @YES,
+        @"Theft4ExperimentalFSRBoost": @NO,
+        @"Theft4MotionBlur": @YES
+    }];
     // The native game image is 1280x720. Keep its layer itself at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
@@ -84,73 +103,45 @@ static void bootEvent(void *context, const char *event) {
     preferFullWidth.priority = 999;
     preferFullWidth.active = YES;
     theft4_metal_bind_layer((__bridge void *)_metalView.layer);
-    UILabel *title = [UILabel new];
-    title.text = @"Theft4";
-    title.font = [UIFont systemFontOfSize:44 weight:UIFontWeightBold];
-    title.textColor = UIColor.whiteColor;
-    UILabel *subtitle = [UILabel new];
-    subtitle.text = @"iOS RUNTIME BRING-UP";
-    subtitle.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
-    subtitle.textColor = UIColor.systemTealColor;
-    _status = [UILabel new];
-    _status.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
-    _status.textColor = UIColor.whiteColor;
-    _status.accessibilityIdentifier = @"core.status";
-    _detail = [UILabel new];
-    _detail.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
-    _detail.textColor = UIColor.lightGrayColor;
-    _detail.accessibilityIdentifier = @"core.details";
-    UILabel *scope = [UILabel new];
-    scope.text = @"LibertyRecomp is linked inside this app.\n\nThis probe does not load game files or start the game runtime. Graphics, audio, and guest execution are not enabled.";
-#ifdef THEFT4_HAS_GAME_LOADER
-    scope.text = @"Loading the real game executable into LibertyRecomp.\n\nThis starts and shuts down the runtime without executing the game. Xbox API exports, graphics, and audio still need integration.";
-#endif
-#ifdef THEFT4_HAS_GAME_STARTUP
-    scope.text = @"Experimental GTA IV startup with real Xbox memory, file, threading, and AOT execution.\n\nNative Metal presentation is connected; Xenos draw commands and audio output are still being integrated. Startup saves are isolated from your existing saves.";
-#endif
-    scope.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    scope.textColor = UIColor.lightGrayColor;
-    UIButton *restart = [UIButton buttonWithType:UIButtonTypeSystem];
-    restart.configuration = [UIButtonConfiguration tintedButtonConfiguration];
-    [restart setTitle:@"Restart core probe" forState:UIControlStateNormal];
-    restart.accessibilityIdentifier = @"core.restart";
-    [restart addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
-    _prepare = [UIButton buttonWithType:UIButtonTypeSystem];
-    _prepare.configuration = [UIButtonConfiguration filledButtonConfiguration];
-    [_prepare setTitle:@"Prepare transferred game" forState:UIControlStateNormal];
-    [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
-    _start = [UIButton buttonWithType:UIButtonTypeSystem];
-    _start.configuration = [UIButtonConfiguration filledButtonConfiguration];
-    [_start setTitle:@"Attempt game startup" forState:UIControlStateNormal];
+    _bringupOverlay = [Theft4LauncherView new];
+    _bringupOverlay.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_bringupOverlay];
+    [NSLayoutConstraint activateConstraints:@[
+        [_bringupOverlay.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_bringupOverlay.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_bringupOverlay.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_bringupOverlay.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
+    _status = _bringupOverlay.statusLabel; _detail = _bringupOverlay.detailLabel;
+    _start = _bringupOverlay.startButton; _prepare = _bringupOverlay.prepareButton;
     [_start addTarget:self action:@selector(startTransferredGame) forControlEvents:UIControlEventTouchUpInside];
+    [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
+    [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
-    UILabel *transfer = [UILabel new];
-    transfer.text = @"On your Mac: Finder → iPad → Files → Theft4.\nCopy the prepared folder named game, wait for the transfer to finish, then tap below. This checks and loads the executable; it does not start gameplay.";
-    transfer.numberOfLines = 0;
-    transfer.textColor = UIColor.lightGrayColor;
-    transfer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    NSArray<UILabel *> *labels = @[title, subtitle, _status, _detail, scope];
-    for (UILabel *label in labels) { label.numberOfLines = 0; label.adjustsFontForContentSizeCategory = YES; }
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle, _status, _detail, scope, transfer, _prepare, _start, restart]];
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 24;
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    _bringupOverlay = [UIScrollView new];
-    _bringupOverlay.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:_bringupOverlay];
-    [_bringupOverlay addSubview:stack];
+    _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
+    _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
+    _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
+    _motionBlur = _bringupOverlay.motionBlur;
+    NSArray *toggles = @[_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
+    NSArray *keys = @[@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+                      @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
+    for (NSUInteger i=0;i<toggles.count;++i) {
+        UISwitch *toggle = toggles[i];
+        toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
+        [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    if (_fsrBoost.on) _enhancedOutput.on = YES;
+    [_bringupOverlay refreshConfigurationSummary];
+    _touchControls = [Theft4TouchControls new];
+    _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_touchControls];
     [NSLayoutConstraint activateConstraints:@[
-        [_bringupOverlay.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [_bringupOverlay.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
-        [_bringupOverlay.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [_bringupOverlay.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [stack.topAnchor constraintEqualToAnchor:_bringupOverlay.contentLayoutGuide.topAnchor constant:32],
-        [stack.bottomAnchor constraintEqualToAnchor:_bringupOverlay.contentLayoutGuide.bottomAnchor constant:-32],
-        [stack.leadingAnchor constraintEqualToAnchor:_bringupOverlay.contentLayoutGuide.leadingAnchor constant:28],
-        [stack.trailingAnchor constraintEqualToAnchor:_bringupOverlay.contentLayoutGuide.trailingAnchor constant:-28],
-        [stack.widthAnchor constraintEqualToAnchor:_bringupOverlay.frameLayoutGuide.widthAnchor constant:-56]
+        [_touchControls.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_touchControls.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_touchControls.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_touchControls.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
     ]];
     _fpsLabel = [UILabel new];
     _fpsLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -198,6 +189,24 @@ static void bootEvent(void *context, const char *event) {
     theft4_metal_resize_layer((__bridge void *)_metalView.layer,
                               _metalView.bounds.size.width,
                               _metalView.bounds.size.height, scale);
+}
+
+- (void)displaySettingsChanged:(UISwitch *)sender {
+    if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
+    if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
+    [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
+    [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    [_bringupOverlay refreshConfigurationSummary];
+    [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
+    [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
+    [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
+        forKey:@"Theft4AnisotropicFiltering"];
+    [NSUserDefaults.standardUserDefaults setBool:_enhancedOutput.on
+        forKey:@"Theft4EnhancedOutput1080p"];
+    _fpsLabel.hidden = !_gamePresentation || !_showFPS.on;
+    _touchControls.active = _gamePresentation && _showControls.on;
+    _fpsLastFrames = theft4_frame_counter_published_frames();
+    _fpsLastTime = CACurrentMediaTime();
 }
 
 - (void)record:(NSString *)event {
@@ -252,7 +261,9 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)enterGamePresentationMode {
-    if (_bringupOverlay.hidden) return;
+    if (_gamePresentation) return;
+    [_bringupOverlay retireScene];
+    _gamePresentation = YES;
     [UIView animateWithDuration:0.2 animations:^{
         self->_bringupOverlay.alpha = 0.0;
     } completion:^(BOOL finished) {
@@ -265,7 +276,9 @@ static void bootEvent(void *context, const char *event) {
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
     _fpsLabel.text = @"--.- FPS";
-    _fpsLabel.hidden = NO;
+    _fpsLabel.hidden = !_showFPS.on;
+    _touchControls.active = _showControls.on &&
+        self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive;
     [self record:@"ui.game_presentation_mode"];
 }
 
@@ -315,6 +328,27 @@ static void bootEvent(void *context, const char *event) {
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
+    }
+    if (execute) {
+        // Apply the persisted launcher choice before the background runtime
+        // reads and validates its native-renderer launch configuration.
+        setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
+        setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
+        [self.view layoutIfNeeded];
+        UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
+        CGFloat nativeScale = screen.nativeScale;
+        theft4_metal_set_output_mode(
+            _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
+                (_enhancedOutput.on ? THEFT4_OUTPUT_FSR_1080P : THEFT4_OUTPUT_720P),
+            (uint32_t)floor(_metalView.bounds.size.width * nativeScale),
+            (uint32_t)floor(_metalView.bounds.size.height * nativeScale));
+        // Release all decorative GPU work before initializing the game device.
+        [_bringupOverlay retireScene];
+        _fsrBoost.enabled = NO;
+        _bringupOverlay.restartButton.enabled = NO;
+        _enhancedOutput.enabled = NO;
+        _anisotropicFiltering.enabled = NO;
+        _motionBlur.enabled = NO;
     }
     NSError *backupError = nil;
     if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])
@@ -366,6 +400,8 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)activate {
+    [_bringupOverlay setActive:!_executionAttempted];
+    _touchControls.active = _gamePresentation && _showControls.on;
     [self createCore];
     if (_core) [self accept:theft4_core_activate(_core) operation:@"activate"];
     [self record:@"scene.active"];
@@ -397,10 +433,14 @@ static void bootEvent(void *context, const char *event) {
     [self refresh];
 }
 - (void)pause {
+    [_bringupOverlay setActive:NO];
+    _touchControls.active = NO;
     if (_core) [self accept:theft4_core_pause(_core) operation:@"pause"];
     [self refresh];
 }
 - (void)shutdown {
+    [_bringupOverlay setActive:NO];
+    _touchControls.active = NO;
     if (_core) {
         [self accept:theft4_core_stop(_core) operation:@"stop"];
         [self accept:theft4_core_destroy(_core) operation:@"destroy"];

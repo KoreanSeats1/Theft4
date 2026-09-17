@@ -100,6 +100,34 @@ Release is still **development signed**, not an App Store/distribution build.
 Symbol information and ordinary startup logs may remain; that does not make it
 a Debug build. No `get-task-allow` entitlement should be confused with CPU JIT.
 
+### Build a public sideload package
+
+A development-signed app cannot be installed broadly: its provisioning profile
+only authorizes registered devices and contains developer/device metadata. For a
+GitHub release, build with stable source paths and package an unsigned IPA that
+the user's sideloading tool will re-sign with that user's Apple account:
+
+```sh
+cmake --preset ios-device-release \
+  -DREXGLUE_RUNTIME_ONLY=ON \
+  -DREXGLUE_HEADLESS_KERNEL=ON \
+  -DTHEFT4_BUILD_GAME_CODE=ON \
+  -DTHEFT4_ENABLE_GAME_STARTUP=ON \
+  -DTHEFT4_PUBLIC_BUILD=ON \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
+  -DTHEFT4_XENIOS_IOS_LIB_DIR="$THEFT4_MOLTENVK_IOS_LIB_DIR"
+cmake --build --preset theft4-device-release --parallel 4
+./tools/package_ios_ipa.sh \
+  out/build/ios-device-release/theft4/Release/Theft4.app
+```
+
+The packager verifies ARM64, rejects simulator slices, local checkout paths and
+bundled game files, removes the developer signature and provisioning profile,
+and writes the `.ipa` plus its `.sha256` file under `dist/`. Do not upload a
+development-signed `.app` or export your signing certificate for this workflow.
+The resulting IPA is not directly installable by itself; AltStore, SideStore or
+another compatible tool must re-sign it for the destination device.
+
 You can install without attaching Xcode's debugger:
 
 ```sh

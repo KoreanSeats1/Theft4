@@ -35,6 +35,9 @@ namespace kernel {
 namespace xam {
 using namespace rex::system;
 
+// Shared with the embedded storage selector; implementation has no desktop UI dependencies.
+X_RESULT xeXamDispatchHeadless(std::function<X_RESULT()> run_callback, uint32_t overlapped);
+
 // TODO(gibbed): This is all one giant WIP that seems to work better than the
 // previous immediate synchronous completion of dialogs.
 //
@@ -154,29 +157,6 @@ X_RESULT xeXamDispatchDialogEx(T* dialog,
     return result;
   } else {
     REX_KERNEL_STATE()->CompleteOverlappedDeferredEx(run, overlapped, pre, post);
-    return X_ERROR_IO_PENDING;
-  }
-}
-
-X_RESULT xeXamDispatchHeadless(std::function<X_RESULT()> run_callback, uint32_t overlapped) {
-  auto pre = []() {
-    REXKRNL_DEBUG("xeXamDispatchHeadless: Broadcasting XN_SYS_UI = true");
-    // Broadcast XN_SYS_UI = true
-    REX_KERNEL_STATE()->BroadcastNotification(0x9, true);
-  };
-  auto post = []() {
-    rex::thread::Sleep(std::chrono::milliseconds(100));
-    REXKRNL_DEBUG("xeXamDispatchHeadless: Broadcasting XN_SYS_UI = false");
-    // Broadcast XN_SYS_UI = false
-    REX_KERNEL_STATE()->BroadcastNotification(0x9, false);
-  };
-  if (!overlapped) {
-    pre();
-    auto result = run_callback();
-    post();
-    return result;
-  } else {
-    REX_KERNEL_STATE()->CompleteOverlappedDeferred(run_callback, overlapped, pre, post);
     return X_ERROR_IO_PENDING;
   }
 }
@@ -501,22 +481,6 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
   return result;
 }
 
-u32 XamShowDeviceSelectorUI_entry(u32 user_index, u32 content_type, u32 content_flags,
-                                  u64 total_requested, mapped_u32 device_id_ptr,
-                                  mapped_void overlapped) {
-  REXKRNL_DEBUG("XamShowDeviceSelectorUI({:08X}, {:08X}, {:08X}, {:016X}, {:08X}, {:08X})",
-                uint32_t(user_index), uint32_t(content_type), uint32_t(content_flags),
-                uint64_t(total_requested), device_id_ptr.guest_address(),
-                overlapped.guest_address());
-  return xeXamDispatchHeadless(
-      [device_id_ptr]() -> X_RESULT {
-        // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
-        *device_id_ptr = 0x00000001;
-        return X_ERROR_SUCCESS;
-      },
-      overlapped.guest_address());
-}
-
 void XamShowDirtyDiscErrorUI_entry(u32 user_index) {
   REXKRNL_ERROR("XamShowDirtyDiscErrorUI called! user_index={}", uint32_t(user_index));
   REXKRNL_ERROR("This indicates a disc/file read error - check that all game files exist");
@@ -646,7 +610,6 @@ uint32_t XamShowMessageBoxUIEx_entry() {
 REX_EXPORT(__imp__XamIsUIActive, rex::kernel::xam::XamIsUIActive_entry)
 REX_EXPORT(__imp__XamShowMessageBoxUI, rex::kernel::xam::XamShowMessageBoxUI_entry)
 REX_EXPORT(__imp__XamShowKeyboardUI, rex::kernel::xam::XamShowKeyboardUI_entry)
-REX_EXPORT(__imp__XamShowDeviceSelectorUI, rex::kernel::xam::XamShowDeviceSelectorUI_entry)
 REX_EXPORT(__imp__XamShowDirtyDiscErrorUI, rex::kernel::xam::XamShowDirtyDiscErrorUI_entry)
 REX_EXPORT(__imp__XamShowPartyUI, rex::kernel::xam::XamShowPartyUI_entry)
 REX_EXPORT(__imp__XamShowCommunitySessionsUI, rex::kernel::xam::XamShowCommunitySessionsUI_entry)

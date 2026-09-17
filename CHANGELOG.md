@@ -22,10 +22,433 @@ material, and device logs are never part of this changelog or repository.
 Comparison base: [`440d505c`](https://github.com/KoreanSeats1/Theft4/commit/440d505c964bbe4cb51a0217e162bf1eaa4de23e),
 the public native-renderer and performance-documentation checkpoint.
 
+### Installed, device acceptance pending — motion-blur option — 2026-09-17
+
+- Added **Display → Motion blur**, default **on**, persisted independently as
+  `Theft4MotionBlur`. Existing users retain the original appearance. The launcher
+  publishes `THEFT4_MOTION_BLUR=1|0` before startup and locks the switch once the
+  one-shot runtime launches. Output resolution, SMAA, FSR, 4× filtering, audio,
+  two-slot scheduling and resource-retirement fixes are unchanged.
+- Traced TU8 `sub_822CFC00` through its final `sub_822CF300` call at LR
+  `0x822D0C48`: blur uses `base+11`, non-blur uses `base+10`, retaining the
+  DOF/noise/alternate-composite base. An iOS-only strong AOT wrapper remaps
+  `11→10`, `13→12`, `25→24`, `27→26`, `29→28` only at this exact caller, with
+  the expected target, readable effect and matching technique handle. Unknown
+  passes remain unchanged. The original helper binds each variant's own shader,
+  constants and sampler layout. No generated game code or installed assets edited.
+- This avoids merely zeroing a blur scalar while leaving the blur shader's
+  samples active. It does **not** remove upstream preparation, motion-vector
+  work, depth of field, bloom or tone mapping. The iOS shader override table is
+  empty, so editing the desktop replacement HLSL would not implement this feature.
+  Desktop presentation hooks are not linked into this iOS target; their existing
+  pass-selection boundary informed this separate, narrowly scoped wrapper.
+- Optional `THEFT4_MOTION_BLUR_TRACE=1` records at most 32 composite observations;
+  it is off in normal play. No continuous per-frame retail logging was added.
+- Validation: exhaustive small-domain pass/gate/idempotence checks and strict
+  setting-parser tests passed with warnings-as-errors; isolated simulator UI
+  preview compiled and was visually checked; signed device Release build passed;
+  symbol inspection confirms the strong wrapper and original AOT implementation
+  coexist. Initial link attempt used a stale generated project; regenerated CMake
+  with its bin directory on PATH (required by the setup prerequisite check), then
+  built successfully. Existing SDK precision/assembly and UIKit deprecation
+  warnings remain. Executable SHA-256:
+  `ff1dc78846d5d741a142a1d34aaebc800321536a599a6c44911fd81c60a0d840`.
+- Initially built without installing; subsequently **installed in place on the
+  user's cue**, with the app confirmed closed afterward. No game launch or data
+  edits performed during installation. No measured FPS gain
+  claimed. Blur/no-blur visual equivalence for other effects and sustained city
+  A/B performance still require device playtests. See the
+  [investigation and test plan](docs/THEFT4_MOTION_BLUR_AND_STREAMING.md).
+
+### Installed, acceptance pending — two-frame GPU buffer quiescence
+
+- First short device playtest: user reports good performance and no foreground
+  crash, with occasional high-speed-driving hitches. Approximately three minutes
+  including startup/loading reached presentation 5100 and survived five buffer
+  drains without Invalid Resource. Extra fence waits peaked at 121.2 microseconds;
+  this excludes destruction cost. Actual output was Boost 2416×1359, not 1080p.
+  Most sampled intervals were near 29–30 FPS, with two near 24–25; locked frame
+  pacing and the ten-minute foreground gate are not established.
+- Backgrounding then reproduced the separate Metal permission failure, after
+  recorded pause/background callbacks. Captured evidence and stopped the app.
+  Motion-blur causation is unproven. The user's latest instruction is build
+  only—no new installation or launch. No further runtime optimization was
+  stacked onto the lifetime candidate during this observation pass.
+- The texture-quarantine candidate also failed: Metal `Invalid Resource` at
+  native frame/submission 4137, about 34 seconds before the first app pause.
+  The incoming call is not established as the trigger. Presentation milestones
+  support approximately 30 FPS average before failure, not a locked/stable 30.
+- The linked MoltenVK implementation declares all live addressable buffers for
+  physical-address shaders, including other-slot allocations. The trace shows
+  completed-slot buffer destruction shortly before failure. This is the next
+  hypothesis, not a proven root cause or evidence of defective texture assets.
+- On Apple, batch retired upload/constants/persistent buffers for cleanup before
+  recording with both native slots complete. Failed completion keeps allocations
+  alive. Drain triggers are 32 MiB, 256 buffers, 120 submissions, or an already
+  completed other slot. Normal frames retain overlap. These triggers are not a
+  hard memory cap. Geometric constant-arena growth reduces resize churn.
+- Diagnostics report drain counts/bytes/wait cost; memory accounting includes
+  the pending batch. No shared XeniOS driver change or visual/audio downgrade.
+  Host checks passed 36 cases / 461,192 assertions; signed Release build passed.
+  SHA-256 `e20a6dc7dda50e043ba6f9699c5f41b43fd1541e4fb2eb1e23bfa06f8714e6f5`,
+  UUID `63C3D9BD-F75B-3188-9F33-3C093DE1ADE4`. Device stability and reclamation
+  hitch cost remain unverified. See the [investigation/test protocol](docs/THEFT4_TWO_FRAME_RESOURCE_LIFETIME.md).
+- Installed in place and launched with the bounded GPU failure recorder, without
+  LLDB/Metal validation. App data was not uninstalled or removed. Launcher
+  startup is not gameplay acceptance; the foreground city soak is still pending.
+
+### Rejected as sufficient — two-frame texture-retirement-only candidate
+
+- The first two-frame candidate delivered the intended performance gain—the
+  user reported a solid 30 FPS—but failed the stability gate with frozen video
+  and continuing audio. The GPU flight recorder identified the first concrete
+  failure at native slot 1 / frame 1649 / submission 1649: MoltenVK reported
+  Metal command-buffer error 9 (`Invalid Resource`) and lost the Vulkan device.
+- Correlation against the preceding frame showed frame 1650 completing slot 0
+  / submission 1648 and immediately releasing a large group of texture images
+  and views while slot 1 / submission 1649 was still executing. Explicit
+  last-use tracking contained no exact hazard match, consistent with Metal
+  argument-buffer resource references surviving beyond the renderer's direct
+  image-use record.
+- Changed `RetireNativeTextureImage` conservatively: a retired texture is now
+  quarantined through the latest already-committed submission as well as its
+  explicit last use. With two slots this delays destruction by at most one
+  submission while preserving CPU/GPU overlap; it does not serialize every
+  frame or disable the performance gain.
+- Added a focused regression test for the observed sequence
+  (`last_used=1648`, `current=1650` retires through submission 1649). All 33
+  focused frame, submission and descriptor cases passed (459,117 assertions).
+- Built, signed, installed in place and launched the corrected ARM64 Release
+  app without removing saves or imported data. Executable SHA-256 is
+  `df914b60f653d1969bcd3bdd910bbbdaabc993b7b9f790a11d8bc5ddd64469d7`;
+  Mach-O UUID is `18BD2405-8D9B-32BB-8AB8-69C989FA4F53`. Foreground city stress
+  subsequently failed at submission 4137. The preceding correlation did not
+  prove texture causation; this change alone was insufficient.
+
+### Rejected on device — initial isolated two-frame overlap candidate
+
+- Changed only the iOS native-frame-slot default from one to two for the first
+  paced-30 implementation experiment. The existing
+  `THEFT4_NATIVE_FRAMES_IN_FLIGHT=1|2` launch override remains the immediate
+  control/rollback mechanism; graphics quality, 1080p FSR output, 4× filtering,
+  audio policy, game logic and corruption checks are unchanged.
+- Reviewed the live integration before building: the two slots independently
+  own command pools/buffers, upload and constant storage, descriptor pools,
+  query/readback state and submission tracking. Exact-slot completion remains
+  required before reset/reuse. This establishes a credible preflight, not proof
+  of device stability.
+- Built the ARM64 host test target and passed 32 relevant frame-context,
+  submission-lifetime and descriptor-lifetime test cases (459,111 assertions).
+- Preserved the prior signed one-frame app before building: executable SHA-256
+  `1368354c3ec751eded3027cf606927b6d1e2650fd6c72a4723137f4b9c80cab5`.
+  Signed Release candidate SHA-256 is
+  `ca4c777f718d7c32fc412688554761021cec416edd5ea3f8815b9917a17124a5`;
+  Mach-O UUID is `23AA50C7-AC3E-38D8-BF1B-62ABBB6CFF5E`.
+- Installed in place on the 11-inch M5 iPad without uninstalling or deleting
+  app data. It produced the expected near-30 FPS gameplay but is rejected in
+  this form because video froze while audio continued. Its captured failure is
+  the evidence used by the corrected texture-retirement build above.
+
+### Planned, with P0b now executing — ordered paced-30 CPU performance passes
+
+- Turned the annotated native-renderer CPU audit into a concrete implementation
+  sequence: preserve/reference timing; canonical state fingerprints with checks
+  retained; reduced command movement; reuse of warm pipeline preparation;
+  conditional residual bottlenecks; matched city/soak acceptance.
+- Specified source/test files, correctness boundaries, measurement fallback,
+  baseline preservation, per-candidate rollback and keep/reject/inconclusive
+  decisions. CPU savings and demonstrated frame-pacing gains are reported
+  separately. No promise of locked 30 from a single optimization.
+- User follow-up adds an early **one vs two frames in flight** A/B via the
+  existing launch override. One is a rollback baseline, not a permanent
+  restriction. Documented lifetime preflight, effective-slot verification,
+  timing/latency/memory checks and stability gates before changing the default.
+  The later P0b execution above implements the slot-count candidate; the rest
+  of the plan remains unimplemented.
+- Added the [implementation plan](docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md) to
+  README navigation and the older performance plan; updated the local handoff.
+  This bullet records the earlier planning pass; see the installed P0b entry
+  above for the subsequent runtime change, build and device action.
+
+### Diagnosed, not implemented — native-renderer CPU efficiency audit
+
+- Profiled the existing signed Release build during user-confirmed 1080p city
+  gameplay with Instruments Time Profiler, verifying executable UUID before
+  symbolication. About 58.853 sampled running CPU-seconds over a 21.003-second
+  trace: native render worker 14.945, game render producer 10.460, audio mixer
+  7.380 and main guest thread 4.537. These are CPU weights, not frame latencies.
+  Missing stacks/system symbols and sampling limitations are documented.
+- The two main rendering CPU threads account for roughly 43% of app CPU.
+  Command ownership/moves, hashing, state preparation and repeated pipeline
+  preparation are measured candidates. Older generic-renderer profiles are not
+  used as the current native backend's ranking.
+- Normal runtime logging emitted six messages (~1.5 KB) in the CPU capture;
+  recognizable output paths contributed ~0.01% of sampled CPU. Detailed
+  diagnostics are gated, but fixed-state integrity fingerprints still perform
+  49 chained hashes per calculation in normal execution. Recommended first A/B:
+  a canonical packed fingerprint preserving all corruption checks, followed by
+  reduced command movement and warm pipeline preparation. **Not implemented.**
+- Confirmed Release/O3, AOT, `-mtune=apple-m5`, existing batching, audio backoffs,
+  one-frame resource safety, 30 cap and menu-scene retirement. No speculative
+  priority changes, fast-math, visual reductions or extra frames in flight.
+- Game Performance and System Trace captures disconnected; no valid new GPU
+  wait/scheduling timeline was obtained. Sparse frame milestones show missed
+  30 FPS windows, not locked 30 or a measured tail percentile. Audio summaries
+  remained free of underruns/rebuffering. Stop claiming causal CPU/GPU timing
+  until the missing trace or bounded in-engine timings are available.
+- Added an ordered, source-linked audit and experiment/acceptance plan to the
+  README engineering record. No runtime source changes, build or install in
+  this pass. Collected final logs, closed Theft4 and verified it stopped; private
+  captures and game data are not committed. See
+  [CPU performance audit](docs/THEFT4_CPU_PERFORMANCE_AUDIT.md).
+
+### Installed after cue — After Hours launcher and Experimental FSR Boost
+
+- Replaced the bring-up scroll screen with an original **After Hours / Liberty
+  City Archive** launcher: condensed editorial typography, ink/bone/sodium-light
+  palette, numbered Play / Display / System navigation and one real game-start
+  action. Existing preparation, core restart, diagnostics, FPS, touch and
+  independent 4× filtering settings remain connected to their original owners.
+- Added an isolated SceneKit/Metal miniature city: procedural window textures,
+  custom suspension-bridge geometry, moving headlights, reflective water,
+  shadowed lighting, fog, HDR bloom, depth of field, slow camera drift and
+  drag-to-orbit. Rain is a Core Animation emitter. All artwork is generated by
+  repository code; no proprietary assets, remote services or music are used.
+- Menu rendering pauses on scene deactivation and respects Reduce Motion.
+  The scene, camera, emitter and view are released **before** starting the game
+  runtime. This is a launcher-only renderer; it does not replace or modify the
+  game's Vulkan/MoltenVK path. SceneKit is deprecated in newer Apple SDKs but
+  remains available; its use is deliberately confined to a replaceable view.
+- **1080p FSR now defaults on** when no value was saved; explicit user preferences
+  remain intact. User reports that the installed 1080p mode looks excellent.
+  This is subjective visual confirmation, not a new measured FPS result.
+- Added default-off **Experimental FSR Boost**. It selects the largest integer
+  16:9 output fitting the game view's native pixel extent at launch (for example,
+  2752×1548 on a full-landscape 2752-pixel-wide display). A 1080p floor handles
+  small windows/missing geometry; a 3840×2160 ceiling bounds future displays.
+  The selected extent stays latched for that game session, including rotation.
+- Separated logical video mode from physical output extent. Both FSR modes keep
+  logical video at 1920×1080 so the existing Quality hooks still produce
+  **1280×720** scene targets. Only the swapchain/presentation target grows.
+  Existing chained EASU passes handle >2× enlargement, followed by RCAS;
+  SMAA/high, 4× filtering, one native frame in flight, audio and saves are untouched.
+  Boost is not temporal reconstruction, frame generation or native-resolution
+  scene detail. Larger output may cost GPU time and is experimental.
+- Added a standalone simulator launcher harness under `ios/launcher-preview`,
+  with a separate bundle ID and no game/runtime linkage. Play and Display screens
+  rendered and were visually inspected on an iPad simulator. Strict host tests
+  pass for native-fit/fallback/4K-cap/unchanged-render-budget policies and the
+  publication FPS counter. Signed ARM64 Release build and signature validation
+  pass. No installation or launch on the physical iPad in this pass.
+- Subsequent **"Install now"** cue: stopped the old Theft4 process and installed
+  the verified candidate in place, retaining bundle identity and app data.
+  No uninstall or automatic game launch. System/scene-retirement preview also
+  inspected; the dedicated simulator was shut down after verification.
+- Remaining acceptance: physical-device menu navigation, landscape/compact and
+  accessibility layouts, menu-to-game handoff, Boost output-route log, moving
+  camera clarity, HUD text and heavy-city pacing compared to regular 1080p.
+  See [launcher and Boost notes](docs/THEFT4_LAUNCHER_AND_FSR_BOOST.md).
+
+### Installed — optional 1080p FSR 1 output and FPS correction
+
+- Added a persisted **1080p enhanced output (FSR 1)** switch to the Options tab,
+  initially default off (now on, as documented above). The shared iOS output policy keeps the game at 1280×720 in both
+  modes; enabled output uses 1920×1080 through the existing EASU/RCAS shaders.
+  The native hook's 1.5× Quality ratio, presenter effect and CAMetalLayer size
+  are selected coherently before startup; later UIKit layout retains the mode.
+- Existing SMAA/high, independent 4× filtering switch, 16:9, one native frame in
+  flight, 30 cap, shadows, reflections, physics, audio and save handling are
+  unchanged. This is spatial upscaling of the game image (including HUD), not
+  frame generation or true native 1080p. Extra GPU cost remains to be measured.
+- Replaced image-allocation-ID FPS detection with a content-publication sequence
+  carried in the existing release/acquire mailbox. Counts advance only for new
+  successful presentations; first image, repeats, failed presents, inactive
+  output and dropped publications are handled without altering resource IDs.
+- Strict-warning host tests pass for the two output policies and counter logic,
+  including the former 30→20 undercount scenario. Sparse existing milestones
+  now report content and unique counts; one startup route log identifies actual
+  input/output sizes and FSR passes. No per-frame logging/readback is added.
+- Build-only handoff requested: do not install or launch until the user's cue.
+  Xcode 27 signed ARM64 Release build succeeded; signature verified and new
+  settings/diagnostic strings confirmed in the bundle. Existing development
+  bundle identity is preserved. No installation or launch was performed.
+  **Subsequent installation:** after the user's cue, rechecked the candidate
+  hash and installed it in place under the same bundle identity, without
+  uninstalling or deleting app data/saves. App verified stopped afterward;
+  no launch or debugger attachment performed.
+  Visual correctness, in-game counter behavior and heavy-city pacing are pending.
+  [Implementation and A/B acceptance plan](THEFT4_1080P_OUTPUT_TEST_PLAN.md).
+
+### Diagnosis preceding the FPS correction
+
+- Source inspection found that the overlay uses reusable image-allocation IDs
+  as frame freshness and excludes valid allocation zero. A synthetic rotation
+  through three image IDs counts 20 of 30 fresh frames. This invalidates earlier
+  claims that the overlay is an authoritative distinct-game-frame measurement;
+  it does not establish a measured 30-FPS device result.
+- The latest city session used 4× filtering and one active native frame slot.
+  User reports 4× subjectively comparable to 1×, with remaining slowdown in fast
+  driving/long architectural views. Audio counters remained healthy. Coarse
+  presentation-call windows were approximately 23–28 calls/s; no live CPU/GPU
+  trace was captured before the user left the app. No optimization gain claimed.
+- The publication-sequence correction is implemented above; bounded CPU/GPU
+  capture of that route remains pending, preserving visuals and 4× filtering. Details and
+  verification criteria: [city performance checkpoint](THEFT4_CITY_PERFORMANCE_2026-09-16.md).
+
+### Validated packaging — Theft4 app icon
+
+- Added an original Theft4 icon built around a graphite numeral 4 and suspension-
+  bridge silhouette, with no Rockstar or game artwork. The master artwork and a
+  complete iPhone/iPad/App Store `AppIcon.appiconset` are versioned under
+  `ios/Theft4`.
+- Wired the asset catalog into the CMake-generated Xcode target using
+  `ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon`. The signed Release bundle was
+  verified to contain the compiled `Assets.car` and installed in place on the
+  iPad as `com.theft4.bringup`, preserving the existing app container and saves.
+- TestFlight archiving temporarily modified generated Xcode output while this
+  build was in progress. Regenerating from `ios/CMakeLists.txt` restored the
+  project source of truth and prevented the development build from changing
+  application identity.
+
+### Installed — balanced 4× anisotropic filtering; subjective device comparisons
+
+- Theft4 now selects 4× material anisotropic filtering before the native iOS
+  renderer initializes. This sharpens roads, sidewalks and other textured
+  surfaces viewed at oblique angles without changing output resolution, SMAA,
+  the 30 FPS cap, frame scheduling, game data or saves.
+- A same-device visual A/B found 1× smooth in heavy views while forced 8× made
+  camera rotation visibly choppier for a barely noticeable fidelity gain. The
+  enhanced launcher mode therefore uses 4× as the balanced intermediate point;
+  8× is no longer the user-facing default.
+- The startup bridge accepts `1x`, `2x`, `4x`, `8x` and `16x` values for
+  `THEFT4_ANISOTROPY`, but the current UIKit launcher overwrites that environment
+  value from its switch before startup. External launch overrides therefore
+  are not a reliable A/B control until precedence is corrected; verify the
+  effective runtime log. The shared renderer's upstream 1× default remains
+  unchanged for non-iOS frontends.
+- The launcher now separates **Play** and **Options** with a native UIKit tab.
+  Options contains persistent switches for the FPS counter, on-screen controls,
+  and enhanced 4× anisotropic filtering. Disabling the filtering switch selects the
+  renderer's original 1× material sampling before game startup; it does not
+  modify game files, saves or the shared desktop renderer default.
+
+### Validated diagnostic — bounded iOS GPU wait and flight recorder
+
+- Added a timeout-capable `VulkanSubmissionTracker::AwaitSubmissionCompletion`
+  overload while preserving the existing infinite-wait API for other callers.
+  GTA-IV-native frame-slot reuse now uses a five-second fence timeout on iOS
+  only; desktop behavior is unchanged. `VK_TIMEOUT` records the pending fence,
+  requested submission, and completed submission through the GPU flight
+  recorder instead of silently blocking the render thread forever.
+- `THEFT4_GPU_FLIGHT_TRACE=1` now creates a unique trace path under Theft4's
+  sandbox for each controlled launch when no explicit recorder path is supplied.
+  Normal icon launches do not enable the recorder, so its high-volume event ring
+  is not a permanent retail-play cost.
+- **Signed-device validation:** the Release build completed and was installed in
+  place without replacing app data. The controlled one-slot run reached city
+  gameplay and remained healthy through native submission 4,779. Audio reported
+  zero underruns, rebuffers, drops, clipping, or non-finite samples.
+- This run ended on a separate, conclusive lifecycle failure rather than the
+  watchdog: the lifecycle log recorded `core.paused` and `scene.background`,
+  after which iOS rejected Metal work with
+  `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`. MoltenVK
+  reported `VK_ERROR_DEVICE_LOST`; the 65,536-event flight capture identifies
+  `driver.device-lost` as its first failure. Therefore this run does not
+  reproduce or disprove the earlier foreground fence hang. It does prove that
+  app deactivation currently continues submitting GPU work and irrecoverably
+  loses the device. The dead process was terminated after evidence capture;
+  saves were preserved.
+- **Post-run health audit:** before that lifecycle event there were no producer
+  stalls, allocation failures, shader/pipeline failures, placeholder draws,
+  positive audio-underrun counters, or native fence timeouts. The persistent
+  shader cache loaded 1,356 shaders and its Vulkan pipeline cache opened
+  successfully. `SGTA400` was opened, mounted, closed, and reopened cleanly,
+  completing the previously pending relaunch/read side of save persistence.
+  Missing `cache:`/`cache1:` probes, optional update shader files, leaderboard
+  data, and variant-suffixed audio configuration probes remain non-fatal guest
+  fallback behavior in this observed run. `surface-address-alias-create` lines
+  are currently emitted at error severity for renderer diagnosis even when
+  resource creation succeeds; they expose real Xbox EDRAM alias complexity but
+  are not themselves API failures.
+
 ### Experimental — native transport batching and device-loss reproduction
 
-- Added a launch-only `THEFT4_NATIVE_FRAMES_IN_FLIGHT=1|2` control for the
-  next resource-lifetime A/B. The normal optimized default remains two slots;
+- **Current iOS default — one native frame in flight:** per user request,
+  `ios/bridge/theft4_startup.cpp` now explicitly selects one native frame slot
+  before runtime initialization even when no launch environment is supplied.
+  App-icon, Xcode and test launches therefore use the same one-slot path unless
+  explicitly overridden with `THEFT4_NATIVE_FRAMES_IN_FLIGHT=2`. Values other
+  than `1` or `2` still fail startup. Logs distinguish the default from an
+  override. Native renderer selection, resolution, effects, save paths and the
+  shared desktop renderer default are unchanged. This supersedes the two-slot
+  default described in the historical test entries below; sustained stability
+  and app-switch correctness remain unproven.
+- **One-slot city hang reproduced:** after successful saving and several minutes
+  of city gameplay, the user saw a van intersect the ground, heard an off-screen
+  explosion/fire, then video stopped while fire audio looped. The current
+  one-slot launch was confirmed in the log. Presentation stopped at count 7,500
+  at 15:58:12; audio continued cleanly through at least block 60,416 at 15:59:13.
+  There was no Vulkan error, device-loss callback, failed-publish record, or GPU
+  wait failure. Lifecycle evidence shows a brief app deactivation occurred about
+  23 seconds *after* presentation stopped, ruling it out as the initiating event.
+  The scene correlation is not yet proof of an explosion/fire renderer defect.
+- Code inspection explains a plausible silent failure mode: one-slot reuse calls
+  `VulkanSubmissionTracker::AwaitSubmissionCompletion`, whose Vulkan fence wait
+  currently uses `UINT64_MAX`. A submitted command buffer whose fence never
+  signals can therefore block the refresh/render thread forever without logging
+  a timeout. This precisely fits the evidence but does not yet identify the bad
+  command/resource. The next diagnostic should add a bounded native fence
+  watchdog plus a failure-triggered GPU flight trace, then reproduce; normal
+  frame performance must remain unaffected. Frozen PID 3568 was stopped after
+  logs were preserved.
+
+- **Built, pending gameplay verification — launch display/input settings:**
+  `ios/Theft4/main.m` now has persistent **Show FPS counter** (default on) and
+  **On-screen controls** (default off) switches above Start GTA IV. FPS measures
+  the existing published-game-frame counter; no renderer options or resolution
+  are changed by these switches.
+- `ios/Theft4/Theft4TouchControls.m` adapts XeniOS's BSD-licensed FPS Compact
+  button positions and basic analog math into a standalone UIKit multi-touch
+  overlay: movement stick, swipe-to-look, ABXY, bumpers, triggers, Back/Start,
+  explicit D-pad and stick clicks. It does not import the XeniOS editor,
+  emulator, TOML layout store, or secondary hold/double-tap gestures. Provenance
+  and full license are in `ios/Theft4/XeniOS-Touch-LICENSE.txt`, also bundled in
+  the app. Touches reset on hiding, cancellation, geometry changes, and scene
+  deactivation. The camera timer exists only while touch controls are active.
+- `ios/bridge/theft4_touch_input.{h,cpp}` provides mutex-protected host-endian
+  snapshots. The user-0 Xbox adapter merges digital buttons, maximum trigger
+  values and the strongest complete stick vector with physical input, then
+  converts to guest-endian fields. Packet numbers change with merged state.
+  Other controller slots and physical-controller haptics are unchanged.
+  `ios/tests/touch_input_test.cpp` passes with Clang C++17 and warnings-as-errors:
+  simultaneous touch/physical input, neutral release, stable/changed packet
+  numbers, and signed-axis magnitude overflow. Signed iOS Release build passes;
+  layout comfort, simultaneous multi-touch gameplay and settings persistence
+  still need witnessed device checks.
+- **Built — storage selector:** extracted the existing desktop headless
+  `XamShowDeviceSelectorUI` and shared dispatch helper into common
+  `src/kernel/xam/xam_storage_ui.cpp`. Embedded iOS now selects the existing
+  virtual HDD and preserves asynchronous completion/UI notification semantics
+  instead of hitting the generated abort guard. Manual/autosave requests still
+  go through ContentManager and the normal sandbox save path; no fabricated
+  save success or save-file migration. **Device-validated write:** on the
+  one-slot-default build, GTA IV requested the selector, received the virtual
+  HDD, created and mounted `SGTA412` as `save0:` under Theft4's sandbox save
+  root, then closed and unmounted it cleanly. The user confirmed the in-game
+  save succeeded. Relaunch/load persistence remains the final end-to-end check.
+- **Unresolved GPU/lifecycle defects:** a subsequent ordinary two-slot launch
+  reproduced the driving visual freeze: native submission 1838 did not complete
+  after 1837, producer queue reached 12,687, and recovery latched rendering off.
+  Audio continued cleanly. This happened before installation of the touch UI
+  changes. The frozen process was stopped after diagnosis. A separate user
+  report describes a freeze after app switching; inspection confirms
+  `theft4_core_pause` only changes shell state, not the live game/GPU runtime.
+  Touch-state cleanup is implemented, but actual renderer suspend/drain/resume
+  is NOT fixed by this UI pass. Retest gameplay with the new one-slot default,
+  then separately validate lifecycle transitions after wiring runtime gating.
+
+- Initially added a launch-only `THEFT4_NATIVE_FRAMES_IN_FLIGHT=1|2` control for the
+  resource-lifetime A/B. At that checkpoint the default remained two slots;
   `1` serializes native frame resources to test whether the reproducible Metal
   Invalid Resource failure depends on cross-frame reuse. Invalid values fail
   startup explicitly, and the selected override is recorded in the runtime log.
@@ -43,8 +466,9 @@ the public native-renderer and performance-documentation checkpoint.
   selection behavior in the embedded kernel is the next platform-service blocker.
 - The one-slot survival strongly implicates cross-frame native resource reuse,
   but it is not yet proof of a complete renderer fix: the unrelated selector
-  abort prevented a longer run. Normal icon launches still default to native
-  rendering with two slots; the serialized mode remains an explicit diagnostic.
+  abort prevented a longer run. At that checkpoint normal icon launches used
+  native rendering with two slots; the one-slot mode has since become the iOS
+  default as documented above.
 
 - Follow-up failure recording captured Metal **Invalid Resource (code 9)** at
   14:51:11 in both the swapchain acquisition command buffer and native frame

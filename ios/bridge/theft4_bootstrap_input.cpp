@@ -1,4 +1,5 @@
 #include "theft4_bootstrap_input.h"
+#include "theft4_touch_input.h"
 
 #include <cstring>
 #include <memory>
@@ -59,12 +60,26 @@ class Theft4BootstrapInput final : public rex::system::IInputSystem {
 
   rex::X_RESULT GetState(uint32_t user_index,
                          rex::input::X_INPUT_STATE* out_state) override {
+    if (!out_state) return X_ERROR_BAD_ARGUMENTS;
+    std::memset(out_state, 0, sizeof(*out_state));
     if (driver_) {
       const X_RESULT result = driver_->GetState(user_index, out_state);
-      if (result != X_ERROR_DEVICE_NOT_CONNECTED) return result;
+      if (result != X_ERROR_DEVICE_NOT_CONNECTED && result != X_ERROR_SUCCESS)
+        return result;
+      if (user_index != 0) return result;
     }
     if (user_index != 0) return X_ERROR_DEVICE_NOT_CONNECTED;
-    if (out_state) std::memset(out_state, 0, sizeof(*out_state));
+    auto& pad = out_state->gamepad;
+    theft4_touch_pad merged{pad.buttons, pad.left_trigger, pad.right_trigger,
+        pad.thumb_lx, pad.thumb_ly, pad.thumb_rx, pad.thumb_ry};
+    out_state->packet_number = theft4_touch_merge(&merged);
+    pad.buttons = merged.buttons;
+    pad.left_trigger = merged.left_trigger;
+    pad.right_trigger = merged.right_trigger;
+    pad.thumb_lx = merged.lx;
+    pad.thumb_ly = merged.ly;
+    pad.thumb_rx = merged.rx;
+    pad.thumb_ry = merged.ry;
     return X_ERROR_SUCCESS;
   }
 

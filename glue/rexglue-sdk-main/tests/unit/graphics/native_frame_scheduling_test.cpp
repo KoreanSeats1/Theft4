@@ -14,6 +14,60 @@
 
 namespace gta4 = rex::graphics::gta4_native;
 
+TEST_CASE("GTA IV native retired addressable buffers batch only at safe boundaries",
+          "[gta4-native][buffer-retirement]") {
+  constexpr uint64_t bytes = gta4::kNativeRetiredBufferDrainBytes;
+  // A flush request is not permission to destroy: the integration must still
+  // complete the other slot before freeing any allocation. Ordinary small
+  // retirements preserve two-frame overlap while waiting for the batch trigger.
+  REQUIRE_FALSE(gta4::ShouldDrainNativeRetiredBuffers(0, bytes, 1, 500, false));
+  REQUIRE_FALSE(gta4::ShouldDrainNativeRetiredBuffers(1, bytes - 1, 4138, 4138, true));
+  REQUIRE_FALSE(gta4::ShouldDrainNativeRetiredBuffers(1, 4096, 4138, 4257, true));
+  REQUIRE(gta4::ShouldDrainNativeRetiredBuffers(1, 4096, 4138, 4258, true));
+  REQUIRE(gta4::ShouldDrainNativeRetiredBuffers(1, bytes, 4138, 4138, true));
+  REQUIRE(gta4::ShouldDrainNativeRetiredBuffers(256, 0, 4138, 4138, true));
+  REQUIRE_FALSE(gta4::ShouldDrainNativeRetiredBuffers(255, 0, 4138, 4138, true));
+  // One-frame operation or an already completed secondary slot drains without
+  // adding GPU overlap waits. A timeline reset also cannot retain indefinitely.
+  REQUIRE(gta4::ShouldDrainNativeRetiredBuffers(1, 0, 4138, 4138, false));
+  REQUIRE(gta4::ShouldDrainNativeRetiredBuffers(1, 4096, 4138, 0, true));
+  REQUIRE_FALSE(gta4::ShouldDrainNativeRetiredBuffers(1, 4096, UINT64_MAX - 1,
+                                                     UINT64_MAX, true));
+}
+
+TEST_CASE("GTA IV native constant arena growth amortizes reallocations without overflow",
+          "[gta4-native][buffer-retirement]") {
+  constexpr uint64_t granularity = 65536;
+  const auto grow = [](uint64_t current, uint64_t required, uint64_t maximum) {
+    return gta4::NativeConstantArenaGrowthCapacity(current, required, granularity,
+                                                    granularity, maximum);
+  };
+  REQUIRE(grow(0, 1, granularity * 16) == granularity);
+  REQUIRE(grow(granularity, granularity + 1, granularity * 16) == granularity * 2);
+  REQUIRE(grow(granularity * 2, granularity * 2 + 1, granularity * 16) == granularity * 4);
+  REQUIRE(grow(granularity, granularity * 5 + 1, granularity * 16) == granularity * 6);
+  REQUIRE(grow(granularity * 8, granularity * 8 + 1, granularity * 12) == granularity * 12);
+  REQUIRE(grow(granularity, granularity + 1, granularity + 1) == granularity + 1);
+  REQUIRE(grow(UINT64_MAX - 1, UINT64_MAX, UINT64_MAX) == UINT64_MAX);
+  REQUIRE(grow(0, UINT64_MAX, UINT64_MAX) == UINT64_MAX);
+  REQUIRE(grow(0, 0, granularity) == 0);
+  REQUIRE(grow(0, granularity + 1, granularity) == 0);
+  REQUIRE(grow(granularity + 1, 1, granularity) == 0);
+  REQUIRE(gta4::NativeConstantArenaGrowthCapacity(0, 1, 1, 0, 100) == 0);
+
+  uint64_t capacity = 0;
+  unsigned growths = 0;
+  for (uint64_t required = 1; required <= granularity * 16; required += 1024) {
+    if (required > capacity) {
+      capacity = grow(capacity, required, granularity * 16);
+      ++growths;
+    }
+    REQUIRE(capacity >= required);
+    REQUIRE(capacity <= granularity * 16);
+  }
+  REQUIRE(growths == 5);  // 64 KiB, 128 KiB, 256 KiB, 512 KiB, 1 MiB.
+}
+
 TEST_CASE("GTA IV native texture eviction waits out the full grace window") {
   constexpr uint32_t kGrace = gta4::kNativeTextureEvictionGraceFrames;
   const uint32_t last_used = 1000;
@@ -183,6 +237,21 @@ TEST_CASE("GTA IV native texture replacement retires every superseded generation
   REQUIRE(retirements.contains(1));
   REQUIRE(retirements.contains(999));
   REQUIRE_FALSE(retirements.contains(current_generation));
+}
+
+TEST_CASE("GTA IV native texture retirement waits for the latest committed frame") {
+  // Submission 1649 is still running while the CPU begins recording 1650.
+  // Even a texture whose last explicit use was 1648 must survive until 1649
+  // completes because MoltenVK's pending argument buffer may retain it.
+  REQUIRE(gta4::NativeTextureRetirementSubmission(1648, 1650) == 1649);
+  REQUIRE(gta4::NativeTextureRetirementSubmission(1649, 1650) == 1649);
+  REQUIRE(gta4::NativeTextureRetirementSubmission(1650, 1650) == 1650);
+
+  // Startup/no-tracker and the first unsubmitted frame add no artificial
+  // dependency. A future explicit stamp always wins.
+  REQUIRE(gta4::NativeTextureRetirementSubmission(0, 0) == 0);
+  REQUIRE(gta4::NativeTextureRetirementSubmission(0, 1) == 0);
+  REQUIRE(gta4::NativeTextureRetirementSubmission(7, 1) == 7);
 }
 
 TEST_CASE("GTA IV native texture retirement survives pre-materialization references") {

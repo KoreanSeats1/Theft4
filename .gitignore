@@ -672,6 +672,7 @@ build-codegen/
 
 # Root-level scripts and logs (local dev only)
 *.sh
+!/tools/package_ios_ipa.sh
 *.py
 /tools/*.py
 !glue/rexglue-sdk-main/gta4-recomp/tools/derive_frontend_advanced_menu_layout.py
@@ -763,9 +764,14 @@ CMakeUserPresets.json
 # Reviewed iOS checkpoint reports and reusable profiling utilities.
 !/THEFT4_AUDIO_ASPECT_PLAN.md
 !/THEFT4_3D_PERFORMANCE_PLAN.md
+!/THEFT4_1080P_OUTPUT_TEST_PLAN.md
 !/docs/IOS_PERFORMANCE_CHECKPOINT.md
 !/tools/analyze_intro_frame_log.py
 !/tools/summarize_ios_time_profile.py
 !/tools/summarize_ios_game_trace.py
 !/docs/IOS_RELEASE_BUILD.md
+!/docs/THEFT4_LAUNCHER_AND_FSR_BOOST.md
+!/docs/THEFT4_CPU_PERFORMANCE_AUDIT.md
+!/docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md
+!/docs/THEFT4_MOTION_BLUR_AND_STREAMING.md
 !/tests/ios/test_xcode_generator.py

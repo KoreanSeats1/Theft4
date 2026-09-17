@@ -587,6 +587,10 @@ class VulkanPresenter final : public Presenter {
   uint64_t guest_output_image_next_version_ = 0;
   std::array<GuestOutputImageInstance, kGuestOutputMailboxSize> guest_output_images_;
   VulkanSubmissionTracker guest_output_image_refresher_submission_tracker_;
+#if REX_PLATFORM_IOS
+  GuestOutputFrameCounter ios_guest_frame_counter_;
+  bool ios_output_route_logged_ = false;
+#endif
 
   // Bounded diagnostic carry-over for host paint attempts that return before
   // consuming the mailbox (for example, submission backpressure). The most

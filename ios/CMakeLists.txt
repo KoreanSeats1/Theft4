@@ -10,6 +10,21 @@ option(THEFT4_COMPILE_GTA4_NATIVE_BACKEND
     "Compile-check LibertyRecomp's GTA IV native renderer for iOS without selecting it" OFF)
 option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
     "Embed the GTA IV native renderer behind THEFT4_GRAPHICS_BACKEND=native" OFF)
+option(THEFT4_PUBLIC_BUILD
+    "Remove checkout-specific source paths from a public Theft4 binary" OFF)
+
+if(THEFT4_PUBLIC_BUILD)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang)$" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang)$")
+        message(FATAL_ERROR "THEFT4_PUBLIC_BUILD requires Clang-compatible prefix-map flags")
+    endif()
+    # __FILE__, diagnostics, and line tables otherwise expose the builder's
+    # account name and checkout location in the linked executable. Keep stable,
+    # useful source-relative paths without publishing that local information.
+    add_compile_options(
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4"
+        "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=/src/Theft4")
+endif()
 
 # Compile the actual checked-in AOT title, not a synthetic PPC fixture. Keep
 # this separate until the kernel/runtime imports can be linked into the host.
@@ -78,7 +93,7 @@ if(REXGLUE_RUNTIME_ONLY)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/game-tools")
 endif()
 
-add_library(theft4_core_bridge STATIC bridge/theft4_core.cpp)
+add_library(theft4_core_bridge STATIC bridge/theft4_core.cpp bridge/theft4_touch_input.cpp)
 target_include_directories(theft4_core_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
 target_link_libraries(theft4_core_bridge PRIVATE rex::core)
 target_compile_features(theft4_core_bridge PRIVATE cxx_std_23)
@@ -149,6 +164,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_aspect_hooks.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_font_selection_trace.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_native_hooks.cpp"
+            bridge/theft4_motion_blur.cpp
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
             "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}/smolv.cpp")
         target_include_directories(theft4_gta4_native_compile PRIVATE
@@ -368,9 +384,16 @@ if(THEFT4_ENABLE_GAME_STARTUP)
     endif()
 endif()
 
-add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m)
+set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
+add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
+    Theft4/Theft4LauncherView.m Theft4/Theft4CityView.m
+    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
+set_source_files_properties(Theft4/XeniOS-Touch-LICENSE.txt PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources)
+set_source_files_properties("${THEFT4_ASSET_CATALOG}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources)
 target_link_libraries(Theft4 PRIVATE theft4_core_bridge
-    "-framework UIKit" "-framework Metal" "-framework QuartzCore"
+    "-framework UIKit" "-framework Metal" "-framework QuartzCore" "-framework SceneKit" "-framework CoreGraphics"
     "-framework GameController" "-framework CoreHaptics"
     "-framework AVFoundation" "-framework AudioToolbox")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
@@ -385,6 +408,7 @@ set_target_properties(Theft4 PROPERTIES
     LINKER_LANGUAGE CXX
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Info.plist.in"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${THEFT4_BUNDLE_IDENTIFIER}"
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
     XCODE_ATTRIBUTE_ENABLE_BITCODE NO

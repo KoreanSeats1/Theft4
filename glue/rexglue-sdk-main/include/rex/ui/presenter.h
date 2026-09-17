@@ -31,6 +31,7 @@
 #include <rex/platform.h>
 #include <rex/types.h>
 #include <rex/ui/flags.h>
+#include <rex/ui/guest_output_frame_sequence.h>
 #include <rex/ui/guest_output_transform.h>
 #include <rex/ui/frame_pixel_probe.h>
 #include <rex/ui/surface.h>
@@ -448,6 +449,8 @@ class Presenter {
     uint32_t display_aspect_ratio_x;
     uint32_t display_aspect_ratio_y;
     bool is_8bpc;
+    // Successful content publication, not GPU image allocation identity.
+    uint64_t content_sequence;
     GuestOutputProvenance provenance;
 
     GuestOutputProperties() { SetToInactive(); }
@@ -463,6 +466,7 @@ class Presenter {
       display_aspect_ratio_x = 0;
       display_aspect_ratio_y = 0;
       is_8bpc = false;
+      content_sequence = 0;
       provenance = {};
     }
   };
@@ -1010,6 +1014,7 @@ class Presenter {
   // accessible only by the guest output refreshing - it's the image that the
   // refresher may write to.
   uint32_t guest_output_mailbox_writable_ = 1;
+  GuestOutputContentSequence guest_output_content_sequence_;
   // The guest output images may be consumed by two operations - painting, and
   // capturing to a CPU-side buffer. These two usually never happen in parallel
   // in reality though, as they're usually not even needed both at once in the

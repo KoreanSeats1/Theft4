@@ -20,6 +20,7 @@ add_executable(unit_tests
     graphics/alpha_to_coverage_util_test.cpp
     graphics/native_clip_control_test.cpp
     graphics/native_fixed_function_policy_test.cpp
+    graphics/native_fixed_function_state_test.cpp
     graphics/native_pipeline_policy_test.cpp
     graphics/native_pipeline_recipe_test.cpp
     graphics/native_pipeline_compiler_test.cpp

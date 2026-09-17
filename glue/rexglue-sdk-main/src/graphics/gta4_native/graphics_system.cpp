@@ -3896,64 +3896,11 @@ void Gta4NativeGraphicsSystem::InitializeShaderStorage(const std::filesystem::pa
 
 uint64_t Gta4NativeGraphicsSystem::HashFixedFunctionState(
     const NativeFixedFunctionState& state) {
-  uint64_t hash = 0;
-  const auto add = [&hash]<typename T>(const T& value) {
-    hash = XXH3_64bits_withSeed(&value, sizeof(value), hash);
-  };
-  add(state.depth_enable);
-  add(state.depth_function);
-  add(state.depth_write_enable);
-  add(state.depth_clamp_enable);
-  add(state.clip_control);
-  add(state.user_clip_plane_enable_mask);
-  add(state.clip_plane_bits);
-  add(state.negative_one_to_one_clip_space);
-  add(state.cull_mode);
-  add(state.polygon_mode);
-  add(state.blend_enable);
-  add(state.blend_controls);
-  add(state.source_blend);
-  add(state.destination_blend);
-  add(state.blend_operation);
-  add(state.source_blend_alpha);
-  add(state.destination_blend_alpha);
-  add(state.blend_operation_alpha);
-  add(state.blend_constants);
-  add(state.alpha_test_enable);
-  add(state.alpha_function);
-  add(state.alpha_reference);
-  add(state.alpha_to_mask_enable);
-  add(state.alpha_to_mask);
-  add(state.stencil_enable);
-  add(state.two_sided_stencil);
-  add(state.stencil_fail);
-  add(state.stencil_depth_fail);
-  add(state.stencil_pass);
-  add(state.stencil_function);
-  add(state.stencil_reference);
-  add(state.stencil_mask);
-  add(state.stencil_write_mask);
-  add(state.back_stencil_reference);
-  add(state.back_stencil_mask);
-  add(state.back_stencil_write_mask);
-  add(state.ccw_stencil_fail);
-  add(state.ccw_stencil_depth_fail);
-  add(state.ccw_stencil_pass);
-  add(state.ccw_stencil_function);
-  add(state.scissor_enable);
-  add(state.slope_scaled_depth_bias_bits);
-  add(state.depth_bias_bits);
-  add(state.depth_bias_enable);
-  add(state.depth_bias_representable);
-  add(state.color_write_mask);
-  add(state.sample_mask);
-  add(state.viewport_bits);
-  add(state.scissor);
-  return hash;
+  return HashNativeFixedFunctionState(state);
 }
 
-Gta4NativeGraphicsSystem::NativeFixedFunctionState
-Gta4NativeGraphicsSystem::DecodeFixedFunctionState(std::span<const uint8_t> device_snapshot) const {
+NativeFixedFunctionState Gta4NativeGraphicsSystem::DecodeFixedFunctionState(
+    std::span<const uint8_t> device_snapshot) const {
   NativeFixedFunctionState state{};
   // sub_82A50160 installs getter function pointers at device + 548 + state.
   // The getters themselves read these packed, authoritative device fields.

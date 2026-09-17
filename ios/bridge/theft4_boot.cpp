@@ -16,6 +16,19 @@
 int theft4_configure_boot_diagnostics(void) {
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
     const bool detailed = enabled && std::string_view(enabled) == "1";
+#ifdef THEFT4_LAB_BUILD
+    const char* native_profile = std::getenv("THEFT4_LAB_NATIVE_PROFILE");
+    const bool profile = native_profile && std::string_view(native_profile) == "1";
+    if (profile) {
+        return rex::diagnostics::Configure(
+                   true,
+                   detailed
+                       ? "logging,transition,audio,vulkan,presenter,guest-hooks,native-profiler"
+                       : "logging,native-profiler")
+                   ? 0
+                   : 1;
+    }
+#endif
     return rex::diagnostics::Configure(
                true, detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
                               : "logging")

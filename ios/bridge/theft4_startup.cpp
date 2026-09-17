@@ -200,6 +200,17 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
+        const char* native_profile_override =
+            std::getenv("THEFT4_LAB_NATIVE_PROFILE");
+        if (native_profile_override &&
+            std::string_view(native_profile_override) != "0" &&
+            std::string_view(native_profile_override) != "1") {
+            throw std::runtime_error("THEFT4_LAB_NATIVE_PROFILE must be 0 or 1");
+        }
+        if (native_profile_override &&
+            std::string_view(native_profile_override) == "1") {
+            REXLOG_INFO("Theft4 Lab bounded native CPU/GPU profiler enabled");
+        }
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep
         // the renderer's conservative false default.

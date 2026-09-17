@@ -109,6 +109,8 @@ def run(command, log=None, cwd=None):
     print("Running: " + str(command[0]) + " " + " ".join(map(str, command[1:5])), flush=True)
     env = dict(os.environ)
     env.setdefault("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
+    if Path(command[0]).name == "cmake":
+        env["PATH"] = str(Path(command[0]).resolve().parent) + os.pathsep + env.get("PATH", "")
     if log:
         with Path(log).open("w") as output:
             result = subprocess.run(list(map(str, command)), cwd=cwd, env=env,

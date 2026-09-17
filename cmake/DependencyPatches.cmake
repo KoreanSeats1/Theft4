@@ -7,7 +7,18 @@ function(liberty_apply_dependency_patches repository_root)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     set(setup_script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/setup_repo.py")
     set(arguments --root "${repository_root}"
-        --patch-directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/dependency-patches" --prepare-only)
+        --patch-directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/dependency-patches")
+    if(THEFT4_LAB_BUILD)
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
+           NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.m5lab")
+            message(FATAL_ERROR "The Lab source-export path requires the isolated iOS Lab identity")
+        endif()
+        # Frozen Lab inputs are already patched. Check every expected checksum
+        # without initializing dependencies, writing Git state or applying fixes.
+        list(APPEND arguments --check-export)
+    else()
+        list(APPEND arguments --prepare-only)
+    endif()
     if(DEFINED LIBERTY_DEPENDENCY_ONLY AND NOT "${LIBERTY_DEPENDENCY_ONLY}" STREQUAL "")
         list(APPEND arguments --only "${LIBERTY_DEPENDENCY_ONLY}")
     endif()

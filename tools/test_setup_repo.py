@@ -210,6 +210,29 @@ class SetupTests(unittest.TestCase):
             with self.assertRaisesRegex(setup_repo.SetupError, 'Windows'):
                 setup_repo.portable_paths(self.root)
 
+    def test_export_check_needs_no_git_and_writes_nothing(self):
+        setup_repo.Patches(self.root).prepare()
+        exported = self.base / 'private export'
+        shutil.copytree(self.root / 'cmake', exported / 'cmake')
+        shutil.copytree(self.root / 'dep', exported / 'dep', ignore=shutil.ignore_patterns('.git'))
+        before = {str(p.relative_to(exported)): (p.read_bytes(), p.stat().st_mtime_ns)
+                  for p in exported.rglob('*') if p.is_file()}
+        with patch.object(setup_repo, 'git', side_effect=AssertionError('Git must not be invoked')):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(setup_repo.main(['--root', str(exported), '--check-export']), 0)
+        after = {str(p.relative_to(exported)): (p.read_bytes(), p.stat().st_mtime_ns)
+                 for p in exported.rglob('*') if p.is_file()}
+        self.assertEqual(before, after)
+
+    def test_export_check_rejects_unpatched_or_modified_files_without_repair(self):
+        for content in ('upstream one\n', 'unreviewed change\n'):
+            with self.subTest(content=content):
+                (self.root / 'dep/source.txt').write_text(content)
+                checker = setup_repo.Patches(self.root, source_export=True)
+                with self.assertRaisesRegex(setup_repo.SetupError, 'does not match reviewed patch'):
+                    checker.verify_export()
+                self.assertEqual((self.root / 'dep/source.txt').read_text(), content)
+
 
 if __name__ == '__main__':
     unittest.main()

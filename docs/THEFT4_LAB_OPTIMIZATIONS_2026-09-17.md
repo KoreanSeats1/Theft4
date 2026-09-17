@@ -104,7 +104,7 @@ The next discriminating test is the same cold launch and route with
 cache warmth. That isolates the texture-content key from the two smaller CPU
 overhead changes and from ordinary first-run pipeline/resource warm-up.
 
-**Installed artifact**
+**Previous installed artifact**
 
 Source: `b4563d5d5e5b6ec327d3360f14a30ef22f43b6c3`.
 
@@ -113,3 +113,35 @@ Executable SHA-256: `258e65ce7719b1ec25b69ba75e3d8930d34493413c41c492a1d81bb486f
 Receipt: `out/m5-lab/artifacts/b4563d5d5e5b-20260917T202607Z/receipt.json`.
 
 Device evidence: `out/m5-lab/validation/optimizations/`.
+
+**Stall-attribution Lab build**
+
+Commit `7dfff41b` adds a Lab-only, lightweight render-worker phase marker to
+each existing 500 ms `producer-stall` warning. It reports the active command,
+command sequence, phase and elapsed phase time. The phase distinguishes command
+dispatch, state snapshot, pipeline prewarm, publish setup, frame-slot wait,
+housekeeping, upload-capacity work, command setup, texture preparation, frame
+recording, finalization and queue submission. It does not enable the detailed
+CPU/GPU profiler and does not change queue limits, frame scheduling or rendering
+behavior. Ordinary Theft4 keeps the diagnostic disabled by default.
+
+The signed Release build passed compilation, release verification, bundle and
+entitlement checks, and code-signature verification. It was installed as
+`com.theft4.m5lab` on the M5 iPad. Device readback after installation showed:
+
+- Theft4 Lab version 0.1.2 build 4 at its new Lab installation URL.
+- Original Theft4 version 0.1.2 build 4 at its unchanged installation URL.
+- All 1,689 Lab game files and 7,072,969,417 bytes match the prior inventory by
+  relative path and size.
+
+Source: `7dfff41b5a2c2eabbfd17505895893c2f5728924`.
+
+Executable SHA-256: `d998ba9810bbd234646c7376c99ac6b0d198848c436410f1a4ce05a9db43b7e1`.
+
+Receipt: `out/m5-lab/artifacts/7dfff41b5a2c-20260917T205215Z/receipt.json`.
+
+Device evidence: `out/m5-lab/validation/stall-attribution/`.
+
+The next run should begin from a fresh Lab launch and repeat the same route. If
+a stall recurs, the warning will identify the render-worker phase to optimize.
+Gameplay acceptance remains pending until that run.

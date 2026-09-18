@@ -149,6 +149,11 @@ REXCVAR_DEFINE_STRING(
 REXCVAR_DEFINE_BOOL(
     gta4_native_pipeline_prewarm, true, "GTA IV/Graphics/Native Renderer",
     "Compile draw pipelines on the render worker as draw commands arrive, before frame recording");
+REXCVAR_DEFINE_UINT32(
+    gta4_native_pipeline_queue_capacity, 64, "GTA IV/Graphics/Native Renderer",
+    "Maximum demanded and speculative native pipeline jobs retained by the compiler")
+    .range(1, 64)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(
     gta4_native_light_overrides, "pair", "GTA IV/Graphics/Native Renderer",
     "Shader override selection: stock modules, legacy stage selection, or approved pipeline pairs")
@@ -14737,7 +14742,8 @@ bool Gta4NativeGraphicsSystem::InitializeNativeRendererObjects() {
   native_pipeline_compiler_->writer = std::make_unique<NativePipelineCompilerState::Writer>(1);
   native_pipeline_compiler_->checkpoint_tick.store(rex::chrono::Clock::QueryHostTickCount());
   native_pipeline_compiler_->compiler = std::make_unique<NativePipelineCompilerState::Compiler>(
-      64, [this] { ScheduleNativePipelineCheckpoint(); });
+      REXCVAR_GET(gta4_native_pipeline_queue_capacity),
+      [this] { ScheduleNativePipelineCheckpoint(); });
   LoadNativePipelineRecipes();
   ReplayNativePipelineRecipes();
   return true;

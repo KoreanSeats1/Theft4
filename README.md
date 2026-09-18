@@ -89,10 +89,11 @@ The **After Hours** launcher places a procedural 3D city and suspension bridge
 behind Play / Display / System navigation. Drag the city to change the view.
 Its scene and effects are released before the game runtime starts.
 
-**Display** offers remembered settings: **Frame counter** (on), **Touch controls**
-(off), **Texture filtering · 4×** (on), **Motion blur** (on), **1080p enhanced output** (on) and
-**Experimental FSR Boost** (off). These are defaults; existing preferences are
-retained. Both FSR modes keep scene rendering at 720p and add spatial
+**Display** offers remembered settings: **Frame counter**, **Touch controls**,
+texture filtering, motion blur, **1080p enhanced output**, and **Experimental
+FSR Boost**. M-series iPads use the existing 4×/motion-blur/1080p defaults;
+pre-M iPads start each launch at 1×/no-blur/720p for compatibility while still
+allowing an explicit opt-in before play. Both FSR modes keep scene rendering at 720p and add spatial
 upscaling/sharpening at presentation—not native-resolution detail or frame
 generation. Boost targets a native-pixel 16:9 image for the current window,
 bounded from 1080p to 4K; it may cost performance. Output is selected at launch.

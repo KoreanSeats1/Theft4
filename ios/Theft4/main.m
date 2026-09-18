@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include "theft4_core.h"
+#include "theft4_device_profile.h"
 #include "theft4_metal_presenter.h"
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
@@ -47,6 +48,7 @@
     UISwitch *_motionBlur;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
+    BOOL _legacyIPadProfile;
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -66,19 +68,24 @@ static void coreEvent(void *context, const char *event) {
     [controller record:[NSString stringWithUTF8String:event]];
 }
 
-static void configureDeviceProfile(void) {
-    if (getenv("THEFT4_DEVICE_PROFILE")) return;
+static BOOL configureDeviceProfile(void) {
+    const char *configured = getenv("THEFT4_DEVICE_PROFILE");
+    if (configured) return strcmp(configured, "legacy-ipad") == 0;
 
     struct utsname systemInfo = {};
     const char *machine = uname(&systemInfo) == 0 ? systemInfo.machine : "unknown";
     // Apple's A19 iPhone family uses the iPhone18,* hardware identifiers. This
     // selects launch defaults only; it does not enable a new instruction set.
     const BOOL isA19 = strncmp(machine, "iPhone18,", 9) == 0;
-    const char *profile = isA19 ? "a19" :
-        (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "ipad" : "generic");
+    const BOOL isIPad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+    const uint64_t physicalMemory = NSProcessInfo.processInfo.physicalMemory;
+    const char *profile = theft4_device_profile_name(isIPad, physicalMemory, isA19);
     setenv("THEFT4_DEVICE_PROFILE", profile, 0);
     setenv("THEFT4_DEVICE_MODEL", machine, 0);
-    os_log(OS_LOG_DEFAULT, "Theft4 launch profile %{public}s for %{public}s", profile, machine);
+    os_log(OS_LOG_DEFAULT,
+           "Theft4 launch profile %{public}s for %{public}s (%{public}llu MiB)",
+           profile, machine, (unsigned long long)(physicalMemory >> 20));
+    return strcmp(profile, "legacy-ipad") == 0;
 }
 
 #ifdef THEFT4_HAS_GAME_LOADER
@@ -94,14 +101,14 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
-    configureDeviceProfile();
+    _legacyIPadProfile = configureDeviceProfile();
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowTouchControls": @NO,
-        @"Theft4AnisotropicFiltering": @YES,
-        @"Theft4EnhancedOutput1080p": @YES,
+        @"Theft4AnisotropicFiltering": @(!_legacyIPadProfile),
+        @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
-        @"Theft4MotionBlur": @YES
+        @"Theft4MotionBlur": @(!_legacyIPadProfile)
     }];
     // The native game image is 1280x720. Keep its layer itself at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
@@ -150,6 +157,15 @@ static void bootEvent(void *context, const char *event) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    // Older installs may have M-series defaults persisted. Start pre-M iPads
+    // in a conservative mode on every process launch, while still allowing an
+    // explicit user opt-in before starting the game.
+    if (_legacyIPadProfile) {
+        _anisotropicFiltering.on = NO;
+        _enhancedOutput.on = NO;
+        _fsrBoost.on = NO;
+        _motionBlur.on = NO;
     }
     if (_fsrBoost.on) _enhancedOutput.on = YES;
     [_bringupOverlay refreshConfigurationSummary];

@@ -17,6 +17,30 @@ Status labels used below:
 Private game files, title updates, saves, screenshots, GPU captures, signing
 material, and device logs are never part of this changelog or repository.
 
+## A12X / pre-M iPad compatibility branch — 2026-09-18
+
+Status: **Pending physical-device verification.**
+
+- Added a `legacy-ipad` launch profile for iPads with less than 8 GiB of
+  physical memory. This covers the 4/6 GiB A12X models without maintaining a
+  brittle hardware-identifier allowlist; M-series iPads remain on the existing
+  profile.
+- Kept native pipeline prewarming enabled, but capped the legacy profile's
+  combined demanded/speculative compiler queue at four jobs instead of 64.
+  Exact first-use work can evict queued speculation, preserving warmup while
+  preventing a slow device from accumulating a boot-blocking compiler backlog.
+- Starts the compatibility profile at 720p output, 1x anisotropy, no motion
+  blur, and one native frame-resource slot. These are per-launch safe defaults;
+  the launcher still permits an explicit visual-quality opt-in before play.
+- Logs the detected profile, hardware identifier, physical-memory tier,
+  prewarm state, compiler-queue capacity, and frame-slot count for device-run
+  verification.
+- Host checks pass for the memory-tier policy and bounded native pipeline
+  compiler. The complete unsigned ARM64 Release app also compiles, links, and
+  passes Xcode bundle validation. A signed A12X first-frame/intro run remains
+  pending because no physical device or matching development profile was
+  available during this pass.
+
 ## v0.1.3(a) — shared hot-path and A19 launch update — 2026-09-17
 
 Apple distribution identity: marketing version **0.1.3**, build **6**. The

@@ -42,6 +42,7 @@ REXCVAR_DECLARE(std::string, present_effect);
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(uint32_t, gta4_native_pipeline_queue_capacity);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
@@ -137,21 +138,33 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
         // Keep expensive diagnostics opt-in for every production device. A19
-        // devices also avoid speculative pipeline prewarm because the pass-1
-        // phone trace showed a deep render-worker backlog. The authoritative
-        // pipeline creation path remains active during frame recording.
+        // and pre-M iPads must not build an unbounded speculative backlog. Even
+        // the A19 pass-1 trace showed deep queueing. Preserve prewarming on an
+        // A12X, but cap it tightly so demanded first-use pipelines can evict
+        // queued speculation and make first-frame progress.
         const char* device_profile_value = std::getenv("THEFT4_DEVICE_PROFILE");
         const std::string_view device_profile =
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
-        REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
+        const bool legacy_ipad_profile = device_profile == "legacy-ipad";
+        bool pipeline_prewarm = !a19_profile;
+        if (const char* prewarm = std::getenv("THEFT4_PIPELINE_PREWARM"); prewarm) {
+            const std::string_view value(prewarm);
+            if (value != "0" && value != "1")
+                throw std::runtime_error("THEFT4_PIPELINE_PREWARM must be 0 or 1");
+            pipeline_prewarm = value == "1";
+        }
+        REXCVAR_SET(gta4_native_pipeline_prewarm, pipeline_prewarm);
+        const uint32_t pipeline_queue_capacity = legacy_ipad_profile ? 4u : 64u;
+        REXCVAR_SET(gta4_native_pipeline_queue_capacity, pipeline_queue_capacity);
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
         REXCVAR_SET(gta4_profile_native_autostart, false);
         REXLOG_INFO(
             "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
-            "profile-autostart=false",
-            device_profile, !a19_profile);
+            "pipeline-queue-capacity={} profile-autostart=false legacy-ipad={}",
+            device_profile, pipeline_prewarm, pipeline_queue_capacity,
+            legacy_ipad_profile);
 
         // Match the desktop FSR setup, with a deliberately fixed 720p scene.
         // Native hooks derive input = output / 1.5 for FSR's Quality mode:
@@ -204,7 +217,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // buffers, upload storage, descriptors, constants, query/readback state
         // and submission fences per slot.  Preserve the launch override so a
         // device run can immediately return to the one-slot stability baseline.
-        uint32_t native_frame_slots = 2;
+        // One slot bounds transient command/upload/descriptor memory on the
+        // 4-6 GiB pre-M iPads. Newer devices retain the two-slot throughput
+        // path, and the existing environment override remains authoritative.
+        uint32_t native_frame_slots = legacy_ipad_profile ? 1u : 2u;
         const char* frames = std::getenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT");
         if (frames) {
             const std::string_view value(frames);

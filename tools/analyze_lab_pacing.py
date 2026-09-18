@@ -66,6 +66,7 @@ def analyze(directory):
         'dropped_pacing_records': pacing_meta['dropped'],
         'producer_system_threads': sorted({r['system_thread'] for r in matched}),
         'sleep_count': len(sleeps), 'late_resets': sum(r['late_reset'] == '1' for r in matched),
+        'pre_submit_pacing_frames': sum(r.get('limiter_before_submit') == '1' for r in matched),
         'limiter_ms': {key: stats(r[key] for r in (sleeps if key in
                         ('requested_sleep_ms', 'actual_sleep_ms', 'wake_overshoot_ms') else matched))
                        for key in limiter_keys},
@@ -77,6 +78,7 @@ def analyze(directory):
                    'Worker split partitions the legacy idle total; do not add that total again.',
                    'Frame N interval ends at N+1; use raw ticks and thread identities to correlate.',
                    'Normal limiter sleep is intentional; overshoot is not the requested sleep.',
+                   'limiter_before_submit=1 marks the even-pacing experiment; compare modes separately.',
                    'Missing boundary records and profiling overhead require explicit review.']}
     return result
 

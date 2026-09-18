@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "Theft4LauncherView.h"
+#import "Theft4FrameTimeView.h"
 
 @interface PreviewController : UIViewController
 @property(nonatomic) Theft4LauncherView *launcher;
@@ -43,6 +44,39 @@
         [self selectInView:self.launcher identifier:identifier];
     }
     if ([args containsObject:@"--retire"]) [self retire];
+    if ([args containsObject:@"--frame-time-preview"]) {
+        [self.launcher retireScene];
+        theft4_frame_time_snapshot snapshot = {0};
+        snapshot.count = THEFT4_FRAME_TIME_SAMPLES;
+        for (unsigned i = 0; i < snapshot.count; ++i)
+            snapshot.milliseconds[i] = i == 105 ? 72 : i == 106 ? 17 : i % 37 == 0 ? 42 : 33.3;
+        if ([args containsObject:@"--stall"]) snapshot.pending_ms = 128;
+        Theft4FrameTimeView *graph = [Theft4FrameTimeView new];
+        graph.translatesAutoresizingMaskIntoConstraints = NO;
+        [graph updateWithSnapshot:&snapshot];
+        [self.view addSubview:graph];
+        BOOL fps = ![args containsObject:@"--no-fps"];
+        if (fps) {
+            UILabel *counter = [UILabel new]; counter.translatesAutoresizingMaskIntoConstraints = NO;
+            counter.text = @"30.0 FPS"; counter.textColor = UIColor.whiteColor;
+            counter.textAlignment = NSTextAlignmentCenter;
+            counter.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold];
+            counter.backgroundColor = [UIColor colorWithWhite:0 alpha:0.58];
+            counter.layer.cornerRadius = 7; counter.clipsToBounds = YES;
+            [self.view addSubview:counter];
+            [NSLayoutConstraint activateConstraints:@[
+                [counter.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
+                [counter.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
+                [counter.widthAnchor constraintEqualToConstant:92],
+                [counter.heightAnchor constraintEqualToConstant:32]]];
+        }
+        [NSLayoutConstraint activateConstraints:@[
+            [graph.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:fps ? 52 : 10],
+            [graph.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
+            [graph.widthAnchor constraintEqualToConstant:244],
+            [graph.heightAnchor constraintEqualToConstant:92]]];
+        self.launcher.statusLabel.text = @"GRAPH PREVIEW  /  SYNTHETIC TIMING DATA";
+    }
 }
 - (void)selectInView:(UIView *)view identifier:(NSString *)identifier {
     if ([view.accessibilityIdentifier isEqualToString:identifier] && [view isKindOfClass:UIButton.class])

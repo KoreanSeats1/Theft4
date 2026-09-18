@@ -97,4 +97,22 @@ constexpr Decision Plan(State previous, uint32_t frames_per_second, int64_t now_
   return decision;
 }
 
+// Lab experiment: gate the present submission itself, then advance from the
+// actual successful enqueue time. A late frame never borrows the next frame's
+// budget. CompleteSubmission must run under the same producer lock as Plan.
+constexpr Decision PlanSubmission(State previous, uint32_t fps, int64_t now_ns) noexcept {
+  Decision decision{};
+  if (!IsSupportedLimit(fps)) fps = 0;
+  decision.mode_changed = previous.frames_per_second != fps;
+  if (!fps) return decision;
+  if (decision.mode_changed) previous = {.frames_per_second = fps};
+  decision.next_state = previous;
+  if (previous.next_deadline_ns > now_ns) decision.wait_until_ns = previous.next_deadline_ns;
+  decision.late_reset = previous.next_deadline_ns > 0 && now_ns > previous.next_deadline_ns;
+  return decision;
+}
+constexpr void CompleteSubmission(State& state, int64_t completed_ns) noexcept {
+  AdvanceDeadline(state, completed_ns);
+}
+
 }  // namespace gta4::frame_limiter

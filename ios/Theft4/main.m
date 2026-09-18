@@ -12,6 +12,7 @@ extern int rex_gta4_native_profile_start(void);
 #endif
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
+#import "Theft4FrameTimeView.h"
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
@@ -43,6 +44,12 @@ extern int rex_gta4_native_profile_start(void);
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
     UISwitch *_showFPS;
+    UISwitch *_showFrameTime;
+    UISwitch *_evenPacing;
+    Theft4FrameTimeView *_frameTimeView;
+    NSTimer *_frameTimeTimer;
+    NSLayoutConstraint *_frameTimeTop;
+    BOOL _sceneActive;
     UISwitch *_showControls;
     UISwitch *_anisotropicFiltering;
     UISwitch *_enhancedOutput;
@@ -102,6 +109,8 @@ static void bootEvent(void *context, const char *event) {
     configureDeviceProfile();
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
+        @"Theft4ShowFrameTime": @NO,
+        @"Theft4EvenPacing": @NO,
         @"Theft4ShowTouchControls": @NO,
         @"Theft4AnisotropicFiltering": @YES,
         @"Theft4EnhancedOutput1080p": @YES,
@@ -144,12 +153,13 @@ static void bootEvent(void *context, const char *event) {
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
+    _showFrameTime = _bringupOverlay.showFrameTime; _evenPacing = _bringupOverlay.evenPacing;
     _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
-    NSArray *toggles = @[_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
-    NSArray *keys = @[@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+    NSArray *toggles = @[_showFrameTime,_evenPacing,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
+    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4EvenPacing",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
@@ -196,6 +206,15 @@ static void bootEvent(void *context, const char *event) {
         [_fpsLabel.widthAnchor constraintEqualToConstant:92],
         [_fpsLabel.heightAnchor constraintEqualToConstant:32]
     ]];
+    _frameTimeView = [Theft4FrameTimeView new];
+    _frameTimeView.translatesAutoresizingMaskIntoConstraints = NO;
+    _frameTimeView.hidden = YES;
+    [self.view addSubview:_frameTimeView];
+    _frameTimeTop = [_frameTimeView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52];
+    [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
+        [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
+        [_frameTimeView.widthAnchor constraintEqualToConstant:244],
+        [_frameTimeView.heightAnchor constraintEqualToConstant:92]]];
     _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                                 target:self
                                               selector:@selector(refreshFrameRate)
@@ -270,6 +289,9 @@ static void bootEvent(void *context, const char *event) {
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
     [_bringupOverlay refreshConfigurationSummary];
+    [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
+    [NSUserDefaults.standardUserDefaults setBool:_evenPacing.on forKey:@"Theft4EvenPacing"];
+    [self updateFrameTimeHUD];
     [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
@@ -354,7 +376,30 @@ static void bootEvent(void *context, const char *event) {
     _fpsLabel.hidden = !_showFPS.on;
     _touchControls.active = _showControls.on &&
         self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive;
+    [self updateFrameTimeHUD];
     [self record:@"ui.game_presentation_mode"];
+}
+
+- (void)updateFrameTimeHUD {
+    BOOL visible = _gamePresentation && _sceneActive && _showFrameTime.on;
+    _frameTimeView.hidden = !visible;
+    _frameTimeTop.constant = _showFPS.on ? 52 : 10;
+    theft4_frame_time_set_enabled(visible);
+    if (!visible) {
+        [_frameTimeTimer invalidate]; _frameTimeTimer = nil;
+        theft4_frame_time_snapshot empty = {0};
+        [_frameTimeView updateWithSnapshot:&empty];
+    } else if (!_frameTimeTimer) {
+        __weak Theft4ViewController *weakSelf = self;
+        _frameTimeTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+            Theft4ViewController *controller = weakSelf;
+            if (!controller) { [timer invalidate]; return; }
+            theft4_frame_time_snapshot snapshot = {0};
+            theft4_frame_time_copy(&snapshot);
+            [controller->_frameTimeView updateWithSnapshot:&snapshot];
+        }];
+        [NSRunLoop.mainRunLoop addTimer:_frameTimeTimer forMode:NSRunLoopCommonModes];
+    }
 }
 
 - (void)refreshFrameRate {
@@ -422,6 +467,10 @@ static void bootEvent(void *context, const char *event) {
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+        setenv("THEFT4_LAB_EVEN_PACING", _evenPacing.on ? "1" : "0", 1);
+        [self record:_evenPacing.on ? @"lab.even_pacing.on" : @"lab.even_pacing.off"];
+#endif
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
@@ -437,6 +486,7 @@ static void bootEvent(void *context, const char *event) {
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
+        _evenPacing.enabled = NO;
     }
     NSError *backupError = nil;
     if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])
@@ -488,6 +538,8 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)activate {
+    _sceneActive = YES;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:!_executionAttempted];
     _touchControls.active = _gamePresentation && _showControls.on;
     [self createCore];
@@ -521,12 +573,16 @@ static void bootEvent(void *context, const char *event) {
     [self refresh];
 }
 - (void)pause {
+    _sceneActive = NO;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:NO];
     _touchControls.active = NO;
     if (_core) [self accept:theft4_core_pause(_core) operation:@"pause"];
     [self refresh];
 }
 - (void)shutdown {
+    _sceneActive = NO;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:NO];
     _touchControls.active = NO;
     if (_core) {
@@ -552,6 +608,8 @@ static void bootEvent(void *context, const char *event) {
     // partially deallocated controller; scene ownership requires shutdown.
     NSCAssert(_core == NULL, @"Scene must shut down its core before release");
     [_fpsTimer invalidate];
+    [_frameTimeTimer invalidate];
+    theft4_frame_time_set_enabled(false);
     theft4_metal_unbind_layer((__bridge void *)_metalView.layer);
 }
 @end

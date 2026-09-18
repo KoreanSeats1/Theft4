@@ -4,6 +4,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/lock.h>
 #include <atomic>
+#include "theft4_frame_time_history.h"
 
 namespace {
 
@@ -18,6 +19,7 @@ dispatch_semaphore_t frame_slots = nil;
 std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
+theft4::FrameTimeHistory<> frame_time_history;
 
 // Protected by presenter_lock. Scene resolution stays 720p in every mode.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
@@ -161,6 +163,19 @@ bool theft4_metal_present_clear(double red, double green, double blue,
 
 void theft4_frame_counter_note_published(void) {
   published_game_frames.fetch_add(1, std::memory_order_relaxed);
+  if (frame_time_history.Enabled())
+    frame_time_history.Record(uint64_t(CACurrentMediaTime() * 1e9));
+}
+
+void theft4_frame_time_set_enabled(bool enabled) {
+  frame_time_history.SetEnabled(enabled);
+}
+
+void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot) {
+  if (!snapshot) return;
+  snapshot->count = (uint32_t)frame_time_history.Copy(
+      uint64_t(CACurrentMediaTime() * 1e9), snapshot->milliseconds,
+      THEFT4_FRAME_TIME_SAMPLES, snapshot->pending_ms);
 }
 
 uint64_t theft4_frame_counter_published_frames(void) {

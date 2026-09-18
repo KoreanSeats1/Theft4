@@ -52,6 +52,17 @@ uint64_t theft4_metal_renderer_completed_frames(void);
 void theft4_frame_counter_note_published(void);
 uint64_t theft4_frame_counter_published_frames(void);
 
+// Rolling publication intervals, not physical display scanout times. UI control
+// and snapshots are main-thread only; the presenter is the sole sample writer.
+#define THEFT4_FRAME_TIME_SAMPLES 180
+typedef struct theft4_frame_time_snapshot {
+  uint32_t count;
+  double milliseconds[THEFT4_FRAME_TIME_SAMPLES];
+  double pending_ms;
+} theft4_frame_time_snapshot;
+void theft4_frame_time_set_enabled(bool enabled);
+void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot);
+
 #ifdef __cplusplus
 }
 #endif

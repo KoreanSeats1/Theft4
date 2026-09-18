@@ -397,7 +397,8 @@ endif()
 
 set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
 add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
-    Theft4/Theft4LauncherView.m Theft4/Theft4CityView.m
+    Theft4/Theft4LauncherView.m
+    Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m
     Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
 set_source_files_properties(Theft4/XeniOS-Touch-LICENSE.txt PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources)

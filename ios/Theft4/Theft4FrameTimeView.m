@@ -4,6 +4,8 @@
 @implementation Theft4FrameTimeView {
     theft4_frame_time_snapshot _snapshot;
     BOOL _captureRequested;
+    BOOL _captureCompleted;
+    BOOL _captureFailed;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
@@ -20,6 +22,10 @@
 }
 - (void)setCaptureRequested:(BOOL)requested {
     _captureRequested = requested;
+    if (requested) {
+        _captureCompleted = NO;
+        _captureFailed = NO;
+    }
     self.layer.borderWidth = requested ? 2.0 : 0.0;
     self.layer.borderColor = requested
         ? [UIColor colorWithRed:1 green:0.56 blue:0.16 alpha:1].CGColor
@@ -27,6 +33,19 @@
     self.accessibilityHint = requested
         ? @"Frame-timing capture requested for this launch"
         : @"Double-tap to capture 600 profiled frames";
+    [self setNeedsDisplay];
+}
+- (void)setCaptureCompleted:(BOOL)success {
+    _captureRequested = NO;
+    _captureCompleted = success;
+    _captureFailed = !success;
+    self.layer.borderWidth = 2.0;
+    self.layer.borderColor = (success
+        ? [UIColor colorWithRed:0.25 green:0.82 blue:0.48 alpha:1]
+        : [UIColor colorWithRed:1 green:0.32 blue:0.32 alpha:1]).CGColor;
+    self.accessibilityHint = success
+        ? @"Frame-timing capture saved"
+        : @"Frame-timing capture export failed";
     [self setNeedsDisplay];
 }
 - (void)updateWithSnapshot:(const theft4_frame_time_snapshot *)snapshot {
@@ -57,6 +76,15 @@
                                                                              green:0.65
                                                                               blue:0.25
                                                                              alpha:1]}];
+    } else if (_captureCompleted || _captureFailed) {
+        NSString *state = _captureCompleted ? @"SAVED" : @"ERR";
+        UIColor *color = _captureCompleted
+            ? [UIColor colorWithRed:0.38 green:1 blue:0.62 alpha:1]
+            : [UIColor colorWithRed:1 green:0.4 blue:0.4 alpha:1];
+        [state drawAtPoint:CGPointMake(self.bounds.size.width - (_captureCompleted ? 43 : 31), 6)
+            withAttributes:@{NSFontAttributeName:[UIFont monospacedSystemFontOfSize:10
+                                                                            weight:UIFontWeightBold],
+                             NSForegroundColorAttributeName:color}];
     }
     self.accessibilityValue = title;
     CGRect plot = CGRectMake(9, 28, self.bounds.size.width - 18, self.bounds.size.height - 46);

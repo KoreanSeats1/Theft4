@@ -328,6 +328,9 @@ namespace rex::graphics::gta4_native {
 
 static std::atomic<bool> g_native_profile_capture_requested{false};
 static std::atomic<bool> g_native_profile_transport_active{false};
+// UI-visible state for the one bounded Lab capture in this process:
+// 0 ready, 1 capturing/exporting, 2 exported, -1 export failed.
+static std::atomic<int> g_native_profile_capture_status{0};
 static std::atomic<bool> g_native_memory_profile_start_requested{false};
 static std::atomic<bool> g_native_memory_profile_stop_requested{false};
 static std::atomic<uint32_t> g_native_memory_profile_marker_requested{0};
@@ -340,7 +343,12 @@ extern "C" __attribute__((visibility("default"))) int rex_gta4_native_profile_st
       !pacing::capture.Start(profile::CpuTick())) return 0;
 #endif
   g_native_profile_capture_requested.store(true, std::memory_order_release);
+  g_native_profile_capture_status.store(1, std::memory_order_release);
   return 1;
+}
+
+extern "C" __attribute__((visibility("default"))) int rex_gta4_native_profile_status() {
+  return g_native_profile_capture_status.load(std::memory_order_acquire);
 }
 
 extern "C" __attribute__((visibility("default"))) int rex_gta4_native_memory_profile_start() {
@@ -9424,13 +9432,18 @@ void Gta4NativeGraphicsSystem::ExportNativeGpuProfile() {
   const std::filesystem::path csv_path =
       output_path.parent_path() / "native-performance-latest.csv";
   native_gpu_profile_state_.export_thread = std::thread([this, output_path, csv_path]() {
+    const auto export_failed = [] {
+      g_native_profile_capture_status.store(-1, std::memory_order_release);
+    };
     std::error_code directory_error;
     std::filesystem::create_directories(output_path.parent_path(), directory_error);
     if (directory_error) {
+      export_failed();
       return;
     }
     std::ofstream output(output_path, std::ios::out | std::ios::trunc);
     if (!output) {
+      export_failed();
       return;
     }
     const uint64_t host_frequency = rex::chrono::Clock::QueryHostTickFrequency();
@@ -9475,6 +9488,7 @@ void Gta4NativeGraphicsSystem::ExportNativeGpuProfile() {
     const std::filesystem::path temporary_csv=csv_path.string()+".partial";
     std::ofstream csv(temporary_csv, std::ios::out | std::ios::trunc);
     if (!csv) {
+      export_failed();
       return;
     }
     const auto csv_name = [](const char* name) {
@@ -9548,22 +9562,28 @@ void Gta4NativeGraphicsSystem::ExportNativeGpuProfile() {
       csv << '\n';
     }
     csv.flush();
-    if(!csv) return;
+    if(!csv) {
+      export_failed();
+      return;
+    }
     csv.close();
     if(!profile::ExportProfileDetails(output_path.parent_path(),native_gpu_profile_state_.detail_frames,
                                       native_gpu_profile_state_.detail_metadata)) {
       REXLOG_ERROR("gta4-native-perf: detailed export failed; incomplete flat CSV not published");
+      export_failed();
       return;
     }
     std::error_code export_error;
     std::filesystem::rename(temporary_csv,csv_path,export_error);
     if(export_error) {
       REXLOG_ERROR("gta4-native-perf: capture publication failed {}",export_error.message());
+      export_failed();
       return;
     }
     REXLOG_INFO("gta4-native-perf: complete schema={} samples={} cpu-detail={} gpu-pass-export=true path={}",
         performance::kProfileSchemaVersion,native_gpu_profile_state_.export_sample_count,
         REXCVAR_GET(gta4_profile_native_detailed_cpu),csv_path.string());
+    g_native_profile_capture_status.store(2, std::memory_order_release);
   });
 }
 
@@ -9593,6 +9613,7 @@ bool Gta4NativeGraphicsSystem::BeginNativeGpuProfileFrame(VkCommandBuffer comman
     if (native_gpu_profile_state_.export_started || native_gpu_profile_state_.capture_complete) {
       REXLOG_WARN(
           "gta4-native-perf: capture request ignored because this process already exported");
+      g_native_profile_capture_status.store(-1, std::memory_order_release);
       return false;
     }
     native_gpu_profile_state_.capture_armed = true;

@@ -9,6 +9,7 @@
 #include "theft4_metal_presenter.h"
 #ifdef THEFT4_LAB_NATIVE_CAPTURE
 extern int rex_gta4_native_profile_start(void);
+extern int rex_gta4_native_profile_status(void);
 #endif
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
@@ -58,6 +59,7 @@ extern int rex_gta4_native_profile_start(void);
     BOOL _gamePresentation;
 #ifdef THEFT4_LAB_NATIVE_CAPTURE
     BOOL _nativeProfileRequested;
+    BOOL _nativeProfileFinished;
 #endif
 }
 - (void)record:(NSString *)event;
@@ -389,6 +391,17 @@ static void bootEvent(void *context, const char *event) {
             theft4_frame_time_snapshot snapshot = {0};
             theft4_frame_time_copy(&snapshot);
             [controller->_frameTimeView updateWithSnapshot:&snapshot];
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            const int captureStatus = rex_gta4_native_profile_status();
+            if (controller->_nativeProfileRequested && !controller->_nativeProfileFinished &&
+                (captureStatus == 2 || captureStatus == -1)) {
+                controller->_nativeProfileFinished = YES;
+                [controller->_frameTimeView setCaptureCompleted:(captureStatus == 2)];
+                [controller record:(captureStatus == 2
+                    ? @"lab.native_profile_complete"
+                    : @"lab.native_profile_failed")];
+            }
+#endif
         }];
         [NSRunLoop.mainRunLoop addTimer:_frameTimeTimer forMode:NSRunLoopCommonModes];
     }
@@ -412,6 +425,7 @@ static void bootEvent(void *context, const char *event) {
     if (!_gamePresentation || _nativeProfileRequested) return;
     if (rex_gta4_native_profile_start()) {
         _nativeProfileRequested = YES;
+        _nativeProfileFinished = NO;
         // The orange graph border means requested; export completion is
         // verified in the runtime log.
         [_frameTimeView setCaptureRequested:YES];

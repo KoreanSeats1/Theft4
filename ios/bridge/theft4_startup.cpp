@@ -220,14 +220,14 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
-        // Detailed collection remains dormant until the graph gesture arms a
-        // bounded capture, so ordinary Lab play does not pay its per-frame
-        // instrumentation cost.
-        REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
+        // Keep CPU/transport detail for attribution, but use only the coarse
+        // GPU envelope. Per-pass Metal timestamp blits measurably perturb the
+        // workload and are unnecessary for the CPU/physics comparison.
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
         REXCVAR_SET(gta4_profile_native_autostart, false);
         REXLOG_INFO(
-            "Theft4 Lab bounded native CPU/GPU profiler ready; "
+            "Theft4 Lab bounded CPU/pacing plus coarse-GPU profiler ready; "
             "double-tap the frame-time graph to capture 600 frames");
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep

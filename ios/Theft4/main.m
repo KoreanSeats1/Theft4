@@ -186,17 +186,6 @@ static void bootEvent(void *context, const char *event) {
     _fpsLabel.layer.masksToBounds = YES;
     _fpsLabel.hidden = YES;
     _fpsLabel.accessibilityIdentifier = @"game.fps";
-#ifdef THEFT4_LAB_NATIVE_CAPTURE
-    const char *nativeProfile = getenv("THEFT4_LAB_NATIVE_PROFILE");
-    if (nativeProfile && strcmp(nativeProfile, "1") == 0) {
-        _fpsLabel.userInteractionEnabled = YES;
-        _fpsLabel.accessibilityHint = @"Double-tap to request one frame-timing capture";
-        UITapGestureRecognizer *capture = [[UITapGestureRecognizer alloc]
-            initWithTarget:self action:@selector(requestNativeProfile)];
-        capture.numberOfTapsRequired = 2;
-        [_fpsLabel addGestureRecognizer:capture];
-    }
-#endif
     [self.view addSubview:_fpsLabel];
     [NSLayoutConstraint activateConstraints:@[
         [_fpsLabel.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
@@ -207,6 +196,12 @@ static void bootEvent(void *context, const char *event) {
     _frameTimeView = [Theft4FrameTimeView new];
     _frameTimeView.translatesAutoresizingMaskIntoConstraints = NO;
     _frameTimeView.hidden = YES;
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+    UITapGestureRecognizer *capture = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(requestNativeProfile)];
+    capture.numberOfTapsRequired = 2;
+    [_frameTimeView addGestureRecognizer:capture];
+#endif
     [self.view addSubview:_frameTimeView];
     _frameTimeTop = [_frameTimeView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52];
     [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
@@ -417,9 +412,9 @@ static void bootEvent(void *context, const char *event) {
     if (!_gamePresentation || _nativeProfileRequested) return;
     if (rex_gta4_native_profile_start()) {
         _nativeProfileRequested = YES;
-        // Orange means requested; export completion is verified in the log.
-        _fpsLabel.backgroundColor = [UIColor colorWithRed:0.65 green:0.28 blue:0.0 alpha:0.9];
-        _fpsLabel.accessibilityHint = @"Frame-timing capture requested for this launch";
+        // The orange graph border means requested; export completion is
+        // verified in the runtime log.
+        [_frameTimeView setCaptureRequested:YES];
         [self record:@"lab.native_profile_requested"];
     }
 }

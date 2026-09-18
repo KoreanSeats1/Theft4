@@ -220,22 +220,15 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
-        const char* native_profile_override =
-            std::getenv("THEFT4_LAB_NATIVE_PROFILE");
-        if (native_profile_override &&
-            std::string_view(native_profile_override) != "0" &&
-            std::string_view(native_profile_override) != "1") {
-            throw std::runtime_error("THEFT4_LAB_NATIVE_PROFILE must be 0 or 1");
-        }
-        if (native_profile_override &&
-            std::string_view(native_profile_override) == "1") {
-            REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
-            REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
-            // Capture the user's slow gameplay section, not the first 600
-            // loading-screen frames. The Lab FPS HUD arms the existing recorder.
-            REXCVAR_SET(gta4_profile_native_autostart, false);
-            REXLOG_INFO("Theft4 Lab bounded native CPU/GPU profiler ready; double-tap FPS to capture 600 frames");
-        }
+        // Detailed collection remains dormant until the graph gesture arms a
+        // bounded capture, so ordinary Lab play does not pay its per-frame
+        // instrumentation cost.
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
+        REXCVAR_SET(gta4_profile_native_autostart, false);
+        REXLOG_INFO(
+            "Theft4 Lab bounded native CPU/GPU profiler ready; "
+            "double-tap the frame-time graph to capture 600 frames");
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep
         // the renderer's conservative false default.

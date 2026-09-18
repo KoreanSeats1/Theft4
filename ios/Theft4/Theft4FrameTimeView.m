@@ -3,18 +3,31 @@
 
 @implementation Theft4FrameTimeView {
     theft4_frame_time_snapshot _snapshot;
+    BOOL _captureRequested;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.68];
     self.layer.cornerRadius = 7;
     self.clipsToBounds = YES;
-    self.userInteractionEnabled = NO;
+    self.userInteractionEnabled = YES;
     self.opaque = NO;
     self.isAccessibilityElement = YES;
     self.accessibilityIdentifier = @"game.frameTime";
     self.accessibilityLabel = @"Frame-time graph";
+    self.accessibilityHint = @"Double-tap to capture 600 profiled frames";
     return self;
+}
+- (void)setCaptureRequested:(BOOL)requested {
+    _captureRequested = requested;
+    self.layer.borderWidth = requested ? 2.0 : 0.0;
+    self.layer.borderColor = requested
+        ? [UIColor colorWithRed:1 green:0.56 blue:0.16 alpha:1].CGColor
+        : UIColor.clearColor.CGColor;
+    self.accessibilityHint = requested
+        ? @"Frame-timing capture requested for this launch"
+        : @"Double-tap to capture 600 profiled frames";
+    [self setNeedsDisplay];
 }
 - (void)updateWithSnapshot:(const theft4_frame_time_snapshot *)snapshot {
     _snapshot = *snapshot;
@@ -36,6 +49,15 @@
     NSDictionary *text = @{NSFontAttributeName:[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium],
                            NSForegroundColorAttributeName:UIColor.whiteColor};
     [title drawAtPoint:CGPointMake(9, 6) withAttributes:text];
+    if (_captureRequested) {
+        [@"REC" drawAtPoint:CGPointMake(self.bounds.size.width - 31, 6)
+            withAttributes:@{NSFontAttributeName:[UIFont monospacedSystemFontOfSize:10
+                                                                            weight:UIFontWeightBold],
+                             NSForegroundColorAttributeName:[UIColor colorWithRed:1
+                                                                             green:0.65
+                                                                              blue:0.25
+                                                                             alpha:1]}];
+    }
     self.accessibilityValue = title;
     CGRect plot = CGRectMake(9, 28, self.bounds.size.width - 18, self.bounds.size.height - 46);
     double ceiling = MAX(66.667, MIN(200, peak * 1.15));

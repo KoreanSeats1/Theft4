@@ -1,5 +1,17 @@
 # Theft4 engineering changelog
 
+## 2026-09-18 — Lab limiter and queue timing (build 9)
+
+- **Opt-in, device test pending:** extend the manual Lab capture with present
+  producer timestamps, limiter deadlines/sleep/wake/lock timing, and separate
+  worker mutex, condition-wait, batch-transfer and dispatch measurements.
+- Preserve the existing pacing decision and rendering settings. Store at most
+  1024 present observations in memory and export after capture; no per-frame
+  file writes or formatting. Report dropped records and capture boundaries.
+- Add clock-domain and frame-identity checks to the capture analyzer. See
+  [the capture procedure](docs/THEFT4_LAB_PACING_CAPTURE.md) for the next playtest
+  and interpretation limits. This preparation does not install or launch an app.
+
 ## 2026-09-17 — Lab manual frame-timing capture (build 8)
 
 - **Opt-in:** Launch Theft4 Lab with `THEFT4_LAB_NATIVE_PROFILE=1`, reach the

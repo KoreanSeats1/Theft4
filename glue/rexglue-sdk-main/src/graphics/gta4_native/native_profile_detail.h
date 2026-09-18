@@ -2,6 +2,9 @@
 #include "native_cpu_profile.h"
 #include "native_gpu_attribution.h"
 #include "native_performance_samples.h"
+#ifdef THEFT4_LAB_BUILD
+#include "native_pacing_export.h"
+#endif
 #include <filesystem>
 #include <cmath>
 #include <fstream>
@@ -26,6 +29,7 @@ struct FrameDetail {
   uint32_t frame = 0, slot = UINT32_MAX, width = 0, height = 0, display_width = 0,
            display_height = 0;
   uint64_t sequence = 0, submission = 0, first_command = 0, last_command = 0;
+  uint64_t publish_begin_tick = 0, publish_end_tick = 0;
   uint32_t query_count = 0, query_budget = 0, dropped_boundaries = 0, dropped_regions = 0;
   uint64_t readback_ticks = 0, export_snapshot_ticks = 0;
   bool detailed_gpu = false;
@@ -155,7 +159,11 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "regions,gpu_query_result,modern_shaders,disable_tlad_grain,query_readback_ms,profiler_"
          "snapshot_ms,paint_sequence,paint_guest_frame,paint_submission,paint_begin_tick,paint_end_"
          "tick,paint_mailbox_version,paint_observations_overwritten,paint_result,paint_acquire_ms,"
-         "paint_submit_ms,paint_present_ms,paint_total_ms\n";
+         "paint_submit_ms,paint_present_ms,paint_total_ms,first_capture_tick,first_enqueue_tick,"
+         "last_enqueue_tick,first_dequeue_tick,last_dequeue_tick,first_measured_sequence,"
+         "last_measured_sequence,worker_queue_mutex_wait_ms,worker_condition_wait_ms,"
+         "worker_batch_transfer_ms,worker_dispatch_ms,worker_batches,worker_condition_waits,"
+         "worker_partition_errors,publish_begin_tick,publish_end_tick\n";
   uint64_t origin = UINT64_MAX;
   for (const auto& frame : frames) {
     if (frame.cpu.enabled)
@@ -277,7 +285,15 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
               << ',' << p.guest_frame << ',' << p.submission << ',' << p.begin << ',' << p.end
               << ',' << p.mailbox_version << ',' << p.overwritten << ',' << p.result << ','
               << p.acquire_ticks * ms << ',' << p.submit_ticks * ms << ',' << p.present_ticks * ms
-              << ',' << p.total_ticks * ms << '\n';
+              << ',' << p.total_ticks * ms << ',' << t.first_capture_tick << ','
+              << t.first_enqueue_tick << ',' << t.last_enqueue_tick << ','
+              << t.first_dequeue_tick << ',' << t.last_dequeue_tick << ','
+              << t.first_sequence << ',' << t.last_sequence << ','
+              << t.worker_mutex_ticks * ms << ',' << t.worker_condition_ticks * ms << ','
+              << t.worker_transfer_ticks * ms << ',' << t.worker_dispatch_ticks * ms << ','
+              << t.worker_batches << ',' << t.worker_condition_waits << ','
+              << t.worker_partition_errors << ',' << f.publish_begin_tick << ','
+              << f.publish_end_tick << '\n';
   }
   trace << "]}\n";
   metadata
@@ -322,7 +338,31 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
     metadata << JsonString(performance::CounterName(counter)) << ':'
              << JsonString(CounterSemantics(counter));
   }
-  metadata << "},\"shader_names\":{";
+  metadata << '}';
+#ifdef THEFT4_LAB_BUILD
+  const auto pacing_snapshot = pacing::capture.Read();
+  if (!pacing::Export(dir, pacing_snapshot, meta.capture_id, meta.host_frequency)) return false;
+  metadata << ",\"pacing\":{\"schema_version\":1,\"started\":"
+           << (pacing_snapshot.started ? "true" : "false")
+           << ",\"stopped\":" << (pacing_snapshot.stopped ? "true" : "false")
+           << ",\"begin_tick\":" << pacing_snapshot.begin_tick
+           << ",\"end_tick\":" << pacing_snapshot.end_tick
+           << ",\"samples\":" << pacing_snapshot.samples.size()
+           << ",\"capacity\":1024,\"dropped\":" << pacing_snapshot.dropped
+           << ",\"clocks\":\"host ticks correlate with frame/transport records; limiter deadlines "
+              "use a separate steady-clock nanosecond domain\""
+           << ",\"boundary_policy\":\"only completed presents within the manual capture; "
+              "leading/trailing frames may lack pacing records; match by frame and thread, "
+              "not row position\"}"
+           << ",\"worker_transport_split\":true";
+#else
+  metadata << ",\"worker_transport_split\":false";
+#endif
+  metadata << ",\"transport_schema_version\":3"
+           << ",\"worker_idle_semantics\":\"legacy acquisition/dispatch total; split into "
+              "queue-mutex wait, condition wait including reacquisition, batch transfer and "
+              "remaining dispatch; these components are not additional frame costs\""
+           << ",\"shader_names\":{";
   first = true;
   for (const auto& [hash, name] : meta.shader_names) {
     if (!first)

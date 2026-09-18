@@ -64,7 +64,8 @@ add_executable(unit_tests
     graphics/shadow_distance_util_test.cpp
     graphics/gta4_native_surface_view_test.cpp
     graphics/native_performance_samples_test.cpp
-  graphics/native_cpu_profile_test.cpp
+    graphics/native_cpu_profile_test.cpp
+    graphics/native_pacing_profile_test.cpp
     graphics/native_memory_samples_test.cpp
     graphics/pipeline_cache_file_test.cpp
     graphics/primitive_restart_test.cpp

@@ -2,6 +2,9 @@
 #include "native_cpu_profile_scope.h"
 #include "native_profile_shader_category.h"
 #include "modern_shader_options.h"
+#ifdef THEFT4_LAB_BUILD
+#include <rex/graphics/gta4_native/pacing_profile.h>
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -332,6 +335,10 @@ static std::atomic<bool> g_native_memory_profile_deep_active{false};
 static std::atomic<uint32_t> g_native_memory_profile_event_frame{0};
 
 extern "C" __attribute__((visibility("default"))) int rex_gta4_native_profile_start() {
+#ifdef THEFT4_LAB_BUILD
+  if (!rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProfiler) ||
+      !pacing::capture.Start(profile::CpuTick())) return 0;
+#endif
   g_native_profile_capture_requested.store(true, std::memory_order_release);
   return 1;
 }
@@ -5825,10 +5832,24 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     const bool profile_transport = g_native_profile_transport_active.load(std::memory_order_acquire) ||
         g_native_profile_capture_requested.load(std::memory_order_acquire);
     const uint64_t idle_begin = profile_transport ? profile::CpuTick() : 0;
+#ifdef THEFT4_LAB_BUILD
+    uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0;
+    bool worker_refilled_batch = false, worker_waited = false;
+#endif
     if (worker_batch_.empty()) {
       std::unique_lock lock(render_mutex_);
+#ifdef THEFT4_LAB_BUILD
+      const uint64_t lock_acquired = profile_transport ? profile::CpuTick() : 0;
+      worker_mutex_ticks = profile_transport ? lock_acquired - idle_begin : 0;
+      worker_waited = profile_transport && render_worker_running_ && render_queue_.empty();
+#endif
       render_condition_.wait(
           lock, [this]() { return !render_worker_running_ || !render_queue_.empty(); });
+#ifdef THEFT4_LAB_BUILD
+      const uint64_t transfer_begin = profile_transport ? profile::CpuTick() : 0;
+      // Predicate wait includes reacquiring the queue mutex after notification.
+      worker_condition_ticks = worker_waited ? transfer_begin - lock_acquired : 0;
+#endif
       if (render_queue_.empty()) {
         if (!render_worker_running_) {
           break;
@@ -5854,6 +5875,12 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       }
       queued_after_batch_transfer = render_queue_.size();
       wake_producer = producer_waiting_ && queued_title_presents_ < 2;
+#ifdef THEFT4_LAB_BUILD
+      if (profile_transport) {
+        worker_transfer_ticks = profile::CpuTick() - transfer_begin;
+        worker_refilled_batch = true;
+      }
+#endif
     }
     // The batch is worker-owned. Process its front in place and pop it after
     // per-command scopes have released their references.
@@ -5878,8 +5905,15 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     if (wake_producer) render_condition_.notify_all();
     const uint64_t dequeued = (profile_transport || command.profile_transport.enqueued) ? profile::CpuTick() : 0;
     if(profile_transport || command.profile_transport.enqueued) {
-      native_profile_transport_.Observe(command.profile_transport, dequeued, queued_after_pop+1);
+      native_profile_transport_.Observe(command.profile_transport, dequeued, queued_after_pop+1,
+                                         command.diagnostic_submit_sequence);
+#ifdef THEFT4_LAB_BUILD
+      if (idle_begin) native_profile_transport_.ObserveWorker(
+          dequeued - idle_begin, worker_mutex_ticks, worker_condition_ticks, worker_transfer_ticks,
+          worker_refilled_batch, worker_waited);
+#else
       if(idle_begin)native_profile_transport_.worker_idle_ticks += dequeued-idle_begin;
+#endif
     }
     const uint64_t assembly_begin = profile_transport && command.type != CommandType::kPresent ? dequeued : 0;
     auto finish_assembly = MakeScopeExit([&] {
@@ -9327,6 +9361,9 @@ void Gta4NativeGraphicsSystem::ExportNativeGpuProfile() {
   }
   native_gpu_profile_state_.export_started = true;
   g_native_profile_transport_active.store(false, std::memory_order_release);
+#ifdef THEFT4_LAB_BUILD
+  pacing::capture.Stop(profile::CpuTick());
+#endif
   auto& metadata=native_gpu_profile_state_.detail_metadata;
   metadata.modern_shaders=modern_shader_frame_.settings().enabled;
   metadata.disable_tlad_grain=modern_shader_frame_.settings().disable_tlad_grain;
@@ -32408,8 +32445,9 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
   if (native_profiler_enabled) {
     for (NativeGpuProfileFramePayload& frame : native_gpu_profile_state_.frames) {
       if (frame.pending && frame.frame == present.submitted_frame) {
-        frame.cpu_publish_ticks =
-            rex::chrono::Clock::QueryHostTickCount() - native_profile_publish_begin;
+        frame.detail.publish_begin_tick = native_profile_publish_begin;
+        frame.detail.publish_end_tick = rex::chrono::Clock::QueryHostTickCount();
+        frame.cpu_publish_ticks = frame.detail.publish_end_tick - native_profile_publish_begin;
         break;
       }
     }

@@ -777,3 +777,5 @@ CMakeUserPresets.json
 !/docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md
 !/docs/THEFT4_MOTION_BLUR_AND_STREAMING.md
 !/tests/ios/test_xcode_generator.py
+!/docs/THEFT4_LAB_PACING_CAPTURE.md
+!/tools/analyze_lab_pacing.py

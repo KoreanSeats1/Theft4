@@ -194,6 +194,9 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
             GTA4_NATIVE_FONT_ASSET_ROOT="${THEFT4_NATIVE_FONT_ASSET_ROOT}")
         target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
+        if(THEFT4_LAB_BUILD)
+            target_compile_definitions(theft4_gta4_native_compile PRIVATE THEFT4_LAB_BUILD=1)
+        endif()
         target_compile_options(theft4_gta4_native_compile PRIVATE
             -Wno-unused-variable)
         set_source_files_properties(

@@ -21,8 +21,18 @@ std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
 theft4::FrameTimeHistory<> frame_time_history;
 
-// Protected by presenter_lock. Scene resolution stays 720p in every mode.
+// Protected by presenter_lock. Latched before the game renderer is created.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
+
+void SetOutputPolicy(theft4_output_policy output) {
+  os_unfair_lock_lock(&presenter_lock);
+  launch_output = output;
+  if (bound_layer) {
+    bound_layer.contentsScale = 1.0;
+    bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
+  }
+  os_unfair_lock_unlock(&presenter_lock);
+}
 
 void EnsureDeviceLocked() {
   if (!metal_device) metal_device = MTLCreateSystemDefaultDevice();
@@ -88,14 +98,13 @@ void theft4_metal_resize_layer(void* raw_layer, double width, double height,
 
 void theft4_metal_set_output_mode(theft4_output_mode mode,
                                 uint32_t native_width, uint32_t native_height) {
-  os_unfair_lock_lock(&presenter_lock);
-  launch_output = theft4_output_policy_for_mode(mode, native_width, native_height);
-  const auto output = launch_output;
-  if (bound_layer) {
-    bound_layer.contentsScale = 1.0;
-    bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
-  }
-  os_unfair_lock_unlock(&presenter_lock);
+  SetOutputPolicy(theft4_output_policy_for_mode(mode, native_width, native_height));
+}
+
+void theft4_metal_set_lab_output(uint32_t render_height, bool fsr1,
+                                uint32_t native_width, uint32_t native_height) {
+  SetOutputPolicy(theft4_output_policy_for_lab(
+      render_height, fsr1, native_width, native_height));
 }
 
 theft4_output_policy theft4_metal_get_output_policy(void) {

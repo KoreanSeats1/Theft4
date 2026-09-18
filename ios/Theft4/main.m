@@ -117,7 +117,7 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4ExperimentalFSRBoost": @NO,
         @"Theft4MotionBlur": @YES
     }];
-    // The native game image is 1280x720. Keep its layer itself at 16:9 so
+    // All selectable game resolutions are 16:9. Keep the layer at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
@@ -167,6 +167,20 @@ static void bootEvent(void *context, const char *event) {
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
     if (_fsrBoost.on) _enhancedOutput.on = YES;
+    if (_bringupOverlay.renderResolution) {
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
+        _bringupOverlay.renderResolution.selectedSegmentIndex = height == 900 ? 1 : height == 1080 ? 2 : 0;
+        // Migrate the old FSR On/Off preference once; old Boost no longer
+        // overrides this independent toggle in Lab.
+        if (![defaults objectForKey:@"Theft4LabFSREnabled"])
+            [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
+        _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
+        [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+        [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    }
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
@@ -278,11 +292,15 @@ static void bootEvent(void *context, const char *event) {
                               _metalView.bounds.size.height, scale);
 }
 
-- (void)displaySettingsChanged:(UISwitch *)sender {
+- (void)displaySettingsChanged:(UIControl *)sender {
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    if (_bringupOverlay.renderResolution) {
+        [NSUserDefaults.standardUserDefaults setInteger:_bringupOverlay.renderHeight forKey:@"Theft4LabRenderHeight"];
+        [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
+    }
     [_bringupOverlay refreshConfigurationSummary];
     [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
     [self updateFrameTimeHUD];
@@ -476,14 +494,22 @@ static void bootEvent(void *context, const char *event) {
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
-        theft4_metal_set_output_mode(
-            _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
-                (_enhancedOutput.on ? THEFT4_OUTPUT_FSR_1080P : THEFT4_OUTPUT_720P),
-            (uint32_t)floor(_metalView.bounds.size.width * nativeScale),
-            (uint32_t)floor(_metalView.bounds.size.height * nativeScale));
+        const uint32_t nativeWidth = (uint32_t)floor(_metalView.bounds.size.width * nativeScale);
+        const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
+        if (_bringupOverlay.renderResolution) {
+            theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
+                _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight);
+        } else {
+            theft4_metal_set_output_mode(
+                _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
+                    (_enhancedOutput.on ? THEFT4_OUTPUT_FSR_1080P : THEFT4_OUTPUT_720P),
+                nativeWidth, nativeHeight);
+        }
         // Release all decorative GPU work before initializing the game device.
         [_bringupOverlay retireScene];
         _fsrBoost.enabled = NO;
+        _bringupOverlay.renderResolution.enabled = NO;
+        _bringupOverlay.fsrUpscaling.enabled = NO;
         _bringupOverlay.restartButton.enabled = NO;
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;

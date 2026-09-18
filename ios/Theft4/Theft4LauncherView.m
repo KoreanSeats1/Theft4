@@ -1,5 +1,6 @@
 #import "Theft4LauncherView.h"
 #import "Theft4CityView.h"
+#include "theft4_output_policy.h"
 #import <QuartzCore/QuartzCore.h>
 
 static UIColor *Ink(unsigned rgb) {
@@ -42,6 +43,7 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     CAGradientLayer *_shade;
     CAEmitterLayer *_rain;
     UILabel *_masthead, *_edition, *_wordmark, *_sceneCaption, *_configuration;
+    UILabel *_resolutionSummary;
     UIView *_topRule, *_bottomRule;
     UIScrollView *_scroll;
     UIStackView *_content, *_navigation, *_play, *_display, *_system;
@@ -119,16 +121,46 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
         UISwitch *toggle = switches[i]; toggle.onTintColor = Ink(0xB6884D);
         toggle.accessibilityIdentifier = [@"settings." stringByAppendingString:identifiers[i]];
     }
-    _display = Column(@[
+    NSMutableArray<UIView *> *displayRows = [NSMutableArray new];
+    if (lab) {
+        UILabel *resolutionTitle = Copy(@"Render resolution",16,NO);
+        resolutionTitle.textColor = Ink(0xECE7D7);
+        _renderResolution = [[UISegmentedControl alloc] initWithItems:@[@"720p",@"900p",@"1080p"]];
+        _renderResolution.selectedSegmentIndex = 0;
+        _renderResolution.selectedSegmentTintColor = Ink(0xB6884D);
+        _renderResolution.backgroundColor = Ink(0x1B292C);
+        [_renderResolution setTitleTextAttributes:@{NSForegroundColorAttributeName:Ink(0xECE7D7)}
+            forState:UIControlStateNormal];
+        [_renderResolution setTitleTextAttributes:@{NSForegroundColorAttributeName:Ink(0x111B1D)}
+            forState:UIControlStateSelected];
+        _renderResolution.accessibilityIdentifier = @"settings.renderResolution";
+        _renderResolution.accessibilityLabel = @"Render resolution";
+        _renderResolution.accessibilityHint = @"Choose 720p, 900p or 1080p. Applies at the next game launch.";
+        [_renderResolution.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+        _fsrUpscaling = [UISwitch new]; _fsrUpscaling.onTintColor = Ink(0xB6884D);
+        _fsrUpscaling.accessibilityIdentifier = @"settings.fsrUpscaling";
+        _resolutionSummary = Copy(@"",12,YES);
+        _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
+        [displayRows addObjectsFromArray:@[
+            Column(@[resolutionTitle,_renderResolution,
+                Copy(@"Higher resolutions add scene detail and use more GPU power.",12,NO)],8),
+            [self setting:@"FSR upscaling" detail:@"Upscale the selected resolution to fit the screen. Turn off for native rendering at the selected resolution." toggle:_fsrUpscaling],
+            _resolutionSummary]];
+    }
+    [displayRows addObjectsFromArray:@[
         [self setting:@"Frame counter" detail:@"Unique game frames, shown in the top right." toggle:_showFPS],
         [self setting:@"Frame-time graph" detail:@"See brief spikes and the 33.3 ms target for 30 FPS." toggle:_showFrameTime],
         [self setting:@"Touch controls" detail:@"Physical controllers work with either setting." toggle:_showControls],
         [self setting:@"Texture filtering · 4×" detail:@"Cleaner roads and surfaces at an angle." toggle:_anisotropicFiltering],
-        [self setting:@"Motion blur" detail:@"Original movement blur. Turn off for a sharper view in motion." toggle:_motionBlur],
-        [self setting:@"1080p enhanced output" detail:@"FSR 1 upscale + sharpening. The balanced default." toggle:_enhancedOutput],
-        [self setting:@"Experimental FSR Boost" detail:@"Native-pixel 16:9 output. More output pixels; potentially less performance. Still rendered at 720p." toggle:_fsrBoost],
-        Copy(@"Output, filtering and motion blur apply at the next game launch. FSR is spatial upscaling, not frame generation.",12,NO)
-    ],18);
+        [self setting:@"Motion blur" detail:@"Original movement blur. Turn off for a sharper view in motion." toggle:_motionBlur]
+    ]];
+    if (!lab) {
+        [displayRows addObjectsFromArray:@[
+            [self setting:@"1080p enhanced output" detail:@"FSR 1 upscale + sharpening. The balanced default." toggle:_enhancedOutput],
+            [self setting:@"Experimental FSR Boost" detail:@"Native-pixel 16:9 output. More output pixels; potentially less performance. Still rendered at 720p." toggle:_fsrBoost]]];
+    }
+    [displayRows addObject:Copy(@"Resolution, FSR, filtering and motion blur apply at the next game launch. FSR is spatial upscaling, not frame generation.",12,NO)];
+    _display = Column(displayRows,18);
     _prepareButton = Action(@"VERIFY GAME FILES",NO);
     _restartButton = Action(@"RESTART CORE PROBE",NO); _restartButton.accessibilityIdentifier = @"core.restart";
     _detailLabel = Copy(@"Waiting for runtime information…",12,YES);
@@ -209,8 +241,27 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     _configuration.frame = CGRectMake(w*.60,h-bottom-44,w*.40-inset,42);
     _sceneCaption.hidden = compact;
     _sceneCaption.frame = CGRectMake(w-350,h-bottom-125,350-inset,50);
+    [self refreshConfigurationSummary];
+}
+- (uint32_t)renderHeight {
+    NSInteger index = _renderResolution.selectedSegmentIndex;
+    return index == 1 ? 900 : index == 2 ? 1080 : 720;
 }
 - (void)refreshConfigurationSummary {
+    if (_renderResolution) {
+        UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
+        const theft4_output_policy output = theft4_output_policy_for_lab(
+            self.renderHeight, _fsrUpscaling.on,
+            (uint32_t)floor(self.bounds.size.width * screen.nativeScale),
+            (uint32_t)floor(self.bounds.size.height * screen.nativeScale));
+        _resolutionSummary.text = [NSString stringWithFormat:@"%u × %u → %u × %u\n%@ · NEXT GAME LAUNCH",
+            output.render_width, output.render_height, output.output_width, output.output_height,
+            _fsrUpscaling.on ? @"FSR ON" : @"FSR OFF"];
+        _configuration.text = [NSString stringWithFormat:@"%up CORE  /  %@  /  %@",
+            self.renderHeight, _fsrUpscaling.on ? @"FSR" : @"NATIVE",
+            _anisotropicFiltering.on ? @"4× FILTER" : @"1× FILTER"];
+        return;
+    }
     _configuration.text = [NSString stringWithFormat:@"720p CORE  /  %@  /  %@",
         _fsrBoost.on ? @"FSR BOOST" : (_enhancedOutput.on ? @"1080p FSR" : @"720p OUTPUT"),
         _anisotropicFiltering.on ? @"4× FILTER" : @"1× FILTER"];

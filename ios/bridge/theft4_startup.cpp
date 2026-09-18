@@ -155,10 +155,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             "profile-autostart=false",
             device_profile, !a19_profile);
 
-        // Match the desktop FSR setup, with a deliberately fixed 720p scene.
-        // Native hooks derive input = output / 1.5 for FSR's Quality mode:
-        // 1920x1080 / 1.5 = 1280x720. The CAMetalLayer is already sized on
-        // the main thread, before Vulkan constructs the output swapchain.
+        // The launch policy independently selects scene and drawable sizes.
+        // Native hooks derive scene = logical video / 1.5 for FSR Quality.
+        // The CAMetalLayer is already sized before swapchain creation.
         const int motion_blur = theft4::motion_blur::ParseSetting(std::getenv("THEFT4_MOTION_BLUR"));
         if (motion_blur < 0)
             throw std::runtime_error("THEFT4_MOTION_BLUR must be 0 or 1");
@@ -168,8 +167,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 motion blur: {} (stock composite-pass selection)",
                     motion_blur ? "on" : "off");
         const auto output = theft4_metal_get_output_policy();
-        // Boost expands only the swapchain. Raising this logical video mode
-        // would also raise the render target through the game's FSR hooks.
+        // Use the policy's logical size, not the physical drawable: its FSR
+        // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
         REXCVAR_SET(video_mode_height, int32_t(output.video_height));
         REXCVAR_SET(gta4_native_upscaler, output.fsr1 ? "fsr1" : "native");

@@ -13,6 +13,10 @@
 @property(nonatomic, readonly) UISwitch *anisotropicFiltering;
 @property(nonatomic, readonly) UISwitch *enhancedOutput;
 @property(nonatomic, readonly) UISwitch *fsrBoost;
+// Lab-only controls; nil in the ordinary launcher.
+@property(nonatomic, readonly) UISegmentedControl *renderResolution;
+@property(nonatomic, readonly) UISwitch *fsrUpscaling;
+@property(nonatomic, readonly) uint32_t renderHeight;
 @property(nonatomic, readonly) UISwitch *motionBlur;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;

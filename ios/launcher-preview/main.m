@@ -11,6 +11,10 @@
     self.launcher.enhancedOutput.on = YES; self.launcher.anisotropicFiltering.on = YES;
     self.launcher.showFPS.on = YES;
     self.launcher.motionBlur.on = YES;
+    NSArray *args = NSProcessInfo.processInfo.arguments;
+    self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 2 :
+        [args containsObject:@"--900p"] ? 1 : 0;
+    self.launcher.fsrUpscaling.on = ![args containsObject:@"--no-fsr"];
     self.launcher.statusLabel.text = @"LAUNCHER PREVIEW  /  NO GAME RUNTIME";
     self.launcher.detailLabel.text = @"Isolated simulator UI preview.\nNo game files, saves or runtime are accessed.";
     [self.launcher refreshConfigurationSummary];
@@ -21,10 +25,14 @@
         self.launcher.motionBlur];
     for (UISwitch *toggle in toggles)
         [toggle addTarget:self action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
+    [self.launcher.renderResolution addTarget:self action:@selector(changed:)
+        forControlEvents:UIControlEventValueChanged];
+    [self.launcher.fsrUpscaling addTarget:self action:@selector(changed:)
+        forControlEvents:UIControlEventValueChanged];
 }
-- (void)changed:(UISwitch *)sender {
-    if (sender == self.launcher.fsrBoost && sender.on) self.launcher.enhancedOutput.on = YES;
-    if (sender == self.launcher.enhancedOutput && !sender.on) self.launcher.fsrBoost.on = NO;
+- (void)changed:(UIControl *)sender {
+    if (sender == self.launcher.fsrBoost && self.launcher.fsrBoost.on) self.launcher.enhancedOutput.on = YES;
+    if (sender == self.launcher.enhancedOutput && !self.launcher.enhancedOutput.on) self.launcher.fsrBoost.on = NO;
     [self.launcher refreshConfigurationSummary];
 }
 - (void)retire {

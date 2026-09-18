@@ -93,12 +93,13 @@ TEST_CASE("stopping a pacing capture racing producers permits no post-stop write
 
 TEST_CASE("worker acquisition partitions time without inventing pure idle time", "[native-pacing]") {
   profile::TransportSummary summary;
-  summary.ObserveWorker(100, 5, 50, 20, true, true);
-  summary.ObserveWorker(10, 0, 0, 0, false, false);
+  summary.ObserveWorker(100, 5, 50, 20, 10, true, true);
+  summary.ObserveWorker(10, 0, 0, 0, 0, false, false);
   CHECK(summary.worker_idle_ticks == 110);
-  CHECK(summary.worker_dispatch_ticks == 35);
+  CHECK(summary.worker_dispatch_ticks == 25);
   CHECK(summary.worker_mutex_ticks + summary.worker_condition_ticks +
-        summary.worker_transfer_ticks + summary.worker_dispatch_ticks == summary.worker_idle_ticks);
+        summary.worker_transfer_ticks + summary.worker_protection_ticks +
+        summary.worker_dispatch_ticks == summary.worker_idle_ticks);
   CHECK(summary.worker_batches == 1);
   CHECK(summary.worker_condition_waits == 1);
   CHECK(summary.worker_partition_errors == 0);
@@ -112,9 +113,9 @@ TEST_CASE("worker acquisition partitions time without inventing pure idle time",
   CHECK(summary.last_dequeue_tick == 240);
   CHECK(summary.first_sequence == 7);
   CHECK(summary.last_sequence == 8);
-  summary.ObserveWorker(1, 2, 3, 4, true, true);
+  summary.ObserveWorker(1, 2, 3, 4, 5, true, true);
   CHECK(summary.worker_partition_errors == 1);
-  CHECK(summary.worker_dispatch_ticks == 35);  // No unsigned underflow.
+  CHECK(summary.worker_dispatch_ticks == 25);  // No unsigned underflow.
 }
 
 TEST_CASE("pacing export separates clock domains, sleep overshoot and unavailable values",

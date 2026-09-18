@@ -1606,6 +1606,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::deque<NativeCommand> worker_batch_;
 #endif
   NativeTextureProtectionIndex worker_batch_texture_protection_;
+#ifdef THEFT4_LAB_BUILD
+  // Immutable full-batch counts. The queue index keeps these references until
+  // the batch completes, then subtracts them once under render_mutex_.
+  NativeTextureProtectionIndex worker_batch_deferred_queue_protection_;
+#endif
   uint32_t queued_title_presents_ = 0;
   bool producer_waiting_ = false;
   uint64_t diagnostic_submit_sequence_ = 0;

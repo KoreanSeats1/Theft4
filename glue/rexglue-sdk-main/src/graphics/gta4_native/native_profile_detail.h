@@ -162,7 +162,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "paint_submit_ms,paint_present_ms,paint_total_ms,first_capture_tick,first_enqueue_tick,"
          "last_enqueue_tick,first_dequeue_tick,last_dequeue_tick,first_measured_sequence,"
          "last_measured_sequence,worker_queue_mutex_wait_ms,worker_condition_wait_ms,"
-         "worker_batch_transfer_ms,worker_dispatch_ms,worker_batches,worker_condition_waits,"
+         "worker_batch_transfer_ms,worker_batch_protection_ms,worker_dispatch_ms,worker_batches,worker_condition_waits,"
          "worker_partition_errors,publish_begin_tick,publish_end_tick\n";
   uint64_t origin = UINT64_MAX;
   for (const auto& frame : frames) {
@@ -290,7 +290,8 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
               << t.first_dequeue_tick << ',' << t.last_dequeue_tick << ','
               << t.first_sequence << ',' << t.last_sequence << ','
               << t.worker_mutex_ticks * ms << ',' << t.worker_condition_ticks * ms << ','
-              << t.worker_transfer_ticks * ms << ',' << t.worker_dispatch_ticks * ms << ','
+              << t.worker_transfer_ticks * ms << ',' << t.worker_protection_ticks * ms << ','
+              << t.worker_dispatch_ticks * ms << ','
               << t.worker_batches << ',' << t.worker_condition_waits << ','
               << t.worker_partition_errors << ',' << f.publish_begin_tick << ','
               << f.publish_end_tick << '\n';

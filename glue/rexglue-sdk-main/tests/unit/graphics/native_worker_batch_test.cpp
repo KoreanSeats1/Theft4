@@ -84,7 +84,7 @@ TEST_CASE("Worker slots release owners on pop clear and destruction", "[graphics
 }
 
 TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[graphics][worker-batch][memory]") {
-  NativeTextureProtectionIndex queued, staged;
+  NativeTextureProtectionIndex queued, staged, deferred;
   NativeWorkerBatch<Command, 64> batch;
   std::deque<Command> queue;
   std::vector<Command> frame;
@@ -105,15 +105,16 @@ TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[grap
     while (!queue.empty()) {
       batch.push_back(std::move(queue.front())); queue.pop_front();
       for (auto generation : batch.back().textures) {
-        REQUIRE(queued.Release(generation)); REQUIRE(staged.Retain(generation));
+        REQUIRE(staged.Retain(generation));
       }
     }
+    REQUIRE(deferred.AssignFrom(staged));
     while (!batch.empty()) {
       const auto& active = batch.front();
       REQUIRE(active.sequence == ++expected_sequence);
       for (auto generation : active.textures) REQUIRE(staged.Release(generation));
       std::unordered_set<uint64_t> actual, oracle;
-      queued.AppendTo(actual); staged.AppendTo(actual);
+      REQUIRE(queued.AppendToExcluding(deferred, actual)); staged.AppendTo(actual);
       add(active, actual);
       for (const auto& command : frame) add(command, actual);
       for (const auto& command : frame) add(command, oracle);
@@ -123,9 +124,34 @@ TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[grap
       frame.push_back(std::move(batch.front())); batch.pop_front();
       if (expected_sequence % 19 == 0) frame.clear(); // Present/flush within a batch.
     }
+    REQUIRE(queued.ReleaseAllFrom(deferred)); deferred.Reset();
     REQUIRE(queued.size() == 0); REQUIRE(staged.size() == 0);
-    REQUIRE(queued.valid()); REQUIRE(staged.valid());
+    REQUIRE(queued.valid()); REQUIRE(staged.valid()); REQUIRE(deferred.valid());
   }
+}
+
+TEST_CASE("Deferred batch counts preserve producer references with shared generations",
+          "[graphics][worker-batch][memory]") {
+  NativeTextureProtectionIndex queued, staged, deferred;
+  for (uint64_t generation : {3, 3, 7, 11, 11, 11}) {
+    REQUIRE(queued.Retain(generation));
+    REQUIRE(staged.Retain(generation));
+  }
+  REQUIRE(deferred.AssignFrom(staged));
+  // Producers may enqueue more references while the worker owns its batch.
+  for (uint64_t generation : {3, 7, 7, 13}) REQUIRE(queued.Retain(generation));
+  std::unordered_set<uint64_t> visible;
+  REQUIRE(queued.AppendToExcluding(deferred, visible));
+  REQUIRE(visible == std::unordered_set<uint64_t>{3, 7, 13});
+  REQUIRE(queued.ReleaseAllFrom(deferred));
+  visible.clear(); queued.AppendTo(visible);
+  REQUIRE(visible == std::unordered_set<uint64_t>{3, 7, 13});
+
+  NativeTextureProtectionIndex impossible;
+  REQUIRE(impossible.Retain(11));
+  REQUIRE_FALSE(queued.AppendToExcluding(impossible, visible));
+  REQUIRE_FALSE(queued.ReleaseAllFrom(impossible));
+  REQUIRE_FALSE(queued.valid());
 }
 
 #ifdef THEFT4_LAB_BUILD

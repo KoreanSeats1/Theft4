@@ -5832,7 +5832,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         g_native_profile_capture_requested.load(std::memory_order_acquire);
     const uint64_t idle_begin = profile_transport ? profile::CpuTick() : 0;
 #ifdef THEFT4_LAB_BUILD
-    uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0;
+    uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0,
+             worker_protection_ticks = 0;
     bool worker_refilled_batch = false, worker_waited = false;
 #endif
     if (worker_batch_.empty()) {
@@ -5848,6 +5849,19 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       const uint64_t transfer_begin = profile_transport ? profile::CpuTick() : 0;
       // Predicate wait includes reacquiring the queue mutex after notification.
       worker_condition_ticks = worker_waited ? transfer_begin - lock_acquired : 0;
+      // Staged references deliberately stayed counted in the queue index while
+      // the previous batch ran. Reconcile its compact snapshot once, before
+      // moving the next batch. An invalid index is rebuilt from the exact queue.
+      if (!queued_texture_protection_.ReleaseAllFrom(
+              worker_batch_deferred_queue_protection_)) {
+        REXLOG_ERROR(
+            "gta4-native-protection: deferred batch reconciliation failed; "
+            "rebuilding queue index");
+        queued_texture_protection_.Reset();
+        for (const auto& queued_command : render_queue_)
+          QueueTextureProtection(queued_command, true);
+      }
+      worker_batch_deferred_queue_protection_.Reset();
 #endif
       if (render_queue_.empty()) {
         if (!render_worker_running_) {
@@ -5860,6 +5874,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       for (size_t index = 0; index < transfer_count; ++index) {
         worker_batch_.push_back(std::move(render_queue_.front()));
         render_queue_.pop_front();
+#ifndef THEFT4_LAB_BUILD
         const NativeCommand& staged = worker_batch_.back();
         VisitProtectedTextureGenerations(staged, [&](uint64_t generation) {
           const bool released = queued_texture_protection_.Release(generation);
@@ -5871,16 +5886,40 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                 generation, released, retained);
           }
         });
+#endif
       }
       queued_after_batch_transfer = render_queue_.size();
       wake_producer = producer_waiting_ && queued_title_presents_ < 2;
 #ifdef THEFT4_LAB_BUILD
+      worker_refilled_batch = true;
       if (profile_transport) {
         worker_transfer_ticks = profile::CpuTick() - transfer_begin;
-        worker_refilled_batch = true;
       }
 #endif
     }
+#ifdef THEFT4_LAB_BUILD
+    if (worker_refilled_batch) {
+      const uint64_t protection_begin = profile_transport ? profile::CpuTick() : 0;
+      // Build worker-owned protection outside render_mutex_. The queue index
+      // still contains the moved references, so there is no lifetime gap.
+      worker_batch_texture_protection_.Reset();
+      for (const auto& staged : worker_batch_) {
+        VisitProtectedTextureGenerations(staged, [&](uint64_t generation) {
+          if (!worker_batch_texture_protection_.Retain(generation)) {
+            REXLOG_ERROR(
+                "gta4-native-protection: staged batch retain failed generation={}", generation);
+          }
+        });
+      }
+      if (!worker_batch_deferred_queue_protection_.AssignFrom(
+              worker_batch_texture_protection_)) {
+        REXLOG_ERROR(
+            "gta4-native-protection: deferred batch snapshot failed; using scan fallback");
+      }
+      if (profile_transport)
+        worker_protection_ticks = profile::CpuTick() - protection_begin;
+    }
+#endif
     // The batch is worker-owned. Process its front in place and pop it after
     // per-command scopes have released their references.
     NativeCommand& command = worker_batch_.front();
@@ -5909,7 +5948,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
 #ifdef THEFT4_LAB_BUILD
       if (idle_begin) native_profile_transport_.ObserveWorker(
           dequeued - idle_begin, worker_mutex_ticks, worker_condition_ticks, worker_transfer_ticks,
-          worker_refilled_batch, worker_waited);
+          worker_protection_ticks, worker_refilled_batch, worker_waited);
 #else
       if(idle_begin)native_profile_transport_.worker_idle_ticks += dequeued-idle_begin;
 #endif
@@ -6380,6 +6419,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   }
   worker_batch_.clear();
   worker_batch_texture_protection_.Reset();
+#ifdef THEFT4_LAB_BUILD
+  worker_batch_deferred_queue_protection_.Reset();
+#endif
   DestroyVulkanWorkerObjects();
 }
 
@@ -17507,8 +17549,18 @@ void Gta4NativeGraphicsSystem::QueueTextureProtection(const NativeCommand& comma
 
 void Gta4NativeGraphicsSystem::AppendQueuedTextureProtection(std::unordered_set<uint64_t>& generations) const {
   // Caller owns render_mutex_; fallback retains the previous exact scan policy.
-  if (queued_texture_protection_.valid()) queued_texture_protection_.AppendTo(generations);
-  else for (const auto& command : render_queue_) AddProtectedTextureGenerations(command, generations);
+#ifdef THEFT4_LAB_BUILD
+  if (queued_texture_protection_.AppendToExcluding(
+          worker_batch_deferred_queue_protection_, generations))
+    return;
+#else
+  if (queued_texture_protection_.valid()) {
+    queued_texture_protection_.AppendTo(generations);
+    return;
+  }
+#endif
+  for (const auto& command : render_queue_)
+    AddProtectedTextureGenerations(command, generations);
 }
 
 void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {

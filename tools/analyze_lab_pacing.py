@@ -53,8 +53,11 @@ def analyze(directory):
         raise ValueError('Transport sequence does not match renderer capture')
     matched = [row for row in pacing if row['frame'] in frames and row['submitted'] == '1']
     sleeps = [row for row in matched if row['wait_requested'] == '1']
-    worker_keys = ('worker_queue_mutex_wait_ms', 'worker_condition_wait_ms',
-                   'worker_batch_transfer_ms', 'worker_dispatch_ms', 'worker_assembly_ms')
+    worker_keys = ['worker_queue_mutex_wait_ms', 'worker_condition_wait_ms',
+                   'worker_batch_transfer_ms']
+    if 'worker_batch_protection_ms' in renderer[0]:
+        worker_keys.append('worker_batch_protection_ms')
+    worker_keys.extend(('worker_dispatch_ms', 'worker_assembly_ms'))
     limiter_keys = ('present_hook_prepare_ms', 'present_submit_ms', 'limiter_mutex_wait_ms',
                     'decision_wait_ms', 'requested_sleep_ms', 'actual_sleep_ms', 'wake_overshoot_ms',
                     'entry_lateness_ms')

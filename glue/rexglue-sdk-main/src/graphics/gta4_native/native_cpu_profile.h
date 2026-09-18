@@ -394,17 +394,20 @@ struct TransportSummary {
   uint64_t first_capture_tick = 0, first_enqueue_tick = 0, last_enqueue_tick = 0;
   uint64_t first_dequeue_tick = 0, last_dequeue_tick = 0, first_sequence = 0, last_sequence = 0;
   uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0,
-           worker_dispatch_ticks = 0, worker_batches = 0, worker_condition_waits = 0,
+           worker_protection_ticks = 0, worker_dispatch_ticks = 0, worker_batches = 0,
+           worker_condition_waits = 0,
            worker_partition_errors = 0;
   // Legacy worker_idle_ticks includes ALL acquisition/dispatch work. The new
   // components partition it; condition ticks include mutex reacquisition.
   void ObserveWorker(uint64_t total, uint64_t mutex, uint64_t condition, uint64_t transfer,
-                     bool batch, bool waited) {
+                     uint64_t protection, bool batch, bool waited) {
     worker_idle_ticks = AddSaturated(worker_idle_ticks, total);
     worker_mutex_ticks = AddSaturated(worker_mutex_ticks, mutex);
     worker_condition_ticks = AddSaturated(worker_condition_ticks, condition);
     worker_transfer_ticks = AddSaturated(worker_transfer_ticks, transfer);
-    const auto measured = AddSaturated(AddSaturated(mutex, condition), transfer);
+    worker_protection_ticks = AddSaturated(worker_protection_ticks, protection);
+    const auto measured = AddSaturated(
+        AddSaturated(AddSaturated(mutex, condition), transfer), protection);
     if (measured > total) ++worker_partition_errors;
     worker_dispatch_ticks = AddSaturated(worker_dispatch_ticks, total > measured ? total - measured : 0);
     worker_batches += batch;

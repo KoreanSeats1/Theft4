@@ -40,6 +40,54 @@ class NativeTextureProtectionIndex {
     destination.reserve(destination.size() + counts_.size());
     for (const auto& [generation, count] : counts_) if (count) destination.insert(generation);
   }
+  // Append the logical difference without changing either index. This lets a
+  // worker keep staged references in the mutex-owned queue index until the
+  // batch completes, while exact protection queries omit those deferred refs.
+  bool AppendToExcluding(const NativeTextureProtectionIndex& excluded,
+                         std::unordered_set<uint64_t>& destination) const {
+    if (!valid_ || !excluded.valid_) return false;
+    for (const auto& [generation, count] : excluded.counts_) {
+      const auto it = counts_.find(generation);
+      if (it == counts_.end() || it->second < count) return false;
+    }
+    destination.reserve(destination.size() + counts_.size());
+    for (const auto& [generation, count] : counts_) {
+      const auto excluded_it = excluded.counts_.find(generation);
+      const uint64_t excluded_count =
+          excluded_it == excluded.counts_.end() ? 0 : excluded_it->second;
+      if (count > excluded_count) destination.insert(generation);
+    }
+    return true;
+  }
+  // Copy logical counts using this index's allocator. Used outside the queue
+  // critical section to retain an immutable batch reconciliation snapshot.
+  bool AssignFrom(const NativeTextureProtectionIndex& source) {
+    if (this == &source) return valid_;
+    Reset();
+    if (!source.valid_) { valid_ = false; return false; }
+    counts_.reserve(source.counts_.size());
+    for (const auto& [generation, count] : source.counts_)
+      counts_.emplace(generation, count);
+    return true;
+  }
+  // Subtract a complete snapshot in two passes so an invariant failure cannot
+  // partially update the destination. The caller may rebuild from its queue.
+  bool ReleaseAllFrom(const NativeTextureProtectionIndex& source) {
+    if (!valid_ || !source.valid_) { valid_ = false; return false; }
+    for (const auto& [generation, count] : source.counts_) {
+      const auto it = counts_.find(generation);
+      if (it == counts_.end() || it->second < count) {
+        valid_ = false;
+        return false;
+      }
+    }
+    for (const auto& [generation, count] : source.counts_) {
+      const auto it = counts_.find(generation);
+      it->second -= count;
+      if (!it->second) counts_.erase(it);
+    }
+    return true;
+  }
   bool Contains(uint64_t generation) const { return counts_.contains(generation); }
   size_t size() const { return counts_.size(); }
   bool valid() const { return valid_; }

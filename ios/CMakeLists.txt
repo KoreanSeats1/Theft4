@@ -2,7 +2,7 @@
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 development bundle ID")
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
-set(THEFT4_ARM64_TUNE "apple-m5" CACHE STRING
+set(THEFT4_ARM64_TUNE "" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
 option(THEFT4_ENABLE_THIN_LTO
     "Enable Release ThinLTO for Theft4-owned AOT, bridge, and app targets" OFF)
@@ -404,6 +404,8 @@ set_target_properties(Theft4 PROPERTIES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${THEFT4_BUNDLE_IDENTIFIER}"
     XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_SKIP_INSTALL NO
+    XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
     XCODE_ATTRIBUTE_ENABLE_BITCODE NO
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/theft4")

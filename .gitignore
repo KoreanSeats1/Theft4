@@ -658,7 +658,8 @@ docs/*.md
 !docs/RPF_EXTRACTION_DESIGN.md
 !docs/GTA4_COLLISION_VPKUWUS_ALIASING_FIX.md
 !docs/GTA_IV_ASSET_STREAMING_SYSTEM.md
--e 
+!docs/IOS_SIDELOAD_INSTALL.md
+!docs/RELEASE_0.1.3A.md
 # Claude and GitHub metadata - do not commit
 .claude/
 .github/
@@ -754,6 +755,7 @@ CMakeUserPresets.json
 /.github/workflows/*
 !/.github/workflows/repository-checks.yml
 !/.github/workflows/build-macos.yml
+!/.github/IOS_RELEASE_NOTES_TEMPLATE.md
 
 # Reproducible iOS core build and artifact validation.
 !/docs/IOS_CORE_BUILD.md

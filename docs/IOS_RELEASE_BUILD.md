@@ -162,6 +162,11 @@ xcrun devicectl device install app --device YOUR_DEVICE_ID \
 
 ## 4. Prepare and transfer your game files
 
+If you installed a published IPA rather than building in Xcode, use the
+step-by-step [sideload installation guide](IOS_SIDELOAD_INSTALL.md). It is the
+canonical release-user guide and includes the exact accepted base/update
+identity, final file tree, and transfer troubleshooting.
+
 Use your legally obtained supported Xbox 360 USA retail base (media ID
 `6AC07221`) and the matching TU8 patch for **0.0.0.5 → 0.0.8.5**. An ISO working
 in an emulator is not sufficient proof of this exact version match. Intermediate
@@ -181,9 +186,13 @@ Theft4 Documents/
   game/
     default.xex
     default.xexp
-    update/
+    update/  # present when staging an STFS/SVOD title-update package
     ...the rest of the validated game installation...
 ```
+
+`default.xex` and `default.xexp` are always required as siblings. If staging
+used a raw `default.xexp` rather than a packaged update, an `update/` directory
+is not required.
 
 Launch Theft4 once. It creates **Files → On My iPhone/iPad → Theft4 → game**
 and a short instruction file automatically. Open `game` and copy the **contents**

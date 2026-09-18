@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.24)
+project(Theft4SharedHotpathTests LANGUAGES C CXX)
+
+enable_testing()
+get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(SDK "${ROOT}/glue/rexglue-sdk-main")
+set(CATCH_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(CATCH_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+set(CATCH_INSTALL_EXTRAS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${SDK}/thirdparty/catch2" catch2 EXCLUDE_FROM_ALL)
+
+add_library(shared_hotpath_xxhash STATIC "${SDK}/thirdparty/xxhash/xxhash.c")
+target_include_directories(shared_hotpath_xxhash PUBLIC "${SDK}/thirdparty/xxhash")
+
+add_executable(shared_hotpath_tests test_shared_hotpaths.cpp)
+target_compile_features(shared_hotpath_tests PRIVATE cxx_std_23)
+target_include_directories(shared_hotpath_tests PRIVATE "${SDK}/src" "${SDK}/include")
+target_link_libraries(shared_hotpath_tests PRIVATE Catch2::Catch2WithMain shared_hotpath_xxhash)
+add_test(NAME shared_hotpath_tests COMMAND shared_hotpath_tests)
+
+option(THEFT4_TEST_SANITIZERS "Run shared hotpath tests under ASan and UBSan" OFF)
+if(THEFT4_TEST_SANITIZERS)
+    foreach(target shared_hotpath_tests shared_hotpath_xxhash)
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endforeach()
+    target_link_options(shared_hotpath_tests PRIVATE -fsanitize=address,undefined)
+endif()

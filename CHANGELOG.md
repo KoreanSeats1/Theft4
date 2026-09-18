@@ -17,6 +17,51 @@ Status labels used below:
 Private game files, title updates, saves, screenshots, GPU captures, signing
 material, and device logs are never part of this changelog or repository.
 
+## v0.1.3(a) — shared hot-path and A19 launch update — 2026-09-17
+
+Apple distribution identity: marketing version **0.1.3**, build **6**. The
+parenthetical `a` is the public release label because Apple bundle versions must
+remain numeric.
+
+### Promoted to the normal Theft4 app
+
+- Replaced 49 dependent fixed-function-state hash calls with one packed,
+  padding-independent fingerprint that retains all 49 fields and 66 components.
+- Processes render-worker batch commands in place, moves deferred-release
+  commands, skips disabled PS9 diagnostic preparation, and reuses verified
+  prepared texture bindings through a bounded per-batch memo.
+- Stores common command headers in 192 inline bytes with automatic heap fallback
+  for uncommon larger commands. Memory telemetry counts only fallback capacity.
+- Makes fixed-state validation hashes and detailed CPU/GPU profiling opt-in for
+  normal production runs. Profiling and validation code remains available for
+  deliberate diagnostic captures.
+- Selects launch defaults from the device hardware identifier. A19-family
+  `iPhone18,*` devices disable speculative pipeline prewarm while retaining the
+  authoritative frame-recording pipeline path. Other devices keep prewarm on.
+- Removes the main app's M5-only compiler scheduling default. Public builds use
+  the normal ARM64 compiler target; device labs may still pass an explicit
+  scheduling target without changing the instruction-set requirement.
+
+### Explicitly not promoted from Theft4 Lab
+
+- No experimental pipeline deferral, drawing-order change, shader experiment,
+  GPU-lifetime diagnostic, or other unresolved Lab renderer work is included.
+- The A19-only `apple-a19` compiler scheduling preset is not enabled in the
+  public app. The earlier multi-change A19 pass that fell to roughly 10–16 FPS
+  is not presented as a successful performance result.
+
+### Validation and limits
+
+- The focused shared-hotpath suite passes under AddressSanitizer and
+  UndefinedBehaviorSanitizer. It covers inline/fallback command storage,
+  fixed-state fingerprint stability and prepared-binding memo verification.
+- The earlier isolated A19 suite passed 55 cases and 2,263,316 assertions; its
+  second device candidate was installed but not gameplay-accepted. This release
+  therefore makes no sustained-FPS claim and should be evaluated on both A19
+  iPhone and M5 iPad hardware.
+- See [release notes](docs/RELEASE_0.1.3A.md) for user-visible changes, install
+  instructions and the artifact identity.
+
 ## v0.1.3 — M5 stable iOS release — 2026-09-17
 
 Comparison base: [`440d505c`](https://github.com/KoreanSeats1/Theft4/commit/440d505c964bbe4cb51a0217e162bf1eaa4de23e),

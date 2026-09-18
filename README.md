@@ -23,10 +23,11 @@ processor or an experimental GTA-IV-specific renderer; both currently present
 through Vulkan and MoltenVK to Metal.
 
 > [!WARNING]
-> Theft4 is an experimental source release, not a packaged or broadly validated release. It currently
-> targets developers comfortable with Xcode, CMake, dependency patching, and
-> device logs. Full 3D and decoded audio have run on the test M5 iPad, but expect
-> incomplete services, compatibility issues, and uneven heavy-scene performance.
+> Theft4 is an experimental release and is not broadly validated. Version
+> 0.1.3(a) is available as an unsigned sideload IPA and as TestFlight build 6,
+> but expect incomplete services, compatibility issues, and uneven heavy-scene
+> performance. Full 3D and decoded audio have run on the test M5 iPad and A19
+> iPhone hardware.
 
 ## Current status
 
@@ -42,12 +43,13 @@ The following has been demonstrated on a physical ARM64 iPad:
 - real XMA decoding, improved audio delivery, and centered 16:9 presentation;
 - the full opening 3D sequence and first player-control state in a Release build.
 
-The latest opt-in GTA-IV-specific renderer build has also initialized on the M5
-iPad, loaded its 1,356-shader SPIR-V cache, entered title-specific 3D rendering,
-and measured approximately 30 presented game frames per second across a bounded
-3D-transition window with zero logged audio underruns. That exact build still
-needs a visually witnessed run through player control before this is treated as
-a sustained, correct 30 FPS result.
+The GTA-IV-specific renderer has initialized on both the M5 iPad and an A19
+iPhone, loaded its 1,356-shader SPIR-V cache, and entered title-specific 3D
+rendering. Version 0.1.3(a) promotes device-independent command-transport and
+CPU hot-path improvements while selecting only conservative defaults at launch.
+It does not claim sustained 30 FPS: the first combined A19 experiment regressed
+under render-worker backlog, and the revised phone profile still needs a matched
+gameplay acceptance run.
 
 The game has visibly booted on the test iPad, but this does **not** mean the port
 is complete or generally playable. Broader physical-controller acceptance,
@@ -87,16 +89,19 @@ Touch gameplay and save/reload are still undergoing device verification.
 GPU freezes during extended play and app switching are known issues; the
 input/display switches do not change renderer stability settings.
 
-Theft4 now defaults to **one native frame in flight**, including normal app-icon
-launches and tests. This is the current stability setting, not proof that all
-GPU freezes are fixed. The default output remains 720p. Developers
-can explicitly set `THEFT4_NATIVE_FRAMES_IN_FLIGHT=2` for a two-slot diagnostic
-comparison; otherwise leave the variable unset (or set it to `1`).
+Theft4 defaults to **two native frame-resource slots** so the CPU can record the
+next frame while the GPU finishes the current frame. This preserves the existing
+paced-30 configuration but is not proof that all GPU freezes are fixed.
+Developers can explicitly set `THEFT4_NATIVE_FRAMES_IN_FLIGHT=1` for the
+stability-control path. The normal enhanced-output default renders at 720p and
+uses FSR1 quality presentation to 1080p.
 
 The project keeps a detailed public record of implementation work, experiments,
 measured outcomes, rejected approaches, and remaining verification:
 
 - [Engineering changelog](CHANGELOG.md) — the running, file-mapped technical record;
+- [0.1.3(a) release notes](docs/RELEASE_0.1.3A.md) — promoted optimizations,
+  device defaults, validation and known limits;
 - [3D performance execution plan](THEFT4_3D_PERFORMANCE_PLAN.md) — ordered work and
   the latest renderer checkpoint;
 - [CPU-first native-renderer audit](docs/THEFT4_CPU_PERFORMANCE_AUDIT.md) — the
@@ -154,6 +159,22 @@ The currently validated input is the supported USA retail Xbox 360 base and its
 matching title update. Input validation is intentionally strict; files accepted
 by an emulator are not automatically compatible with this title-specific AOT
 build.
+
+## Installing a release IPA
+
+The unsigned IPA attached to a GitHub release must be re-signed with AltStore,
+SideStore, or another compatible sideloading tool. It does not contain game
+files. After installation, launch Theft4 once, then place the **contents** of a
+validated prepared game folder in **Files → Browse → On My iPhone/iPad → Theft4
+→ game**. The final layout must put `default.xex` and the matching TU8
+`default.xexp` directly beside each other; do not create `game/game` and do not
+copy a raw ISO or unopened title-update package to the device.
+
+See [Install a sideloaded Theft4 IPA](docs/IOS_SIDELOAD_INSTALL.md) for the exact
+supported base/TU8 versions and hashes, staging step, complete file tree, Finder
+and Files transfer paths, verification step, update-in-place warning, and common
+failure fixes. These instructions apply to release 0.1.3 and later unless a
+newer release explicitly says otherwise.
 
 ## Building
 

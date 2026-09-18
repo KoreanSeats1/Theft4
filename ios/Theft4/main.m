@@ -3,6 +3,8 @@
 #import <os/log.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/utsname.h>
 #include "theft4_core.h"
 #include "theft4_metal_presenter.h"
 #import "Theft4TouchControls.h"
@@ -64,6 +66,21 @@ static void coreEvent(void *context, const char *event) {
     [controller record:[NSString stringWithUTF8String:event]];
 }
 
+static void configureDeviceProfile(void) {
+    if (getenv("THEFT4_DEVICE_PROFILE")) return;
+
+    struct utsname systemInfo = {};
+    const char *machine = uname(&systemInfo) == 0 ? systemInfo.machine : "unknown";
+    // Apple's A19 iPhone family uses the iPhone18,* hardware identifiers. This
+    // selects launch defaults only; it does not enable a new instruction set.
+    const BOOL isA19 = strncmp(machine, "iPhone18,", 9) == 0;
+    const char *profile = isA19 ? "a19" :
+        (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "ipad" : "generic");
+    setenv("THEFT4_DEVICE_PROFILE", profile, 0);
+    setenv("THEFT4_DEVICE_MODEL", machine, 0);
+    os_log(OS_LOG_DEFAULT, "Theft4 launch profile %{public}s for %{public}s", profile, machine);
+}
+
 #ifdef THEFT4_HAS_GAME_LOADER
 static void bootEvent(void *context, const char *event) {
     fprintf(stderr, "Theft4 loader: %s\n", event);
@@ -77,6 +94,7 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    configureDeviceProfile();
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowTouchControls": @NO,

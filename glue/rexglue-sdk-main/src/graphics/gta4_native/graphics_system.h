@@ -42,6 +42,7 @@
 #include "native_texture_protection.h"
 #include "native_prepared_bindings.h"
 #include "native_image_reuse.h"
+#include "native_inline_bytes.h"
 #include "native_texture_eviction_index.h"
 #include <memory_resource>
 #include "stateful_constant_state.h"
@@ -57,6 +58,7 @@
 #include "native_draw_state_cache.h"
 #include "native_frame_context.h"
 #include "native_frame_scheduling.h"
+#include "native_fixed_state.h"
 #include "native_gpu_attribution.h"
 #include <rex/graphics/gta4_native/gpu_pass_origin.h>
 #include "native_host_enhancement_policy.h"
@@ -177,64 +179,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::vector<VertexElement> elements;
   };
 
-  struct NativeFixedFunctionState {
-    uint32_t depth_enable = 0;
-    uint32_t depth_function = 0;
-    uint32_t depth_write_enable = 0;
-    uint32_t depth_clamp_enable = 0;
-    uint32_t clip_control = 0;
-    uint32_t user_clip_plane_enable_mask = 0;
-    std::array<uint32_t, 4> clip_plane_bits{};
-    uint32_t negative_one_to_one_clip_space = 0;
-    uint32_t cull_mode = 0;
-    uint32_t polygon_mode = 0;
-    uint32_t blend_enable = 0;
-    std::array<uint32_t, kRenderTargetCount> blend_controls{};
-    uint32_t source_blend = 0;
-    uint32_t destination_blend = 0;
-    uint32_t blend_operation = 0;
-    uint32_t source_blend_alpha = 0;
-    uint32_t destination_blend_alpha = 0;
-    uint32_t blend_operation_alpha = 0;
-    std::array<float, 4> blend_constants{};
-    uint32_t alpha_test_enable = 0;
-    uint32_t alpha_function = 0;
-    float alpha_reference = 0.0f;
-    // Xenos RB_COLORCONTROL bit 4. This is deliberately captured separately
-    // from alpha test: foliage may request alpha-to-mask while alpha test is
-    // disabled.
-    uint32_t alpha_to_mask_enable = 0;
-    // Native shader layout: four RB_COLORCONTROL offsets in bits 0-7 and the
-    // enable in bit 8. This remains dynamic and is not a pipeline-key field.
-    uint32_t alpha_to_mask = 0;
-    uint32_t stencil_enable = 0;
-    uint32_t two_sided_stencil = 0;
-    uint32_t stencil_fail = 0;
-    uint32_t stencil_depth_fail = 0;
-    uint32_t stencil_pass = 0;
-    uint32_t stencil_function = 0;
-    uint32_t stencil_reference = 0;
-    uint32_t stencil_mask = 0;
-    uint32_t stencil_write_mask = 0;
-    uint32_t back_stencil_reference = 0;
-    uint32_t back_stencil_mask = 0;
-    uint32_t back_stencil_write_mask = 0;
-    uint32_t ccw_stencil_fail = 0;
-    uint32_t ccw_stencil_depth_fail = 0;
-    uint32_t ccw_stencil_pass = 0;
-    uint32_t ccw_stencil_function = 0;
-    uint32_t scissor_enable = 0;
-    uint32_t slope_scaled_depth_bias_bits = 0;
-    uint32_t depth_bias_bits = 0;
-    bool depth_bias_enable = false;
-    bool depth_bias_representable = true;
-    uint32_t color_write_mask = 0;
-    uint32_t sample_mask = 0xFFFFu;
-    std::array<uint32_t, 6> viewport_bits{};
-    std::array<int32_t, 4> scissor{};
-
-    bool operator==(const NativeFixedFunctionState&) const = default;
-  };
+  using NativeFixedFunctionState = NativeFixedFunctionStateStorage<kRenderTargetCount>;
 
   struct NativePipelineState {
     struct VertexStream {
@@ -399,7 +344,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t light_trace_id = 0;
     uint32_t light_trace_technique = 0xFFFFFFFFu;
     uint32_t light_trace_mode = 0;
-    std::vector<uint8_t> bytes;
+    // The common draw/clear/resolve/present commands remain inline. Larger,
+    // uncommon registration commands automatically use the heap fallback.
+    NativeInlineBytes<192> bytes;
     std::vector<uint8_t> payload;
     NativeDeviceSnapshot device_snapshot;
     NativeShaderConstantDelta shader_constant_delta;

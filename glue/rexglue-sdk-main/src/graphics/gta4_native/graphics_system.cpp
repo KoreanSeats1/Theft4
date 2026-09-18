@@ -267,9 +267,9 @@ REXCVAR_DEFINE_BOOL(gta4_native_descriptor_paging, true, "GTA IV/Graphics/Native
                     "Use fence-owned indexed descriptor working sets rather than lifetime-sized tables");
 REXCVAR_DEFINE_BOOL(gta4_validate_native_hot_caches, false, "GTA IV/Diagnostics",
                     "Cross-check incremental resource protection and constant uploads against original inputs");
-REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_gpu, true, "GTA IV/Diagnostics",
+REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_gpu, false, "GTA IV/Diagnostics",
                     "Enable approximate per-pass timestamps; coarse GPU envelope is cheaper on Metal");
-REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, true, "GTA IV/Diagnostics",
+REXCVAR_DEFINE_BOOL(gta4_profile_native_detailed_cpu, false, "GTA IV/Diagnostics",
                     "Collect bounded operation-level CPU self/inclusive timings during native capture");
 REXCVAR_DEFINE_UINT32(gta4_profile_native_gpu_query_budget, 512, "GTA IV/Diagnostics",
                       "Maximum timestamp boundaries per sampled frame (more boundaries add GPU overhead)")
@@ -281,7 +281,7 @@ REXCVAR_DEFINE_UINT32(gta4_profile_native_samples, 600, "GTA IV/Diagnostics",
                       "Export the native-renderer numeric profile after this many samples")
     .range(1, rex::graphics::gta4_native::performance::kFrameSampleCapacity);
 REXCVAR_DEFINE_BOOL(
-    gta4_profile_native_autostart, true, "GTA IV/Diagnostics",
+    gta4_profile_native_autostart, false, "GTA IV/Diagnostics",
     "Start native profiling with the first rendered frame; disable to arm it later from LLDB");
 REXCVAR_DEFINE_UINT32(gta4_profile_native_memory_interval_ms, 1000, "GTA IV/Diagnostics",
                       "Wall-clock interval between native-renderer memory samples in milliseconds")
@@ -3750,60 +3750,7 @@ void Gta4NativeGraphicsSystem::InitializeShaderStorage(const std::filesystem::pa
 
 uint64_t Gta4NativeGraphicsSystem::HashFixedFunctionState(
     const NativeFixedFunctionState& state) {
-  uint64_t hash = 0;
-  const auto add = [&hash]<typename T>(const T& value) {
-    hash = XXH3_64bits_withSeed(&value, sizeof(value), hash);
-  };
-  add(state.depth_enable);
-  add(state.depth_function);
-  add(state.depth_write_enable);
-  add(state.depth_clamp_enable);
-  add(state.clip_control);
-  add(state.user_clip_plane_enable_mask);
-  add(state.clip_plane_bits);
-  add(state.negative_one_to_one_clip_space);
-  add(state.cull_mode);
-  add(state.polygon_mode);
-  add(state.blend_enable);
-  add(state.blend_controls);
-  add(state.source_blend);
-  add(state.destination_blend);
-  add(state.blend_operation);
-  add(state.source_blend_alpha);
-  add(state.destination_blend_alpha);
-  add(state.blend_operation_alpha);
-  add(state.blend_constants);
-  add(state.alpha_test_enable);
-  add(state.alpha_function);
-  add(state.alpha_reference);
-  add(state.alpha_to_mask_enable);
-  add(state.alpha_to_mask);
-  add(state.stencil_enable);
-  add(state.two_sided_stencil);
-  add(state.stencil_fail);
-  add(state.stencil_depth_fail);
-  add(state.stencil_pass);
-  add(state.stencil_function);
-  add(state.stencil_reference);
-  add(state.stencil_mask);
-  add(state.stencil_write_mask);
-  add(state.back_stencil_reference);
-  add(state.back_stencil_mask);
-  add(state.back_stencil_write_mask);
-  add(state.ccw_stencil_fail);
-  add(state.ccw_stencil_depth_fail);
-  add(state.ccw_stencil_pass);
-  add(state.ccw_stencil_function);
-  add(state.scissor_enable);
-  add(state.slope_scaled_depth_bias_bits);
-  add(state.depth_bias_bits);
-  add(state.depth_bias_enable);
-  add(state.depth_bias_representable);
-  add(state.color_write_mask);
-  add(state.sample_mask);
-  add(state.viewport_bits);
-  add(state.scissor);
-  return hash;
+  return HashNativeFixedFunctionState(state);
 }
 
 Gta4NativeGraphicsSystem::NativeFixedFunctionState
@@ -4512,8 +4459,11 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
             DirtyStateComponentBit(DirtyStateComponent::kIntegerConstants);
       }
       native_command.fixed_function_state = DecodeFixedFunctionState(device_state);
-      native_command.captured_fixed_function_state_hash =
-          HashFixedFunctionState(native_command.fixed_function_state);
+      if (REXCVAR_GET(gta4_validate_native_hot_caches) ||
+          REXCVAR_GET(gta4_trace_artificial_lights)) {
+        native_command.captured_fixed_function_state_hash =
+            HashFixedFunctionState(native_command.fixed_function_state);
+      }
     }
     for (uint32_t index = 0; index < kRenderTargetCount; ++index) {
       native_command.snapshot_render_targets[index] = CaptureSurfaceDescriptor(
@@ -5723,7 +5673,6 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     }
   };
   while (true) {
-    NativeCommand command;
     size_t queued_after_pop = 0;
     bool wake_producer = false;
     const bool profile_transport = g_native_profile_transport_active.load(std::memory_order_acquire) ||
@@ -5759,15 +5708,17 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       queued_after_batch_transfer = render_queue_.size();
       wake_producer = producer_waiting_ && queued_title_presents_ < 2;
     }
-    command = std::move(worker_batch_.front());
-    worker_batch_.pop_front();
+    // The batch is worker-owned. Process its front in place and pop it only
+    // after all per-command guards and resource-ownership scopes finish.
+    NativeCommand& command = worker_batch_.front();
+    const auto pop_processed_command = MakeScopeExit([&] { worker_batch_.pop_front(); });
     VisitProtectedTextureGenerations(command, [&](uint64_t generation) {
       if (!worker_batch_texture_protection_.Release(generation)) {
         REXLOG_ERROR(
             "gta4-native-protection: batch release invariant failed generation={}", generation);
       }
     });
-    queued_after_pop = queued_after_batch_transfer + worker_batch_.size();
+    queued_after_pop = queued_after_batch_transfer + worker_batch_.size() - 1;
     active_worker_command_ = &command;
     const auto clear_active_command = MakeScopeExit([&] { active_worker_command_ = nullptr; });
     if (wake_producer) render_condition_.notify_all();
@@ -5956,16 +5907,17 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         // Draws already queued ahead of Release still own the surface. If the
         // frame has not been submitted, defer retirement until the next real
         // submission instead of forcing an extra present at the release site.
+        const uint64_t released_texture_generation = command.released_texture_generation;
         if (current_frame_.empty()) {
           QueueSurfaceImageRelease(release.resource);
         } else {
           // Preserve command order: earlier draws may create their image only
           // when this batch is recorded. Snapshot image identities there.
           AddProtectedTextureGenerations(command, frame_texture_protection_);
-          current_frame_.push_back(command);
+          current_frame_.push_back(std::move(command));
         }
-        if (command.released_texture_generation) {
-          pending_texture_release_generations_.insert(command.released_texture_generation);
+        if (released_texture_generation) {
+          pending_texture_release_generations_.insert(released_texture_generation);
         }
         if (current_frame_.empty() && !command_buffer_submission_) {
           ReleasePendingSurfaceImages();
@@ -6180,8 +6132,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
             command.type == CommandType::kDrawPrimitiveUp ||
             command.type == CommandType::kDrawIndexedPrimitive ||
             command.type == CommandType::kClear) {
-          command.recorded_fixed_function_state_hash =
-              HashFixedFunctionState(command.fixed_function_state);
+          if (command.captured_fixed_function_state_hash ||
+              REXCVAR_GET(gta4_validate_native_hot_caches)) {
+            command.recorded_fixed_function_state_hash =
+                HashFixedFunctionState(command.fixed_function_state);
+          }
           const uint32_t device = CommandDevice(command.type, command.bytes.data());
           if (!ApplyShaderConstantDelta(command, device)) {
             REXLOG_ERROR("gta4-native-constants: rejected worker command type={} device={:08X}",
@@ -10284,13 +10239,14 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
   snapshot.maximum_vertex_variants_per_buffer = maximum_vertex_variants;
 
   const auto command_bytes = [](const NativeCommand& command) {
-    return uint64_t(sizeof(NativeCommand)) + command.bytes.capacity() + command.payload.capacity();
+    return uint64_t(sizeof(NativeCommand)) + command.bytes.heap_capacity() +
+           command.payload.capacity();
   };
   uint64_t command_transport_bytes = current_frame_.capacity() * sizeof(NativeCommand);
   uint64_t command_transport_logical = current_frame_.size() * sizeof(NativeCommand);
   uint64_t command_count = current_frame_.size();
   for (const NativeCommand& command : current_frame_) {
-    command_transport_bytes += command.bytes.capacity() + command.payload.capacity();
+    command_transport_bytes += command.bytes.heap_capacity() + command.payload.capacity();
     command_transport_logical += command.bytes.size() + command.payload.size();
   }
   {
@@ -16641,7 +16597,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     NativeSamplerKey effective{};
   };
   std::array<SamplerMemo, kShaderTextureCount> sampler_memo{};
-  const NativeCommand* previous_prepared_draw = nullptr;
+  NativePreparedBindingMemo<NativeCommand> prepared_bindings;
   const bool reuse_prepared_bindings = !trace_reflections && !FireTraceConfig().enabled &&
       !EmissionTraceConfig().pipeline_full_readback && !PhoneTraceConfig().enabled &&
       REXCVAR_GET(gta4_native_light_color_delta_probe) != "room" &&
@@ -16752,12 +16708,13 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     if (!is_draw) {
       continue;
     }
-    if (reuse_prepared_bindings && !TvCommandRole(command) && previous_prepared_draw &&
-        native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_ &&
-        NativePreparedTextureInputsEqual(*previous_prepared_draw, command)) {
-      CopyNativePreparedTextureBindings(*previous_prepared_draw, command);
-      AddNativeGpuProfileCounter(performance::Counter::kTextureBindingReuses);
-      continue;
+    if (reuse_prepared_bindings && !TvCommandRole(command) &&
+        native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_) {
+      if (const NativeCommand* prepared = prepared_bindings.Find(command)) {
+        CopyNativePreparedTextureBindings(*prepared, command);
+        AddNativeGpuProfileCounter(performance::Counter::kTextureBindingReuses);
+        continue;
+      }
     }
     const NativeShader* alpha_card_pixel_shader =
         command.pipeline_state ? command.pipeline_state->pixel_shader_resource : nullptr;
@@ -17162,7 +17119,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     }
     if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_) {
       if (!AssignIndexedWorkingSet(command, descriptor_key)) return false;
-      previous_prepared_draw = &command;
+      prepared_bindings.Remember(command);
     } else {
       cached_draws.emplace_back(&command, std::move(descriptor_key));
     }
@@ -27073,7 +27030,8 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       QueueSurfaceImageRelease(release.resource);
       continue;
     }
-    if ((queued_command.type == CommandType::kDrawPrimitive ||
+    if (REXCVAR_GET(gta4_validate_native_hot_caches) &&
+        (queued_command.type == CommandType::kDrawPrimitive ||
          queued_command.type == CommandType::kDrawPrimitiveUp ||
          queued_command.type == CommandType::kDrawIndexedPrimitive ||
          queued_command.type == CommandType::kClear) &&
@@ -27100,8 +27058,10 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         queued_command.pipeline_state->vertex_shader_resource &&
         queued_command.pipeline_state->pixel_shader_resource &&
         queued_command.pipeline_state->pixel_shader_resource->hash == kDeferredLightingPs9Hash;
+    const bool legacy_ps9_bypass = REXCVAR_GET(gta4_native_light_ps9_stencil_bypass);
     uint64_t ps9_probe_instance = 0;
-    if (ps9_accumulation_draw && queued_command.shader_state &&
+    if ((legacy_ps9_bypass || ps9_stencil_probe != "original") &&
+        ps9_accumulation_draw && queued_command.shader_state &&
         queued_command.shader_state->vertex_constants) {
       const std::shared_ptr<const std::vector<uint8_t>> vertex_constants =
           profile::CpuCall(profile::CpuOp::kConstantMaterialize, [&] { return AuthoritativeConstantState::Materialize(queued_command.shader_state->vertex_constants); });
@@ -27111,7 +27071,6 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         ps9_probe_instance = StableDeferredLocalLightInstanceId(*vertex_constants, *constant_base);
       }
     }
-    const bool legacy_ps9_bypass = REXCVAR_GET(gta4_native_light_ps9_stencil_bypass);
     const bool targeted_ps9_probe =
         ps9_probe_instance == kApartmentBulbX890Instance && ps9_stencil_probe != "original";
     if (ps9_accumulation_draw && (legacy_ps9_bypass || targeted_ps9_probe)) {

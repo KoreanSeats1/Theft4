@@ -41,6 +41,10 @@ REXCVAR_DECLARE(std::string, gta4_fsr1_quality);
 REXCVAR_DECLARE(std::string, present_effect);
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
+REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
 #endif
 
 extern const rex::PPCImageInfo PPCImageConfig;
@@ -132,6 +136,23 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+        // Keep expensive diagnostics opt-in for every production device. A19
+        // devices also avoid speculative pipeline prewarm because the pass-1
+        // phone trace showed a deep render-worker backlog. The authoritative
+        // pipeline creation path remains active during frame recording.
+        const char* device_profile_value = std::getenv("THEFT4_DEVICE_PROFILE");
+        const std::string_view device_profile =
+            device_profile_value ? device_profile_value : "generic";
+        const bool a19_profile = device_profile == "a19";
+        REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
+        REXCVAR_SET(gta4_profile_native_autostart, false);
+        REXLOG_INFO(
+            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
+            "profile-autostart=false",
+            device_profile, !a19_profile);
+
         // Match the desktop FSR setup, with a deliberately fixed 720p scene.
         // Native hooks derive input = output / 1.5 for FSR's Quality mode:
         // 1920x1080 / 1.5 = 1280x720. The CAMetalLayer is already sized on

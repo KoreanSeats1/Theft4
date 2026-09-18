@@ -29,15 +29,30 @@ through Vulkan and MoltenVK to Metal.
 > performance. Full 3D and decoded audio have run on the test M5 iPad and A19
 > iPhone hardware.
 
-## AI-assisted engineering
+## AI-assisted engineering and bespoke technology
 
-Theft4 is also a stress test of what is possible with agent-assisted software
-engineering. OpenAI Codex agents—including GPT-5.6 Sol and GPT-6 Astra—were
-heavily used throughout the project for coding, bespoke solutions, novel
-rendering and build technology, investigation, documentation, and test
-iteration. The resulting work remains subject to human direction, review, and
-device validation; agent assistance does not turn experimental results into
-shipping guarantees.
+Theft4 is deliberately a stress test of what is possible with agent-assisted
+software engineering. OpenAI Codex agents—including GPT-5.6 Sol and GPT-6
+Astra—were heavily used for investigation, design, coding, debugging,
+documentation, build tooling, and device-test iteration.
+
+That work produced project-specific technology, not just routine integration:
+
+- a GTA-IV-aware native renderer that operates alongside the generic Xenos
+  command processor and uses title-specific graphics hooks plus a native SPIR-V
+  shader cache;
+- an iOS rendering/presentation path that owns the UIKit `CAMetalLayer` and
+  swapchain lifecycle, then presents through Vulkan and MoltenVK to Metal;
+- signed ARM64 AOT application integration for the recompiled game runtime,
+  native audio/input, launcher controls, device-safe defaults, and reproducible
+  iOS build and verification tooling; and
+- focused renderer investigations and performance experiments, with accepted
+  defaults kept separate from device-specific or unfinished Lab work.
+
+This is an active experiment in both game-runtime engineering and human-directed
+AI collaboration. Every change remains subject to human review and real-device
+validation; agent assistance does not turn experimental results into shipping
+guarantees.
 
 ## Current status
 

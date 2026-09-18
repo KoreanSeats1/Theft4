@@ -40,6 +40,9 @@
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
 #include "native_texture_protection.h"
+#ifdef THEFT4_LAB_BUILD
+#include "native_worker_batch.h"
+#endif
 #include "native_prepared_bindings.h"
 #include "native_image_reuse.h"
 #include "native_inline_bytes.h"
@@ -1596,7 +1599,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // Render-worker-owned staging. Moving a bounded batch out of render_queue_
   // amortizes the queue mutex without changing command order. Texture
   // generations stay protected until each staged command becomes active.
+  static constexpr size_t kRenderWorkerBatchCommands = 64;
+#ifdef THEFT4_LAB_BUILD
+  NativeWorkerBatch<NativeCommand, kRenderWorkerBatchCommands> worker_batch_;
+#else
   std::deque<NativeCommand> worker_batch_;
+#endif
   NativeTextureProtectionIndex worker_batch_texture_protection_;
   uint32_t queued_title_presents_ = 0;
   bool producer_waiting_ = false;

@@ -1370,7 +1370,6 @@ constexpr size_t kMaximumQueuedCommands = 65536;
 // their stable frame storage off the allocation hot path and amortize the
 // producer/consumer mutex while retaining strict FIFO command order.
 constexpr size_t kInitialFrameCommandCapacity = 8192;
-constexpr size_t kRenderWorkerBatchCommands = 64;
 constexpr size_t kIndexedFrameDetailedCommandLimit = 256;
 constexpr size_t kIndexedFrameProgressInterval = 128;
 constexpr uint32_t kSpirvMagic = 0x07230203;

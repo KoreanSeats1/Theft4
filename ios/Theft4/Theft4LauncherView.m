@@ -6,6 +6,20 @@ static UIColor *Ink(unsigned rgb) {
     return [UIColor colorWithRed:((rgb>>16)&255)/255.0 green:((rgb>>8)&255)/255.0
                            blue:(rgb&255)/255.0 alpha:1];
 }
+static NSString *LauncherVersion(void) {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *version = info[@"CFBundleShortVersionString"];
+    NSString *build = info[@"CFBundleVersion"];
+    if (!version.length) version = @"DEV";
+#ifdef THEFT4_LAB_BUILD
+    NSString *channel = @"LAB ";
+#else
+    NSString *channel = @"";
+#endif
+    return build.length
+        ? [NSString stringWithFormat:@"%@v%@ (%@)",channel,version,build]
+        : [NSString stringWithFormat:@"%@v%@",channel,version];
+}
 static UILabel *Copy(NSString *text, CGFloat size, BOOL mono) {
     UILabel *label = [UILabel new]; label.text = text; label.numberOfLines = 0;
     UIFont *font = mono ? [UIFont monospacedSystemFontOfSize:size weight:UIFontWeightMedium]
@@ -73,7 +87,8 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     _rain = [CAEmitterLayer layer]; _rain.emitterShape = kCAEmitterLayerLine;
     _rain.emitterCells = @[rain]; [_atmosphere.layer addSublayer:_rain];
 
-    _masthead = Copy(@"T H E F T 4   /   LIBERTY CITY ARCHIVE",11,YES);
+    _masthead = Copy([NSString stringWithFormat:@"T H E F T 4   /   %@",LauncherVersion()],11,YES);
+    _masthead.accessibilityIdentifier = @"launcher.version";
     _masthead.textColor = Ink(0xE5DECA); [self addSubview:_masthead];
     _edition = Copy(@"AFTER HOURS   /   LC—04",11,YES);
     _edition.textAlignment = NSTextAlignmentRight; [self addSubview:_edition];

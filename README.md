@@ -29,6 +29,16 @@ through Vulkan and MoltenVK to Metal.
 > performance. Full 3D and decoded audio have run on the test M5 iPad and A19
 > iPhone hardware.
 
+## AI-assisted engineering
+
+Theft4 is also a stress test of what is possible with agent-assisted software
+engineering. OpenAI Codex agents—including GPT-5.6 Sol and GPT-6 Astra—were
+heavily used throughout the project for coding, bespoke solutions, novel
+rendering and build technology, investigation, documentation, and test
+iteration. The resulting work remains subject to human direction, review, and
+device validation; agent assistance does not turn experimental results into
+shipping guarantees.
+
 ## Current status
 
 The following has been demonstrated on a physical ARM64 iPad:

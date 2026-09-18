@@ -1525,6 +1525,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool GetOrCreateFrameConstantBuffer(NativeConstantBufferKind kind, uint64_t immutable_identity,
                                       std::span<const uint8_t> source_bytes, bool guest_word_order,
                                       NativeUploadAllocation& allocation);
+  bool GetOrCreateFrameConstantBufferDelta(
+      NativeConstantBufferKind kind, uint64_t immutable_identity,
+      const NativeUploadAllocation& parent, const ConstantPayloadDelta& delta,
+      size_t byte_size, NativeUploadAllocation& allocation);
   bool ResetFrameConstantArena(uint32_t slot, uint64_t completed_submission, bool unsubmitted);
   void DestroyNativeFrameConstantArenas();
   void ReleaseUnusedPersistentBuffers(uint64_t completed_submission);

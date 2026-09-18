@@ -8067,6 +8067,59 @@ bool Gta4NativeGraphicsSystem::GetOrCreateFrameConstantBuffer(NativeConstantBuff
   return true;
 }
 
+bool Gta4NativeGraphicsSystem::GetOrCreateFrameConstantBufferDelta(
+    NativeConstantBufferKind kind, uint64_t immutable_identity,
+    const NativeUploadAllocation& parent, const ConstantPayloadDelta& delta,
+    size_t byte_size, NativeUploadAllocation& allocation) {
+  const profile::CpuScope profile_scope(profile::CpuOp::kConstantBind);
+
+  if (active_frame_slot_ >= frame_constant_arenas_.size() || !immutable_identity ||
+      !byte_size || kind == NativeConstantBufferKind::kShared || !parent.mapping ||
+      !ValidateConstantPayloadDelta(delta, byte_size) || delta.complete_snapshot) {
+    return false;
+  }
+  NativeFrameConstantArena& arena = frame_constant_arenas_[active_frame_slot_];
+  if (!arena.storage.buffer || !arena.storage.mapping || !arena.storage.device_address ||
+      parent.buffer != arena.storage.buffer || parent.offset > arena.storage.capacity ||
+      byte_size > arena.storage.capacity - parent.offset) {
+    return false;
+  }
+  const auto reservation = arena.index.FindOrReserve(
+      {kind, immutable_identity}, byte_size, size_t(kNativeConstantArenaAlignment));
+  if (!reservation || reservation->offset > arena.storage.capacity ||
+      reservation->byte_size > arena.storage.capacity - reservation->offset ||
+      reservation->offset >
+          std::numeric_limits<VkDeviceAddress>::max() - arena.storage.device_address) {
+    return false;
+  }
+
+  allocation.buffer = arena.storage.buffer;
+  allocation.offset = VkDeviceSize(reservation->offset);
+  allocation.device_address = arena.storage.device_address + reservation->offset;
+  allocation.mapping = arena.storage.mapping + reservation->offset;
+  allocation.host_data = allocation.mapping;
+  if (reservation->reused) {
+    return true;
+  }
+
+  std::memmove(allocation.mapping, parent.mapping, byte_size);
+  for (const ConstantDeltaRange& range : delta.ranges) {
+    CopyGuestWordsToHost(allocation.mapping + range.destination_offset,
+                         delta.payload.data() + range.payload_offset,
+                         range.byte_count);
+  }
+  arena.storage.write_offset = std::max(
+      arena.storage.write_offset,
+      VkDeviceSize(reservation->offset + reservation->byte_size));
+
+  const performance::Counter counter =
+      kind == NativeConstantBufferKind::kVertex
+          ? performance::Counter::kVertexConstantUploadBytes
+          : performance::Counter::kPixelConstantUploadBytes;
+  AddNativeGpuProfileCounter(counter, reservation->byte_size);
+  return true;
+}
+
 bool Gta4NativeGraphicsSystem::ResetFrameConstantArena(uint32_t slot, uint64_t completed_submission,
                                                        bool unsubmitted) {
   if (slot >= frame_constant_arenas_.size()) {
@@ -19989,20 +20042,26 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
     const size_t required_size = kind == NativeConstantBufferKind::kVertex ? kVertexConstantsSize : kPixelConstantsSize;
     if (!version || version->byte_size != required_size) return false;
     auto& bindings = frame_constant_arenas_[active_frame_slot_].immutable_bindings;
-    const auto result = bindings.Bind(kind, version, allocation, bytes,
+    const auto result = bindings.BindWithDelta(kind, version, allocation, bytes,
         [](const auto& v) {
           return profile::CpuCall(profile::CpuOp::kConstantMaterialize,
               [&] { return AuthoritativeConstantState::MaterializeView(v); });
         },
         [&](auto constant_kind, uint64_t identity, const auto& data, auto& out) {
           return GetOrCreateFrameConstantBuffer(constant_kind, identity, data, true, out);
+        },
+        [&](auto constant_kind, uint64_t identity, const auto& parent,
+            const auto& delta, size_t byte_size, auto& out) {
+          return GetOrCreateFrameConstantBufferDelta(
+              constant_kind, identity, parent, delta, byte_size, out);
         });
     using Binding = NativeImmutableBindings<NativeUploadAllocation>;
     if (result == Binding::Result::kVersionHit)
       AddNativeGpuProfileCounter(performance::Counter::kConstantVersionHits);
     else if (result == Binding::Result::kContentHit)
       AddNativeGpuProfileCounter(performance::Counter::kConstantContentHits);
-    else if (result == Binding::Result::kUploaded)
+    else if (result == Binding::Result::kDeltaUploaded ||
+             result == Binding::Result::kUploaded)
       AddNativeGpuProfileCounter(performance::Counter::kConstantBindingUploads);
     if (result != Binding::Result::kFailure && REXCVAR_GET(gta4_validate_native_hot_caches)) {
       const auto* original = AuthoritativeConstantState::MaterializeView(version);
@@ -20019,6 +20078,19 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                              vertex_constants_allocation, vertex_constants) ||
       !bind_guest_constants(NativeConstantBufferKind::kPixel, command.shader_state->pixel_constants,
                              pixel_constants_allocation, pixel_constants)) return false;
+  // Delta-backed allocations intentionally have no contiguous guest copy.
+  // The optional artifact traces below inspect guest bytes, so reconstruct
+  // them only while one of those diagnostics is active. Normal rendering and
+  // lightweight performance capture continue to avoid this work.
+  if ((!vertex_constants || !pixel_constants) &&
+      (EmissionTraceActive(diagnostic_submitted_frame_) || fire_event_active_ ||
+       bulb_trace_frame_)) {
+    vertex_constants = AuthoritativeConstantState::MaterializeView(
+        command.shader_state->vertex_constants);
+    pixel_constants = AuthoritativeConstantState::MaterializeView(
+        command.shader_state->pixel_constants);
+    if (!vertex_constants || !pixel_constants) return false;
+  }
   const uint64_t bound_vertex_shader_hash =
       command.pipeline_state && command.pipeline_state->vertex_shader_resource
           ? command.pipeline_state->vertex_shader_resource->hash

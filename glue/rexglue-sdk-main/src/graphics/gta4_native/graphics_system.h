@@ -370,7 +370,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::shared_ptr<const EnvironmentalDataV1> environmental_data;
     std::array<SurfaceDescriptor, kRenderTargetCount> snapshot_render_targets{};
     SurfaceDescriptor snapshot_depth_stencil{};
-    std::array<VkDescriptorSet, 5> draw_descriptor_sets{};
+    std::array<VkDescriptorSet, 6> draw_descriptor_sets{};
     std::array<uint32_t, kTextureStageCount> texture_descriptor_indices{};
     std::array<uint32_t, kTextureStageCount> sampler_descriptor_indices{};
     uint32_t descriptor_page = UINT32_MAX;
@@ -1909,10 +1909,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   NativeImageResource null_texture_3d_;
   NativeImageResource null_texture_cube_;
   VkSampler null_sampler_ = VK_NULL_HANDLE;
-  std::array<VkDescriptorSetLayout, 6> descriptor_set_layouts_{};
-  std::array<VkDescriptorSetLayout, 5> cached_descriptor_set_layouts_{};
+  std::array<VkDescriptorSetLayout, 7> descriptor_set_layouts_{};
+  std::array<VkDescriptorSetLayout, 6> cached_descriptor_set_layouts_{};
   VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
-  std::array<std::array<VkDescriptorSet, 6>, 2> descriptor_sets_{};
+  std::array<std::array<VkDescriptorSet, 7>, 2> descriptor_sets_{};
   NativeDescriptorBackend native_descriptor_backend_ = NativeDescriptorBackend::kCached;
   std::unique_ptr<NativeStableDescriptorSlotTable> native_stable_image_descriptor_table_;
   std::unique_ptr<NativeStableDescriptorSlotTable> native_stable_sampler_descriptor_table_;
@@ -1928,7 +1928,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::map<uint64_t, std::vector<NativeDescriptorRetirement>> native_descriptor_retirement_journal_;
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
-  NativeDrawStateCache<6> native_draw_state_cache_;
+  NativeDrawStateCache<7> native_draw_state_cache_;
   NativeDescriptorSlotHandle native_null_image_descriptor_{};
   NativeDescriptorSlotHandle native_null_sampler_descriptor_{};
   uint32_t active_descriptor_copy_ = 0;
@@ -2064,6 +2064,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   NativeReflectionRegistry reflection_resources_;
   uint32_t native_descriptor_capacity_ = 0;
   uint32_t native_sampler_descriptor_capacity_ = 0;
+  bool native_cached_split_sampler_layout_ = false;
   bool null_images_initialized_ = false;
 };
 

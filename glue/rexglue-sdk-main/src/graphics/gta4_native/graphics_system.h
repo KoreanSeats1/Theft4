@@ -42,6 +42,7 @@
 #include "native_texture_protection.h"
 #include "native_prepared_bindings.h"
 #include "native_image_reuse.h"
+#include "native_inline_bytes.h"
 #include "native_texture_eviction_index.h"
 #include <memory_resource>
 #include "stateful_constant_state.h"
@@ -341,7 +342,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t light_trace_id = 0;
     uint32_t light_trace_technique = 0xFFFFFFFFu;
     uint32_t light_trace_mode = 0;
-    std::vector<uint8_t> bytes;
+    // Draw, clear, resolve, and present commands avoid a separate allocation.
+    // Larger registration commands keep the existing heap fallback.
+    NativeInlineBytes<192> bytes;
     std::vector<uint8_t> payload;
     NativeDeviceSnapshot device_snapshot;
     NativeShaderConstantDelta shader_constant_delta;

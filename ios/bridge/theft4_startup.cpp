@@ -36,6 +36,10 @@ REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
 REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
+REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -135,6 +139,22 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+        // Keep detailed diagnostics opt-in. A19 phones skip speculative
+        // prewarming after the observed deep render-worker backlog; pipeline
+        // creation at the authoritative recording point remains enabled.
+        const char* device_profile_value = std::getenv("THEFT4_DEVICE_PROFILE");
+        const std::string_view device_profile =
+            device_profile_value ? device_profile_value : "generic";
+        const bool a19_profile = device_profile == "a19";
+        REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
+        REXCVAR_SET(gta4_profile_native_autostart, false);
+        REXLOG_INFO(
+            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
+            "profile-autostart=false",
+            device_profile, !a19_profile);
+
         // Match the desktop FSR setup, with a deliberately fixed 720p scene.
         // Native hooks derive input = output / 1.5 for FSR's Quality mode:
         // 1920x1080 / 1.5 = 1280x720. The CAMetalLayer is already sized on
@@ -209,6 +229,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         }
         if (native_profile_override &&
             std::string_view(native_profile_override) == "1") {
+            REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
+            REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
+            REXCVAR_SET(gta4_profile_native_autostart, true);
             REXLOG_INFO("Theft4 Lab bounded native CPU/GPU profiler enabled");
         }
         // Lab-only default; a fresh launch with 0 restores strict fetch identity

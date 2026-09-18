@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -37,4 +39,41 @@ void CopyNativePreparedTextureBindings(const Command& previous, Command& next) {
   // Never copy diagnostic-owned objects from another draw.
   next.room_light_input_bindings.reset();
 }
+
+// Pointers are borrowed for one indexed preparation batch only. Hinted hits
+// are always checked against the complete binding input before reuse.
+template <typename Command, size_t Capacity = 64>
+class NativePreparedBindingMemo {
+  static_assert(Capacity && (Capacity & (Capacity - 1)) == 0);
+ public:
+  const Command* Find(const Command& next) const {
+    if (previous_ && NativePreparedTextureInputsEqual(*previous_, next)) return previous_;
+    const Command* candidate = entries_[Bucket(next)];
+    return candidate && candidate != previous_ &&
+                   NativePreparedTextureInputsEqual(*candidate, next) ? candidate : nullptr;
+  }
+
+  void Remember(const Command& command) {
+    if (!command.bindings_prepared || command.failed_texture_mask || !command.pipeline_state) return;
+    previous_ = &command;
+    entries_[Bucket(command)] = &command;
+  }
+
+ private:
+  static size_t Bucket(const Command& command) {
+    uint64_t hint = command.used_texture_mask;
+    if (command.used_texture_mask) {
+      const auto stage = std::countr_zero(command.used_texture_mask);
+      if (size_t(stage) < command.textures.size()) {
+        hint ^= uint64_t(reinterpret_cast<uintptr_t>(command.textures[stage].get())) >> 4;
+      }
+    }
+    hint ^= hint >> 17;
+    hint *= 0x9E3779B185EBCA87ull;
+    return size_t(hint >> 32) & (Capacity - 1);
+  }
+
+  std::array<const Command*, Capacity> entries_{};
+  const Command* previous_ = nullptr;
+};
 }  // namespace rex::graphics::gta4_native

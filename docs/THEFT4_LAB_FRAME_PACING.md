@@ -1,5 +1,10 @@
 # Lab 11: frame-time graph and optional submission pacing
 
+**Status:** the pacing experiment was rejected after device A/B feedback and
+removed in Lab 12. The graph remains. See `THEFT4_LAB_PACING_ROLLBACK.md`.
+
+This document records the Lab 11 experiment and its original validation.
+
 Lab 10 driving feedback was clearly better, with reported low HUD readings of
 26–28 FPS, but occasional choppy motion while the averaged counter still read 30.
 Coarse runtime logs cannot establish the duration or cause of those spikes.

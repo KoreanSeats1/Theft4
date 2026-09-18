@@ -109,12 +109,12 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     UILabel *saveNote = Copy(@"Your saves stay with you. Continue or start a new story inside the game.",12,NO);
     _play = Column(@[headline,intro,_startButton,saveNote],22);
 
-    _showFrameTime = [UISwitch new]; _evenPacing = [UISwitch new];
+    _showFrameTime = [UISwitch new];
     _showFPS = [UISwitch new]; _showControls = [UISwitch new];
     _anisotropicFiltering = [UISwitch new]; _enhancedOutput = [UISwitch new]; _fsrBoost = [UISwitch new];
     _motionBlur = [UISwitch new];
-    NSArray *switches = @[_showFrameTime,_evenPacing,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
-    NSArray *identifiers = @[@"showFrameTime",@"evenPacing",@"showFPS",@"showTouchControls",@"anisotropicFiltering",@"enhancedOutput1080p",@"fsrBoost",@"motionBlur"];
+    NSArray *switches = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
+    NSArray *identifiers = @[@"showFrameTime",@"showFPS",@"showTouchControls",@"anisotropicFiltering",@"enhancedOutput1080p",@"fsrBoost",@"motionBlur"];
     for (NSUInteger i=0;i<switches.count;++i) {
         UISwitch *toggle = switches[i]; toggle.onTintColor = Ink(0xB6884D);
         toggle.accessibilityIdentifier = [@"settings." stringByAppendingString:identifiers[i]];
@@ -129,11 +129,6 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
         [self setting:@"Experimental FSR Boost" detail:@"Native-pixel 16:9 output. More output pixels; potentially less performance. Still rendered at 720p." toggle:_fsrBoost],
         Copy(@"Output, filtering and motion blur apply at the next game launch. FSR is spatial upscaling, not frame generation.",12,NO)
     ],18);
-    if ([NSBundle.mainBundle.infoDictionary[@"Theft4LabBuild"] boolValue]) {
-        [_display insertArrangedSubview:[self setting:@"Frame pacing experiment"
-            detail:@"Aims for more even frame delivery. Applies at the next game launch."
-            toggle:_evenPacing] atIndex:2];
-    }
     _prepareButton = Action(@"VERIFY GAME FILES",NO);
     _restartButton = Action(@"RESTART CORE PROBE",NO); _restartButton.accessibilityIdentifier = @"core.restart";
     _detailLabel = Copy(@"Waiting for runtime information…",12,YES);

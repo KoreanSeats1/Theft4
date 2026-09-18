@@ -15,7 +15,6 @@ namespace rex::graphics::gta4_native::pacing {
 struct Sample {
   uint32_t frame = 0, system_thread = 0, guest_thread = 0;
   uint32_t requested_fps = 0, applied_fps = 0;
-  bool limiter_before_submit = false;
   bool submitted = false, wait_requested = false, late_reset = false, mode_changed = false;
   uint64_t hook_begin = 0, submit_begin = 0, submit_end = 0;
   uint64_t limiter_begin = 0, mutex_begin = 0, mutex_acquired = 0;

@@ -22,7 +22,7 @@ inline bool Export(const std::filesystem::path& directory, const Snapshot& captu
          "limiter_begin_tick,mutex_begin_tick,mutex_acquired_tick,sleep_begin_tick,wake_tick,"
          "limiter_end_tick,decision_ns,prior_deadline_ns,wait_until_ns,next_deadline_ns,"
          "sleep_begin_ns,wake_ns,present_hook_prepare_ms,present_submit_ms,limiter_mutex_wait_ms,"
-         "decision_wait_ms,requested_sleep_ms,actual_sleep_ms,wake_overshoot_ms,entry_lateness_ms,limiter_before_submit\n";
+         "decision_wait_ms,requested_sleep_ms,actual_sleep_ms,wake_overshoot_ms,entry_lateness_ms\n";
   const long double tick_ms = 1000.0L / host_frequency;
   const auto elapsed = [](uint64_t begin, uint64_t end) {
     return end >= begin ? end - begin : 0;
@@ -39,9 +39,9 @@ inline bool Export(const std::filesystem::path& directory, const Snapshot& captu
         << s.sleep_begin << ',' << s.wake << ',' << s.limiter_end << ',' << s.decision_ns
         << ',' << s.prior_deadline_ns << ',' << s.wait_until_ns << ',' << s.next_deadline_ns
         << ',' << s.sleep_begin_ns << ',' << s.wake_ns << ','
-        << elapsed(s.hook_begin, s.limiter_before_submit ? s.limiter_begin : s.submit_begin) * tick_ms << ','
+        << elapsed(s.hook_begin, s.submit_begin) * tick_ms << ','
         << elapsed(s.submit_begin, s.submit_end) * tick_ms << ',';
-    if (s.submitted || s.limiter_before_submit) {
+    if (s.submitted) {
       out << elapsed(s.mutex_begin, s.mutex_acquired) * tick_ms << ','
           << (s.wait_requested ? ns_ms(s.decision_ns, s.wait_until_ns) : 0) << ','
           << (s.wait_requested ? ns_ms(s.sleep_begin_ns, s.wait_until_ns) : 0) << ','
@@ -52,7 +52,7 @@ inline bool Export(const std::filesystem::path& directory, const Snapshot& captu
     } else {
       out << ",,,,,";  // Six unavailable limiter columns for rejected submissions.
     }
-    out << ',' << s.limiter_before_submit << '\n';
+    out << '\n';
   }
   out.flush();
   if (!out) return false;

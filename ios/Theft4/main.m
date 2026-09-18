@@ -45,7 +45,6 @@ extern int rex_gta4_native_profile_start(void);
     CFTimeInterval _fpsLastTime;
     UISwitch *_showFPS;
     UISwitch *_showFrameTime;
-    UISwitch *_evenPacing;
     Theft4FrameTimeView *_frameTimeView;
     NSTimer *_frameTimeTimer;
     NSLayoutConstraint *_frameTimeTop;
@@ -110,7 +109,6 @@ static void bootEvent(void *context, const char *event) {
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowFrameTime": @NO,
-        @"Theft4EvenPacing": @NO,
         @"Theft4ShowTouchControls": @NO,
         @"Theft4AnisotropicFiltering": @YES,
         @"Theft4EnhancedOutput1080p": @YES,
@@ -153,13 +151,13 @@ static void bootEvent(void *context, const char *event) {
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
-    _showFrameTime = _bringupOverlay.showFrameTime; _evenPacing = _bringupOverlay.evenPacing;
+    _showFrameTime = _bringupOverlay.showFrameTime;
     _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
-    NSArray *toggles = @[_showFrameTime,_evenPacing,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
-    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4EvenPacing",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+    NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
+    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
@@ -290,7 +288,6 @@ static void bootEvent(void *context, const char *event) {
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
     [_bringupOverlay refreshConfigurationSummary];
     [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
-    [NSUserDefaults.standardUserDefaults setBool:_evenPacing.on forKey:@"Theft4EvenPacing"];
     [self updateFrameTimeHUD];
     [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
@@ -467,10 +464,6 @@ static void bootEvent(void *context, const char *event) {
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
-#ifdef THEFT4_LAB_NATIVE_CAPTURE
-        setenv("THEFT4_LAB_EVEN_PACING", _evenPacing.on ? "1" : "0", 1);
-        [self record:_evenPacing.on ? @"lab.even_pacing.on" : @"lab.even_pacing.off"];
-#endif
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
@@ -486,7 +479,6 @@ static void bootEvent(void *context, const char *event) {
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
-        _evenPacing.enabled = NO;
     }
     NSError *backupError = nil;
     if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])

@@ -140,11 +140,6 @@ TEST_CASE("pacing export separates clock domains, sleep overshoot and unavailabl
   snapshot.samples.push_back(sample);
   sample.submitted = false;
   snapshot.samples.push_back(sample);
-  sample.limiter_before_submit = true;
-  sample.limiter_begin = 110;
-  sample.submit_begin = 150;
-  sample.submit_end = 160;
-  snapshot.samples.push_back(sample); // Rejected submit still has a real pre-submit wait.
   REQUIRE(pacing::Export(directory, snapshot, 99, 1000));
   std::ifstream input(directory / "native-performance-pacing.csv");
   std::vector<std::vector<std::string>> rows;
@@ -155,8 +150,7 @@ TEST_CASE("pacing export separates clock domains, sleep overshoot and unavailabl
     if (!line.empty() && line.back() == ',') fields.emplace_back();
     rows.push_back(std::move(fields));
   }
-  REQUIRE(rows.size() == 4);
-  REQUIRE(rows[3].size() == rows[0].size());
+  REQUIRE(rows.size() == 3);
   REQUIRE(rows[1].size() == rows[0].size());
   REQUIRE(rows[2].size() == rows[0].size());
   const auto value = [&](size_t row, const char* column) -> const std::string& {
@@ -173,11 +167,6 @@ TEST_CASE("pacing export separates clock domains, sleep overshoot and unavailabl
   CHECK(std::stod(value(1, "wake_overshoot_ms")) == 1.5);
   CHECK(std::stod(value(1, "entry_lateness_ms")) == 1);
   CHECK(value(2, "actual_sleep_ms").empty());
-  CHECK(value(1, "limiter_before_submit") == "0");
-  CHECK(value(3, "limiter_before_submit") == "1");
-  CHECK(std::stod(value(3, "present_hook_prepare_ms")) == 10);
-  CHECK(std::stod(value(3, "present_submit_ms")) == 10);
-  CHECK(std::stod(value(3, "actual_sleep_ms")) == 4.5);
   snapshot.stopped = false;
   CHECK_FALSE(pacing::Export(directory, snapshot, 100, 1000));
   std::filesystem::remove_all(directory);

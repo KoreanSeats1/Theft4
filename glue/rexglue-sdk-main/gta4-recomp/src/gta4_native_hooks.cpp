@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -442,78 +441,6 @@ void PaceNativePresent(uint32_t submitted_frame) {
   }
 #endif
 }
-
-#ifdef THEFT4_LAB_BUILD
-bool EvenPacingEnabled() {
-  // Latched once after UIKit applies the saved launch choice.
-  static const bool enabled = [] {
-    const char* value = std::getenv("THEFT4_LAB_EVEN_PACING");
-    const bool enabled = value && std::strcmp(value, "1") == 0;
-    REXLOG_INFO("GTA4FrameLimiter point=lab-experiment even-pacing={}", enabled);
-    return enabled;
-  }();
-  return enabled;
-}
-
-template <typename Submit>
-bool SubmitEvenly(Submit&& submit, pacing::Sample* observation) {
-  using Clock = std::chrono::steady_clock;
-  const auto now = [] {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        Clock::now().time_since_epoch()).count();
-  };
-  if (observation) {
-    observation->limiter_before_submit = true;
-    observation->limiter_begin = rex::chrono::Clock::QueryHostTickCount();
-  }
-  const auto requested = rex::cvar::Query<uint32_t>("gta4_frame_limit");
-  if (observation) observation->mutex_begin = rex::chrono::Clock::QueryHostTickCount();
-  // All present producers share this lock through wait + enqueue + rebase.
-  // The queue consumer never acquires it; no reverse queue/limiter lock order.
-  std::unique_lock lock(g_native_frame_limiter_mutex);
-  if (observation) {
-    observation->mutex_acquired = rex::chrono::Clock::QueryHostTickCount();
-    observation->prior_deadline_ns = g_native_frame_limiter_state.next_deadline_ns;
-  }
-  const auto begin = now();
-  const auto decision = gta4::frame_limiter::PlanSubmission(
-      g_native_frame_limiter_state, requested, begin);
-  g_native_frame_limiter_state = decision.next_state;
-  if (observation) {
-    observation->requested_fps = requested;
-    observation->applied_fps = decision.next_state.frames_per_second;
-    observation->decision_ns = begin;
-    observation->wait_until_ns = decision.wait_until_ns;
-    observation->wait_requested = decision.should_wait(begin);
-    observation->late_reset = decision.late_reset;
-    observation->mode_changed = decision.mode_changed;
-  }
-  if (decision.should_wait(begin)) {
-    if (observation) {
-      observation->sleep_begin = rex::chrono::Clock::QueryHostTickCount();
-      observation->sleep_begin_ns = now();
-    }
-    std::this_thread::sleep_until(Clock::time_point(std::chrono::nanoseconds(decision.wait_until_ns)));
-  }
-  if (observation) {
-    observation->wake_ns = now();
-    observation->wake = rex::chrono::Clock::QueryHostTickCount();
-    // End the limiter phase before Submit, so exported durations don't overlap.
-    observation->limiter_end = rex::chrono::Clock::QueryHostTickCount();
-    observation->submit_begin = rex::chrono::Clock::QueryHostTickCount();
-  }
-  const bool submitted = submit();
-  if (observation) {
-    observation->submit_end = rex::chrono::Clock::QueryHostTickCount();
-    observation->submitted = submitted;
-  }
-  if (submitted) gta4::frame_limiter::CompleteSubmission(g_native_frame_limiter_state, now());
-  if (observation) observation->next_deadline_ns = g_native_frame_limiter_state.next_deadline_ns;
-  lock.unlock();
-  if (observation) pacing::capture.Record(*observation);
-  return submitted;
-}
-#endif
 
 struct VectorFontOwnerBinding {
   uint32_t owner_slot;
@@ -7349,22 +7276,19 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
   }
   g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
 #ifdef THEFT4_LAB_BUILD
-  if (observe_pacing) pacing_sample.frame = submitted_frame;
-  if (EvenPacingEnabled()) {
-    SubmitEvenly([&] { return SubmitNativeCommand(command); },
-                 observe_pacing ? &pacing_sample : nullptr);
-  } else {
-    if (observe_pacing) pacing_sample.submit_begin = rex::chrono::Clock::QueryHostTickCount();
-    const bool submitted = SubmitNativeCommand(command);
-    if (observe_pacing) {
-      pacing_sample.submitted = submitted;
-      pacing_sample.submit_end = rex::chrono::Clock::QueryHostTickCount();
-    }
-    if (submitted) {
-      PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
-    } else if (observe_pacing) {
-      pacing::capture.Record(pacing_sample);
-    }
+  if (observe_pacing) {
+    pacing_sample.frame = submitted_frame;
+    pacing_sample.submit_begin = rex::chrono::Clock::QueryHostTickCount();
+  }
+  const bool submitted = SubmitNativeCommand(command);
+  if (observe_pacing) {
+    pacing_sample.submitted = submitted;
+    pacing_sample.submit_end = rex::chrono::Clock::QueryHostTickCount();
+  }
+  if (submitted) {
+    PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
+  } else if (observe_pacing) {
+    pacing::capture.Record(pacing_sample);
   }
 #else
   if (SubmitNativeCommand(command)) {

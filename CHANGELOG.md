@@ -1,5 +1,19 @@
 # Theft4 engineering changelog
 
+## 2026-09-17 — Lab manual frame-timing capture (build 8)
+
+- **Opt-in:** Launch Theft4 Lab with `THEFT4_LAB_NATIVE_PROFILE=1`, reach the
+  desired gameplay scene, then double-tap the FPS counter to request the existing
+  600-frame CPU/GPU capture. The counter turns orange when requested. Only one
+  capture is supported per process; completion and timestamp validity must be
+  checked in the diagnostic export before drawing conclusions.
+- Profiling no longer automatically consumes its sample window during loading.
+  The control is compiled only into the Lab native-renderer app. Ordinary launches
+  retain profiling disabled. Rendering settings and the main app are unchanged.
+- Build, isolation checks and on-device capture validation are recorded with the
+  private Lab artifact. Instrumented FPS is diagnostic evidence, not acceptance
+  performance; repeat the route with profiling disabled for the control.
+
 This file is the durable, public engineering record for Theft4. It records
 implementation changes, experiments, validation evidence, and known limits. It
 is intentionally more detailed than a release-note summary because this project

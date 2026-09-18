@@ -406,6 +406,9 @@ target_link_libraries(Theft4 PRIVATE theft4_core_bridge
     "-framework AVFoundation" "-framework AudioToolbox")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
 target_compile_options(Theft4 PRIVATE -fobjc-arc)
+if(THEFT4_LAB_BUILD AND THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+    target_compile_definitions(Theft4 PRIVATE THEFT4_LAB_NATIVE_CAPTURE=1)
+endif()
 if(THEFT4_ENABLE_THIN_LTO)
     set_property(TARGET theft4_core_bridge PROPERTY
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)

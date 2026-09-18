@@ -7,6 +7,9 @@
 #include <sys/utsname.h>
 #include "theft4_core.h"
 #include "theft4_metal_presenter.h"
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+extern int rex_gta4_native_profile_start(void);
+#endif
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
 #ifdef THEFT4_HAS_GAME_LOADER
@@ -47,6 +50,9 @@
     UISwitch *_motionBlur;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+    BOOL _nativeProfileRequested;
+#endif
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -172,6 +178,17 @@ static void bootEvent(void *context, const char *event) {
     _fpsLabel.layer.masksToBounds = YES;
     _fpsLabel.hidden = YES;
     _fpsLabel.accessibilityIdentifier = @"game.fps";
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+    const char *nativeProfile = getenv("THEFT4_LAB_NATIVE_PROFILE");
+    if (nativeProfile && strcmp(nativeProfile, "1") == 0) {
+        _fpsLabel.userInteractionEnabled = YES;
+        _fpsLabel.accessibilityHint = @"Double-tap to request one frame-timing capture";
+        UITapGestureRecognizer *capture = [[UITapGestureRecognizer alloc]
+            initWithTarget:self action:@selector(requestNativeProfile)];
+        capture.numberOfTapsRequired = 2;
+        [_fpsLabel addGestureRecognizer:capture];
+    }
+#endif
     [self.view addSubview:_fpsLabel];
     [NSLayoutConstraint activateConstraints:@[
         [_fpsLabel.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
@@ -352,6 +369,19 @@ static void bootEvent(void *context, const char *event) {
         _fpsLastTime = now;
     }
 }
+
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+- (void)requestNativeProfile {
+    if (!_gamePresentation || _nativeProfileRequested) return;
+    if (rex_gta4_native_profile_start()) {
+        _nativeProfileRequested = YES;
+        // Orange means requested; export completion is verified in the log.
+        _fpsLabel.backgroundColor = [UIColor colorWithRed:0.65 green:0.28 blue:0.0 alpha:0.9];
+        _fpsLabel.accessibilityHint = @"Frame-timing capture requested for this launch";
+        [self record:@"lab.native_profile_requested"];
+    }
+}
+#endif
 
 - (BOOL)prefersStatusBarHidden { return _executionAttempted; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return _executionAttempted; }

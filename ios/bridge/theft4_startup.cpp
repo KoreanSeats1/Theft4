@@ -231,8 +231,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             std::string_view(native_profile_override) == "1") {
             REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
             REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
-            REXCVAR_SET(gta4_profile_native_autostart, true);
-            REXLOG_INFO("Theft4 Lab bounded native CPU/GPU profiler enabled");
+            // Capture the user's slow gameplay section, not the first 600
+            // loading-screen frames. The Lab FPS HUD arms the existing recorder.
+            REXCVAR_SET(gta4_profile_native_autostart, false);
+            REXLOG_INFO("Theft4 Lab bounded native CPU/GPU profiler ready; double-tap FPS to capture 600 frames");
         }
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep

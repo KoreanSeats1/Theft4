@@ -110,6 +110,7 @@ enum class Counter : uint8_t {
   kPersistentBufferUploadBytes,
   kPersistentBufferHits,
   kPersistentBufferOwnerMemoHits,
+  kSharedConstantLastKeyHits,
   kPersistentBufferMisses,
   kPersistentBufferResidentBytes,
   kPersistentBufferLiveAllocations,

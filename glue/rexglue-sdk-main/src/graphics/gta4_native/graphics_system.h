@@ -1157,6 +1157,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     FrameGenerationMap<NativeSharedConstantSemanticKey, uint64_t,
                        NativeSharedConstantSemanticKeyHash>
         shared_versions;
+    // Consecutive draws commonly share the complete semantic constant state.
+    // Keep the last identity beside the map so that path avoids a wide-key
+    // hash and lookup while preserving the map as the authoritative cache.
+    NativeSharedConstantSemanticKey last_shared_key{};
+    uint64_t last_shared_identity = 0;
+    bool has_last_shared_key = false;
     NativeImmutableBindings<NativeUploadAllocation> immutable_bindings;
     uint64_t next_shared_identity = 1;
   };

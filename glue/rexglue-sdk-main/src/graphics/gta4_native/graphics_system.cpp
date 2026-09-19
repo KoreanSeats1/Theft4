@@ -8226,6 +8226,8 @@ bool Gta4NativeGraphicsSystem::ResetFrameConstantArena(uint32_t slot, uint64_t c
       !arena.immutable_bindings.Reset()) {
     return false;
   }
+  arena.has_last_shared_key = false;
+  arena.last_shared_identity = 0;
   arena.next_shared_identity = 1;
   arena.storage.write_offset = 0;
   return true;
@@ -20376,7 +20378,14 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
     return false;
   }
   NativeFrameConstantArena& constant_arena = frame_constant_arenas_[active_frame_slot_];
-  uint64_t* shared_identity = constant_arena.shared_versions.Find(shared_key);
+  uint64_t* shared_identity = nullptr;
+  if (constant_arena.has_last_shared_key &&
+      constant_arena.last_shared_key == shared_key) {
+    shared_identity = &constant_arena.last_shared_identity;
+    AddNativeGpuProfileCounter(performance::Counter::kSharedConstantLastKeyHits);
+  } else {
+    shared_identity = constant_arena.shared_versions.Find(shared_key);
+  }
   if (!shared_identity) {
     if (!constant_arena.next_shared_identity ||
         constant_arena.next_shared_identity == std::numeric_limits<uint64_t>::max()) {
@@ -20388,6 +20397,12 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
       return false;
     }
     shared_identity = insertion.value;
+  }
+  if (shared_identity != &constant_arena.last_shared_identity) {
+    constant_arena.last_shared_key = shared_key;
+    constant_arena.last_shared_identity = *shared_identity;
+    constant_arena.has_last_shared_key = true;
+    shared_identity = &constant_arena.last_shared_identity;
   }
   if (!FindFrameConstantBuffer(NativeConstantBufferKind::kShared, *shared_identity,
                                shared_constants_allocation)) {

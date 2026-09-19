@@ -5748,6 +5748,15 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
         &render_worker_, &attributes,
         [](void* context) -> void* {
           pthread_setname_np("Theft4 native render");
+#if defined(THEFT4_LAB_BUILD) && TARGET_OS_IPHONE
+          // This is the worker measured by the Lab wall/on-core and QoS
+          // counters. Favor timely frame production while keeping UI/audio
+          // at their higher interactive priority.
+          const int qos_result = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+          if (qos_result != 0) {
+            REXLOG_WARN("gta4-native: render worker QoS setup failed ({})", qos_result);
+          }
+#endif
           static_cast<Gta4NativeGraphicsSystem*>(context)->RenderWorkerMain();
           return nullptr;
         },

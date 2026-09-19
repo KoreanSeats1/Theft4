@@ -1621,10 +1621,13 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // Render-worker-owned staging. Moving a bounded batch out of render_queue_
   // amortizes the queue mutex without changing command order. Texture
   // generations stay protected until each staged command becomes active.
-  static constexpr size_t kRenderWorkerBatchCommands = 64;
 #ifdef THEFT4_LAB_BUILD
+  // Lab 23: fewer queue-mutex acquisitions when the title has already
+  // produced a full frame of commands. Preserve FIFO and the bounded batch.
+  static constexpr size_t kRenderWorkerBatchCommands = 128;
   NativeWorkerBatch<NativeCommand, kRenderWorkerBatchCommands> worker_batch_;
 #else
+  static constexpr size_t kRenderWorkerBatchCommands = 64;
   std::deque<NativeCommand> worker_batch_;
 #endif
   NativeTextureProtectionIndex worker_batch_texture_protection_;

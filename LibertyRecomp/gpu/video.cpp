@@ -85,6 +85,10 @@ namespace GTAIV {
 #include <xxHashMap.h>
 #include <os/process.h>
 
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
+
 #if defined(ASYNC_PSO_DEBUG) || defined(PSO_CACHING)
 #include <magic_enum/magic_enum.hpp>
 #endif
@@ -6987,6 +6991,12 @@ static std::thread g_renderThread([]
 #ifdef _WIN32
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         GuestThread::SetThreadName(GetCurrentThreadId(), "Render Thread");
+#endif
+#if defined(__APPLE__)
+        // This worker produces frames for presentation. It previously inherited
+        // default QoS and could be descheduled behind title CPU work. Keep UI
+        // and audio above it while giving frame production timely scheduling.
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
 #endif
 
         RenderCommand commands[32];

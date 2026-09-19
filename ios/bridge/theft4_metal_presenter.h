@@ -22,6 +22,9 @@ theft4_output_policy theft4_metal_get_output_policy(void);
 void theft4_metal_resize_layer(void* layer, double width, double height,
                                double scale);
 bool theft4_metal_has_layer(void);
+// NSProcessInfoThermalState as a stable integer: 0 nominal, 1 fair, 2 serious,
+// 3 critical. This is intentionally a low-frequency diagnostic sample only.
+uint32_t theft4_platform_thermal_state(void);
 // Borrowed pointer retained by the UIKit bridge while bound. Used only to
 // create the MoltenVK surface; ownership remains with the view hierarchy.
 void* theft4_metal_bound_layer(void);

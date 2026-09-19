@@ -178,6 +178,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         target_include_directories(theft4_gta4_native_compile PRIVATE
             "${THEFT4_GTA4_NATIVE_ROOT}"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
             "${THEFT4_GENERATED_DIR}"
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}"
             "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}"

@@ -121,6 +121,10 @@ bool theft4_metal_has_layer(void) {
   return available;
 }
 
+uint32_t theft4_platform_thermal_state(void) {
+  return static_cast<uint32_t>(NSProcessInfo.processInfo.thermalState);
+}
+
 void* theft4_metal_bound_layer(void) {
   os_unfair_lock_lock(&presenter_lock);
   CAMetalLayer* layer = bound_layer;

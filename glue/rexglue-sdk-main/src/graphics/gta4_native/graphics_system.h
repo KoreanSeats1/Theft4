@@ -700,6 +700,13 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t cpu_submit_ticks = 0;
     uint64_t cpu_callback_ticks = 0;
     uint64_t cpu_publish_ticks = 0;
+    uint64_t cpu_render_worker_begin_ticks = 0;
+    uint64_t cpu_render_worker_begin_nanoseconds = 0;
+    uint64_t cpu_render_worker_wall_ticks = 0;
+    uint64_t cpu_render_worker_on_core_ticks = 0;
+    uint32_t render_worker_qos_class = 0;
+    int32_t render_worker_qos_relative_priority = 0;
+    uint32_t thermal_state = 0;
     VkDeviceSize upload_bytes = 0;
     attribution::NativeAttributionPlan attribution_plan;
     std::optional<attribution::NativeDrilldownReservation> attribution_reservation;

@@ -94,6 +94,11 @@ enum class CpuRange : uint8_t {
   kHousekeepingTextureRetirement,
   kHousekeepingBufferReclamation,
   kHousekeepingPersistentBufferReclamation,
+  // Matching pre-submit spans measured on the native render worker. Comparing
+  // elapsed wall time against time actually scheduled on-core distinguishes a
+  // slow CPU path from a worker that was descheduled by the OS.
+  kRenderWorkerPreSubmitWall,
+  kRenderWorkerPreSubmitOnCore,
   kCount,
 };
 
@@ -152,6 +157,9 @@ enum class Counter : uint8_t {
   kConstantBindingUploads,
   kTextureBindingReuses,
   kConstantBindingOwners,
+  kRenderWorkerQosClass,
+  kRenderWorkerQosRelativePriority,
+  kThermalState,
   kCount,
 };
 

@@ -4,6 +4,9 @@
 #include "modern_shader_options.h"
 #ifdef THEFT4_LAB_BUILD
 #include <rex/graphics/gta4_native/pacing_profile.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include "theft4_metal_presenter.h"
+#endif
 #endif
 
 #include <algorithm>
@@ -28,12 +31,14 @@
 #if defined(__APPLE__) && defined(__MACH__)
 #include <TargetConditionals.h>
 #include <mach/mach.h>
+#include <mach/thread_info.h>
 #if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
 #endif
 #include <mach/vm_region.h>
 #include <mach/vm_statistics.h>
 #include <malloc/malloc.h>
+#include <pthread/qos.h>
 #endif
 
 #include <fmt/format.h>
@@ -369,6 +374,58 @@ namespace {
 
 namespace transition = rex::diagnostics::gta4_transition;
 namespace gpu_flight = rex::diagnostics::gpu_flight;
+
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+// This uses the kernel's cumulative per-thread CPU accounting. Unlike the
+// profiler's host-clock spans, it excludes time while this worker is runnable
+// but not scheduled. It is sampled only for the bounded Lab capture.
+struct NativeWorkerThreadRuntimeSnapshot {
+  uint64_t cpu_nanoseconds = 0;
+  uint64_t query_ticks = 0;
+  uint32_t qos_class = 0;
+  int32_t qos_relative_priority = 0;
+  bool cpu_time_available = false;
+};
+
+NativeWorkerThreadRuntimeSnapshot CaptureNativeWorkerThreadRuntime() {
+  NativeWorkerThreadRuntimeSnapshot snapshot;
+  const uint64_t query_begin = rex::chrono::Clock::QueryHostTickCount();
+  thread_basic_info_data_t info{};
+  mach_msg_type_number_t info_count = THREAD_BASIC_INFO_COUNT;
+  const mach_port_t thread = mach_thread_self();
+  const kern_return_t result =
+      thread_info(thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &info_count);
+  mach_port_deallocate(mach_task_self(), thread);
+  snapshot.query_ticks = rex::chrono::Clock::QueryHostTickCount() - query_begin;
+  if (result == KERN_SUCCESS && info_count == THREAD_BASIC_INFO_COUNT &&
+      info.user_time.seconds >= 0 && info.user_time.microseconds >= 0 &&
+      info.system_time.seconds >= 0 && info.system_time.microseconds >= 0) {
+    const uint64_t user_nanoseconds = uint64_t(info.user_time.seconds) * 1'000'000'000ull +
+                                      uint64_t(info.user_time.microseconds) * 1'000ull;
+    const uint64_t system_nanoseconds = uint64_t(info.system_time.seconds) * 1'000'000'000ull +
+                                        uint64_t(info.system_time.microseconds) * 1'000ull;
+    if (user_nanoseconds <= std::numeric_limits<uint64_t>::max() - system_nanoseconds) {
+      snapshot.cpu_nanoseconds = user_nanoseconds + system_nanoseconds;
+      snapshot.cpu_time_available = true;
+    }
+  }
+  qos_class_t qos_class = QOS_CLASS_UNSPECIFIED;
+  int relative_priority = 0;
+  if (pthread_get_qos_class_np(pthread_self(), &qos_class, &relative_priority) == 0) {
+    snapshot.qos_class = static_cast<uint32_t>(qos_class);
+    snapshot.qos_relative_priority = relative_priority;
+  }
+  return snapshot;
+}
+
+uint64_t NativeWorkerCpuNanosecondsToHostTicks(uint64_t nanoseconds) {
+  const uint64_t frequency = rex::chrono::Clock::QueryHostTickFrequency();
+  if (!frequency || nanoseconds > std::numeric_limits<uint64_t>::max() / frequency) {
+    return 0;
+  }
+  return nanoseconds * frequency / 1'000'000'000ull;
+}
+#endif
 
 // iOS must never leave the user-facing render thread in an unobservable,
 // infinite Vulkan fence wait. Five seconds is far beyond a healthy GTA IV GPU
@@ -9795,6 +9852,31 @@ bool Gta4NativeGraphicsSystem::BeginNativeGpuProfileFrame(VkCommandBuffer comman
   frame.cpu_submit_ticks = 0;
   frame.cpu_callback_ticks = 0;
   frame.cpu_publish_ticks = 0;
+  frame.cpu_render_worker_begin_ticks = 0;
+  frame.cpu_render_worker_begin_nanoseconds = 0;
+  frame.cpu_render_worker_wall_ticks = 0;
+  frame.cpu_render_worker_on_core_ticks = 0;
+  frame.render_worker_qos_class = 0;
+  frame.render_worker_qos_relative_priority = 0;
+  frame.thermal_state = 0;
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+  const NativeWorkerThreadRuntimeSnapshot worker_runtime = CaptureNativeWorkerThreadRuntime();
+  frame.cpu_render_worker_begin_ticks = rex::chrono::Clock::QueryHostTickCount();
+  if (worker_runtime.cpu_time_available) {
+    frame.cpu_render_worker_begin_nanoseconds = worker_runtime.cpu_nanoseconds;
+  }
+  frame.render_worker_qos_class = worker_runtime.qos_class;
+  frame.render_worker_qos_relative_priority = worker_runtime.qos_relative_priority;
+  frame.thermal_state = theft4_platform_thermal_state();
+  frame.sample_builder.SetCounter(performance::Counter::kRenderWorkerQosClass,
+                                  frame.render_worker_qos_class);
+  // Persist a signed relative priority in an unsigned sample format. Apple
+  // documents the value as non-positive, so its magnitude remains directly
+  // readable in the exported CSV.
+  frame.sample_builder.SetCounter(performance::Counter::kRenderWorkerQosRelativePriority,
+                                  uint64_t(-int64_t(frame.render_worker_qos_relative_priority)));
+  frame.sample_builder.SetCounter(performance::Counter::kThermalState, frame.thermal_state);
+#endif
   frame.upload_bytes = 0;
 
   auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
@@ -10003,6 +10085,22 @@ void Gta4NativeGraphicsSystem::EndNativeGpuProfileFrame(VkCommandBuffer command_
   builder.SetCounter(performance::Counter::kPipelinesLive, native_pipelines_.size());
   builder.SetCounter(performance::Counter::kConstantBindingOwners,
                      frame_constant_arenas_[active_frame_slot_].immutable_bindings.owner_count());
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+  if (frame.cpu_render_worker_begin_ticks && frame.cpu_render_worker_begin_nanoseconds) {
+    const NativeWorkerThreadRuntimeSnapshot worker_runtime = CaptureNativeWorkerThreadRuntime();
+    const uint64_t worker_end_tick = rex::chrono::Clock::QueryHostTickCount();
+    if (worker_runtime.cpu_time_available &&
+        worker_runtime.cpu_nanoseconds >= frame.cpu_render_worker_begin_nanoseconds) {
+      frame.cpu_render_worker_wall_ticks = worker_end_tick - frame.cpu_render_worker_begin_ticks;
+      frame.cpu_render_worker_on_core_ticks = NativeWorkerCpuNanosecondsToHostTicks(
+          worker_runtime.cpu_nanoseconds - frame.cpu_render_worker_begin_nanoseconds);
+      builder.SetCounter(performance::Counter::kRenderWorkerQosClass,
+                         worker_runtime.qos_class);
+      builder.SetCounter(performance::Counter::kRenderWorkerQosRelativePriority,
+                         uint64_t(-int64_t(worker_runtime.qos_relative_priority)));
+    }
+  }
+#endif
 }
 
 void Gta4NativeGraphicsSystem::CancelNativeGpuProfileFrame() {
@@ -10047,6 +10145,13 @@ void Gta4NativeGraphicsSystem::CancelNativeGpuProfileFrame(uint32_t slot) {
   frame.cpu_submit_ticks = 0;
   frame.cpu_callback_ticks = 0;
   frame.cpu_publish_ticks = 0;
+  frame.cpu_render_worker_begin_ticks = 0;
+  frame.cpu_render_worker_begin_nanoseconds = 0;
+  frame.cpu_render_worker_wall_ticks = 0;
+  frame.cpu_render_worker_on_core_ticks = 0;
+  frame.render_worker_qos_class = 0;
+  frame.render_worker_qos_relative_priority = 0;
+  frame.thermal_state = 0;
   frame.upload_bytes = 0;
   frame.sample_builder.Cancel();
 }
@@ -11412,6 +11517,12 @@ void Gta4NativeGraphicsSystem::AnalyzeCompletedNativeGpuProfile(
   frame.sample_builder.AddCpuRange(performance::CpuRange::kRenderCallback,
                                    frame.cpu_callback_ticks);
   frame.sample_builder.AddCpuRange(performance::CpuRange::kPublish, frame.cpu_publish_ticks);
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+  frame.sample_builder.AddCpuRange(performance::CpuRange::kRenderWorkerPreSubmitWall,
+                                   frame.cpu_render_worker_wall_ticks);
+  frame.sample_builder.AddCpuRange(performance::CpuRange::kRenderWorkerPreSubmitOnCore,
+                                   frame.cpu_render_worker_on_core_ticks);
+#endif
   frame.sample_builder.AddCpuRange(performance::CpuRange::kFrameInterval,
                                    frame.cpu_frame_interval_ticks);
   frame.sample_builder.AddCpuRange(performance::CpuRange::kOutsideRenderer,

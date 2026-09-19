@@ -205,6 +205,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t index_buffer = 0;
     uint64_t version = 0;
     // Only the render worker updates memoization on an immutable snapshot.
+    mutable std::optional<std::array<bool, kVertexStreamCount>> required_vertex_streams;
     mutable NativePipelineLookupMemo<NativeFixedFunctionState, kRenderTargetCount, VkPipeline>
         pipeline_lookup_memo;
   };
@@ -1943,7 +1944,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::map<uint64_t, std::vector<NativeDescriptorRetirement>> native_descriptor_retirement_journal_;
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
-  NativeDrawStateCache<6> native_draw_state_cache_;
+  NativeDrawStateCache<6, kVertexStreamCount> native_draw_state_cache_;
   NativeDescriptorSlotHandle native_null_image_descriptor_{};
   NativeDescriptorSlotHandle native_null_sampler_descriptor_{};
   uint32_t active_descriptor_copy_ = 0;

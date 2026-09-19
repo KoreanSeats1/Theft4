@@ -6449,6 +6449,9 @@ Gta4NativeGraphicsSystem::SnapshotPipeline(const NativeCommand& command, bool dr
   }
   auto snapshot = std::allocate_shared<NativePipelineState>(
       std::pmr::polymorphic_allocator<NativePipelineState>(&snapshot_pool_), pipeline_state_);
+  // A new immutable snapshot may have a different shader or declaration.
+  // Do not inherit vertex requirements from its mutable source state.
+  snapshot->required_vertex_streams.reset();
   snapshot->render_targets = colors;
   snapshot->depth_stencil = depth;
   last_pipeline_snapshot_ = std::move(snapshot);
@@ -20869,19 +20872,35 @@ bool Gta4NativeGraphicsSystem::RecordPrimitiveUp(VkCommandBuffer command_buffer,
   const auto& dfn = vulkan_provider->vulkan_device()->functions();
   const VkBuffer default_vertex_buffer = upload_buffer_.buffer;
   const VkDeviceSize default_vertex_offset = 0;
-  profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1, &default_vertex_buffer,
-                             &default_vertex_offset); });
+  if (native_draw_state_cache_.UpdateVertexBuffer(
+          kDefaultVertexBinding, NativeVulkanHandleIdentity(default_vertex_buffer), default_vertex_offset)) {
+    profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+      dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1,
+                               &default_vertex_buffer, &default_vertex_offset);
+    });
+  }
   const VkBuffer vertex_buffer = vertex_allocation.buffer;
   const VkDeviceSize vertex_offset = vertex_allocation.offset;
-  profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, &vertex_offset); });
+  if (native_draw_state_cache_.UpdateVertexBuffer(
+          0, NativeVulkanHandleIdentity(vertex_buffer), vertex_offset)) {
+    profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+      dfn.vkCmdBindVertexBuffers(command_buffer, 0, 1,
+                               &vertex_buffer, &vertex_offset);
+    });
+  }
   if (draw.primitive_type == uint32_t(xenos::PrimitiveType::kRectangleList)) {
     const uint32_t rectangle_count = host_vertex_count / 4;
     for (uint32_t rectangle = 0; rectangle < rectangle_count; ++rectangle) {
       profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, 4, 1, rectangle * 4, 0); });
     }
   } else if (draw.primitive_type == uint32_t(xenos::PrimitiveType::kQuadList)) {
-    profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindIndexBuffer(command_buffer, quad_list_indices.buffer, quad_list_indices.offset,
-                             VK_INDEX_TYPE_UINT32); });
+    if (native_draw_state_cache_.UpdateIndexBuffer(
+            NativeVulkanHandleIdentity(quad_list_indices.buffer), quad_list_indices.offset, VK_INDEX_TYPE_UINT32)) {
+      profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+        dfn.vkCmdBindIndexBuffer(command_buffer, quad_list_indices.buffer,
+                               quad_list_indices.offset, VK_INDEX_TYPE_UINT32);
+      });
+    }
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDrawIndexed(command_buffer, quad_list_index_count, 1, 0, 0, 0); });
   } else {
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, host_vertex_count, 1, 0, 0); });
@@ -20895,6 +20914,11 @@ bool Gta4NativeGraphicsSystem::GetRequiredVertexStreams(
   required_streams.fill(false);
   if (!state.vertex_shader_resource || !state.vertex_declaration_resource) {
     return false;
+  }
+
+  if (state.required_vertex_streams) {
+    required_streams = *state.required_vertex_streams;
+    return true;
   }
 
   for (const NativeVertexInput& shader_input : state.vertex_shader_resource->vertex_inputs) {
@@ -20914,6 +20938,7 @@ bool Gta4NativeGraphicsSystem::GetRequiredVertexStreams(
     }
     required_streams[matching_element->stream] = true;
   }
+  state.required_vertex_streams = required_streams;
   return true;
 }
 
@@ -20958,8 +20983,13 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
   const auto& dfn = vulkan_provider->vulkan_device()->functions();
   const VkBuffer upload_buffer = upload_buffer_.buffer;
   const VkDeviceSize default_vertex_offset = 0;
-  profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1, &upload_buffer,
-                             &default_vertex_offset); });
+  if (native_draw_state_cache_.UpdateVertexBuffer(
+          kDefaultVertexBinding, NativeVulkanHandleIdentity(upload_buffer), default_vertex_offset)) {
+    profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+      dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1,
+                               &upload_buffer, &default_vertex_offset);
+    });
+  }
   std::array<bool, kVertexStreamCount> required_streams{};
   if (!GetRequiredVertexStreams(*command.pipeline_state, required_streams)) {
     return fail("vertex-input-layout");
@@ -20997,8 +21027,13 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
       return fail("vertex-stream-upload");
     }
     const VkDeviceSize stream_offset = stream_allocation.offset + stream_state.offset;
-    profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, stream, 1, &stream_allocation.buffer,
-                               &stream_offset); });
+    if (native_draw_state_cache_.UpdateVertexBuffer(
+            stream, NativeVulkanHandleIdentity(stream_allocation.buffer), stream_offset)) {
+      profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+        dfn.vkCmdBindVertexBuffers(command_buffer, stream, 1,
+                                 &stream_allocation.buffer, &stream_offset);
+      });
+    }
   }
 
   if (draw.primitive_type == uint32_t(xenos::PrimitiveType::kQuadList)) {
@@ -21022,8 +21057,13 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
       *(indices++) = vertex + 2;
       *(indices++) = vertex + 3;
     }
-    profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindIndexBuffer(command_buffer, indices_allocation.buffer, indices_allocation.offset,
-                             VK_INDEX_TYPE_UINT32); });
+    if (native_draw_state_cache_.UpdateIndexBuffer(
+            NativeVulkanHandleIdentity(indices_allocation.buffer), indices_allocation.offset, VK_INDEX_TYPE_UINT32)) {
+      profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+        dfn.vkCmdBindIndexBuffer(command_buffer, indices_allocation.buffer,
+                               indices_allocation.offset, VK_INDEX_TYPE_UINT32);
+      });
+    }
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDrawIndexed(command_buffer, index_count, 1, 0, int32_t(draw.start_vertex), 0); });
   } else {
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, draw.vertex_count, 1, draw.start_vertex, 0); });
@@ -21083,8 +21123,13 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
   const auto& dfn = vulkan_provider->vulkan_device()->functions();
   const VkBuffer upload_buffer = upload_buffer_.buffer;
   const VkDeviceSize default_vertex_offset = 0;
-  profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1, &upload_buffer,
-                             &default_vertex_offset); });
+  if (native_draw_state_cache_.UpdateVertexBuffer(
+          kDefaultVertexBinding, NativeVulkanHandleIdentity(upload_buffer), default_vertex_offset)) {
+    profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+      dfn.vkCmdBindVertexBuffers(command_buffer, kDefaultVertexBinding, 1,
+                               &upload_buffer, &default_vertex_offset);
+    });
+  }
   std::array<bool, kVertexStreamCount> required_streams{};
   if (!GetRequiredVertexStreams(*command.pipeline_state, required_streams)) {
     return fail("vertex-input-layout");
@@ -21116,8 +21161,13 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
       return fail("vertex-stream-upload");
     }
     const VkDeviceSize stream_offset = stream_allocation.offset + stream_state.offset;
-    profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindVertexBuffers(command_buffer, stream, 1, &stream_allocation.buffer,
-                               &stream_offset); });
+    if (native_draw_state_cache_.UpdateVertexBuffer(
+            stream, NativeVulkanHandleIdentity(stream_allocation.buffer), stream_offset)) {
+      profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+        dfn.vkCmdBindVertexBuffers(command_buffer, stream, 1,
+                                 &stream_allocation.buffer, &stream_offset);
+      });
+    }
   }
 
   const uint64_t element_size = index32 ? sizeof(uint32_t) : sizeof(uint16_t);
@@ -21480,7 +21530,13 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
     }
   }
 
-  profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindIndexBuffer(command_buffer, host_index_buffer, host_index_offset, bound_index_type); });
+  if (native_draw_state_cache_.UpdateIndexBuffer(
+          NativeVulkanHandleIdentity(host_index_buffer), host_index_offset, bound_index_type)) {
+    profile::CpuCall(profile::CpuOp::kDriverBind, [&] {
+      dfn.vkCmdBindIndexBuffer(command_buffer, host_index_buffer,
+                             host_index_offset, bound_index_type);
+    });
+  }
   if (IsHoveGantryGeometryCandidate(command)) {
     static std::atomic<uint64_t> hove_recorded_draw_count{0};
     const uint64_t hit = ++hove_recorded_draw_count;

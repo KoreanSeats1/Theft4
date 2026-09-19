@@ -323,6 +323,7 @@ const char* CounterName(Counter counter) {
       "index-upload-bytes",
       "persistent-buffer-upload-bytes",
       "persistent-buffer-hits",
+      "persistent-buffer-owner-memo-hits",
       "persistent-buffer-misses",
       "persistent-buffer-resident-bytes",
       "persistent-buffer-live-allocations",

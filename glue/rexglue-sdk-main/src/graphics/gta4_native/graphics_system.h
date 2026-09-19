@@ -240,6 +240,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     mutable std::vector<ConvertedVertexPayload> converted_vertex_payloads;
     mutable std::vector<uint8_t> host_index16_payload;
     mutable std::vector<uint8_t> host_index32_payload;
+    // The render worker owns both this immutable resource and the persistent
+    // buffer map. Entries remain valid until this owner retires; retaining the
+    // pointers avoids rehashing the global cache for every streamed draw.
+    mutable std::vector<NativePersistentBufferEntry*> persistent_buffer_entries;
     mutable NativeOwnerRetirementWatch<NativePersistentBufferEntry> persistent_retirement;
   };
 

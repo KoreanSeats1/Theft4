@@ -7791,6 +7791,14 @@ void Gta4NativeGraphicsSystem::DestroyNativePersistentBuffers() {
     persistent_buffer_retirements_->Close();
     persistent_buffer_retirements_.reset();
   }
+  // Resource snapshots can outlive a device reset. Their non-owning entry
+  // pointers must be invalidated before the backing unordered map is cleared.
+  for (auto& [handle, resource] : buffer_resources_) {
+    (void)handle;
+    if (resource) {
+      resource->persistent_buffer_entries.clear();
+    }
+  }
   persistent_buffers_.clear();
   std::vector<uint64_t> block_ids;
   block_ids.reserve(persistent_buffer_blocks_.size());
@@ -7820,20 +7828,38 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
   }
   const uint64_t predicted_submission =
       submission_tracker_ ? submission_tracker_->GetCurrentSubmission() : 0;
-  const auto existing = persistent_buffers_.find(key);
-  if (existing != persistent_buffers_.end()) {
-    NativePersistentBufferEntry& entry = existing->second;
-    entry.last_used_submission = std::max(entry.last_used_submission, predicted_submission);
-    entry.last_used_frame = active_texture_frame_;
-    allocation.buffer = entry.buffer;
-    allocation.offset = entry.offset;
+  NativePersistentBufferEntry* cached_entry = nullptr;
+  bool owner_memo_hit = false;
+  for (NativePersistentBufferEntry* candidate : owner->persistent_buffer_entries) {
+    if (candidate && candidate->key == key) {
+      cached_entry = candidate;
+      owner_memo_hit = true;
+      break;
+    }
+  }
+  if (!cached_entry) {
+    const auto existing = persistent_buffers_.find(key);
+    if (existing != persistent_buffers_.end()) {
+      cached_entry = &existing->second;
+      owner->persistent_buffer_entries.push_back(cached_entry);
+    }
+  }
+  if (cached_entry) {
+    cached_entry->last_used_submission =
+        std::max(cached_entry->last_used_submission, predicted_submission);
+    cached_entry->last_used_frame = active_texture_frame_;
+    allocation.buffer = cached_entry->buffer;
+    allocation.offset = cached_entry->offset;
     allocation.host_data = source;
     StageNativeFlightResource(NativeFlightResourceKind::kPersistentBuffer,
-                              NativeVulkanHandleIdentity(entry.buffer), 0, key.generation);
-    gpu_flight::Record("native.persistent-reuse", NativeVulkanHandleIdentity(entry.buffer),
-                       predicted_submission, active_texture_frame_, entry.offset, entry.size);
+                              NativeVulkanHandleIdentity(cached_entry->buffer), 0, key.generation);
+    gpu_flight::Record("native.persistent-reuse", NativeVulkanHandleIdentity(cached_entry->buffer),
+                       predicted_submission, active_texture_frame_, cached_entry->offset,
+                       cached_entry->size);
     ++persistent_buffer_hits_;
     AddNativeGpuProfileCounter(performance::Counter::kPersistentBufferHits);
+    AddNativeGpuProfileCounter(performance::Counter::kPersistentBufferOwnerMemoHits,
+                               owner_memo_hit);
     return true;
   }
 
@@ -7925,6 +7951,7 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
   }
   const auto inserted = persistent_buffers_.emplace(key, entry);
   owner->persistent_retirement.Track(persistent_buffer_retirements_, inserted.first->second);
+  owner->persistent_buffer_entries.push_back(&inserted.first->second);
   allocation.buffer = entry.buffer;
   allocation.offset = entry.offset;
   allocation.mapping = block.mapping ? block.mapping + entry.offset : nullptr;

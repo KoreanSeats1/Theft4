@@ -26372,6 +26372,39 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
            left.depth_stencil_attachment_active == right.depth_stencil_attachment_active &&
            left.uses_presenter == right.uses_presenter;
   };
+#ifdef THEFT4_LAB_BUILD
+  // Consecutive draw commands usually retain the exact attachment state.  The
+  // generic resolver still walks the surface cache and recomputes the target
+  // for every one, even though none of those inputs changed.  Keep this cache
+  // deliberately frame-local and invalidate it for every non-render command:
+  // resource updates and releases must always force a fresh resolution.
+  struct LabResolvedTargetCache {
+    const NativePipelineState* pipeline_state = nullptr;
+    NativeAttachmentUsage usage{};
+    VkImageView presenter_view = VK_NULL_HANDLE;
+    uint32_t presenter_width = 0;
+    uint32_t presenter_height = 0;
+    NativeRenderingTarget target{};
+    bool valid = false;
+  };
+  LabResolvedTargetCache lab_resolved_target_cache{};
+  const auto lab_attachment_usage_equal = [](const NativeAttachmentUsage& left,
+                                             const NativeAttachmentUsage& right) {
+    return left.color_attachment_mask == right.color_attachment_mask &&
+           left.color_write_mask == right.color_write_mask &&
+           left.depth_stencil_aspects == right.depth_stencil_aspects;
+  };
+  const auto mark_cached_target_used = [this](const NativeRenderingTarget& target) {
+    for (NativeSurfaceImage* surface : target.color_surfaces) {
+      if (surface) {
+        MarkNativeSurfaceImageUsed(*surface);
+      }
+    }
+    if (target.depth_surface) {
+      MarkNativeSurfaceImageUsed(*target.depth_surface);
+    }
+  };
+#endif
   auto command_has_active_color_write = [](const NativeCommand& command) {
     if (!command.pipeline_state) {
       return false;
@@ -27690,6 +27723,16 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     phone_frame_trace_ = queued_command.phone_trace;
     phone_record_event_ = phone_frame_trace_ ? phone_frame_trace_->event : 0;
     phone_lineage_draw_active_ = PhoneTraceConfig().lineage && phone_probe_commands.contains(command_index);
+#ifdef THEFT4_LAB_BUILD
+    const bool lab_target_cache_command =
+        queued_command.type == CommandType::kDrawPrimitive ||
+        queued_command.type == CommandType::kDrawPrimitiveUp ||
+        queued_command.type == CommandType::kDrawIndexedPrimitive ||
+        queued_command.type == CommandType::kClear;
+    if (!lab_target_cache_command) {
+      lab_resolved_target_cache.valid = false;
+    }
+#endif
     if (queued_command.type == CommandType::kReleaseResource) {
       if (rendering) {
         end_rendering();
@@ -29367,10 +29410,37 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       continue;
     }
     NativeRenderingTarget target;
+#ifdef THEFT4_LAB_BUILD
+    // Preserve per-command surface lifetime tracking on a cache hit.  The
+    // cache only replaces lookup and target construction, never ownership or
+    // submission bookkeeping. Event tracing keeps the uncached path so its
+    // attachment-resolution events remain complete.
+    const bool lab_target_cache_enabled =
+        lab_target_cache_command && !NativeRendererEventTraceEnabled();
+    const NativeAttachmentUsage lab_target_usage =
+        lab_target_cache_enabled ? GetRenderingTargetUsage(command) : NativeAttachmentUsage{};
+    const bool lab_target_cache_hit =
+        lab_target_cache_enabled && lab_resolved_target_cache.valid &&
+        lab_resolved_target_cache.pipeline_state == command.pipeline_state.get() &&
+        lab_attachment_usage_equal(lab_resolved_target_cache.usage, lab_target_usage) &&
+        lab_resolved_target_cache.presenter_view == presenter_view &&
+        lab_resolved_target_cache.presenter_width == width &&
+        lab_resolved_target_cache.presenter_height == height;
+    if (lab_target_cache_hit) {
+      target = lab_resolved_target_cache.target;
+      mark_cached_target_used(target);
+    }
+    if (!lab_target_cache_hit &&
+        !ResolveRenderingTarget(command, presenter_view, width, height, target)) {
+#else
     if (!ResolveRenderingTarget(command, presenter_view, width, height, target)) {
+#endif
       if (collect_frame_diagnostics) {
         ++target_failures;
       }
+#ifdef THEFT4_LAB_BUILD
+      lab_resolved_target_cache.valid = false;
+#endif
       TraceNativeRendererEvent("command-rejected", "reason=render-target-resolution-failed");
       if (diagnostic_frame && command.type == CommandType::kClear) {
         ClearCommand clear{};
@@ -29405,6 +29475,17 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       }
       continue;
     }
+#ifdef THEFT4_LAB_BUILD
+    if (lab_target_cache_enabled && !lab_target_cache_hit) {
+      lab_resolved_target_cache.pipeline_state = command.pipeline_state.get();
+      lab_resolved_target_cache.usage = lab_target_usage;
+      lab_resolved_target_cache.presenter_view = presenter_view;
+      lab_resolved_target_cache.presenter_width = width;
+      lab_resolved_target_cache.presenter_height = height;
+      lab_resolved_target_cache.target = target;
+      lab_resolved_target_cache.valid = true;
+    }
+#endif
     if (collect_frame_diagnostics) {
       if (target.uses_presenter) {
         ++presenter_target_commands;

@@ -27627,6 +27627,13 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         PhoneTraceConfig().readbacks));
   }
   SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFrameCommandLoop);
+  // These diagnostic controls are stable for a recorded frame. Reading the
+  // string cvars inside the command loop copies them for every draw and state
+  // command, even when all probes are disabled.
+  const bool validate_native_hot_caches = REXCVAR_GET(gta4_validate_native_hot_caches);
+  const std::string ps9_stencil_probe = REXCVAR_GET(gta4_native_light_ps9_stencil_probe);
+  const bool legacy_ps9_bypass = REXCVAR_GET(gta4_native_light_ps9_stencil_bypass);
+  const std::string stencil_face_probe = REXCVAR_GET(gta4_native_light_stencil_face_probe);
   for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
     const NativeCommand& queued_command = current_frame_[command_index];
     SetNativeWorkerDiagnosticFrameProgress(uint32_t(command_index), uint32_t(current_frame_.size()),
@@ -27649,7 +27656,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       QueueSurfaceImageRelease(release.resource);
       continue;
     }
-    if (REXCVAR_GET(gta4_validate_native_hot_caches) &&
+    if (validate_native_hot_caches &&
         (queued_command.type == CommandType::kDrawPrimitive ||
          queued_command.type == CommandType::kDrawPrimitiveUp ||
          queued_command.type == CommandType::kDrawIndexedPrimitive ||
@@ -27670,7 +27677,6 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     const NativeCommand* command_pointer = &queued_command;
     constexpr uint64_t kDeferredLightingPs9Hash = 0x23C88DA6F953E36Bull;
     constexpr uint32_t kFillerVolumePointTechnique = 11;
-    const std::string ps9_stencil_probe = REXCVAR_GET(gta4_native_light_ps9_stencil_probe);
     const bool ps9_accumulation_draw =
         queued_command.light_trace_technique == kFillerVolumePointTechnique &&
         queued_command.light_trace_mode == 0 && queued_command.pipeline_state &&
@@ -27688,7 +27694,6 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         ps9_probe_instance = StableDeferredLocalLightInstanceId(*vertex_constants, *constant_base);
       }
     }
-    const bool legacy_ps9_bypass = REXCVAR_GET(gta4_native_light_ps9_stencil_bypass);
     const bool targeted_ps9_probe =
         ps9_probe_instance == kApartmentBulbX890Instance && ps9_stencil_probe != "original";
     if (ps9_accumulation_draw && (legacy_ps9_bypass || targeted_ps9_probe)) {
@@ -27720,7 +27725,6 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       }
     }
 
-    const std::string stencil_face_probe = REXCVAR_GET(gta4_native_light_stencil_face_probe);
     constexpr uint64_t kDeferredLightingVs1Hash = 0xA97B1F043F720396ull;
     uint64_t stencil_face_probe_instance = 0;
     if (stencil_face_probe != "original" && queued_command.pipeline_state &&

@@ -233,9 +233,6 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t created_frame = 0;
     mutable std::atomic<uint32_t> last_used_frame{0};
     mutable std::atomic<size_t> shadow_validation_offset{0};
-    // Lab may validate a clean shadow once per producer frame. UINT32_MAX
-    // forces the first capture of a resource to validate normally.
-    mutable std::atomic<uint32_t> shadow_validation_producer_epoch{UINT32_MAX};
     std::vector<uint8_t> payload;
     // Built only by the single render worker. Keeping conversions with the
     // immutable source generation makes their lifetime follow the guest

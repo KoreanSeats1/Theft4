@@ -5016,21 +5016,6 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
   if (can_reuse_clean_capture) {
     const auto& clean_cache_entry = matching_cache_entry;
     buffer_fast_path_request_count_.fetch_add(1, std::memory_order_relaxed);
-#ifdef THEFT4_LAB_BUILD
-    // A known guest write still bypasses this path above. For clean resources,
-    // one rotating shadow range per producer frame preserves the corruption
-    // detector while avoiding duplicate checks for every draw that reuses the
-    // same geometry in that frame.
-    const uint32_t producer_epoch = diagnostic_producer_epoch_;
-    if (clean_cache_entry->shadow_validation_producer_epoch.load(
-            std::memory_order_relaxed) == producer_epoch) {
-      buffer_capture_reuse_count_.fetch_add(1, std::memory_order_relaxed);
-      clean_cache_entry->last_used_frame.store(
-          g_native_memory_profile_event_frame.load(std::memory_order_relaxed),
-          std::memory_order_relaxed);
-      return clean_cache_entry;
-    }
-#endif
     const size_t validation_offset =
         clean_cache_entry->shadow_validation_offset.load(std::memory_order_relaxed);
     const NativeBufferShadowValidationRange validation_range =
@@ -5040,10 +5025,6 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
                                               validation_range)) {
       clean_cache_entry->shadow_validation_offset.store(validation_range.next_offset,
                                                         std::memory_order_relaxed);
-#ifdef THEFT4_LAB_BUILD
-      clean_cache_entry->shadow_validation_producer_epoch.store(
-          producer_epoch, std::memory_order_relaxed);
-#endif
       buffer_capture_reuse_count_.fetch_add(1, std::memory_order_relaxed);
       clean_cache_entry->last_used_frame.store(
           g_native_memory_profile_event_frame.load(std::memory_order_relaxed),

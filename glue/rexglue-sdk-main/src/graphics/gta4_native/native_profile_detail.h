@@ -151,7 +151,9 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
   transport
       << "frame,sequence,slot,submission,render_width,render_height,display_width,display_height,"
          "first_command,last_command,cpu_begin_tick,cpu_end_tick,commands,measured_commands,"
-         "producer_capture_sum_ms,capture_lock_sum_ms,queue_lock_sum_ms,backpressure_sum_ms,queue_"
+         "producer_capture_sum_ms,producer_validation_sum_ms,producer_state_capture_sum_ms,"
+         "producer_geometry_capture_sum_ms,producer_texture_capture_sum_ms,capture_lock_sum_ms,"
+         "queue_lock_sum_ms,backpressure_sum_ms,queue_"
          "dwell_sum_ms,queue_dwell_max_ms,queue_peak,worker_assembly_ms,worker_idle_ms,internal_"
          "flush_ms,internal_flush_count,cpu_scope_clock_reads,clock_probe_ticks,clock_pair_floor_"
          "estimate_ms,cpu_events_omitted,cpu_invalid_scopes,cpu_stack_overflow,shader_keys_"
@@ -270,7 +272,9 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
               << f.width << ',' << f.height << ',' << f.display_width << ',' << f.display_height
               << ',' << f.first_command << ',' << f.last_command << ',' << c.begin << ',' << c.end
               << ',' << t.commands << ',' << t.measured_commands << ',' << t.capture_ticks * ms
-              << ',' << t.capture_lock_ticks * ms << ',' << t.queue_lock_ticks * ms << ','
+              << ',' << t.validation_ticks * ms << ',' << t.state_capture_ticks * ms << ','
+              << t.geometry_capture_ticks * ms << ',' << t.texture_capture_ticks * ms << ','
+              << t.capture_lock_ticks * ms << ',' << t.queue_lock_ticks * ms << ','
               << t.backpressure_ticks * ms << ',' << t.dwell_ticks * ms << ','
               << t.max_dwell_ticks * ms << ',' << t.queue_peak << ','
               << t.worker_assembly_ticks * ms << ',' << t.worker_idle_ticks * ms << ','
@@ -359,7 +363,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
 #else
   metadata << ",\"worker_transport_split\":false";
 #endif
-  metadata << ",\"transport_schema_version\":3"
+  metadata << ",\"transport_schema_version\":4"
            << ",\"worker_idle_semantics\":\"legacy acquisition/dispatch total; split into "
               "queue-mutex wait, condition wait including reacquisition, batch transfer and "
               "remaining dispatch; these components are not additional frame costs\""

@@ -387,11 +387,13 @@ class CpuRecorder {
 // particular must never be described as a serial CPU workload.
 struct CommandTransport {
   uint64_t enqueued = 0, capture_ticks = 0, capture_lock_ticks = 0, queue_lock_ticks = 0,
-           backpressure_ticks = 0;
+           backpressure_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
+           geometry_capture_ticks = 0, texture_capture_ticks = 0;
 };
 struct TransportSummary {
   uint64_t commands = 0, measured_commands = 0, capture_ticks = 0, capture_lock_ticks = 0,
-           queue_lock_ticks = 0;
+           queue_lock_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
+           geometry_capture_ticks = 0, texture_capture_ticks = 0;
   uint64_t backpressure_ticks = 0, dwell_ticks = 0, max_dwell_ticks = 0, queue_peak = 0;
   uint64_t worker_assembly_ticks = 0, worker_idle_ticks = 0, internal_flush_ticks = 0,
            internal_flushes = 0;
@@ -438,6 +440,10 @@ struct TransportSummary {
     capture_ticks = AddSaturated(capture_ticks, p.capture_ticks);
     capture_lock_ticks = AddSaturated(capture_lock_ticks, p.capture_lock_ticks);
     queue_lock_ticks = AddSaturated(queue_lock_ticks, p.queue_lock_ticks);
+    validation_ticks = AddSaturated(validation_ticks, p.validation_ticks);
+    state_capture_ticks = AddSaturated(state_capture_ticks, p.state_capture_ticks);
+    geometry_capture_ticks = AddSaturated(geometry_capture_ticks, p.geometry_capture_ticks);
+    texture_capture_ticks = AddSaturated(texture_capture_ticks, p.texture_capture_ticks);
     backpressure_ticks = AddSaturated(backpressure_ticks, p.backpressure_ticks);
     if (dequeued >= p.enqueued) {
       const auto d = dequeued - p.enqueued;

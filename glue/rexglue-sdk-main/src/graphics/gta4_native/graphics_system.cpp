@@ -3768,6 +3768,10 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     }
     return false;
   }
+  const uint64_t validation_end = profile_transport ? profile::CpuTick() : 0;
+  if (profile_transport) {
+    native_command.profile_transport.validation_ticks = validation_end - capture_acquired;
+  }
   native_command.gpu_pass_origin = gpu_pass_origin;
   if (phone_envelope) {
     native_command.phone_trace = std::make_shared<PhoneTraceContext>(phone_context);
@@ -3855,8 +3859,11 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     wake_worker = render_queue_.empty();
     if(profile_transport) {
       const uint64_t enqueued = profile::CpuTick();
-      native_command.profile_transport = {enqueued, enqueued-capture_begin,
-          capture_acquired-capture_begin, queue_lock_end-queue_lock_begin, backpressure_end-queue_lock_end};
+      native_command.profile_transport.enqueued = enqueued;
+      native_command.profile_transport.capture_ticks = enqueued-capture_begin;
+      native_command.profile_transport.capture_lock_ticks = capture_acquired-capture_begin;
+      native_command.profile_transport.queue_lock_ticks = queue_lock_end-queue_lock_begin;
+      native_command.profile_transport.backpressure_ticks = backpressure_end-queue_lock_end;
     }
     QueueTextureProtection(native_command, true);
     render_queue_.push_back(std::move(native_command));
@@ -4082,6 +4089,10 @@ NativeFixedFunctionState Gta4NativeGraphicsSystem::DecodeFixedFunctionState(
 
 bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_t command_size,
                                                       NativeCommand& native_command) {
+  const bool profile_transport =
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProfiler) &&
+      (g_native_profile_transport_active.load(std::memory_order_acquire) ||
+       g_native_profile_capture_requested.load(std::memory_order_acquire));
   auto reject = [command_size](CommandType type, const char* reason) {
     static std::atomic<uint64_t> rejection_count{0};
     const uint64_t count = NextNativeTraceDiagnosticCount(rejection_count);
@@ -4554,6 +4565,8 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
                             header.type == CommandType::kDrawPrimitiveUp ||
                             header.type == CommandType::kDrawIndexedPrimitive;
   if (draw_command || header.type == CommandType::kClear) {
+    const uint64_t state_capture_begin =
+        profile_transport ? profile::CpuTick() : 0;
     const uint32_t device = CommandDevice(header.type, command);
     const NativeDirtyState* dirty_state = CommandDirtyState(header.type, command);
     const uint8_t* device_memory = memory_->TranslateVirtual<const uint8_t*>(device);
@@ -4690,8 +4703,17 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     }
     native_command.snapshot_depth_stencil =
         CaptureSurfaceDescriptor(LoadGuestWord(device_state, kDepthStencilOffset));
+    if (profile_transport) {
+      native_command.profile_transport.state_capture_ticks =
+          profile::CpuTick() - state_capture_begin;
+    }
   }
 
+  const bool geometry_capture = header.type == CommandType::kDrawPrimitiveUp ||
+                                header.type == CommandType::kDrawPrimitive ||
+                                header.type == CommandType::kDrawIndexedPrimitive;
+  const uint64_t geometry_capture_begin =
+      profile_transport && geometry_capture ? profile::CpuTick() : 0;
   if (header.type == CommandType::kDrawPrimitiveUp) {
     const auto& draw = *static_cast<const DrawPrimitiveUpCommand*>(command);
     if (draw.vertex_data_size > kMaximumUpPayloadSize ||
@@ -4729,9 +4751,15 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       CaptureBulbSource(native_command, device_state);
     }
   }
+  if (geometry_capture_begin) {
+    native_command.profile_transport.geometry_capture_ticks =
+        profile::CpuTick() - geometry_capture_begin;
+  }
 
   if (header.type == CommandType::kDrawPrimitive || header.type == CommandType::kDrawPrimitiveUp ||
       header.type == CommandType::kDrawIndexedPrimitive) {
+    const uint64_t texture_capture_begin =
+        profile_transport ? profile::CpuTick() : 0;
     const uint32_t device = CommandDevice(header.type, command);
     const auto producer_state = producer_device_shader_states_.find(device);
     if (producer_state != producer_device_shader_states_.end()) {
@@ -4776,6 +4804,10 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       if (handle) {
         native_command.textures[stage] = CaptureTextureResource(handle, fetch, stage);
       }
+    }
+    if (profile_transport) {
+      native_command.profile_transport.texture_capture_ticks =
+          profile::CpuTick() - texture_capture_begin;
     }
   }
 

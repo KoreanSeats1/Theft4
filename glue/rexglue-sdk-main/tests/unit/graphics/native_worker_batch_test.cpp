@@ -5,6 +5,7 @@
 #include <memory>
 #include <memory_resource>
 #include <random>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 #include "graphics/gta4_native/native_worker_batch.h"
@@ -62,6 +63,59 @@ TEST_CASE("Worker staging preserves FIFO and move-only payloads across wraps", "
   batch.clear(); REQUIRE(batch.empty());
 }
 
+TEST_CASE("Indirect queue transfer preserves addresses and resource ownership",
+          "[graphics][worker-batch][memory]") {
+  using Owner = std::unique_ptr<Command>;
+  NativeWorkerBatch<Owner, 128> batch;
+  std::deque<Owner> queue;
+  std::vector<std::weak_ptr<uint64_t>> resources;
+  std::vector<Command*> addresses;
+  uint64_t expected = 0;
+  for (unsigned round = 0; round < 8; ++round) {
+    addresses.clear();
+    resources.clear();
+    for (size_t i = 0; i < batch.capacity(); ++i) {
+      auto command = std::make_unique<Command>();
+      command->sequence = round * batch.capacity() + i;
+      command->payload = std::make_unique<uint64_t>(command->sequence);
+      command->owner = std::make_shared<uint64_t>(command->sequence);
+      resources.push_back(command->owner);
+      addresses.push_back(command.get());
+      queue.push_back(std::move(command));
+    }
+    while (!queue.empty()) {
+      batch.push_back(std::move(queue.front()));
+      REQUIRE_FALSE(queue.front());
+      queue.pop_front();
+    }
+    const auto& read_only_batch = batch;
+    size_t index = 0;
+    for (const auto& owner : read_only_batch) {
+      REQUIRE(&NativeQueueCommand(owner) == addresses[index++]);
+      REQUIRE(owner->owner.use_count() == 1);
+    }
+    index = 0;
+    while (!batch.empty()) {
+      Command& command = NativeQueueCommand(batch.front());
+      REQUIRE(&command == addresses[index]);
+      REQUIRE(command.sequence == expected++);
+      REQUIRE(*command.payload == command.sequence);
+      // Actual renderer retains frame draws by moving the command once.
+      Command retained = std::move(command);
+      batch.pop_front();
+      REQUIRE_FALSE(resources[index].expired());
+      retained.owner.reset();
+      REQUIRE(resources[index++].expired());
+    }
+  }
+  auto pending = std::make_unique<Command>();
+  pending->owner = std::make_shared<uint64_t>(1);
+  std::weak_ptr<uint64_t> pending_resource = pending->owner;
+  batch.push_back(std::move(pending));
+  batch.clear(); // Shutdown before processing must release pending resources.
+  REQUIRE(pending_resource.expired());
+}
+
 TEST_CASE("Worker slots release owners on pop clear and destruction", "[graphics][worker-batch][memory]") {
   std::vector<std::weak_ptr<uint64_t>> observers;
   {
@@ -84,9 +138,11 @@ TEST_CASE("Worker slots release owners on pop clear and destruction", "[graphics
 }
 
 TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[graphics][worker-batch][memory]") {
+  const auto exercise = []<bool Indirect>() {
+  using Entry = std::conditional_t<Indirect, std::unique_ptr<Command>, Command>;
   NativeTextureProtectionIndex queued, staged, deferred;
-  NativeWorkerBatch<Command, 64> batch;
-  std::deque<Command> queue;
+  NativeWorkerBatch<Entry, 64> batch;
+  std::deque<Entry> queue;
   std::vector<Command> frame;
   std::mt19937 random(407);
   uint64_t sequence = 0, expected_sequence = 0;
@@ -95,22 +151,27 @@ TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[grap
   };
   for (size_t round = 0; round < 160; ++round) {
     for (size_t i = 0; i < 64; ++i) {
-      Command command{++sequence, {}, {}};
+      auto entry = [] {
+        if constexpr (Indirect) return std::make_unique<Command>();
+        else return Command{};
+      }();
+      Command& command = NativeQueueCommand(entry);
+      command.sequence = ++sequence;
       for (auto& generation : command.textures) {
         generation = random() % 24; // Nulls, repeated bindings and shared sources.
         REQUIRE(queued.Retain(generation));
       }
-      queue.push_back(std::move(command));
+      queue.push_back(std::move(entry));
     }
     while (!queue.empty()) {
       batch.push_back(std::move(queue.front())); queue.pop_front();
-      for (auto generation : batch.back().textures) {
+      for (auto generation : NativeQueueCommand(batch.back()).textures) {
         REQUIRE(staged.Retain(generation));
       }
     }
     REQUIRE(deferred.AssignFrom(staged));
     while (!batch.empty()) {
-      const auto& active = batch.front();
+      const auto& active = NativeQueueCommand(batch.front());
       REQUIRE(active.sequence == ++expected_sequence);
       for (auto generation : active.textures) REQUIRE(staged.Release(generation));
       std::unordered_set<uint64_t> actual, oracle;
@@ -118,16 +179,19 @@ TEST_CASE("Queue batch active and frame pins agree with a resource scan", "[grap
       add(active, actual);
       for (const auto& command : frame) add(command, actual);
       for (const auto& command : frame) add(command, oracle);
-      for (const auto& command : batch) add(command, oracle);
-      for (const auto& command : queue) add(command, oracle);
+      for (const auto& command : batch) add(NativeQueueCommand(command), oracle);
+      for (const auto& command : queue) add(NativeQueueCommand(command), oracle);
       REQUIRE(actual == oracle);
-      frame.push_back(std::move(batch.front())); batch.pop_front();
+      frame.push_back(std::move(NativeQueueCommand(batch.front()))); batch.pop_front();
       if (expected_sequence % 19 == 0) frame.clear(); // Present/flush within a batch.
     }
     REQUIRE(queued.ReleaseAllFrom(deferred)); deferred.Reset();
     REQUIRE(queued.size() == 0); REQUIRE(staged.size() == 0);
     REQUIRE(queued.valid()); REQUIRE(staged.valid()); REQUIRE(deferred.valid());
   }
+  };
+  exercise.template operator()<false>();
+  exercise.template operator()<true>();
 }
 
 TEST_CASE("Deferred batch counts preserve producer references with shared generations",

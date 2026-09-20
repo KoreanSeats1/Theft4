@@ -3751,6 +3751,21 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     return false;
   }
 
+#ifdef THEFT4_LAB_BUILD
+  // These notifications have no worker-side effect; draws capture authoritative
+  // packed state. Validate the same size/type/device contract before creating
+  // a large command or acquiring capture/queue locks. Malformed commands still
+  // take the normal rejection path below.
+  if (title_command_size == sizeof(SetRenderStateCommand)) {
+    SetRenderStateCommand state{};
+    std::memcpy(&state, title_command, sizeof(state));
+    if (state.header.type == CommandType::kSetRenderState &&
+        state.header.size == sizeof(state) && state.device) {
+      return true;
+    }
+  }
+#endif
+
   // Capture and queue are one producer transaction. This guarantees that a
   // later partial delta can never overtake the bootstrap snapshot it depends
   // on when title command submission happens from multiple host threads.
@@ -3760,7 +3775,12 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   const uint64_t capture_begin = profile_transport ? profile::CpuTick() : 0;
   std::unique_lock capture_lock(command_capture_mutex_);
   const uint64_t capture_acquired = profile_transport ? profile::CpuTick() : 0;
-  NativeCommand native_command;
+#ifdef THEFT4_LAB_BUILD
+  auto queued_command = std::make_unique<NativeCommand>();
+#else
+  NativeCommand queued_command;
+#endif
+  NativeCommand& native_command = NativeQueueCommand(queued_command);
   if (!ValidateAndCopyCommand(title_command, title_command_size, native_command)) {
     if (phone_envelope) {
       PhoneTraceLog("native-reject", fmt::format("run={} event={} reason=validation",
@@ -3772,14 +3792,6 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   if (profile_transport) {
     native_command.profile_transport.validation_ticks = validation_end - capture_acquired;
   }
-#ifdef THEFT4_LAB_BUILD
-  // Draw commands capture the authoritative packed device state. The worker's
-  // kSetRenderState case is intentionally a no-op, so forwarding these state
-  // notifications only consumes producer, queue, and worker time.
-  if (native_command.type == CommandType::kSetRenderState) {
-    return true;
-  }
-#endif
   native_command.gpu_pass_origin = gpu_pass_origin;
   if (phone_envelope) {
     native_command.phone_trace = std::make_shared<PhoneTraceContext>(phone_context);
@@ -3874,7 +3886,7 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       native_command.profile_transport.backpressure_ticks = backpressure_end-queue_lock_end;
     }
     QueueTextureProtection(native_command, true);
-    render_queue_.push_back(std::move(native_command));
+    render_queue_.push_back(std::move(queued_command));
     if (title_header.type == CommandType::kPresent) {
       ++queued_title_presents_;
       ++diagnostic_producer_epoch_;
@@ -3935,7 +3947,12 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
   }
 
   std::unique_lock capture_lock(command_capture_mutex_);
-  NativeCommand native_command;
+#ifdef THEFT4_LAB_BUILD
+  auto queued_command = std::make_unique<NativeCommand>();
+#else
+  NativeCommand queued_command;
+#endif
+  NativeCommand& native_command = NativeQueueCommand(queued_command);
   native_command.type = CommandType::kTextureLock;
   native_command.bytes.resize(sizeof(lock_command));
   std::memcpy(native_command.bytes.data(), &lock_command, sizeof(lock_command));
@@ -3960,7 +3977,7 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
         "run={} event={} seq={} epoch={} texture={:08X}", phone_context.run, phone_context.event,
         native_command.diagnostic_submit_sequence, native_command.diagnostic_producer_epoch, lock_command.texture));
     QueueTextureProtection(native_command, true);
-    render_queue_.push_back(std::move(native_command));
+    render_queue_.push_back(std::move(queued_command));
   }
   render_condition_.notify_one();
 
@@ -4629,8 +4646,16 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       if (dirty_state) {
         dirty_words = dirty_state->words;
       }
+#ifdef THEFT4_LAB_BUILD
+      // These ranges are consumed before releasing command_capture_mutex_.
+      // Only the command-owned payload crosses to the worker; no scratch
+      // references escape, and capacity can survive the next draw.
+      DirtyStateDelta& dirty_delta = producer_dirty_delta_;
+      DirtyDeltaScratch& dirty_scratch = producer_dirty_scratch_;
+#else
       DirtyStateDelta dirty_delta;
       DirtyDeltaScratch dirty_scratch;
+#endif
       const DirtyLayoutValidationResult dirty_validation = BuildDirtyStateDelta(
           dirty_words, NativeConstantDirtyLayout(), dirty_delta, dirty_scratch);
       if (!dirty_validation.valid()) {
@@ -5768,6 +5793,11 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
   if (current_frame_.capacity() < kInitialFrameCommandCapacity) {
     current_frame_.reserve(kInitialFrameCommandCapacity);
   }
+#ifdef THEFT4_LAB_BUILD
+  REXLOG_INFO("gta4-native-lab: command-transport=unique-owner command-bytes={} "
+              "queue-entry-bytes={} worker-batch={} dirty-scratch=reused",
+              sizeof(NativeCommand), sizeof(NativeQueuedCommand), kRenderWorkerBatchCommands);
+#endif
   {
     std::lock_guard lock(deferred_diagnostic_mutex_);
     deferred_diagnostic_shutdown_ = false;
@@ -5973,7 +6003,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
             "rebuilding queue index");
         queued_texture_protection_.Reset();
         for (const auto& queued_command : render_queue_)
-          QueueTextureProtection(queued_command, true);
+          QueueTextureProtection(NativeQueueCommand(queued_command), true);
       }
       worker_batch_deferred_queue_protection_.Reset();
 #endif
@@ -6018,7 +6048,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       // still contains the moved references, so there is no lifetime gap.
       worker_batch_texture_protection_.Reset();
       for (const auto& staged : worker_batch_) {
-        VisitProtectedTextureGenerations(staged, [&](uint64_t generation) {
+        VisitProtectedTextureGenerations(NativeQueueCommand(staged), [&](uint64_t generation) {
           if (!worker_batch_texture_protection_.Retain(generation)) {
             REXLOG_ERROR(
                 "gta4-native-protection: staged batch retain failed generation={}", generation);
@@ -6036,7 +6066,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
 #endif
     // The batch is worker-owned. Process its front in place and pop it after
     // per-command scopes have released their references.
-    NativeCommand& command = worker_batch_.front();
+    NativeCommand& command = NativeQueueCommand(worker_batch_.front());
     const auto pop_processed_command = MakeScopeExit([&] { worker_batch_.pop_front(); });
     VisitProtectedTextureGenerations(command, [&](uint64_t generation) {
       if (!worker_batch_texture_protection_.Release(generation)) {
@@ -10749,7 +10779,8 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
   {
     std::lock_guard lock(render_mutex_);
     command_count += render_queue_.size();
-    for (const NativeCommand& command : render_queue_) {
+    for (const auto& queued_command : render_queue_) {
+      const NativeCommand& command = NativeQueueCommand(queued_command);
       command_transport_bytes += command_bytes(command);
       command_transport_logical +=
           sizeof(NativeCommand) + command.bytes.size() + command.payload.size();
@@ -17826,7 +17857,7 @@ void Gta4NativeGraphicsSystem::AppendQueuedTextureProtection(std::unordered_set<
   }
 #endif
   for (const auto& command : render_queue_)
-    AddProtectedTextureGenerations(command, generations);
+    AddProtectedTextureGenerations(NativeQueueCommand(command), generations);
 }
 
 void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {
@@ -17845,7 +17876,7 @@ std::unordered_set<uint64_t> Gta4NativeGraphicsSystem::CollectProtectedTextureGe
     worker_batch_texture_protection_.AppendTo(generations);
   } else {
     for (const auto& command : worker_batch_) {
-      AddProtectedTextureGenerations(command, generations);
+      AddProtectedTextureGenerations(NativeQueueCommand(command), generations);
     }
   }
   {
@@ -17854,8 +17885,10 @@ std::unordered_set<uint64_t> Gta4NativeGraphicsSystem::CollectProtectedTextureGe
     if (REXCVAR_GET(gta4_validate_native_hot_caches)) {
       std::unordered_set<uint64_t> expected;
       for (const auto& command : current_frame_) AddProtectedTextureGenerations(command, expected);
-      for (const auto& command : worker_batch_) AddProtectedTextureGenerations(command, expected);
-      for (const auto& command : render_queue_) AddProtectedTextureGenerations(command, expected);
+      for (const auto& command : worker_batch_)
+        AddProtectedTextureGenerations(NativeQueueCommand(command), expected);
+      for (const auto& command : render_queue_)
+        AddProtectedTextureGenerations(NativeQueueCommand(command), expected);
       if (active_worker_command_) AddProtectedTextureGenerations(*active_worker_command_, expected);
       if (expected != generations) {
         REXLOG_ERROR("gta4-native-hotpath: protection-mismatch fast={} reference={}", generations.size(), expected.size());

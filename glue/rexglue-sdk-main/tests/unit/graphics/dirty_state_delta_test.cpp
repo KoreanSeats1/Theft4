@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -112,6 +113,41 @@ TEST_CASE("GTA IV native dirty state reuses caller-owned delta storage") {
   REQUIRE_FALSE(gta4::BuildDirtyStateDelta(words, invalid_layout, delta, scratch).valid());
   REQUIRE_FALSE(delta.Any());
   REQUIRE(delta.fixed_state_mask.element_count == 0);
+}
+
+TEST_CASE("Single-span dirty extraction matches a bit-by-bit oracle", "[graphics][dirty-span]") {
+  // Exercise both bit directions, clipped words, nonzero semantic offsets,
+  // empty/full/sparse masks and the 64-bit shift boundary.
+  std::mt19937_64 random(0x900033);
+  gta4::DirtyStateDelta delta;
+  gta4::DirtyDeltaScratch scratch;
+  for (uint8_t count = 1; count <= 64; ++count) {
+    for (bool reverse : {false, true}) {
+      for (unsigned trial = 0; trial < 80; ++trial) {
+        const uint8_t first_bit = uint8_t(random() % (65 - count));
+        const uint32_t first_element = uint32_t(random() % 13);
+        const uint8_t word = uint8_t(random() % gta4::kNativeDirtyWordCount);
+        std::array<gta4::DirtyBitSpan, 1> spans{{
+            {word, first_bit, count, first_element, reverse}}};
+        gta4::DirtyStateLayout layout{};
+        layout.vertex_constants = {spans, first_element + count};
+        gta4::NativeDirtyWords words{};
+        words[word] = trial == 0 ? 0 : trial == 1 ? ~uint64_t{0} : random();
+        std::vector<gta4::DirtyElementRange> expected;
+        for (uint32_t element = 0; element < count; ++element) {
+          const uint32_t bit = first_bit + (reverse ? count - 1 - element : element);
+          if (!(words[word] & (uint64_t{1} << bit))) continue;
+          const uint32_t index = first_element + element;
+          if (!expected.empty() && expected.back().first + expected.back().count == index)
+            ++expected.back().count;
+          else
+            expected.push_back({index, 1});
+        }
+        REQUIRE(gta4::BuildDirtyStateDelta(words, layout, delta, scratch).valid());
+        REQUIRE(delta.vertex_constant_ranges.ranges == expected);
+      }
+    }
+  }
 }
 
 TEST_CASE("GTA IV native dirty layout validation identifies the exact bad span") {

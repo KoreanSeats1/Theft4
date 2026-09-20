@@ -1616,7 +1616,16 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::mutex render_mutex_;
   std::condition_variable render_condition_;
   std::pmr::synchronized_pool_resource snapshot_pool_;
-  std::deque<NativeCommand> render_queue_;
+#ifdef THEFT4_LAB_BUILD
+  // Construct once on the producer, then move only the owning pointer through
+  // the queue and batch. The worker still moves retained draws into its frame.
+  using NativeQueuedCommand = std::unique_ptr<NativeCommand>;
+  DirtyStateDelta producer_dirty_delta_;
+  DirtyDeltaScratch producer_dirty_scratch_; // command_capture_mutex_ owns both.
+#else
+  using NativeQueuedCommand = NativeCommand;
+#endif
+  std::deque<NativeQueuedCommand> render_queue_;
   NativeTextureProtectionIndex queued_texture_protection_; // render_mutex_ owns this.
   // Render-worker-owned staging. Moving a bounded batch out of render_queue_
   // amortizes the queue mutex without changing command order. Texture
@@ -1625,7 +1634,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // Lab 23: fewer queue-mutex acquisitions when the title has already
   // produced a full frame of commands. Preserve FIFO and the bounded batch.
   static constexpr size_t kRenderWorkerBatchCommands = 128;
-  NativeWorkerBatch<NativeCommand, kRenderWorkerBatchCommands> worker_batch_;
+  NativeWorkerBatch<NativeQueuedCommand, kRenderWorkerBatchCommands> worker_batch_;
 #else
   static constexpr size_t kRenderWorkerBatchCommands = 64;
   std::deque<NativeCommand> worker_batch_;

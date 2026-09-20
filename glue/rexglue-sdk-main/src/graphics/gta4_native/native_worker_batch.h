@@ -3,10 +3,29 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <utility>
 
 namespace rex::graphics::gta4_native {
+
+// A queue may store commands inline or transfer a unique owner. Consumers
+// always access the same command; moving an owner never moves its payload or
+// shared resource references. A queued owner must never be null.
+template <typename Command>
+Command& NativeQueueCommand(Command& command) { return command; }
+template <typename Command>
+const Command& NativeQueueCommand(const Command& command) { return command; }
+template <typename Command>
+Command& NativeQueueCommand(std::unique_ptr<Command>& command) {
+  assert(command);
+  return *command;
+}
+template <typename Command>
+const Command& NativeQueueCommand(const std::unique_ptr<Command>& command) {
+  assert(command);
+  return *command;
+}
 
 // Worker-owned bounded staging. Slots are reused without allocating container
 // blocks. Popping destroys the command immediately, including unmoved owners.

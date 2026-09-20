@@ -275,6 +275,33 @@ void ForEachDirtyElement(const NativeDirtyWords& dirty_words, const DirtyCompone
 
 inline void BuildRangeSet(const NativeDirtyWords& dirty_words, const DirtyComponentLayout& layout,
                           DirtyRangeSet& result, DirtyDeltaScratch& scratch) {
+  // A single span already defines unique, ordered elements. Walk its set bits
+  // in semantic order instead of allocating an element list and sorting it.
+  // In particular, Xenos constants use MSB-first groups, so reverse spans must
+  // visit the highest bit first. The general path still handles overlapping or
+  // unordered spans and deduplicates them exactly as before.
+  if (layout.spans.size() == 1) {
+    const DirtyBitSpan& span = layout.spans.front();
+    uint64_t bits =
+        (dirty_words[span.dirty_word] >> span.first_dirty_bit) & LowBitMask(span.bit_count);
+    result.ranges.clear();
+    scratch.dirty_elements.clear();
+    while (bits) {
+      const uint32_t bit = span.reverse_bits
+          ? 63u - static_cast<uint32_t>(std::countl_zero(bits))
+          : static_cast<uint32_t>(std::countr_zero(bits));
+      const uint32_t element = span.first_element +
+          (span.reverse_bits ? uint32_t(span.bit_count - 1) - bit : bit);
+      if (!result.ranges.empty() &&
+          result.ranges.back().first + result.ranges.back().count == element) {
+        ++result.ranges.back().count;
+      } else {
+        result.ranges.push_back({element, 1});
+      }
+      bits &= ~(uint64_t{1} << bit);
+    }
+    return;
+  }
   std::vector<uint32_t>& dirty_elements = scratch.dirty_elements;
   dirty_elements.clear();
   ForEachDirtyElement(dirty_words, layout,

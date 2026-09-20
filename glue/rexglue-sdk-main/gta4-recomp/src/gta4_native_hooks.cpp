@@ -354,6 +354,30 @@ gta4::frame_limiter::State g_native_frame_limiter_state;
 uint64_t g_native_frame_limiter_present_count = 0;
 
 #ifdef THEFT4_LAB_BUILD
+// iOS may resume a short sleep several milliseconds after its requested
+// deadline. Keep the established fixed limiter phase, but leave a bounded
+// final interval for an active wait so an otherwise-ready frame does not miss
+// the next display opportunity solely because of scheduler wake latency.
+// This is deliberately Lab-only: it costs at most 2 ms of one core per capped
+// frame and must earn its place with the device pacing capture.
+constexpr auto kLabPacingActiveWaitMargin = std::chrono::milliseconds(2);
+
+void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
+  using Clock = std::chrono::steady_clock;
+  const auto now = Clock::now();
+  if (now >= deadline) {
+    return;
+  }
+  const auto remaining = deadline - now;
+  if (remaining > kLabPacingActiveWaitMargin) {
+    std::this_thread::sleep_until(deadline - kLabPacingActiveWaitMargin);
+  }
+  while (Clock::now() < deadline) {
+  }
+}
+#endif
+
+#ifdef THEFT4_LAB_BUILD
 void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr) {
 #else
 void PaceNativePresent(uint32_t submitted_frame) {
@@ -410,7 +434,11 @@ void PaceNativePresent(uint32_t submitted_frame) {
           std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
     }
 #endif
+#ifdef THEFT4_LAB_BUILD
+    WaitForLabPacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#else
     std::this_thread::sleep_until(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#endif
   }
 #ifdef THEFT4_LAB_BUILD
   if (observation) {

@@ -20343,6 +20343,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
   auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
   const auto* vulkan_device = vulkan_provider->vulkan_device();
   NativeSharedConstantSemanticKey shared_key{};
+  {
+  const profile::CpuScope shared_constants_scope(profile::CpuOp::kSharedDrawConstants);
   shared_key.texture_descriptor_indices = command.texture_descriptor_indices;
   shared_key.sampler_descriptor_indices = command.sampler_descriptor_indices;
   shared_key.boolean_version =
@@ -20493,6 +20495,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                   fmt::ptr(shared_constants_allocation.buffer), shared_constants_allocation.offset);
     }
   }
+  }
+  const profile::CpuScope dynamic_state_scope(profile::CpuOp::kDynamicDrawState);
   const auto& dfn = vulkan_provider->vulkan_device()->functions();
   std::array<VkDescriptorSet, kDescriptorSetCount> draw_descriptor_sets{};
   if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed) {

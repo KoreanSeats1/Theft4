@@ -105,7 +105,11 @@ namespace rex::graphics::gta4_native::profile {
                                                                           "profiler-bookkeeping")    \
                                                                           X(TraceFormatting,         \
                                                                             "diagnostic-"            \
-                                                                            "formatting")
+                                                                          "formatting") X(          \
+                                                                          SharedDrawConstants,      \
+                                                                          "shared-draw-constants") X(\
+                                                                          DynamicDrawState,         \
+                                                                          "dynamic-draw-state")
 
 enum class CpuPhase : uint8_t {
 #define X(id, name) k##id,

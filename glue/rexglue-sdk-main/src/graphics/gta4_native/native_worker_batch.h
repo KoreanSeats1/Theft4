@@ -28,7 +28,8 @@ const Command& NativeQueueCommand(const std::unique_ptr<Command>& command) {
 }
 
 // Worker-owned bounded staging. Slots are reused without allocating container
-// blocks. Popping destroys the command immediately, including unmoved owners.
+// blocks. Popping destroys the command immediately; take_front transfers an
+// owner to the worker's bounded recycler after command dispatch.
 // The caller must cap each queue transfer to capacity(), as with the old batch.
 template <typename Command, size_t Capacity>
 class NativeWorkerBatch {
@@ -50,6 +51,12 @@ class NativeWorkerBatch {
     slots_[head_].reset();
     head_ = (head_ + 1) % Capacity;
     --size_;
+  }
+  Command take_front() {
+    assert(size_);
+    Command command = std::move(front());
+    pop_front();
+    return command;
   }
   void clear() { while (!empty()) pop_front(); }
 

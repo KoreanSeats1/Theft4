@@ -165,7 +165,11 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "last_enqueue_tick,first_dequeue_tick,last_dequeue_tick,first_measured_sequence,"
          "last_measured_sequence,worker_queue_mutex_wait_ms,worker_condition_wait_ms,"
          "worker_batch_transfer_ms,worker_batch_protection_ms,worker_dispatch_ms,worker_batches,worker_condition_waits,"
-         "worker_partition_errors,publish_begin_tick,publish_end_tick\n";
+         "worker_partition_errors,publish_begin_tick,publish_end_tick,"
+         "command_acquire_sum_ms,command_storage_reuses,worker_recycle_sum_ms,"
+         "unchanged_vertex_declarations,worker_constant_sum_ms,worker_snapshot_sum_ms,"
+         "worker_frame_insert_sum_ms,worker_draw_commands,worker_state_commands,"
+         "worker_other_commands,command_pool_shared_slots,command_pool_shared_high_water\n";
   uint64_t origin = UINT64_MAX;
   for (const auto& frame : frames) {
     if (frame.cpu.enabled)
@@ -298,7 +302,13 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
               << t.worker_dispatch_ticks * ms << ','
               << t.worker_batches << ',' << t.worker_condition_waits << ','
               << t.worker_partition_errors << ',' << f.publish_begin_tick << ','
-              << f.publish_end_tick << '\n';
+              << f.publish_end_tick << ',' << t.allocation_ticks * ms << ','
+              << t.storage_reuses << ',' << t.worker_recycle_ticks * ms << ','
+              << t.unchanged_vertex_declarations << ','
+              << t.worker_constant_ticks * ms << ',' << t.worker_snapshot_ticks * ms << ','
+              << t.worker_frame_insert_ticks * ms << ',' << t.worker_draw_commands << ','
+              << t.worker_state_commands << ',' << t.worker_other_commands << ','
+              << t.command_pool_shared_slots << ',' << t.command_pool_shared_high_water << '\n';
   }
   trace << "]}\n";
   metadata

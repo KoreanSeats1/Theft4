@@ -388,7 +388,9 @@ class CpuRecorder {
 struct CommandTransport {
   uint64_t enqueued = 0, capture_ticks = 0, capture_lock_ticks = 0, queue_lock_ticks = 0,
            backpressure_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
-           geometry_capture_ticks = 0, texture_capture_ticks = 0;
+           geometry_capture_ticks = 0, texture_capture_ticks = 0,
+           allocation_ticks = 0;
+  bool reused_storage = false;
 };
 struct TransportSummary {
   uint64_t commands = 0, measured_commands = 0, capture_ticks = 0, capture_lock_ticks = 0,
@@ -397,6 +399,13 @@ struct TransportSummary {
   uint64_t backpressure_ticks = 0, dwell_ticks = 0, max_dwell_ticks = 0, queue_peak = 0;
   uint64_t worker_assembly_ticks = 0, worker_idle_ticks = 0, internal_flush_ticks = 0,
            internal_flushes = 0;
+  uint64_t allocation_ticks = 0, storage_reuses = 0, worker_recycle_ticks = 0,
+           unchanged_vertex_declarations = 0;
+  uint64_t worker_constant_ticks = 0, worker_snapshot_ticks = 0,
+           worker_frame_insert_ticks = 0;
+  uint64_t worker_draw_commands = 0, worker_state_commands = 0,
+           worker_other_commands = 0;
+  uint64_t command_pool_shared_slots = 0, command_pool_shared_high_water = 0;
   uint64_t first_capture_tick = 0, first_enqueue_tick = 0, last_enqueue_tick = 0;
   uint64_t first_dequeue_tick = 0, last_dequeue_tick = 0, first_sequence = 0, last_sequence = 0;
   uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0,
@@ -444,6 +453,8 @@ struct TransportSummary {
     state_capture_ticks = AddSaturated(state_capture_ticks, p.state_capture_ticks);
     geometry_capture_ticks = AddSaturated(geometry_capture_ticks, p.geometry_capture_ticks);
     texture_capture_ticks = AddSaturated(texture_capture_ticks, p.texture_capture_ticks);
+    allocation_ticks = AddSaturated(allocation_ticks, p.allocation_ticks);
+    storage_reuses += p.reused_storage;
     backpressure_ticks = AddSaturated(backpressure_ticks, p.backpressure_ticks);
     if (dequeued >= p.enqueued) {
       const auto d = dequeued - p.enqueued;

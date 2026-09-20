@@ -3776,7 +3776,10 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   std::unique_lock capture_lock(command_capture_mutex_);
   const uint64_t capture_acquired = profile_transport ? profile::CpuTick() : 0;
 #ifdef THEFT4_LAB_BUILD
-  auto queued_command = std::make_unique<NativeCommand>();
+  const uint64_t allocation_begin = profile_transport ? profile::CpuTick() : 0;
+  bool command_storage_reused = false;
+  auto queued_command = command_recycler_.Acquire(&command_storage_reused);
+  const uint64_t allocation_end = profile_transport ? profile::CpuTick() : 0;
 #else
   NativeCommand queued_command;
 #endif
@@ -3791,6 +3794,10 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   const uint64_t validation_end = profile_transport ? profile::CpuTick() : 0;
   if (profile_transport) {
     native_command.profile_transport.validation_ticks = validation_end - capture_acquired;
+#ifdef THEFT4_LAB_BUILD
+    native_command.profile_transport.allocation_ticks = allocation_end - allocation_begin;
+    native_command.profile_transport.reused_storage = command_storage_reused;
+#endif
   }
   native_command.gpu_pass_origin = gpu_pass_origin;
   if (phone_envelope) {
@@ -3948,7 +3955,7 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
 
   std::unique_lock capture_lock(command_capture_mutex_);
 #ifdef THEFT4_LAB_BUILD
-  auto queued_command = std::make_unique<NativeCommand>();
+  auto queued_command = command_recycler_.Acquire();
 #else
   NativeCommand queued_command;
 #endif
@@ -6067,7 +6074,17 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     // The batch is worker-owned. Process its front in place and pop it after
     // per-command scopes have released their references.
     NativeCommand& command = NativeQueueCommand(worker_batch_.front());
-    const auto pop_processed_command = MakeScopeExit([&] { worker_batch_.pop_front(); });
+    const auto pop_processed_command = MakeScopeExit([&] {
+#ifdef THEFT4_LAB_BUILD
+      auto processed = worker_batch_.take_front();
+      const uint64_t recycle_begin = profile_transport ? profile::CpuTick() : 0;
+      command_recycler_.Recycle(std::move(processed));
+      if (recycle_begin)
+        native_profile_transport_.worker_recycle_ticks += profile::CpuTick() - recycle_begin;
+#else
+      worker_batch_.pop_front();
+#endif
+    });
     VisitProtectedTextureGenerations(command, [&](uint64_t generation) {
       if (!worker_batch_texture_protection_.Release(generation)) {
         REXLOG_ERROR(
@@ -6089,6 +6106,25 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     if(profile_transport || command.profile_transport.enqueued) {
       native_profile_transport_.Observe(command.profile_transport, dequeued, queued_after_pop+1,
                                          command.diagnostic_submit_sequence);
+#ifdef THEFT4_LAB_BUILD
+      if (command.type == CommandType::kDrawPrimitive ||
+          command.type == CommandType::kDrawPrimitiveUp ||
+          command.type == CommandType::kDrawIndexedPrimitive) {
+        ++native_profile_transport_.worker_draw_commands;
+      } else if (command.type == CommandType::kSetRenderState ||
+                 command.type == CommandType::kSetPixelShader ||
+                 command.type == CommandType::kSetVertexShader ||
+                 command.type == CommandType::kSetVertexDeclaration ||
+                 command.type == CommandType::kSetTexture ||
+                 command.type == CommandType::kSetDepthStencil ||
+                 command.type == CommandType::kSetRenderTarget ||
+                 command.type == CommandType::kSetVertexStream ||
+                 command.type == CommandType::kSetIndexBuffer) {
+        ++native_profile_transport_.worker_state_commands;
+      } else {
+        ++native_profile_transport_.worker_other_commands;
+      }
+#endif
 #ifdef THEFT4_LAB_BUILD
       if (idle_begin) native_profile_transport_.ObserveWorker(
           dequeued - idle_begin, worker_mutex_ticks, worker_condition_ticks, worker_transfer_ticks,
@@ -6284,7 +6320,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           // Preserve command order: earlier draws may create their image only
           // when this batch is recorded. Snapshot image identities there.
           AddProtectedTextureGenerations(command, frame_texture_protection_);
+          const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
           current_frame_.push_back(std::move(command));
+          if (insert_begin)
+            native_profile_transport_.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         }
         if (released_texture_generation) {
           pending_texture_release_generations_.insert(released_texture_generation);
@@ -6401,7 +6440,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           }
         }
         AddProtectedTextureGenerations(command, frame_texture_protection_);
+        const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
         current_frame_.push_back(std::move(command));
+        if (insert_begin)
+          native_profile_transport_.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         break;
       }
       case CommandType::kPresent: {
@@ -6509,16 +6551,25 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                 HashFixedFunctionState(command.fixed_function_state);
           }
           const uint32_t device = CommandDevice(command.type, command.bytes.data());
+          const uint64_t constant_begin = assembly_begin ? profile::CpuTick() : 0;
           if (!ApplyShaderConstantDelta(command, device)) {
             REXLOG_ERROR("gta4-native-constants: rejected worker command type={} device={:08X}",
                          CommandTypeName(command.type), device);
             break;
           }
+          if (constant_begin)
+            native_profile_transport_.worker_constant_ticks += profile::CpuTick() - constant_begin;
           SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
+          const uint64_t snapshot_begin = assembly_begin ? profile::CpuTick() : 0;
           command.pipeline_state = SnapshotPipeline(command, true);
+          if (snapshot_begin)
+            native_profile_transport_.worker_snapshot_ticks += profile::CpuTick() - snapshot_begin;
         } else {
           SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
+          const uint64_t snapshot_begin = assembly_begin ? profile::CpuTick() : 0;
           command.pipeline_state = SnapshotPipeline(command, false);
+          if (snapshot_begin)
+            native_profile_transport_.worker_snapshot_ticks += profile::CpuTick() - snapshot_begin;
         }
         if (command.render_phase == RenderPhase::kCompositePostFx &&
             (command.type == CommandType::kDrawPrimitive ||
@@ -6541,7 +6592,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch);
         if (command.phone_trace) TracePhoneNativeCommand("worker-finalized", command);
         AddProtectedTextureGenerations(command, frame_texture_protection_);
+        const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
         current_frame_.push_back(std::move(command));
+        if (insert_begin)
+          native_profile_transport_.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         startup_present_follows_texture_lock_flush = false;
         break;
       }
@@ -6564,6 +6618,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   worker_batch_.clear();
   worker_batch_texture_protection_.Reset();
 #ifdef THEFT4_LAB_BUILD
+  command_recycler_.FlushWorker();
   worker_batch_deferred_queue_protection_.Reset();
 #endif
   DestroyVulkanWorkerObjects();
@@ -6628,11 +6683,19 @@ void Gta4NativeGraphicsSystem::ApplyStateCommand(const NativeCommand& command) {
     case CommandType::kSetVertexDeclaration: {
       SetVertexDeclarationCommand declaration;
       std::memcpy(&declaration, command.bytes.data(), sizeof(declaration));
-      pipeline_state_.vertex_declaration = declaration.declaration;
       auto declaration_resource = vertex_declarations_.find(declaration.declaration);
-      pipeline_state_.vertex_declaration_resource =
-          declaration_resource != vertex_declarations_.end() ? declaration_resource->second
-                                                             : nullptr;
+      auto resolved = declaration_resource != vertex_declarations_.end()
+                          ? declaration_resource->second
+                          : std::shared_ptr<NativeVertexDeclaration>{};
+      if (pipeline_state_.vertex_declaration == declaration.declaration &&
+          pipeline_state_.vertex_declaration_resource == resolved) {
+#ifdef THEFT4_LAB_BUILD
+        ++native_profile_transport_.unchanged_vertex_declarations;
+#endif
+        return;
+      }
+      pipeline_state_.vertex_declaration = declaration.declaration;
+      pipeline_state_.vertex_declaration_resource = resolved;
       break;
     }
     case CommandType::kSetTexture: {
@@ -10786,6 +10849,11 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
           sizeof(NativeCommand) + command.bytes.size() + command.payload.size();
     }
   }
+#ifdef THEFT4_LAB_BUILD
+  // The exchange pool owns at most 1024 reset command objects. Producer and
+  // worker local caches hold at most another 128 each.
+  command_transport_bytes += command_recycler_.SharedSize() * sizeof(NativeCommand);
+#endif
   set_usage(memory::Category::kHostCommandTransport, command_transport_bytes,
             command_transport_logical, command_count);
 
@@ -32834,6 +32902,12 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
   const bool title_present = present.device != 0;
   auto transport_detail = title_present ? std::exchange(native_profile_transport_, profile::TransportSummary{})
                                         : profile::TransportSummary{};
+#ifdef THEFT4_LAB_BUILD
+  if (title_present && detail_requested) {
+    transport_detail.command_pool_shared_slots = command_recycler_.SharedSize();
+    transport_detail.command_pool_shared_high_water = command_recycler_.SharedHighWater();
+  }
+#endif
   if(detail_requested && native_profile_clock_probe_ticks_==UINT64_MAX)
     native_profile_clock_probe_ticks_ = profile::CalibrateCpuClock();
   const bool collect_cpu = detail_requested && title_present &&

@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 #include "graphics/gta4_native/native_worker_batch.h"
+#include "graphics/gta4_native/native_command_recycler.h"
 #include "graphics/gta4_native/native_texture_protection.h"
 
 using namespace rex::graphics::gta4_native;
@@ -114,6 +115,45 @@ TEST_CASE("Indirect queue transfer preserves addresses and resource ownership",
   batch.push_back(std::move(pending));
   batch.clear(); // Shutdown before processing must release pending resources.
   REQUIRE(pending_resource.expired());
+}
+
+TEST_CASE("Recycled command storage releases resources and preserves staged order",
+          "[graphics][worker-batch][memory]") {
+  NativeCommandRecycler<Command, 4, 8> recycler;
+  NativeWorkerBatch<std::unique_ptr<Command>, 4> batch;
+  std::array<Command*, 4> addresses{};
+  std::array<std::weak_ptr<uint64_t>, 4> resources{};
+  for (size_t i = 0; i < 4; ++i) {
+    bool reused = true;
+    auto command = recycler.Acquire(&reused);
+    REQUIRE_FALSE(reused);
+    addresses[i] = command.get();
+    command->sequence = i;
+    command->owner = std::make_shared<uint64_t>(i);
+    resources[i] = command->owner;
+    batch.push_back(std::move(command));
+  }
+  for (size_t i = 0; i < 4; ++i) {
+    REQUIRE(batch.front()->sequence == i);
+    auto command = batch.take_front();
+    recycler.Recycle(std::move(command));
+    REQUIRE(resources[i].expired());
+  }
+  REQUIRE(recycler.SharedSize() == 4);
+  for (size_t i = 0; i < 4; ++i) {
+    bool reused = false;
+    auto command = recycler.Acquire(&reused);
+    REQUIRE(reused);
+    REQUIRE(std::find(addresses.begin(), addresses.end(), command.get()) != addresses.end());
+    REQUIRE(command->sequence == 0);
+    REQUIRE_FALSE(command->owner);
+    REQUIRE_FALSE(command->payload);
+    batch.push_back(std::move(command));
+  }
+  batch.clear();
+  for (size_t i = 0; i < 16; ++i) recycler.Recycle(std::make_unique<Command>());
+  REQUIRE(recycler.SharedSize() == 8); // capped after burst
+  REQUIRE(recycler.SharedHighWater() == 8);
 }
 
 TEST_CASE("Worker slots release owners on pop clear and destruction", "[graphics][worker-batch][memory]") {

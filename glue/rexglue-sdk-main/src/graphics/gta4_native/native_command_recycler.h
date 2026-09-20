@@ -5,16 +5,30 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <vector>
 
 namespace rex::graphics::gta4_native {
 
 // One producer (under command_capture_mutex_) and one render worker. Commands
-// release their resources on the worker before storage is published for reuse.
+// destroy commands on the worker before storage is published for reuse. The
+// producer constructs a fresh command in that storage, so default state is
+// restored without doing the initialization on the worker's frame path.
 // Neither thread takes the exchange mutex for each command.
 template <typename Command, size_t Batch = 128, size_t SharedLimit = 1024>
 class NativeCommandRecycler {
   static_assert(Batch > 0 && SharedLimit >= Batch);
+  struct StorageDelete {
+    void operator()(Command* pointer) const noexcept {
+      if constexpr (alignof(Command) > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
+        ::operator delete(pointer, std::align_val_t(alignof(Command)));
+      } else {
+        ::operator delete(pointer);
+      }
+    }
+  };
+  // A slot owns allocation only: its Command lifetime has already ended.
+  using Storage = std::unique_ptr<Command, StorageDelete>;
  public:
   using Owner = std::unique_ptr<Command>;
   NativeCommandRecycler() {
@@ -35,17 +49,20 @@ class NativeCommandRecycler {
     const bool hit = !producer_free_.empty();
     if (reused) *reused = hit;
     if (!hit) return std::make_unique<Command>();
-    Owner command = std::move(producer_free_.back());
+    Storage storage = std::move(producer_free_.back());
     producer_free_.pop_back();
-    return command;
+    Command* command = std::construct_at(storage.get());
+    storage.release();
+    return Owner(command);
   }
 
   void Recycle(Owner command) {
     assert(command);
-    // Assignment releases all shared references, owned payloads and sync
-    // state before another producer can see the storage.
-    *command = Command{};
-    worker_free_.push_back(std::move(command));
+    // Destroying releases all references and owned payloads now. The slot
+    // owns only raw storage until the producer constructs a fresh command.
+    Command* storage = command.release();
+    std::destroy_at(storage);
+    worker_free_.emplace_back(storage);
     if (worker_free_.size() == Batch) FlushWorker();
   }
 
@@ -70,9 +87,9 @@ class NativeCommandRecycler {
 
  private:
   mutable std::mutex mutex_;
-  std::vector<Owner> shared_free_;
-  std::vector<Owner> producer_free_;
-  std::vector<Owner> worker_free_;
+  std::vector<Storage> shared_free_;
+  std::vector<Storage> producer_free_;
+  std::vector<Storage> worker_free_;
   size_t max_shared_ = 0;
 };
 

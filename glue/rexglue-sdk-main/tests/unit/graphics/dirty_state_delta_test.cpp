@@ -350,6 +350,15 @@ TEST_CASE("GTA IV authoritative constants reuse identical writes and version rea
   REQUIRE(first.version->token.revision == 1);
   REQUIRE(hash_calls == 1);
 
+  const gta4::ConstantApplyResult empty = state.Apply({}, hash);
+  REQUIRE(empty);
+  REQUIRE_FALSE(empty.changed);
+  REQUIRE(empty.version == first.version);
+  REQUIRE(hash_calls == 1);
+  gta4::ConstantPayloadDelta invalid_empty_snapshot;
+  invalid_empty_snapshot.complete_snapshot = true;
+  REQUIRE_FALSE(state.Apply(invalid_empty_snapshot, hash));
+
   gta4::ConstantPayloadDelta identical;
   identical.ranges = {{3, 0, 1}};
   identical.payload = {7};

@@ -1621,7 +1621,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // Construct once on the producer, then move only the owning pointer through
   // the queue and batch. The worker still moves retained draws into its frame.
   using NativeQueuedCommand = std::unique_ptr<NativeCommand>;
-  NativeCommandRecycler<NativeCommand, 128, 1024> command_recycler_;
+  NativeCommandRecycler<NativeCommand, 128, 2048> command_recycler_;
   DirtyStateDelta producer_dirty_delta_;
   DirtyDeltaScratch producer_dirty_scratch_; // command_capture_mutex_ owns both.
 #else

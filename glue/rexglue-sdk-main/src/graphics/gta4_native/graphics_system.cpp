@@ -10850,7 +10850,7 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
     }
   }
 #ifdef THEFT4_LAB_BUILD
-  // The exchange pool owns at most 1024 reset command objects. Producer and
+  // The exchange pool owns at most 2048 command-sized slots. Producer and
   // worker local caches hold at most another 128 each.
   command_transport_bytes += command_recycler_.SharedSize() * sizeof(NativeCommand);
 #endif

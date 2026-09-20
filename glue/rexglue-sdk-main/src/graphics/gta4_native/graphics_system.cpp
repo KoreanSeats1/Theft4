@@ -3772,6 +3772,14 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   if (profile_transport) {
     native_command.profile_transport.validation_ticks = validation_end - capture_acquired;
   }
+#ifdef THEFT4_LAB_BUILD
+  // Draw commands capture the authoritative packed device state. The worker's
+  // kSetRenderState case is intentionally a no-op, so forwarding these state
+  // notifications only consumes producer, queue, and worker time.
+  if (native_command.type == CommandType::kSetRenderState) {
+    return true;
+  }
+#endif
   native_command.gpu_pass_origin = gpu_pass_origin;
   if (phone_envelope) {
     native_command.phone_trace = std::make_shared<PhoneTraceContext>(phone_context);

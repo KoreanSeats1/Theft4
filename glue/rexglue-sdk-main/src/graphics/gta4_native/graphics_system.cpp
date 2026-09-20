@@ -3176,56 +3176,62 @@ struct Gta4NativeGraphicsSystem::NativePipelineCompilerState {
 
 size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
     const NativePipelineKey& key) const noexcept {
-  uint64_t hash = 0;
-  auto add = [&hash](const auto& value) {
-    hash = XXH3_64bits_withSeed(&value, sizeof(value), hash);
-  };
-  add(key.vertex_shader_hash);
-  add(key.pixel_shader_hash);
-  add(key.shader_variant_key);
-  add(key.vertex_declaration_hash);
-  add(uint32_t(key.topology));
-  add(key.vertex_strides);
-  add(key.color_formats);
-  add(key.depth_format);
-  add(key.samples);
-  add(key.user_pointer);
-  add(key.indexed_descriptors);
-  add(key.depth_enable);
-  add(key.depth_function);
-  add(key.depth_write_enable);
-  add(key.depth_clamp_enable);
-  add(key.negative_one_to_one_clip_space);
-  add(key.cull_mode);
-  add(key.polygon_mode);
-  add(key.blend_enable_mask);
-  add(key.blend_controls);
-  add(key.source_blend);
-  add(key.destination_blend);
-  add(key.blend_operation);
-  add(key.source_blend_alpha);
-  add(key.destination_blend_alpha);
-  add(key.blend_operation_alpha);
-  add(key.alpha_test_enable);
-  add(key.alpha_function);
-  add(key.alpha_to_mask_enable);
-  add(key.stencil_enable);
-  add(key.two_sided_stencil);
-  add(key.stencil_fail);
-  add(key.stencil_depth_fail);
-  add(key.stencil_pass);
-  add(key.stencil_function);
-  add(key.stencil_mask);
-  add(key.stencil_write_mask);
-  add(key.ccw_stencil_fail);
-  add(key.ccw_stencil_depth_fail);
-  add(key.ccw_stencil_pass);
-  add(key.ccw_stencil_function);
-  add(key.color_write_mask);
-  add(key.sample_mask);
-  add(key.depth_bias_enable);
-  add(key.primitive_restart_enable);
-  return size_t(hash);
+  // Do not hash NativePipelineKey's object representation directly: alignment
+  // padding is not part of its equality contract. Pack every equality field
+  // into fixed-width words instead, then make one XXH3 call. The former hash
+  // made more than forty independent XXH3 calls per unordered-map probe;
+  // pipeline lookup runs for every draw in the native submission path.
+  constexpr size_t kWordCount = 42 + kVertexStreamCount + 2 * kRenderTargetCount;
+  std::array<uint64_t, kWordCount> words{};
+  size_t index = 0;
+  auto append = [&words, &index](auto value) { words[index++] = uint64_t(value); };
+  append(key.vertex_shader_hash);
+  append(key.pixel_shader_hash);
+  append(key.shader_variant_key);
+  append(key.vertex_declaration_hash);
+  append(uint32_t(key.topology));
+  for (uint32_t stride : key.vertex_strides) append(stride);
+  for (VkFormat format : key.color_formats) append(uint32_t(format));
+  append(uint32_t(key.depth_format));
+  append(uint32_t(key.samples));
+  append(key.user_pointer);
+  append(key.indexed_descriptors);
+  append(key.depth_enable);
+  append(key.depth_function);
+  append(key.depth_write_enable);
+  append(key.depth_clamp_enable);
+  append(key.negative_one_to_one_clip_space);
+  append(key.cull_mode);
+  append(key.polygon_mode);
+  append(key.blend_enable_mask);
+  for (uint32_t control : key.blend_controls) append(control);
+  append(key.source_blend);
+  append(key.destination_blend);
+  append(key.blend_operation);
+  append(key.source_blend_alpha);
+  append(key.destination_blend_alpha);
+  append(key.blend_operation_alpha);
+  append(key.alpha_test_enable);
+  append(key.alpha_function);
+  append(key.alpha_to_mask_enable);
+  append(key.stencil_enable);
+  append(key.two_sided_stencil);
+  append(key.stencil_fail);
+  append(key.stencil_depth_fail);
+  append(key.stencil_pass);
+  append(key.stencil_function);
+  append(key.stencil_mask);
+  append(key.stencil_write_mask);
+  append(key.ccw_stencil_fail);
+  append(key.ccw_stencil_depth_fail);
+  append(key.ccw_stencil_pass);
+  append(key.ccw_stencil_function);
+  append(key.color_write_mask);
+  append(key.sample_mask);
+  append(key.depth_bias_enable);
+  append(key.primitive_restart_enable);
+  assert(index == words.size());
+  return size_t(XXH3_64bits(words.data(), sizeof(words)));
 }
 
 size_t Gta4NativeGraphicsSystem::NativePersistentBufferKeyHash::operator()(

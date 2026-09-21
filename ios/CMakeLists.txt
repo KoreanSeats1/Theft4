@@ -104,6 +104,9 @@ target_link_libraries(theft4_core_bridge PRIVATE rex::core)
 target_compile_features(theft4_core_bridge PRIVATE cxx_std_23)
 if(THEFT4_LAB_BUILD)
     target_compile_definitions(theft4_core_bridge PRIVATE THEFT4_LAB_BUILD=1)
+    # The guest producer starts in rexruntime, outside the app and renderer
+    # targets that otherwise receive the Lab flag.
+    target_compile_definitions(rexruntime PRIVATE THEFT4_LAB_BUILD=1)
 endif()
 if(REXGLUE_RUNTIME_ONLY)
     target_sources(theft4_core_bridge PRIVATE bridge/theft4_boot.cpp)

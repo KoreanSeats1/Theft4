@@ -3,7 +3,7 @@
 #include "../../glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h"
 
 #include <algorithm>
-#include <cfloat>
+#include <cmath>
 #include <cstdint>
 
 #include <cpu/ppc_context.h>
@@ -40,18 +40,23 @@ public:
     PhysicsUpdateScope& operator=(const PhysicsUpdateScope&) = delete;
 };
 
-void FloorPrePostTimeStep(PPCContext& ctx) noexcept
+void BoundTimeStep(PPCContext& ctx, bool floor_pre_post) noexcept
 {
     const float timeStep = static_cast<float>(ctx.f1.f64);
-    const float floored =
-        std::clamp(timeStep, kPrePostMinimumTimeStep, FLT_MAX);
-    ctx.f1.f64 = static_cast<double>(floored);
+    if (!std::isfinite(timeStep))
+    {
+        ctx.f1.f64 = static_cast<double>(kPrePostMinimumTimeStep);
+        return;
+    }
+    const float lower = floor_pre_post ? kPrePostMinimumTimeStep : 0.0f;
+    ctx.f1.f64 = static_cast<double>(std::clamp(timeStep, lower, kMaximumTimeStep));
 }
 }
 }
 
 PPC_FUNC_IMPL(__imp__sub_824797C0);
 PPC_FUNC_IMPL(__imp__sub_82476B58);
+PPC_FUNC_IMPL(__imp__sub_82476DA0);
 PPC_FUNC_IMPL(__imp__sub_82477920);
 
 PPC_FUNC_HOOK(sub_824797C0)
@@ -64,17 +69,27 @@ PPC_FUNC_HOOK(sub_82476B58)
 {
     if (gta4::fps::physics::gPhysicsUpdateDepth != 0)
     {
-        gta4::fps::physics::FloorPrePostTimeStep(ctx);
+        gta4::fps::physics::BoundTimeStep(ctx, true);
     }
 
     __imp__sub_82476B58(ctx, base);
+}
+
+PPC_FUNC_HOOK(sub_82476DA0)
+{
+    if (gta4::fps::physics::gPhysicsUpdateDepth != 0)
+    {
+        gta4::fps::physics::BoundTimeStep(ctx, false);
+    }
+
+    __imp__sub_82476DA0(ctx, base);
 }
 
 PPC_FUNC_HOOK(sub_82477920)
 {
     if (gta4::fps::physics::gPhysicsUpdateDepth != 0)
     {
-        gta4::fps::physics::FloorPrePostTimeStep(ctx);
+        gta4::fps::physics::BoundTimeStep(ctx, true);
     }
 
     __imp__sub_82477920(ctx, base);

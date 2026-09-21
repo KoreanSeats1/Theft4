@@ -125,6 +125,10 @@ REXCVAR_DEFINE_BOOL(gta4_native_texture_content_cache, false,
                     "GTA IV/Graphics/Native Renderer",
                     "Reuse CPU texture contents across sampler-only fetch changes")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(gta4_native_sparse_texture_walks, false,
+                    "GTA IV/Graphics/Native Renderer",
+                    "Walk only captured draw texture stages during frame capacity and alias preparation")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_native_worker_stall_attribution, false,
                     "GTA IV/Diagnostics",
                     "Add the active render-worker phase to producer-stall warnings")
@@ -4928,10 +4932,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       return reject(header.type, "texture-state-translation");
     }
     const std::span<const uint8_t> device_state(device_memory, kGuestDeviceSize);
-    for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-      if (!(native_command.used_texture_mask & (uint32_t{1} << stage))) {
-        continue;
-      }
+    const auto capture_texture_stage = [&](uint32_t stage) {
       xenos::xe_gpu_texture_fetch_t& fetch = native_command.texture_fetches[stage];
       const size_t fetch_offset = kTextureFetchBase + stage * kTextureFetchSize;
       fetch.dword_0 = LoadGuestWord(device_state, fetch_offset);
@@ -4944,6 +4945,19 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
           LoadGuestWord(device_state, kTextureHandleBase + stage * sizeof(uint32_t));
       if (handle) {
         native_command.textures[stage] = CaptureTextureResource(handle, fetch, stage);
+      }
+    };
+    if (REXCVAR_GET(gta4_native_sparse_texture_walks)) {
+      uint32_t stages = native_command.used_texture_mask;
+      while (stages) {
+        capture_texture_stage(std::countr_zero(stages));
+        stages &= stages - 1;
+      }
+    } else {
+      for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
+        if (native_command.used_texture_mask & (uint32_t{1} << stage)) {
+          capture_texture_stage(stage);
+        }
       }
     }
     if (profile_transport) {
@@ -15984,17 +15998,24 @@ bool Gta4NativeGraphicsSystem::EnsureFrameUploadCapacity(
   const bool persistent_buffers_enabled = REXCVAR_GET(gta4_native_persistent_buffers);
   const bool persistent_direct_upload =
       persistent_buffers_enabled && vulkan_device->properties().driverID == VK_DRIVER_ID_MOLTENVK;
+  const bool sparse_texture_walks = REXCVAR_GET(gta4_native_sparse_texture_walks);
   uint32_t draw_count = 0;
   for (const NativeCommand& command : current_frame_) {
     add_texture(command.resolve_destination);
     add_texture(command.depth_handoff_source);
-    for (const auto& texture : command.textures) {
-      add_texture(texture);
-    }
-
     const bool is_draw = command.type == CommandType::kDrawPrimitive ||
                          command.type == CommandType::kDrawPrimitiveUp ||
                          command.type == CommandType::kDrawIndexedPrimitive;
+    if (sparse_texture_walks) {
+      uint32_t stages = command.used_texture_mask;
+      while (stages) {
+        const uint32_t stage = std::countr_zero(stages);
+        add_texture(command.textures[stage]);
+        stages &= stages - 1;
+      }
+    } else {
+      for (const auto& texture : command.textures) add_texture(texture);
+    }
     if (!is_draw) {
       continue;
     }
@@ -17369,6 +17390,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
   const profile::CpuScope profile_scope(profile::CpuOp::kTexturePreparation);
 
   SCOPE_profile_cpu_i("gpu", "GTA4 Native PrepareFrameTextures");
+  const bool sparse_texture_walks = REXCVAR_GET(gta4_native_sparse_texture_walks);
   frame_descriptor_draws_requested_ = 0;
   frame_descriptor_unique_draws_ = 0;
   frame_descriptor_sets_allocated_ = 0;
@@ -17378,9 +17400,21 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
   uint32_t depth_handoff_count = 0;
   std::unordered_set<uint64_t> packed_alias_generations;
   for (const NativeCommand& command : current_frame_) {
-    for (const auto& texture : command.textures) {
-      if (texture && texture->packed_depth_source) {
-        packed_alias_generations.insert(texture->generation);
+    if (sparse_texture_walks) {
+      uint32_t stages = command.used_texture_mask;
+      while (stages) {
+        const uint32_t stage = std::countr_zero(stages);
+        const auto& texture = command.textures[stage];
+        if (texture && texture->packed_depth_source) {
+          packed_alias_generations.insert(texture->generation);
+        }
+        stages &= stages - 1;
+      }
+    } else {
+      for (const auto& texture : command.textures) {
+        if (texture && texture->packed_depth_source) {
+          packed_alias_generations.insert(texture->generation);
+        }
       }
     }
     if (command.type == CommandType::kDrawPrimitive ||

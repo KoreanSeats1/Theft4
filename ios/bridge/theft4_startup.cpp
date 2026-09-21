@@ -35,6 +35,7 @@ REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
+REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
 REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
@@ -155,13 +156,14 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
         REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
+        REXCVAR_SET(gta4_native_sparse_texture_walks, a19_profile);
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
         REXCVAR_SET(gta4_profile_native_autostart, false);
         REXLOG_INFO(
-            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
+            "Theft4 device profile: {} pipeline-prewarm={} sparse-texture-walks={} detailed-profile=false "
             "profile-autostart=false",
-            device_profile, !a19_profile);
+            device_profile, !a19_profile, a19_profile);
 
         // The launch policy independently selects scene and drawable sizes.
         // Native hooks derive scene = logical video / 1.5 for FSR Quality.

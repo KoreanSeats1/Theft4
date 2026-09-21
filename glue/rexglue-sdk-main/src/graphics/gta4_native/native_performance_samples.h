@@ -99,6 +99,11 @@ enum class CpuRange : uint8_t {
   // slow CPU path from a worker that was descheduled by the OS.
   kRenderWorkerPreSubmitWall,
   kRenderWorkerPreSubmitOnCore,
+  // Wall/CPU accounting of the interval from this frame's PublishFrame end
+  // to the next frame's PublishFrame begin on the same producer thread.
+  kGuestGapWall,
+  kGuestGapOnCore,
+  kGuestGapOffCore,
   kCount,
 };
 
@@ -162,6 +167,7 @@ enum class Counter : uint8_t {
   kRenderWorkerQosClass,
   kRenderWorkerQosRelativePriority,
   kThermalState,
+  kGuestGapCpuValid,
   kCount,
 };
 

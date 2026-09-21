@@ -5,6 +5,7 @@
 #ifdef THEFT4_LAB_BUILD
 #include <rex/graphics/gta4_native/pacing_profile.h>
 #if defined(__APPLE__) && defined(__MACH__)
+#include "theft4_lab_diagnostics.h"
 #include "theft4_metal_presenter.h"
 #endif
 #endif
@@ -336,6 +337,18 @@ static std::atomic<bool> g_native_profile_transport_active{false};
 // UI-visible state for the one bounded Lab capture in this process:
 // 0 ready, 1 capturing/exporting, 2 exported, -1 export failed.
 static std::atomic<int> g_native_profile_capture_status{0};
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+static std::mutex g_native_profile_guest_gap_mutex;
+static theft4_lab_guest_gap_snapshot g_native_profile_guest_gap{};
+
+extern "C" __attribute__((visibility("default"))) bool
+rex_gta4_native_profile_guest_gap_copy(theft4_lab_guest_gap_snapshot* snapshot) {
+  if (!snapshot) return false;
+  std::lock_guard lock(g_native_profile_guest_gap_mutex);
+  *snapshot = g_native_profile_guest_gap;
+  return snapshot->frame != 0;
+}
+#endif
 static std::atomic<bool> g_native_memory_profile_start_requested{false};
 static std::atomic<bool> g_native_memory_profile_stop_requested{false};
 static std::atomic<uint32_t> g_native_memory_profile_marker_requested{0};
@@ -382,6 +395,8 @@ namespace gpu_flight = rex::diagnostics::gpu_flight;
 struct NativeWorkerThreadRuntimeSnapshot {
   uint64_t cpu_nanoseconds = 0;
   uint64_t query_ticks = 0;
+  uint64_t host_tick = 0;
+  uint64_t thread_id = 0;
   uint32_t qos_class = 0;
   int32_t qos_relative_priority = 0;
   bool cpu_time_available = false;
@@ -396,7 +411,9 @@ NativeWorkerThreadRuntimeSnapshot CaptureNativeWorkerThreadRuntime() {
   const kern_return_t result =
       thread_info(thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &info_count);
   mach_port_deallocate(mach_task_self(), thread);
-  snapshot.query_ticks = rex::chrono::Clock::QueryHostTickCount() - query_begin;
+  snapshot.host_tick = rex::chrono::Clock::QueryHostTickCount();
+  snapshot.query_ticks = snapshot.host_tick - query_begin;
+  pthread_threadid_np(nullptr, &snapshot.thread_id);
   if (result == KERN_SUCCESS && info_count == THREAD_BASIC_INFO_COUNT &&
       info.user_time.seconds >= 0 && info.user_time.microseconds >= 0 &&
       info.system_time.seconds >= 0 && info.system_time.microseconds >= 0) {
@@ -9903,6 +9920,9 @@ bool Gta4NativeGraphicsSystem::BeginNativeGpuProfileFrame(VkCommandBuffer comman
     native_gpu_profile_state_.capture_armed = true;
     native_gpu_profile_state_.last_sampled_frame = 0;
     native_gpu_profile_state_.last_publish_host_tick = 0;
+    native_gpu_profile_state_.last_publish_end_host_tick = 0;
+    native_gpu_profile_state_.last_publish_end_cpu_nanoseconds = 0;
+    native_gpu_profile_state_.last_publish_thread_id = 0;
     native_gpu_profile_state_.sample_ring.Clear();
     native_gpu_profile_state_.completed_samples.Clear();
     native_gpu_profile_state_.completed_attribution.Clear();
@@ -10012,6 +10032,10 @@ bool Gta4NativeGraphicsSystem::BeginNativeGpuProfileFrame(VkCommandBuffer comman
                                      paint_timing.total_ticks);
   }
   frame.cpu_frame_interval_ticks = 0;
+  frame.guest_gap_wall_ticks = 0;
+  frame.guest_gap_on_core_ticks = 0;
+  frame.guest_gap_off_core_ticks = 0;
+  frame.guest_gap_cpu_valid = false;
   frame.cpu_housekeeping_ticks = 0;
   frame.cpu_slot_cleanup_ticks = 0;
   frame.cpu_profile_readback_ticks = 0;
@@ -10307,6 +10331,10 @@ void Gta4NativeGraphicsSystem::CancelNativeGpuProfileFrame(uint32_t slot) {
   frame.capture_sequence = 0;
   frame.detail = {};
   frame.cpu_frame_interval_ticks = 0;
+  frame.guest_gap_wall_ticks = 0;
+  frame.guest_gap_on_core_ticks = 0;
+  frame.guest_gap_off_core_ticks = 0;
+  frame.guest_gap_cpu_valid = false;
   frame.cpu_housekeeping_ticks = 0;
   frame.cpu_upload_capacity_ticks = 0;
   frame.cpu_command_setup_ticks = 0;
@@ -11706,6 +11734,14 @@ void Gta4NativeGraphicsSystem::AnalyzeCompletedNativeGpuProfile(
                                    frame.cpu_frame_interval_ticks > frame.cpu_publish_ticks
                                        ? frame.cpu_frame_interval_ticks - frame.cpu_publish_ticks
                                        : 0);
+  frame.sample_builder.AddCpuRange(performance::CpuRange::kGuestGapWall,
+                                   frame.guest_gap_wall_ticks);
+  frame.sample_builder.AddCpuRange(performance::CpuRange::kGuestGapOnCore,
+                                   frame.guest_gap_on_core_ticks);
+  frame.sample_builder.AddCpuRange(performance::CpuRange::kGuestGapOffCore,
+                                   frame.guest_gap_off_core_ticks);
+  frame.sample_builder.SetCounter(performance::Counter::kGuestGapCpuValid,
+                                  frame.guest_gap_cpu_valid);
   frame.sample_builder.AddCounter(performance::Counter::kUploadBytes, frame.upload_bytes);
   if (persistent_buffer_arena_) {
     const NativeBufferArenaSnapshot persistent_snapshot = persistent_buffer_arena_->Snapshot();
@@ -32971,6 +33007,14 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
       native_profiler_enabled && native_gpu_profile_state_.last_publish_host_tick
           ? native_profile_publish_begin - native_gpu_profile_state_.last_publish_host_tick
           : 0;
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+  // The preceding frame owns this gap. Sample the same producer thread on
+  // both sides, so the delta in kernel CPU time distinguishes work actually
+  // run on-core from time this thread was blocked or descheduled.
+  const NativeWorkerThreadRuntimeSnapshot guest_gap_begin =
+      native_profiler_enabled && native_gpu_profile_state_.last_publish_end_host_tick
+          ? CaptureNativeWorkerThreadRuntime() : NativeWorkerThreadRuntimeSnapshot{};
+#endif
   if (native_profiler_enabled) {
     // A frame's interval ends when the following PublishFrame begins. Attach it to the
     // still-pending frame before ClearGuestOutput waits for and analyzes that frame.
@@ -32983,7 +33027,40 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     }
     if (native_profile_frame_interval && latest_pending_frame) {
       latest_pending_frame->cpu_frame_interval_ticks = native_profile_frame_interval;
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+      if (guest_gap_begin.host_tick > native_gpu_profile_state_.last_publish_end_host_tick) {
+        const uint64_t wall_ticks = guest_gap_begin.host_tick -
+            native_gpu_profile_state_.last_publish_end_host_tick;
+        latest_pending_frame->guest_gap_wall_ticks = wall_ticks;
+        if (guest_gap_begin.cpu_time_available && guest_gap_begin.thread_id &&
+            guest_gap_begin.thread_id == native_gpu_profile_state_.last_publish_thread_id &&
+            guest_gap_begin.cpu_nanoseconds >=
+                native_gpu_profile_state_.last_publish_end_cpu_nanoseconds) {
+          const uint64_t on_core_ticks = NativeWorkerCpuNanosecondsToHostTicks(
+              guest_gap_begin.cpu_nanoseconds -
+              native_gpu_profile_state_.last_publish_end_cpu_nanoseconds);
+          if (on_core_ticks <= wall_ticks) {
+            latest_pending_frame->guest_gap_on_core_ticks = on_core_ticks;
+            latest_pending_frame->guest_gap_off_core_ticks = wall_ticks - on_core_ticks;
+            latest_pending_frame->guest_gap_cpu_valid = true;
+          }
+        }
+        const double ticks_to_ms = 1000.0 /
+            double(rex::chrono::Clock::QueryHostTickFrequency());
+        std::lock_guard lock(g_native_profile_guest_gap_mutex);
+        g_native_profile_guest_gap = {
+            latest_pending_frame->frame, wall_ticks * ticks_to_ms,
+            latest_pending_frame->guest_gap_on_core_ticks * ticks_to_ms,
+            latest_pending_frame->guest_gap_off_core_ticks * ticks_to_ms,
+            latest_pending_frame->guest_gap_cpu_valid};
+      }
+#endif
     }
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+    native_gpu_profile_state_.last_publish_end_host_tick = 0;
+    native_gpu_profile_state_.last_publish_end_cpu_nanoseconds = 0;
+    native_gpu_profile_state_.last_publish_thread_id = 0;
+#endif
     native_gpu_profile_state_.last_publish_host_tick = native_profile_publish_begin;
   }
   const uint32_t width = present.width    ? present.width
@@ -33046,6 +33123,16 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
         frame.detail.publish_begin_tick = native_profile_publish_begin;
         frame.detail.publish_end_tick = rex::chrono::Clock::QueryHostTickCount();
         frame.cpu_publish_ticks = frame.detail.publish_end_tick - native_profile_publish_begin;
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+        const NativeWorkerThreadRuntimeSnapshot guest_gap_end =
+            CaptureNativeWorkerThreadRuntime();
+        if (guest_gap_end.cpu_time_available) {
+          native_gpu_profile_state_.last_publish_end_host_tick = guest_gap_end.host_tick;
+          native_gpu_profile_state_.last_publish_end_cpu_nanoseconds =
+              guest_gap_end.cpu_nanoseconds;
+          native_gpu_profile_state_.last_publish_thread_id = guest_gap_end.thread_id;
+        }
+#endif
         break;
       }
     }

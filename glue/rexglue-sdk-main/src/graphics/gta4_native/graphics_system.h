@@ -694,6 +694,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     performance::FrameBuilder sample_builder;
     uint64_t capture_sequence = 0;
     uint64_t cpu_frame_interval_ticks = 0;
+    uint64_t guest_gap_wall_ticks = 0;
+    uint64_t guest_gap_on_core_ticks = 0;
+    uint64_t guest_gap_off_core_ticks = 0;
+    bool guest_gap_cpu_valid = false;
     uint64_t cpu_housekeeping_ticks = 0;
     uint64_t cpu_slot_cleanup_ticks = 0;
     uint64_t cpu_profile_readback_ticks = 0;
@@ -740,6 +744,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::vector<profile::FrameDetail> detail_frames;
     std::array<std::optional<profile::FrameDetail>, NativeFrameContextRing::kSlotCount> completed_details;
     uint64_t last_publish_host_tick = 0;
+    uint64_t last_publish_end_host_tick = 0;
+    uint64_t last_publish_end_cpu_nanoseconds = 0;
+    uint64_t last_publish_thread_id = 0;
   };
 
   struct NativeImageResource {

@@ -81,6 +81,18 @@ def analyze(directory):
                    'Frame N interval ends at N+1; use raw ticks and thread identities to correlate.',
                    'Normal limiter sleep is intentional; overshoot is not the requested sleep.',
                    'Missing boundary records and profiling overhead require explicit review.']}
+    gap_keys = ('cpu_guest_gap_wall_ms', 'cpu_guest_gap_on_core_ms',
+                'cpu_guest_gap_off_core_ms')
+    if all(key in flat[0] for key in gap_keys) and 'counter_guest_gap_cpu_valid' in flat[0]:
+        valid = [row for row in frames.values() if row['counter_guest_gap_cpu_valid'] == '1']
+        if any(abs(float(row[gap_keys[0]]) - float(row[gap_keys[1]]) -
+                   float(row[gap_keys[2]])) > .02 for row in valid):
+            raise ValueError('Guest gap wall/CPU split does not balance')
+        result['guest_gap_cpu_valid_frames'] = len(valid)
+        result['guest_gap_cpu_invalid_frames'] = len(frames) - len(valid)
+        result['guest_gap_ms'] = {key: stats(row[key] for row in valid) for key in gap_keys}
+        result['limits'].append('Guest gap off-core includes voluntary waits and descheduling; '
+                                'this capture cannot isolate runnable queue delay.')
     return result
 
 

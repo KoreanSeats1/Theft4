@@ -6,6 +6,8 @@
     BOOL _captureRequested;
     BOOL _captureCompleted;
     BOOL _captureFailed;
+    NSString *_configurationLine;
+    NSString *_gapLine;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
@@ -53,6 +55,11 @@
     _snapshot.count = MIN(_snapshot.count, THEFT4_FRAME_TIME_SAMPLES);
     [self setNeedsDisplay];
 }
+- (void)setConfigurationLine:(NSString *)configuration gapLine:(NSString *)gap {
+    _configurationLine = [configuration copy];
+    _gapLine = [gap copy];
+    [self setNeedsDisplay];
+}
 - (void)drawRect:(CGRect)rect {
     const double target = 1000.0 / 30.0;
     double last = _snapshot.count ? _snapshot.milliseconds[_snapshot.count - 1] : 0;
@@ -86,8 +93,11 @@
                                                                             weight:UIFontWeightBold],
                              NSForegroundColorAttributeName:color}];
     }
-    self.accessibilityValue = title;
-    CGRect plot = CGRectMake(9, 28, self.bounds.size.width - 18, self.bounds.size.height - 46);
+    self.accessibilityValue = [@[title, _configurationLine ?: @"", _gapLine ?: @""]
+        componentsJoinedByString:@", "];
+    const BOOL diagnostics = _configurationLine.length || _gapLine.length;
+    CGRect plot = CGRectMake(9, 28, self.bounds.size.width - 18,
+        self.bounds.size.height - (diagnostics ? 62 : 46));
     double ceiling = MAX(66.667, MIN(200, peak * 1.15));
     CGFloat (^y)(double) = ^CGFloat(double ms) {
         return CGRectGetMaxY(plot) - MIN(1, MAX(0, ms / ceiling)) * plot.size.height;
@@ -113,6 +123,15 @@
         CGFloat x = CGRectGetMaxX(plot) - (total - i) * step;
         CGContextMoveToPoint(context, x, y(a));
         CGContextAddLineToPoint(context, x + step, y(b)); CGContextStrokePath(context);
+    }
+    if (diagnostics) {
+        NSDictionary *diagnosticText = @{
+            NSFontAttributeName:[UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightMedium],
+            NSForegroundColorAttributeName:[UIColor colorWithWhite:1 alpha:0.86]};
+        [_configurationLine drawAtPoint:CGPointMake(9, self.bounds.size.height - 43)
+            withAttributes:diagnosticText];
+        [_gapLine drawAtPoint:CGPointMake(9, self.bounds.size.height - 29)
+            withAttributes:diagnosticText];
     }
     [@"33.3 ms target · 180 frames" drawAtPoint:CGPointMake(9, self.bounds.size.height - 15)
         withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:9],

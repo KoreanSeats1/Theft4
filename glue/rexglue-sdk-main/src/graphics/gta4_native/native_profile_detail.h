@@ -318,7 +318,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
       << ",\"gpu_timestamp_period_ns\":" << meta.gpu_timestamp_period_ns
       << ",\"gpu_timestamp_valid_bits\":" << meta.gpu_timestamp_valid_bits
       << ",\"driver_id\":" << meta.driver_id << ",\"device\":" << JsonString(meta.device_name)
-      << ",\"cpu_clock\":\"host monotonic ticks; elapsed thread spans, not on-core CPU sampling\""
+      << ",\"cpu_clock\":\"host monotonic ticks; elapsed thread spans except explicitly labeled on-core CPU ranges\""
       << ",\"gpu_timing\":\"approximate queue stage/encoder boundaries; not isolated shader "
          "execution; repeated timestamps may collapse ranges\""
       << ",\"cpu_gpu_clock_calibrated\":false,\"physical_scanout_measured\":false"
@@ -328,6 +328,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "separate drill-down, never an additional cost\""
       << ",\"transport_accounting\":\"producer and queue dwell sums overlap commands and GPU work; "
          "paint observations keep their own frame identity\""
+      << ",\"guest_gap_accounting\":\"wall and cumulative CPU time sampled on the producer thread between consecutive PublishFrame calls; off-core includes waits and descheduling; cpu-valid marks matched threads\""
       << ",\"instrumentation_cost\":\"clock_pair_floor_estimate_ms is a measured clock-only lower "
          "estimate, not total profiler overhead; compare the same scene with detailed_gpu "
          "false/true\""

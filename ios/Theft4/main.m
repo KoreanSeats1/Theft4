@@ -8,6 +8,7 @@
 #include "theft4_core.h"
 #include "theft4_metal_presenter.h"
 #ifdef THEFT4_LAB_NATIVE_CAPTURE
+#include "theft4_lab_diagnostics.h"
 extern int rex_gta4_native_profile_start(void);
 extern int rex_gta4_native_profile_status(void);
 #endif
@@ -223,7 +224,13 @@ static void bootEvent(void *context, const char *event) {
     [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
         [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
         [_frameTimeView.widthAnchor constraintEqualToConstant:244],
-        [_frameTimeView.heightAnchor constraintEqualToConstant:92]]];
+        [_frameTimeView.heightAnchor constraintEqualToConstant:
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            126
+#else
+            92
+#endif
+        ]]];
     _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                                 target:self
                                               selector:@selector(refreshFrameRate)
@@ -408,6 +415,30 @@ static void bootEvent(void *context, const char *event) {
             if (!controller) { [timer invalidate]; return; }
             theft4_frame_time_snapshot snapshot = {0};
             theft4_frame_time_copy(&snapshot);
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            // Read the latched runtime policy, not the launcher's current
+            // control value. This makes an unexpected resolution reset visible.
+            const theft4_output_policy output = theft4_metal_get_output_policy();
+            NSString *thermal = @"nominal";
+            switch (NSProcessInfo.processInfo.thermalState) {
+                case NSProcessInfoThermalStateFair: thermal = @"fair"; break;
+                case NSProcessInfoThermalStateSerious: thermal = @"serious"; break;
+                case NSProcessInfoThermalStateCritical: thermal = @"critical"; break;
+                default: break;
+            }
+            NSString *configuration = [NSString stringWithFormat:@"IN %u×%u → %@ %u×%u · %@",
+                output.render_width, output.render_height, output.fsr1 ? @"FSR" : @"OUT",
+                output.output_width, output.output_height, thermal];
+            theft4_lab_guest_gap_snapshot gap = {0};
+            NSString *gapLine = @"Gap split: double-tap to capture";
+            if (rex_gta4_native_profile_guest_gap_copy(&gap)) {
+                gapLine = gap.cpu_valid
+                    ? [NSString stringWithFormat:@"Gap %.1f · on %.1f · off %.1f ms",
+                        gap.wall_ms, gap.on_core_ms, gap.off_core_ms]
+                    : [NSString stringWithFormat:@"Gap %.1f ms · CPU unavailable", gap.wall_ms];
+            }
+            [controller->_frameTimeView setConfigurationLine:configuration gapLine:gapLine];
+#endif
             [controller->_frameTimeView updateWithSnapshot:&snapshot];
 #ifdef THEFT4_LAB_NATIVE_CAPTURE
             const int captureStatus = rex_gta4_native_profile_status();

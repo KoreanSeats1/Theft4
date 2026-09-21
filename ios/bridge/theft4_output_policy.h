@@ -49,10 +49,10 @@ static inline theft4_output_policy theft4_output_policy_for_enhanced(bool enhanc
 }
 
 // Persist the height rather than a UI index, so invalid/older values safely
-// select 720p. The Lab launcher exposes these three scene budgets independently
+// select 720p. The Lab launcher exposes these four scene budgets independently
 // of FSR; the ordinary launcher's legacy policy above is unchanged.
 static inline uint32_t theft4_lab_render_height(uint32_t height) {
-    return height == 900 || height == 1080 ? height : 720;
+    return height == 540 || height == 900 || height == 1080 ? height : 720;
 }
 
 static inline theft4_output_policy theft4_output_policy_for_lab(

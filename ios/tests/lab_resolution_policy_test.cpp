@@ -12,7 +12,8 @@ int main() {
     // resolution hooks, not just the policy's declared render dimensions.
     // Changing the display, FSR or an old Boost preference must not shrink the
     // selected scene budget back to 720p.
-    for (const auto scene : {std::pair<unsigned,unsigned>{1280,720}, {1600,900}, {1920,1080}}) {
+    for (const auto scene : {std::pair<unsigned,unsigned>{960,540}, {1280,720},
+                             {1600,900}, {1920,1080}}) {
         for (bool fsr : {false, true}) {
             for (const auto display : {std::pair<unsigned,unsigned>{2420,1668}, {2752,2064},
                                        {0,0}, {1024,768}, {1668,2420}, {7680,4320}}) {
@@ -42,5 +43,5 @@ int main() {
         assert(fallback.render_width == 1280 && fallback.render_height == 720);
     }
 
-    puts("Lab 720p/900p/1080p + FSR policies and native-hook extents passed");
+    puts("Lab 540p/720p/900p/1080p + FSR policies and native-hook extents passed");
 }

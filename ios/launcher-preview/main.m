@@ -10,10 +10,10 @@
     self.launcher = [Theft4LauncherView new]; self.view = self.launcher;
     self.launcher.enhancedOutput.on = YES; self.launcher.anisotropicFiltering.on = YES;
     self.launcher.showFPS.on = YES;
-    self.launcher.motionBlur.on = YES;
+    self.launcher.motionBlur.on = NO;
     NSArray *args = NSProcessInfo.processInfo.arguments;
-    self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 2 :
-        [args containsObject:@"--900p"] ? 1 : 0;
+    self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 3 :
+        [args containsObject:@"--900p"] ? 2 : [args containsObject:@"--540p"] ? 0 : 1;
     self.launcher.fsrUpscaling.on = ![args containsObject:@"--no-fsr"];
     self.launcher.statusLabel.text = @"LAUNCHER PREVIEW  /  NO GAME RUNTIME";
     self.launcher.detailLabel.text = @"Isolated simulator UI preview.\nNo game files, saves or runtime are accessed.";

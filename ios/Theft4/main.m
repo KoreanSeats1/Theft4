@@ -80,6 +80,7 @@ extern int rex_gta4_native_profile_status(void);
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
+- (void)applyLowPowerPreset;
 @end
 
 static void coreEvent(void *context, const char *event) {
@@ -125,13 +126,20 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4AnisotropicFiltering": @YES,
         @"Theft4EnhancedOutput1080p": @YES,
         @"Theft4ExperimentalFSRBoost": @NO,
-        @"Theft4MotionBlur": @YES,
+        @"Theft4MotionBlur": @NO,
         @"Theft4ShadowQuality": @0,
         @"Theft4DrawDistance": @0,
         @"Theft4ModelDetail": @0,
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2
     }];
+    // Older Lab builds registered blur as enabled and also persisted that
+    // implicit value whenever another display setting changed. Switch that
+    // legacy default off once; later explicit user choices remain persistent.
+    if (![NSUserDefaults.standardUserDefaults boolForKey:@"Theft4MotionBlurDefaultOffV39"]) {
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"Theft4MotionBlur"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4MotionBlurDefaultOffV39"];
+    }
     // All selectable game resolutions are 16:9. Keep the layer at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
@@ -165,6 +173,8 @@ static void bootEvent(void *context, const char *event) {
     [_start addTarget:self action:@selector(startTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
+    [_bringupOverlay.lowPowerButton addTarget:self action:@selector(applyLowPowerPreset)
+        forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
@@ -205,7 +215,8 @@ static void bootEvent(void *context, const char *event) {
     if (_bringupOverlay.renderResolution) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
-        _bringupOverlay.renderResolution.selectedSegmentIndex = height == 900 ? 1 : height == 1080 ? 2 : 0;
+        _bringupOverlay.renderResolution.selectedSegmentIndex =
+            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 : 1;
         // Migrate the old FSR On/Off preference once; old Boost no longer
         // overrides this independent toggle in Lab.
         if (![defaults objectForKey:@"Theft4LabFSREnabled"])
@@ -365,6 +376,20 @@ static void bootEvent(void *context, const char *event) {
     _touchControls.active = _gamePresentation && _showControls.on;
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
+}
+
+- (void)applyLowPowerPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    _bringupOverlay.renderResolution.selectedSegmentIndex = 0; // 960 × 540
+    _bringupOverlay.fsrUpscaling.on = YES;
+    _shadowQuality.selectedSegmentIndex = 0;
+    _drawDistance.selectedSegmentIndex = 0;
+    _modelDetail.selectedSegmentIndex = 0;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
+    _anisotropicFiltering.on = NO;
+    _motionBlur.on = NO;
+    [self displaySettingsChanged:_bringupOverlay.renderResolution];
 }
 
 - (void)record:(NSString *)event {

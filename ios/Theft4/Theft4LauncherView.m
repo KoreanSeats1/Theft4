@@ -71,6 +71,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     CAEmitterLayer *_rain;
     UILabel *_masthead, *_edition, *_wordmark, *_sceneCaption, *_configuration;
     UILabel *_resolutionSummary, *_pageTitle, *_pageDetail, *_controllerHint;
+    UILabel *_shadowMetrics, *_distanceMetrics, *_modelMetrics, *_reflectionMetrics, *_aaMetrics;
     UIView *_topRule, *_bottomRule, *_navRule;
     UIScrollView *_scroll;
     UIStackView *_content, *_navigation;
@@ -149,6 +150,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _wordmark = Copy(@"THEFT4", 67, NO);
     _wordmark.font = [UIFont fontWithName:@"HelveticaNeue-CondensedBlack" size:67]
         ?: [UIFont systemFontOfSize:67 weight:UIFontWeightBlack];
+    _wordmark.adjustsFontSizeToFitWidth = YES;
+    _wordmark.minimumScaleFactor = .75;
+    _wordmark.numberOfLines = 1;
     _wordmark.textColor = Ink(0xECE7D7);
     _wordmark.accessibilityLabel = @"Theft four";
     [_menuPanel addSubview:_wordmark];
@@ -219,18 +223,24 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
     NSMutableArray<UIView *> *graphicsRows = [NSMutableArray new];
     if (lab) {
-        _renderResolution = ChoiceControl(@[@"720p", @"900p", @"1080p"], @"renderResolution",
+        _renderResolution = ChoiceControl(@[@"540p", @"720p", @"900p", @"1080p"], @"renderResolution",
             @"Render resolution", @"The internal scene resolution. Applies at the next game launch.");
-        _renderResolution.selectedSegmentIndex = 0;
+        _renderResolution.selectedSegmentIndex = 1;
         _fsrUpscaling = [UISwitch new];
         _fsrUpscaling.onTintColor = Ink(0xB6884D);
         _fsrUpscaling.accessibilityIdentifier = @"settings.fsrUpscaling";
         _resolutionSummary = Copy(@"", 12, YES);
         _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
         [graphicsRows addObjectsFromArray:@[
-            [self choice:@"INTERNAL RESOLUTION" detail:@"Scene resolution before presentation. 900p is the current M-series balance." control:_renderResolution],
+            [self choice:@"INTERNAL RESOLUTION" detail:@"540p = 960 × 540, 56% of 720p's pixels. 720p = 1280 × 720. 900p and 1080p cost more GPU time." control:_renderResolution],
             [self setting:@"FSR UPSCALING" detail:@"Fit the selected internal resolution to the display with spatial upscaling." toggle:_fsrUpscaling],
             _resolutionSummary
+        ]];
+        _lowPowerButton = Action(@"APPLY PERFORMANCE PRESET", NO);
+        _lowPowerButton.accessibilityIdentifier = @"settings.lowPowerPreset";
+        [graphicsRows addObjectsFromArray:@[
+            _lowPowerButton,
+            Copy(@"540p + FSR, original shadows/distance/reflections/model LOD, no edge filter, 1× texture filtering and no motion blur. You can adjust each setting afterward.", 12, NO)
         ]];
     }
 
@@ -245,12 +255,27 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _antiAliasing = ChoiceControl(@[@"Off", @"FXAA", @"SMAA"], @"antiAliasing",
         @"Anti-aliasing", @"Select the native renderer's edge smoothing mode.");
 
+    _shadowMetrics = Copy(@"", 12, YES);
+    _distanceMetrics = Copy(@"", 12, YES);
+    _modelMetrics = Copy(@"", 12, YES);
+    _reflectionMetrics = Copy(@"", 12, YES);
+    _aaMetrics = Copy(@"", 12, YES);
+    for (UILabel *metric in @[_shadowMetrics, _distanceMetrics, _modelMetrics,
+                              _reflectionMetrics, _aaMetrics]) {
+        metric.textColor = Ink(0xE6B56B);
+    }
+    for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
+                                         _reflectionQuality, _antiAliasing]) {
+        [choice addTarget:self action:@selector(refreshConfigurationSummary)
+            forControlEvents:UIControlEventValueChanged];
+    }
+
     [graphicsRows addObjectsFromArray:@[
-        [self choice:@"DYNAMIC SHADOWS" detail:@"Enhanced doubles map resolution at the original range. Ultra uses 1024 maps with a modest range extension." control:_shadowQuality],
-        [self choice:@"DRAW DISTANCE" detail:@"Uses the title's original world-distance control. Larger scenes increase CPU work." control:_drawDistance],
-        [self choice:@"MODEL DETAIL" detail:@"Highest LOD keeps the best resident model mesh where available." control:_modelDetail],
-        [self choice:@"REFLECTION QUALITY" detail:@"Raises mirror, water, and environment reflection resolution through the native renderer." control:_reflectionQuality],
-        [self choice:@"ANTI-ALIASING" detail:@"SMAA gives the cleanest edges here. FXAA is lighter; Off is the fastest control." control:_antiAliasing],
+        [self choice:@"DYNAMIC SHADOWS" detail:@"Original: 256 base / 2048² point cache. Enhanced: 512 / 4096². Ultra: 1024 / 8192²; device limits may cap it." control:_shadowQuality metrics:_shadowMetrics],
+        [self choice:@"DRAW DISTANCE" detail:@"World-distance multiplier and drawable-reference capacity. Longer range adds CPU, streaming and draw work." control:_drawDistance metrics:_distanceMetrics],
+        [self choice:@"MODEL DETAIL" detail:@"Highest LOD selects the best resident model; it does not force missing models to load." control:_modelDetail metrics:_modelMetrics],
+        [self choice:@"REFLECTION QUALITY" detail:@"Mirror and water targets / environment cubemap. Full is capped at 1440p in this build." control:_reflectionQuality metrics:_reflectionMetrics],
+        [self choice:@"ANTI-ALIASING" detail:@"Edge smoothing after scene rendering; this does not change internal resolution." control:_antiAliasing metrics:_aaMetrics],
         [self setting:@"TEXTURE FILTERING · 4×" detail:@"Cleaner roads and surfaces at an angle." toggle:_anisotropicFiltering],
         [self setting:@"MOTION BLUR" detail:@"Original movement blur. Disable for a sharper image in motion." toggle:_motionBlur],
         Copy(@"Graphics changes apply on the next game launch. Extended distance and Ultra shadows can reduce frame rate in dense areas.", 12, NO)
@@ -341,6 +366,13 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     return Column(@[label, control, Copy(detail, 12, NO)], 7);
 }
 
+- (UIView *)choice:(NSString *)title detail:(NSString *)detail
+           control:(UISegmentedControl *)control metrics:(UILabel *)metrics {
+    UILabel *label = Copy(title, 14, YES);
+    label.textColor = Ink(0xECE7D7);
+    return Column(@[label, control, metrics, Copy(detail, 12, NO)], 7);
+}
+
 - (void)updateTabAppearance {
     for (UIButton *tab in _tabs) {
         BOOL selected = !_pages[tab.tag].hidden;
@@ -411,13 +443,13 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _menuPanel.frame = CGRectMake(inset, panelTop, panelWidth, MAX(300, panelBottom - panelTop));
     CGFloat pw = _menuPanel.bounds.size.width, ph = _menuPanel.bounds.size.height;
     CGFloat navWidth = compact ? 145 : 174;
-    _wordmark.frame = CGRectMake(20, 16, navWidth - 24, 76);
-    _navigation.frame = CGRectMake(12, 103, navWidth - 16, 212);
-    _navRule.frame = CGRectMake(navWidth, 18, 1, ph - 36);
+    _wordmark.frame = CGRectMake(22, 12, pw - 44, 81);
+    _navigation.frame = CGRectMake(12, 120, navWidth - 16, 212);
+    _navRule.frame = CGRectMake(navWidth, 109, 1, ph - 127);
     _controllerHint.frame = CGRectMake(17, ph - 42, navWidth - 26, 30);
-    _pageTitle.frame = CGRectMake(navWidth + 24, 20, pw - navWidth - 44, 20);
-    _pageDetail.frame = CGRectMake(navWidth + 24, 43, pw - navWidth - 44, 18);
-    _scroll.frame = CGRectMake(navWidth + 24, 76, pw - navWidth - 39, ph - 94);
+    _pageTitle.frame = CGRectMake(navWidth + 24, 111, pw - navWidth - 44, 20);
+    _pageDetail.frame = CGRectMake(navWidth + 24, 134, pw - navWidth - 44, 18);
+    _scroll.frame = CGRectMake(navWidth + 24, 168, pw - navWidth - 39, ph - 186);
 
     _bottomRule.frame = CGRectMake(inset, h - bottom - 46, w - 2 * inset, 1);
     _statusLabel.frame = CGRectMake(inset, h - bottom - 39, compact ? w - 2 * inset : w * .55, 38);
@@ -430,10 +462,29 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
 - (uint32_t)renderHeight {
     NSInteger index = _renderResolution.selectedSegmentIndex;
-    return index == 1 ? 900 : index == 2 ? 1080 : 720;
+    return index == 0 ? 540 : index == 2 ? 900 : index == 3 ? 1080 : 720;
 }
 
 - (void)refreshConfigurationSummary {
+    NSArray<NSString *> *shadowMetrics = @[
+        @"256 base · 2048 × 2048 cache · 1× range",
+        @"512 base · 4096 × 4096 cache · 1× range",
+        @"1024 base · up to 8192 × 8192 cache · 1.5× range"];
+    NSArray<NSString *> *distanceMetrics = @[
+        @"1× world distance · 13,000 drawable references",
+        @"2× world distance · 17,000 drawable references",
+        @"3× world distance · 20,000 drawable references"];
+    NSArray<NSString *> *reflectionMetrics = @[
+        @"320 × 180 mirror/water · 256² environment",
+        @"1920 × 1080 mirror/water · 1024² environment",
+        @"2560 × 1440 mirror/water · 2048² environment"];
+    _shadowMetrics.text = shadowMetrics[MAX(0, MIN(2, _shadowQuality.selectedSegmentIndex))];
+    _distanceMetrics.text = distanceMetrics[MAX(0, MIN(2, _drawDistance.selectedSegmentIndex))];
+    _modelMetrics.text = _modelDetail.selectedSegmentIndex == 1
+        ? @"Highest resident mesh at any distance" : @"Title-controlled model LOD";
+    _reflectionMetrics.text = reflectionMetrics[MAX(0, MIN(2, _reflectionQuality.selectedSegmentIndex))];
+    _aaMetrics.text = @[@"No edge filter", @"FXAA · single lightweight pass",
+                        @"SMAA 1× · high preset"][MAX(0, MIN(2, _antiAliasing.selectedSegmentIndex))];
     NSString *shadow = @[@"ORIGINAL SHADOWS", @"ENHANCED SHADOWS", @"ULTRA SHADOWS"]
         [MAX(0, _shadowQuality.selectedSegmentIndex)];
     NSString *distance = @[@"ORIGINAL DISTANCE", @"2× DISTANCE", @"3× DISTANCE"]

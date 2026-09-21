@@ -18,6 +18,7 @@
 @property(nonatomic, readonly) UISwitch *fsrUpscaling;
 @property(nonatomic, readonly) uint32_t renderHeight;
 @property(nonatomic, readonly) UISwitch *motionBlur;
+@property(nonatomic, readonly) UIButton *lowPowerButton;
 // Native renderer controls. These map to GTA IV graphics CVars at launch.
 @property(nonatomic, readonly) UISegmentedControl *shadowQuality;
 @property(nonatomic, readonly) UISegmentedControl *drawDistance;

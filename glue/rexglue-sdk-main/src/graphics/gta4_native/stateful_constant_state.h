@@ -163,6 +163,12 @@ class AuthoritativeConstantState {
 
   template <typename HashCallback>
   ConstantApplyResult Apply(const ConstantPayloadDelta& delta, HashCallback&& hash_callback) {
+    // Most draws do not change both constant stages. Once initialized, an
+    // empty delta is already valid and cannot create a new state version.
+    if (initialized_ && !delta.complete_snapshot && delta.ranges.empty() &&
+        delta.payload.empty()) {
+      return {ConstantApplyStatus::kApplied, false, current_};
+    }
     if (!ValidateConstantPayloadDelta(delta, canonical_.size())) {
       return {ConstantApplyStatus::kInvalidDelta, false, current_};
     }

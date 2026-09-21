@@ -6988,7 +6988,6 @@ static std::thread g_renderThread([]
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         GuestThread::SetThreadName(GetCurrentThreadId(), "Render Thread");
 #endif
-
         RenderCommand commands[32];
 
         while (true)

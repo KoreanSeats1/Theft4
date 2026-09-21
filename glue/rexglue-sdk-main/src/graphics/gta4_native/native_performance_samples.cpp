@@ -309,6 +309,8 @@ const char* CpuRangeName(CpuRange range) {
       "housekeeping-surface-release", "housekeeping-texture-reclamation",
       "housekeeping-texture-retirement", "housekeeping-buffer-reclamation",
       "housekeeping-persistent-buffer-reclamation",
+      "render-worker-pre-submit-wall", "render-worker-pre-submit-on-core",
+      "guest-gap-wall", "guest-gap-on-core", "guest-gap-off-core",
   };
   const size_t index = EnumIndex(range);
   return index < kNames.size() ? kNames[index] : "unknown";
@@ -322,6 +324,8 @@ const char* CounterName(Counter counter) {
       "index-upload-bytes",
       "persistent-buffer-upload-bytes",
       "persistent-buffer-hits",
+      "persistent-buffer-owner-memo-hits",
+      "shared-constant-last-key-hits",
       "persistent-buffer-misses",
       "persistent-buffer-resident-bytes",
       "persistent-buffer-live-allocations",
@@ -365,6 +369,8 @@ const char* CounterName(Counter counter) {
       "shader-snapshot-reuses",
       "zero-dof-skips",
       "postfx-direct-writes", "constant-version-hits", "constant-content-hits", "constant-binding-uploads", "texture-binding-reuses", "constant-binding-owners",
+      "render-worker-qos-class", "render-worker-qos-relative-priority", "thermal-state",
+      "guest-gap-cpu-valid",
   };
   const size_t index = EnumIndex(counter);
   return index < kNames.size() ? kNames[index] : "unknown";

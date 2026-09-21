@@ -1,5 +1,31 @@
 # Theft4 engineering changelog
 
+## 2026-09-18 — Lab limiter and queue timing (build 9)
+
+- **Opt-in, device test pending:** extend the manual Lab capture with present
+  producer timestamps, limiter deadlines/sleep/wake/lock timing, and separate
+  worker mutex, condition-wait, batch-transfer and dispatch measurements.
+- Preserve the existing pacing decision and rendering settings. Store at most
+  1024 present observations in memory and export after capture; no per-frame
+  file writes or formatting. Report dropped records and capture boundaries.
+- Add clock-domain and frame-identity checks to the capture analyzer. See
+  [the capture procedure](docs/THEFT4_LAB_PACING_CAPTURE.md) for the next playtest
+  and interpretation limits. This preparation does not install or launch an app.
+
+## 2026-09-17 — Lab manual frame-timing capture (build 8)
+
+- **Opt-in:** Launch Theft4 Lab with `THEFT4_LAB_NATIVE_PROFILE=1`, reach the
+  desired gameplay scene, then double-tap the FPS counter to request the existing
+  600-frame CPU/GPU capture. The counter turns orange when requested. Only one
+  capture is supported per process; completion and timestamp validity must be
+  checked in the diagnostic export before drawing conclusions.
+- Profiling no longer automatically consumes its sample window during loading.
+  The control is compiled only into the Lab native-renderer app. Ordinary launches
+  retain profiling disabled. Rendering settings and the main app are unchanged.
+- Build, isolation checks and on-device capture validation are recorded with the
+  private Lab artifact. Instrumented FPS is diagnostic evidence, not acceptance
+  performance; repeat the route with profiling disabled for the control.
+
 This file is the durable, public engineering record for Theft4. It records
 implementation changes, experiments, validation evidence, and known limits. It
 is intentionally more detailed than a release-note summary because this project
@@ -17,73 +43,10 @@ Status labels used below:
 Private game files, title updates, saves, screenshots, GPU captures, signing
 material, and device logs are never part of this changelog or repository.
 
-## v0.1.3(a) — shared hot-path and A19 launch update — 2026-09-17
-
-Apple distribution identity: marketing version **0.1.3**, build **6**. The
-parenthetical `a` is the public release label because Apple bundle versions must
-remain numeric.
-
-### Promoted to the normal Theft4 app
-
-- Replaced 49 dependent fixed-function-state hash calls with one packed,
-  padding-independent fingerprint that retains all 49 fields and 66 components.
-- Processes render-worker batch commands in place, moves deferred-release
-  commands, skips disabled PS9 diagnostic preparation, and reuses verified
-  prepared texture bindings through a bounded per-batch memo.
-- Stores common command headers in 192 inline bytes with automatic heap fallback
-  for uncommon larger commands. Memory telemetry counts only fallback capacity.
-- Makes fixed-state validation hashes and detailed CPU/GPU profiling opt-in for
-  normal production runs. Profiling and validation code remains available for
-  deliberate diagnostic captures.
-- Selects launch defaults from the device hardware identifier. A19-family
-  `iPhone18,*` devices disable speculative pipeline prewarm while retaining the
-  authoritative frame-recording pipeline path. Other devices keep prewarm on.
-- Removes the main app's M5-only compiler scheduling default. Public builds use
-  the normal ARM64 compiler target; device labs may still pass an explicit
-  scheduling target without changing the instruction-set requirement.
-
-### Explicitly not promoted from Theft4 Lab
-
-- No experimental pipeline deferral, drawing-order change, shader experiment,
-  GPU-lifetime diagnostic, or other unresolved Lab renderer work is included.
-- The A19-only `apple-a19` compiler scheduling preset is not enabled in the
-  public app. The earlier multi-change A19 pass that fell to roughly 10–16 FPS
-  is not presented as a successful performance result.
-
-### Validation and limits
-
-- The focused shared-hotpath suite passes under AddressSanitizer and
-  UndefinedBehaviorSanitizer. It covers inline/fallback command storage,
-  fixed-state fingerprint stability and prepared-binding memo verification.
-- The earlier isolated A19 suite passed 55 cases and 2,263,316 assertions; its
-  second device candidate was installed but not gameplay-accepted. This release
-  therefore makes no sustained-FPS claim and should be evaluated on both A19
-  iPhone and M5 iPad hardware.
-- See [release notes](docs/RELEASE_0.1.3A.md) for user-visible changes, install
-  instructions and the artifact identity.
-
-## v0.1.3 — M5 stable iOS release — 2026-09-17
+## Unreleased — work after `440d505c` — 2026-09-16
 
 Comparison base: [`440d505c`](https://github.com/KoreanSeats1/Theft4/commit/440d505c964bbe4cb51a0217e162bf1eaa4de23e),
 the public native-renderer and performance-documentation checkpoint.
-
-### Release checkpoint
-
-- Promoted the device-tested M5 iPad configuration without the isolated A19
-  experiments: native GTA IV renderer, two frames in flight, 1280×720 internal
-  render to 1920×1080 FSR1 quality output, and motion blur enabled by default.
-- Fixed the iOS native render worker startup failure by using an explicit 2 MiB
-  pthread stack on Apple platforms. The worker is joined through the matching
-  pthread lifetime path at shutdown.
-- Made the public iOS Release pipeline require the native backend and explicit
-  `-O3 -DNDEBUG` compiler flags. Packaging now rejects a build unless the actual
-  AOT game, core bridge, and native-renderer response files pass that check.
-- Preserved the checksummed dependency-patch manifest and pinned submodule
-  revisions needed to reproduce the linked MoltenVK/XeniOS stack. The public IPA
-  contains no retail game files, saves, signing identity, provisioning profile,
-  or machine-specific source paths.
-- Version 0.1.3 (build 5) is the GitHub/sideloading release checkpoint. The IPA
-  is unsigned by design and must be re-signed by the user's sideloading tool.
 
 ### Installed, device acceptance pending — motion-blur option — 2026-09-17
 

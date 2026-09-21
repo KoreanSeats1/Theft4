@@ -30,9 +30,21 @@ REXCVAR_DECLARE(bool, execute_unclipped_draw_vs_on_cpu_with_scissor);
 REXCVAR_DECLARE(bool, draw_extent_estimator_diagnostics);
 REXCVAR_DECLARE(bool, vulkan_ownership_transfer_diagnostics);
 REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
+REXCVAR_DECLARE(bool, vulkan_tight_render_area);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
+REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
+REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
+REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
+REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
+REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_gpu_query_budget);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_interval);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_samples);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -41,10 +53,13 @@ REXCVAR_DECLARE(std::string, gta4_fsr1_quality);
 REXCVAR_DECLARE(std::string, present_effect);
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
-REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
-REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
-REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
-REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
+REXCVAR_DECLARE(uint32_t, gta4_shadow_map_base_size);
+REXCVAR_DECLARE(double, gta4_shadow_distance_scale);
+REXCVAR_DECLARE(std::string, gta4_reflection_resolution);
+REXCVAR_DECLARE(std::string, gta4_native_anti_aliasing);
+REXCVAR_DECLARE(bool, gta4_force_highest_lod);
+REXCVAR_DECLARE(double, gta4_draw_distance_scale);
+REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 #endif
 
 extern const rex::PPCImageInfo PPCImageConfig;
@@ -136,27 +151,33 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
-        // Keep expensive diagnostics opt-in for every production device. A19
-        // devices also avoid speculative pipeline prewarm because the pass-1
-        // phone trace showed a deep render-worker backlog. The authoritative
-        // pipeline creation path remains active during frame recording.
+        // Keep detailed diagnostics opt-in. A19 phones skip speculative
+        // prewarming after the observed deep render-worker backlog; pipeline
+        // creation at the authoritative recording point remains enabled.
         const char* device_profile_value = std::getenv("THEFT4_DEVICE_PROFILE");
         const std::string_view device_profile =
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
         REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
-        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
-        REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
+        REXCVAR_SET(gta4_native_sparse_texture_walks, a19_profile);
+        const char* capture_value = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
+        const bool capture = capture_value && std::string_view(capture_value) == "1";
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, capture);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, capture);
         REXCVAR_SET(gta4_profile_native_autostart, false);
+        if (capture) {
+            REXCVAR_SET(gta4_profile_native_gpu_query_budget, 512u);
+            REXCVAR_SET(gta4_profile_native_interval, 1u);
+            REXCVAR_SET(gta4_profile_native_samples, 600u);
+        }
         REXLOG_INFO(
-            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
+            "Theft4 device profile: {} pipeline-prewarm={} sparse-texture-walks={} detailed-profile={} "
             "profile-autostart=false",
-            device_profile, !a19_profile);
+            device_profile, !a19_profile, a19_profile, capture);
 
-        // Match the desktop FSR setup, with a deliberately fixed 720p scene.
-        // Native hooks derive input = output / 1.5 for FSR's Quality mode:
-        // 1920x1080 / 1.5 = 1280x720. The CAMetalLayer is already sized on
-        // the main thread, before Vulkan constructs the output swapchain.
+        // The launch policy independently selects scene and drawable sizes.
+        // Native hooks derive scene = logical video / 1.5 for FSR Quality.
+        // The CAMetalLayer is already sized before swapchain creation.
         const int motion_blur = theft4::motion_blur::ParseSetting(std::getenv("THEFT4_MOTION_BLUR"));
         if (motion_blur < 0)
             throw std::runtime_error("THEFT4_MOTION_BLUR must be 0 or 1");
@@ -166,8 +187,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 motion blur: {} (stock composite-pass selection)",
                     motion_blur ? "on" : "off");
         const auto output = theft4_metal_get_output_policy();
-        // Boost expands only the swapchain. Raising this logical video mode
-        // would also raise the render target through the game's FSR hooks.
+        // Use the policy's logical size, not the physical drawable: its FSR
+        // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
         REXCVAR_SET(video_mode_height, int32_t(output.video_height));
         REXCVAR_SET(gta4_native_upscaler, output.fsr1 ? "fsr1" : "native");
@@ -199,6 +220,82 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                     anisotropy,
                     anisotropy_override ? "launch override" : "iOS default");
 
+        // The launcher exposes established native-renderer controls. Preserve
+        // the existing iOS values when an older install has no saved selection
+        // so adding the menu does not silently make a performance run heavier.
+        const char* shadow_override = std::getenv("THEFT4_SHADOW_QUALITY");
+        const std::string_view shadow = shadow_override ? shadow_override : "original";
+        uint32_t shadow_map_size = 0;
+        double shadow_distance = 0.0;
+        if (shadow == "original") {
+            shadow_map_size = 256;
+            shadow_distance = 1.0;
+        } else if (shadow == "enhanced") {
+            shadow_map_size = 512;
+            shadow_distance = 1.0;
+        } else if (shadow == "ultra") {
+            shadow_map_size = 1024;
+            shadow_distance = 1.5;
+        } else {
+            throw std::runtime_error(
+                "THEFT4_SHADOW_QUALITY must be original, enhanced, or ultra");
+        }
+        REXCVAR_SET(gta4_shadow_map_base_size, shadow_map_size);
+        REXCVAR_SET(gta4_shadow_distance_scale, shadow_distance);
+
+        const char* draw_distance_override = std::getenv("THEFT4_DRAW_DISTANCE");
+        const std::string_view draw_distance =
+            draw_distance_override ? draw_distance_override : "1";
+        double draw_distance_scale = 0.0;
+        uint32_t drawable_reference_limit = 0;
+        if (draw_distance == "1") {
+            draw_distance_scale = 1.0;
+            drawable_reference_limit = 13000;
+        } else if (draw_distance == "2") {
+            draw_distance_scale = 2.0;
+            drawable_reference_limit = 17000;
+        } else if (draw_distance == "3") {
+            draw_distance_scale = 3.0;
+            // Matches the established desktop 3x default without expanding
+            // the heavy-area producer workload beyond the proven capacity.
+            drawable_reference_limit = 20000;
+        } else {
+            throw std::runtime_error("THEFT4_DRAW_DISTANCE must be 1, 2, or 3");
+        }
+        REXCVAR_SET(gta4_draw_distance_scale, draw_distance_scale);
+        REXCVAR_SET(gta4_drawable_reference_limit, drawable_reference_limit);
+
+        const char* highest_lod_override = std::getenv("THEFT4_FORCE_HIGHEST_LOD");
+        const std::string_view highest_lod =
+            highest_lod_override ? highest_lod_override : "0";
+        if (highest_lod != "0" && highest_lod != "1") {
+            throw std::runtime_error("THEFT4_FORCE_HIGHEST_LOD must be 0 or 1");
+        }
+        REXCVAR_SET(gta4_force_highest_lod, highest_lod == "1");
+
+        const char* reflection_override = std::getenv("THEFT4_REFLECTION_RESOLUTION");
+        const std::string_view reflection =
+            reflection_override ? reflection_override : "original";
+        if (reflection != "original" && reflection != "1080p" && reflection != "full") {
+            throw std::runtime_error(
+                "THEFT4_REFLECTION_RESOLUTION must be original, 1080p, or full");
+        }
+        REXCVAR_SET(gta4_reflection_resolution, std::string(reflection));
+
+        const char* anti_aliasing_override = std::getenv("THEFT4_ANTI_ALIASING");
+        const std::string_view anti_aliasing =
+            anti_aliasing_override ? anti_aliasing_override : "smaa";
+        if (anti_aliasing != "off" && anti_aliasing != "fxaa" &&
+            anti_aliasing != "smaa") {
+            throw std::runtime_error("THEFT4_ANTI_ALIASING must be off, fxaa, or smaa");
+        }
+        REXCVAR_SET(gta4_native_anti_aliasing, std::string(anti_aliasing));
+        REXLOG_INFO(
+            "Theft4 graphics: shadows={} ({} map, {}x range) draw-distance={}x "
+            "drawable-limit={} highest-lod={} reflections={} anti-aliasing={}",
+            shadow, shadow_map_size, shadow_distance, draw_distance_scale,
+            drawable_reference_limit, highest_lod == "1", reflection, anti_aliasing);
+
         // Use both independently owned native frame slots so the CPU can record
         // frame n+1 while the GPU completes frame n.  The renderer keeps command
         // buffers, upload storage, descriptors, constants, query/readback state
@@ -217,6 +314,50 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_frames_in_flight, native_frame_slots);
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
+#ifdef THEFT4_LAB_BUILD
+        // Keep CPU/transport detail for attribution, but use only the coarse
+        // GPU envelope. Per-pass Metal timestamp blits measurably perturb the
+        // workload and are unnecessary for the CPU/physics comparison.
+        const char* detailed_capture_value = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
+        const bool detailed_capture = detailed_capture_value &&
+            std::string_view(detailed_capture_value) == "1";
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, detailed_capture);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
+        REXCVAR_SET(gta4_profile_native_autostart, false);
+        REXLOG_INFO(
+            "Theft4 bounded CPU/GPU profiler ready; detailed-gpu={}. "
+            "Double-tap the frame-time graph to capture",
+            detailed_capture);
+        // Promoted default; a fresh launch with 0 restores strict fetch identity
+        // in the same executable for a controlled comparison. Keep the historical
+        // override name so existing device experiments remain reproducible.
+        const char* content_cache_override = std::getenv("THEFT4_LAB_TEXTURE_CONTENT_CACHE");
+        const std::string_view content_cache =
+            content_cache_override ? content_cache_override : "1";
+        if (content_cache != "0" && content_cache != "1") {
+            throw std::runtime_error("THEFT4_LAB_TEXTURE_CONTENT_CACHE must be 0 or 1");
+        }
+        REXCVAR_SET(gta4_native_texture_content_cache, content_cache == "1");
+        REXLOG_INFO("Theft4 texture content cache: {} ({})",
+                    content_cache == "1" ? "enabled" : "strict baseline",
+                    content_cache_override ? "launch override" : "release default");
+        REXCVAR_SET(gta4_native_worker_stall_attribution, true);
+        REXLOG_INFO("Theft4 render-worker stall attribution enabled");
+        // New-area pipelines may still be compiling when their first draw is
+        // recorded. Defer that draw instead of blocking the whole
+        // render worker. Set 0 to restore the exact synchronous wait path.
+        const char* async_pipeline_override =
+            std::getenv("THEFT4_LAB_ASYNC_PIPELINES");
+        const std::string_view async_pipelines =
+            async_pipeline_override ? async_pipeline_override : "1";
+        if (async_pipelines != "0" && async_pipelines != "1") {
+            throw std::runtime_error("THEFT4_LAB_ASYNC_PIPELINES must be 0 or 1");
+        }
+        REXCVAR_SET(gta4_native_async_pipeline_no_wait, async_pipelines == "1");
+        REXLOG_INFO("Theft4 asynchronous pipelines: {} ({})",
+                    async_pipelines == "1" ? "defer pending draws" : "strict wait baseline",
+                    async_pipeline_override ? "launch override" : "release default");
+#endif
 #endif
         rex::Runtime runtime(game_directory, support / "user",
                              std::filesystem::path(game_directory) / "update",

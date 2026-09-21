@@ -16,6 +16,9 @@ int main(int argc, char **argv) {
   metadata.gpu_timestamp_valid_bits = 36;
   metadata.device_name = "test device \"quoted\"\nline";
   metadata.shader_names = {{123, "vertex.hlsl"}, {456, "pixel.hlsl"}};
+#ifdef THEFT4_LAB_BUILD
+  rex::graphics::gta4_native::pacing::capture.Start(900);
+#endif
   std::vector<p::FrameDetail> details;
   std::ofstream csv(directory / "native-performance-latest.csv");
   csv << "frame,capture_index,schema_version,capture_id,capture_sequence,"
@@ -44,9 +47,28 @@ int main(int argc, char **argv) {
     recorder.Leave(command, start + 8000);
     recorder.Leave(outer, start + 10000);
     frame.cpu = recorder.Finish(start + 10000, 2);
+    frame.publish_begin_tick = start;
+    frame.publish_end_tick = start + 10000;
     frame.paint = {i + 1, start - 500, start, 50 + i, 10,     0,
                    10,    20,          30,    500,    99 + i, 0};
     frame.transport.Observe({start - 100, 100, 10, 20, 30}, start, 5);
+#ifdef THEFT4_LAB_BUILD
+    frame.transport.ObserveWorker(80000, 1000, 70000, 6000, true, true);
+    rex::graphics::gta4_native::pacing::Sample pacing_sample;
+    pacing_sample.frame = frame.frame;
+    pacing_sample.system_thread = 123;
+    pacing_sample.submitted = pacing_sample.wait_requested = true;
+    pacing_sample.hook_begin = start - 300;
+    pacing_sample.submit_begin = start - 200;
+    pacing_sample.submit_end = start - 100;
+    pacing_sample.sleep_begin = start + 20000;
+    pacing_sample.wake = start + 40000;
+    pacing_sample.decision_ns = 10000000;
+    pacing_sample.sleep_begin_ns = 11000000;
+    pacing_sample.wait_until_ns = 30000000;
+    pacing_sample.wake_ns = 31000000;
+    rex::graphics::gta4_native::pacing::capture.Record(pacing_sample);
+#endif
     frame.detailed_gpu = true;
     frame.query_count = 3;
     frame.query_budget = 16;
@@ -78,5 +100,8 @@ int main(int argc, char **argv) {
         << (i ? 0 : 1) << '\n';
   }
   csv.close();
+#ifdef THEFT4_LAB_BUILD
+  rex::graphics::gta4_native::pacing::capture.Stop(400000);
+#endif
   return p::ExportProfileDetails(directory, details, metadata) ? 0 : 1;
 }

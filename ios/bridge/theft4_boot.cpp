@@ -16,9 +16,13 @@
 int theft4_configure_boot_diagnostics(void) {
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
     const bool detailed = enabled && std::string_view(enabled) == "1";
+    // Keep the bounded profiler available for the graph gesture or the next
+    // launch capture switch. Collection remains dormant until armed.
     return rex::diagnostics::Configure(
-               true, detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
-                              : "logging")
+               true,
+               detailed
+                   ? "logging,transition,audio,vulkan,presenter,guest-hooks,native-profiler"
+                   : "logging,native-profiler")
                ? 0
                : 1;
 }

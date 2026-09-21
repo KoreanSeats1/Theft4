@@ -1,7 +1,7 @@
 # Install a sideloaded Theft4 IPA
 
-These instructions are for the unsigned ARM64 IPA attached to a Theft4 GitHub
-release. The IPA contains the application and statically recompiled game code,
+These instructions are for the unsigned ARM64 IPA attached to the Theft4 0.2.0
+GitHub release. The IPA contains the application and statically recompiled game code,
 but it does **not** contain Grand Theft Auto IV game data or a title update.
 
 ## Requirements
@@ -28,10 +28,10 @@ rename an incompatible update or bypass the validation checks.
    download GitHub's **Source code** archives as a substitute for the IPA.
 2. Import the IPA into AltStore, SideStore, or your preferred compatible
    sideloading tool and let that tool sign it with your Apple account.
-3. Install Theft4 on the destination iPhone or iPad. If an older build is
-   already installed, use the same bundle identity if you want the sideloading
-   tool to update it in place. Deleting the old app also deletes its app-local
-   files and saves.
+3. Install Theft4 on the destination iPhone or iPad. Version 0.2.0 uses the
+   original `com.theft4.bringup` bundle identifier. Update the existing app
+   in place to retain its game files and saves. Do not delete the old app.
+   The separate `com.theft4.m5lab` app is not the update target.
 4. Open Theft4 once, then close it. First launch creates the shared transfer
    location at **Files → Browse → On My iPhone/iPad → Theft4 → game** and the
    file `COPY GAME FILES HERE.txt` beside it.
@@ -133,8 +133,30 @@ directory, or a folder named `game` into the device's existing `game` folder.
    touch controls are enabled or disabled.
 
 Theft4 stores runtime settings, caches, and saves in its private app container,
-separate from the shared `Documents/game` folder. Replacing or deleting the app
-can therefore remove saves even if the transferred game folder was backed up.
+separate from the shared `Documents/game` folder. An in-place update keeps this
+container. Deleting the app removes it, including saves.
+
+## 0.2.0 graphics and diagnostics
+
+- **Graphics** selects 540p, 720p, 900p or 1080p internal resolution, FSR,
+  shadows, draw distance, model detail, reflections, anti-aliasing, filtering
+  and motion blur. **Apply Performance Preset** starts from 540p + FSR and
+  conservative quality settings. Changes apply at the next game launch.
+- **Interface** has the frame counter, a frame-time graph and touch controls.
+  The graph shows frame publication intervals against a 33.3 ms target.
+- For a low-FPS report, open **System** before starting the game and enable
+  **Detailed Performance Capture**. In the slow scene, double-tap the frame-time
+  graph and allow 600 frames to finish. Quit and relaunch, then tap
+  **Download Latest Log Capture**.
+  Save or share the dated text bundle from **Files → On My iPhone/iPad → Theft4
+  → Diagnostics**. Include the device, route, graphics settings, play duration
+  and whether the device felt hot. Profiling adds overhead; also describe an
+  ordinary run with capture off.
+
+TestFlight testers install the signed 0.2.0 build from TestFlight, then follow
+the same game-folder and diagnostics steps. Do not sideload the unsigned GitHub
+IPA over a TestFlight install unless you deliberately manage signing with the
+same bundle identifier and preserve the existing app container.
 
 ## Common installation failures
 

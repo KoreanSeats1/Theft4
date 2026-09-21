@@ -1,14 +1,22 @@
 #import <UIKit/UIKit.h>
+#import <GameController/GameController.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/utsname.h>
+#include <stdint.h>
 #include "theft4_core.h"
 #include "theft4_metal_presenter.h"
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+#include "theft4_lab_diagnostics.h"
+extern int rex_gta4_native_profile_start(void);
+extern int rex_gta4_native_profile_status(void);
+#endif
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
+#import "Theft4FrameTimeView.h"
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
@@ -19,7 +27,66 @@
 + (Class)layerClass { return CAMetalLayer.class; }
 @end
 
-@interface Theft4ViewController : UIViewController {
+static BOOL Theft4WriteBytes(NSOutputStream *stream, const uint8_t *bytes,
+                             NSUInteger length, NSUInteger *budget) {
+    if (!stream || !budget || length > *budget || (length && !bytes)) return NO;
+    NSUInteger offset = 0;
+    while (offset < length) {
+        NSInteger written = [stream write:bytes + offset maxLength:length - offset];
+        if (written <= 0) return NO;
+        offset += (NSUInteger)written;
+    }
+    *budget -= length;
+    return YES;
+}
+
+static BOOL Theft4WriteString(NSOutputStream *stream, NSString *value, NSUInteger *budget) {
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    return data && Theft4WriteBytes(stream, data.bytes, data.length, budget);
+}
+
+static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSString *label,
+                                       NSUInteger *budget, NSMutableArray<NSString *> *included,
+                                       NSMutableArray<NSString *> *skipped) {
+    BOOL directory = NO;
+    if (!url || ![NSFileManager.defaultManager fileExistsAtPath:url.path isDirectory:&directory] ||
+        directory) return YES;
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:nil];
+    unsigned long long fileSize = [attributes fileSize];
+    NSString *header = [NSString stringWithFormat:@"\n\n===== %@ (%llu bytes; modified %@) =====\n",
+                        label, fileSize, [attributes fileModificationDate] ?: @"unknown"];
+    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
+    if (fileSize > *budget || headerData.length > *budget - (NSUInteger)fileSize) {
+        [skipped addObject:[NSString stringWithFormat:@"%@ (%llu bytes; export budget exceeded)",
+                             label, fileSize]];
+        return YES;
+    }
+    if (!Theft4WriteBytes(stream, headerData.bytes, headerData.length, budget)) return NO;
+    NSInputStream *input = [NSInputStream inputStreamWithURL:url];
+    [input open];
+    uint8_t buffer[64 * 1024];
+    BOOL success = YES;
+    while (success) {
+        NSInteger count = [input read:buffer maxLength:sizeof(buffer)];
+        if (count < 0) { success = NO; break; }
+        if (count == 0) break;
+        success = Theft4WriteBytes(stream, buffer, (NSUInteger)count, budget);
+    }
+    [input close];
+    if (success) [included addObject:label];
+    return success;
+}
+
+static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
+    static NSSet<NSString *> *extensions;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        extensions = [NSSet setWithObjects:@"log", @"json", @"jsonl", @"csv", @"txt", @"partial", nil];
+    });
+    return [extensions containsObject:extension.lowercaseString];
+}
+
+@interface Theft4ViewController : GCEventViewController {
     theft4_core *_core;
     NSURL *_supportURL;
     NSURL *_logURL;
@@ -40,13 +107,29 @@
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
     UISwitch *_showFPS;
+    UISwitch *_showFrameTime;
+    Theft4FrameTimeView *_frameTimeView;
+    NSTimer *_frameTimeTimer;
+    NSLayoutConstraint *_frameTimeTop;
+    BOOL _sceneActive;
     UISwitch *_showControls;
     UISwitch *_anisotropicFiltering;
     UISwitch *_enhancedOutput;
     UISwitch *_fsrBoost;
     UISwitch *_motionBlur;
+    UISwitch *_performanceCapture;
+    UIButton *_downloadLogButton;
+    UISegmentedControl *_shadowQuality;
+    UISegmentedControl *_drawDistance;
+    UISegmentedControl *_modelDetail;
+    UISegmentedControl *_reflectionQuality;
+    UISegmentedControl *_antiAliasing;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+    BOOL _nativeProfileRequested;
+    BOOL _nativeProfileFinished;
+#endif
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -59,6 +142,9 @@
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
+- (void)applyLowPowerPreset;
+- (void)syncA19OutputChoice;
+- (void)downloadLatestLogCapture;
 @end
 
 static void coreEvent(void *context, const char *event) {
@@ -71,8 +157,7 @@ static void configureDeviceProfile(void) {
 
     struct utsname systemInfo = {};
     const char *machine = uname(&systemInfo) == 0 ? systemInfo.machine : "unknown";
-    // Apple's A19 iPhone family uses the iPhone18,* hardware identifiers. This
-    // selects launch defaults only; it does not enable a new instruction set.
+    // This selects launch defaults only; it does not enable a new instruction set.
     const BOOL isA19 = strncmp(machine, "iPhone18,", 9) == 0;
     const char *profile = isA19 ? "a19" :
         (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "ipad" : "generic");
@@ -94,16 +179,33 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    // Route controller buttons and directional input through UIKit while the
+    // launcher is visible so every standard control participates in focus.
+    self.controllerUserInteractionEnabled = YES;
     configureDeviceProfile();
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
+        @"Theft4ShowFrameTime": @NO,
         @"Theft4ShowTouchControls": @NO,
         @"Theft4AnisotropicFiltering": @YES,
         @"Theft4EnhancedOutput1080p": @YES,
         @"Theft4ExperimentalFSRBoost": @NO,
-        @"Theft4MotionBlur": @YES
+        @"Theft4MotionBlur": @NO,
+        @"Theft4DetailedPerformanceCapture": @NO,
+        @"Theft4ShadowQuality": @0,
+        @"Theft4DrawDistance": @0,
+        @"Theft4ModelDetail": @0,
+        @"Theft4ReflectionQuality": @0,
+        @"Theft4AntiAliasing": @2
     }];
-    // The native game image is 1280x720. Keep its layer itself at 16:9 so
+    // Older Lab builds registered blur as enabled and also persisted that
+    // implicit value whenever another display setting changed. Switch that
+    // legacy default off once; later explicit user choices remain persistent.
+    if (![NSUserDefaults.standardUserDefaults boolForKey:@"Theft4MotionBlurDefaultOffV39"]) {
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"Theft4MotionBlur"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4MotionBlurDefaultOffV39"];
+    }
+    // All selectable game resolutions are 16:9. Keep the layer at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
@@ -136,22 +238,67 @@ static void bootEvent(void *context, const char *event) {
     [_start addTarget:self action:@selector(startTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
+    [_bringupOverlay.lowPowerButton addTarget:self action:@selector(applyLowPowerPreset)
+        forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
+    _showFrameTime = _bringupOverlay.showFrameTime;
     _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
-    NSArray *toggles = @[_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
-    NSArray *keys = @[@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
-                      @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
+    _performanceCapture = _bringupOverlay.performanceCapture;
+    _downloadLogButton = _bringupOverlay.downloadLogButton;
+    [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
+                 forControlEvents:UIControlEventTouchUpInside];
+    _shadowQuality = _bringupOverlay.shadowQuality;
+    _drawDistance = _bringupOverlay.drawDistance;
+    _modelDetail = _bringupOverlay.modelDetail;
+    _reflectionQuality = _bringupOverlay.reflectionQuality;
+    _antiAliasing = _bringupOverlay.antiAliasing;
+    NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur,_performanceCapture];
+    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+                      @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
+                      @"Theft4DetailedPerformanceCapture"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
+    if (_performanceCapture.on) _showFrameTime.on = YES;
+    NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
+    NSArray<UISegmentedControl *> *graphicsChoices = @[
+        _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing
+    ];
+    NSArray<NSString *> *graphicsKeys = @[
+        @"Theft4ShadowQuality", @"Theft4DrawDistance", @"Theft4ModelDetail",
+        @"Theft4ReflectionQuality", @"Theft4AntiAliasing"
+    ];
+    for (NSUInteger i = 0; i < graphicsChoices.count; ++i) {
+        UISegmentedControl *choice = graphicsChoices[i];
+        NSInteger persisted = [graphicsDefaults integerForKey:graphicsKeys[i]];
+        choice.selectedSegmentIndex = MAX(0, MIN(choice.numberOfSegments - 1, persisted));
+        [choice addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    }
     if (_fsrBoost.on) _enhancedOutput.on = YES;
+    if (_bringupOverlay.renderResolution) {
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
+        _bringupOverlay.renderResolution.selectedSegmentIndex =
+            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 : 1;
+        // Migrate the old FSR On/Off preference once; old Boost no longer
+        // overrides this independent toggle in Lab.
+        if (![defaults objectForKey:@"Theft4LabFSREnabled"])
+            [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
+        _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
+        [self syncA19OutputChoice];
+        [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+        [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    }
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
@@ -180,6 +327,27 @@ static void bootEvent(void *context, const char *event) {
         [_fpsLabel.widthAnchor constraintEqualToConstant:92],
         [_fpsLabel.heightAnchor constraintEqualToConstant:32]
     ]];
+    _frameTimeView = [Theft4FrameTimeView new];
+    _frameTimeView.translatesAutoresizingMaskIntoConstraints = NO;
+    _frameTimeView.hidden = YES;
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+    UITapGestureRecognizer *capture = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(requestNativeProfile)];
+    capture.numberOfTapsRequired = 2;
+    [_frameTimeView addGestureRecognizer:capture];
+#endif
+    [self.view addSubview:_frameTimeView];
+    _frameTimeTop = [_frameTimeView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52];
+    [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
+        [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
+        [_frameTimeView.widthAnchor constraintEqualToConstant:244],
+        [_frameTimeView.heightAnchor constraintEqualToConstant:
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            126
+#else
+            92
+#endif
+        ]]];
     _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                                 target:self
                                               selector:@selector(refreshFrameRate)
@@ -202,6 +370,7 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)initializeSharedGameDirectory {
     NSError *error = nil;
+    NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
     NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
     NSURL *game = [documents URLByAppendingPathComponent:@"game" isDirectory:YES];
@@ -214,12 +383,13 @@ static void bootEvent(void *context, const char *event) {
 
     NSURL *instructionsURL = [documents URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
     if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path]) {
-        NSString *instructions =
-            @"Theft4 game-file transfer\n\n"
+        NSString *instructions = [NSString stringWithFormat:
+            @"%@ game-file transfer\n\n"
             @"Open the game folder next to this file and copy the CONTENTS of your prepared "
             @"installation into it. The final layout must include game/default.xex, "
             @"game/default.xexp, and game/update. A raw ISO will not work.\n\n"
-            @"Return to Theft4 and choose Verify Game Files when the transfer finishes.\n";
+            @"Return to %@ and choose Verify Game Files when the transfer finishes.\n",
+            displayName, displayName];
         if (![instructions writeToURL:instructionsURL atomically:YES
             encoding:NSUTF8StringEncoding error:&error]) {
             _failure = [NSString stringWithFormat:@"Cannot create transfer instructions: %@",
@@ -235,7 +405,7 @@ static void bootEvent(void *context, const char *event) {
         fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xexp"] path]];
     _bootStatus = hasBase && hasUpdate
         ? @"Game files detected. Verify them before starting."
-        : @"Transfer folder ready: Files → On My iPhone → Theft4 → game";
+        : [NSString stringWithFormat:@"Transfer folder ready: Files → On My iPhone/iPad → %@ → game", displayName];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -246,12 +416,32 @@ static void bootEvent(void *context, const char *event) {
                               _metalView.bounds.size.height, scale);
 }
 
-- (void)displaySettingsChanged:(UISwitch *)sender {
+- (void)displaySettingsChanged:(UIControl *)sender {
+    if (sender == _performanceCapture && _performanceCapture.on) _showFrameTime.on = YES;
+    [NSUserDefaults.standardUserDefaults setBool:_performanceCapture.on
+                                          forKey:@"Theft4DetailedPerformanceCapture"];
+    [self syncA19OutputChoice];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    [NSUserDefaults.standardUserDefaults setInteger:_shadowQuality.selectedSegmentIndex
+        forKey:@"Theft4ShadowQuality"];
+    [NSUserDefaults.standardUserDefaults setInteger:_drawDistance.selectedSegmentIndex
+        forKey:@"Theft4DrawDistance"];
+    [NSUserDefaults.standardUserDefaults setInteger:_modelDetail.selectedSegmentIndex
+        forKey:@"Theft4ModelDetail"];
+    [NSUserDefaults.standardUserDefaults setInteger:_reflectionQuality.selectedSegmentIndex
+        forKey:@"Theft4ReflectionQuality"];
+    [NSUserDefaults.standardUserDefaults setInteger:_antiAliasing.selectedSegmentIndex
+        forKey:@"Theft4AntiAliasing"];
+    if (_bringupOverlay.renderResolution) {
+        [NSUserDefaults.standardUserDefaults setInteger:_bringupOverlay.renderHeight forKey:@"Theft4LabRenderHeight"];
+        [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
+    }
     [_bringupOverlay refreshConfigurationSummary];
+    [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
+    [self updateFrameTimeHUD];
     [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
@@ -264,10 +454,33 @@ static void bootEvent(void *context, const char *event) {
     _fpsLastTime = CACurrentMediaTime();
 }
 
+- (void)syncA19OutputChoice {
+    if (!_bringupOverlay.renderResolution ||
+        strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") != 0) return;
+    _bringupOverlay.fsrUpscaling.on = _bringupOverlay.renderHeight < 1080;
+    _bringupOverlay.fsrUpscaling.enabled = NO;
+}
+
+- (void)applyLowPowerPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    _bringupOverlay.renderResolution.selectedSegmentIndex = 0; // 960 × 540
+    _bringupOverlay.fsrUpscaling.on = YES;
+    _shadowQuality.selectedSegmentIndex = 0;
+    _drawDistance.selectedSegmentIndex = 0;
+    _modelDetail.selectedSegmentIndex = 0;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
+    _anisotropicFiltering.on = NO;
+    _motionBlur.on = NO;
+    [self displaySettingsChanged:_bringupOverlay.renderResolution];
+}
+
 - (void)record:(NSString *)event {
     static os_log_t log;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ log = os_log_create("com.theft4.bringup", "lifecycle"); });
+    dispatch_once(&once, ^{
+        log = os_log_create(NSBundle.mainBundle.bundleIdentifier.UTF8String, "lifecycle");
+    });
     NSMutableDictionary *entry = [@{@"event":event, @"time":@([NSDate timeIntervalSinceReferenceDate]),
         @"pid":@(NSProcessInfo.processInfo.processIdentifier)} mutableCopy];
     theft4_core_snapshot snapshot = {.struct_size = sizeof(snapshot), .abi_version = THEFT4_CORE_ABI_VERSION};
@@ -293,12 +506,157 @@ static void bootEvent(void *context, const char *event) {
     }
 }
 
+- (void)downloadLatestLogCapture {
+    if (!_supportURL || !_downloadLogButton.enabled) return;
+    [self record:@"diagnostics.export_requested"];
+    _downloadLogButton.enabled = NO;
+    NSURL *supportURL = [_supportURL copy];
+    NSURL *lifecycleURL = [_logURL copy];
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown";
+    NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"unknown";
+    NSString *systemVersion = UIDevice.currentDevice.systemVersion ?: @"unknown";
+    NSString *deviceName = UIDevice.currentDevice.model ?: @"unknown";
+    const char *machineCString = getenv("THEFT4_DEVICE_MODEL");
+    NSString *machine = machineCString ? [NSString stringWithUTF8String:machineCString] : nil;
+    if (!machine.length) {
+        struct utsname systemInfo = {};
+        machine = uname(&systemInfo) == 0 ? [NSString stringWithUTF8String:systemInfo.machine] : @"unknown";
+    }
+    NSString *profile = [NSString stringWithUTF8String:getenv("THEFT4_DEVICE_PROFILE") ?: "unknown"];
+    uint64_t memoryMiB = NSProcessInfo.processInfo.physicalMemory >> 20;
+    BOOL captureEnabled = _performanceCapture.on;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSError *error = nil;
+        NSURL *documents = [fm URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask
+                             appropriateForURL:nil create:YES error:&error];
+        NSURL *diagnosticsURL = [documents URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        if (!documents || ![fm createDirectoryAtURL:diagnosticsURL withIntermediateDirectories:YES
+                                         attributes:nil error:&error]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_downloadLogButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
+                    message:error.localizedDescription ?: @"The Files folder is unavailable."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                    style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+            return;
+        }
+
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd-HH-mm-ss";
+        NSURL *outputURL = [diagnosticsURL URLByAppendingPathComponent:
+            [NSString stringWithFormat:@"Theft4-Performance-Capture-%@.txt",
+                                        [formatter stringFromDate:[NSDate date]]]];
+        NSOutputStream *stream = [NSOutputStream outputStreamWithURL:outputURL append:NO];
+        [stream open];
+        NSUInteger budget = 200u * 1024u * 1024u;
+        NSMutableArray<NSString *> *included = [NSMutableArray new];
+        NSMutableArray<NSString *> *skipped = [NSMutableArray new];
+        NSString *metadata = [NSString stringWithFormat:
+            @"Theft4 0.2.0 performance capture export\n"
+             "Generated: %@\nApp: %@ (%@)\nBundle: %@\nDevice: %@ / %@\n"
+             "iOS/iPadOS: %@\nPhysical memory: %llu MiB\nDevice profile: %@\n"
+             "Detailed capture switch at export: %@\n"
+             "This text bundle includes native CPU/GPU CSV and JSON artifacts when available.\n",
+            [NSDate date], version, build, NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+            deviceName, machine, systemVersion, (unsigned long long)memoryMiB, profile,
+            captureEnabled ? @"ON" : @"OFF"];
+        BOOL success = Theft4WriteString(stream, metadata, &budget);
+        NSURL *startupURL = [supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES];
+        NSURL *applicationSupport = [supportURL URLByDeletingLastPathComponent];
+        NSURL *nativeDiagnosticsURL = [[applicationSupport
+            URLByAppendingPathComponent:@"LibertyRecomp" isDirectory:YES]
+            URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        BOOL profileFound = [fm fileExistsAtPath:[[nativeDiagnosticsURL
+            URLByAppendingPathComponent:@"native-performance-latest.csv"] path]];
+        success = success && Theft4WriteString(stream,
+            profileFound ? @"Native performance CSV: available\n"
+                         : @"Native performance CSV: not found; capture may not have completed\n",
+            &budget);
+        success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
+            @"Theft4/lifecycle.jsonl", &budget, included, skipped);
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"runtime.log"],
+            @"Theft4/runtime.log", &budget, included, skipped);
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [startupURL URLByAppendingPathComponent:@"runtime.log"],
+            @"Theft4/startup/runtime.log", &budget, included, skipped);
+
+        NSArray<NSURL *> *directories = @[
+            nativeDiagnosticsURL,
+            [startupURL URLByAppendingPathComponent:@"audio-timing" isDirectory:YES],
+            [startupURL URLByAppendingPathComponent:@"frame-captures" isDirectory:YES]
+        ];
+        NSArray<NSString *> *prefixes = @[
+            @"LibertyRecomp/Diagnostics", @"Theft4/startup/audio-timing",
+            @"Theft4/startup/frame-captures"
+        ];
+        for (NSUInteger i = 0; i < directories.count && success; ++i) {
+            NSURL *directoryURL = directories[i];
+            NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:directoryURL
+                includingPropertiesForKeys:@[NSURLIsRegularFileKey] options:0
+                errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
+                    [skipped addObject:[NSString stringWithFormat:@"%@ (%@)",
+                        url.lastPathComponent, enumerationError.localizedDescription]];
+                    return YES;
+                }];
+            for (NSURL *url in enumerator) {
+                NSNumber *regular = nil;
+                [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+                if (!regular.boolValue || !Theft4DiagnosticTextExtension(url.pathExtension)) continue;
+                NSString *relative = [url.path substringFromIndex:directoryURL.path.length + 1];
+                NSString *label = [NSString stringWithFormat:@"%@/%@", prefixes[i], relative];
+                success = Theft4AppendDiagnosticFile(stream, url, label, &budget, included, skipped);
+                if (!success) break;
+            }
+        }
+        if (success) {
+            NSString *manifest = [NSString stringWithFormat:
+                @"\n\n===== EXPORT MANIFEST =====\nIncluded files (%lu):\n%@\n"
+                 "Skipped files (%lu):\n%@\nRemaining export budget: %lu bytes\n",
+                (unsigned long)included.count, [included componentsJoinedByString:@"\n"],
+                (unsigned long)skipped.count, [skipped componentsJoinedByString:@"\n"],
+                (unsigned long)budget];
+            success = Theft4WriteString(stream, manifest, &budget);
+        }
+        [stream close];
+        if (!success) {
+            [fm removeItemAtURL:outputURL error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_downloadLogButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
+                    message:@"The diagnostic bundle could not be written."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                    style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_downloadLogButton.enabled = YES;
+            [self record:@"diagnostics.export_completed"];
+            UIActivityViewController *share = [[UIActivityViewController alloc]
+                initWithActivityItems:@[outputURL] applicationActivities:nil];
+            UIPopoverPresentationController *popover = share.popoverPresentationController;
+            popover.sourceView = self->_downloadLogButton;
+            popover.sourceRect = self->_downloadLogButton.bounds;
+            [self presentViewController:share animated:YES completion:nil];
+        });
+    });
+}
+
 - (void)refresh {
     theft4_core_snapshot snapshot = {.struct_size = sizeof(snapshot), .abi_version = THEFT4_CORE_ABI_VERSION};
     if (_core && theft4_core_get_snapshot(_core, &snapshot) == THEFT4_OK) {
         NSArray *states = @[@"Core ready", @"Core active", @"Core paused", @"Core stopped"];
         _status.text = _failure ?: (_bootStatus ?: states[snapshot.state]);
-        _detail.text = [NSString stringWithFormat:@"Platform  %s\nCore      %s\nC ABI     %u\nPage size %llu bytes\nGame progress is reported above.\n\nLogs: Application Support/Theft4/lifecycle.jsonl",
+        _detail.text = [NSString stringWithFormat:@"Platform  %s\nCore      %s\nC ABI     %u\nPage size %llu bytes\nGame progress is reported above.\n\nLogs: System → Download Latest Log Capture",
             snapshot.platform, snapshot.core_version, snapshot.abi_version, (unsigned long long)snapshot.host_page_bytes];
     } else {
         _status.text = _failure ?: @"Core stopped";
@@ -319,6 +677,9 @@ static void bootEvent(void *context, const char *event) {
     if (_gamePresentation) return;
     [_bringupOverlay retireScene];
     _gamePresentation = YES;
+    // The title owns GCController input after launch. Leaving UIKit controller
+    // routing enabled here would consume gameplay buttons as focus events.
+    self.controllerUserInteractionEnabled = NO;
     [UIView animateWithDuration:0.2 animations:^{
         self->_bringupOverlay.alpha = 0.0;
     } completion:^(BOOL finished) {
@@ -334,7 +695,65 @@ static void bootEvent(void *context, const char *event) {
     _fpsLabel.hidden = !_showFPS.on;
     _touchControls.active = _showControls.on &&
         self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive;
+    [self updateFrameTimeHUD];
     [self record:@"ui.game_presentation_mode"];
+}
+
+- (void)updateFrameTimeHUD {
+    BOOL visible = _gamePresentation && _sceneActive && _showFrameTime.on;
+    _frameTimeView.hidden = !visible;
+    _frameTimeTop.constant = _showFPS.on ? 52 : 10;
+    theft4_frame_time_set_enabled(visible);
+    if (!visible) {
+        [_frameTimeTimer invalidate]; _frameTimeTimer = nil;
+        theft4_frame_time_snapshot empty = {0};
+        [_frameTimeView updateWithSnapshot:&empty];
+    } else if (!_frameTimeTimer) {
+        __weak Theft4ViewController *weakSelf = self;
+        _frameTimeTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+            Theft4ViewController *controller = weakSelf;
+            if (!controller) { [timer invalidate]; return; }
+            theft4_frame_time_snapshot snapshot = {0};
+            theft4_frame_time_copy(&snapshot);
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            // Read the latched runtime policy, not the launcher's current
+            // control value. This makes an unexpected resolution reset visible.
+            const theft4_output_policy output = theft4_metal_get_output_policy();
+            NSString *thermal = @"nominal";
+            switch (NSProcessInfo.processInfo.thermalState) {
+                case NSProcessInfoThermalStateFair: thermal = @"fair"; break;
+                case NSProcessInfoThermalStateSerious: thermal = @"serious"; break;
+                case NSProcessInfoThermalStateCritical: thermal = @"critical"; break;
+                default: break;
+            }
+            NSString *configuration = [NSString stringWithFormat:@"IN %u×%u → %@ %u×%u · %@",
+                output.render_width, output.render_height, output.fsr1 ? @"FSR" : @"OUT",
+                output.output_width, output.output_height, thermal];
+            theft4_lab_guest_gap_snapshot gap = {0};
+            NSString *gapLine = @"Worker gap: double-tap to capture";
+            if (rex_gta4_native_profile_guest_gap_copy(&gap)) {
+                gapLine = gap.cpu_valid
+                    ? [NSString stringWithFormat:@"Worker gap %.1f · on %.1f · off %.1f ms",
+                        gap.wall_ms, gap.on_core_ms, gap.off_core_ms]
+                    : [NSString stringWithFormat:@"Worker gap %.1f ms · CPU unavailable", gap.wall_ms];
+            }
+            [controller->_frameTimeView setConfigurationLine:configuration gapLine:gapLine];
+#endif
+            [controller->_frameTimeView updateWithSnapshot:&snapshot];
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+            const int captureStatus = rex_gta4_native_profile_status();
+            if (controller->_nativeProfileRequested && !controller->_nativeProfileFinished &&
+                (captureStatus == 2 || captureStatus == -1)) {
+                controller->_nativeProfileFinished = YES;
+                [controller->_frameTimeView setCaptureCompleted:(captureStatus == 2)];
+                [controller record:(captureStatus == 2
+                    ? @"lab.native_profile_complete"
+                    : @"lab.native_profile_failed")];
+            }
+#endif
+        }];
+        [NSRunLoop.mainRunLoop addTimer:_frameTimeTimer forMode:NSRunLoopCommonModes];
+    }
 }
 
 - (void)refreshFrameRate {
@@ -349,6 +768,20 @@ static void bootEvent(void *context, const char *event) {
         _fpsLastTime = now;
     }
 }
+
+#ifdef THEFT4_LAB_NATIVE_CAPTURE
+- (void)requestNativeProfile {
+    if (!_gamePresentation || _nativeProfileRequested) return;
+    if (rex_gta4_native_profile_start()) {
+        _nativeProfileRequested = YES;
+        _nativeProfileFinished = NO;
+        // The orange graph border means requested; export completion is
+        // verified in the runtime log.
+        [_frameTimeView setCaptureRequested:YES];
+        [self record:@"lab.native_profile_requested"];
+    }
+}
+#endif
 
 - (BOOL)prefersStatusBarHidden { return _executionAttempted; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return _executionAttempted; }
@@ -380,6 +813,7 @@ static void bootEvent(void *context, const char *event) {
         [self bootEvent:@"Copy the prepared game folder into Theft4 using Finder first."];
         return;
     }
+    setenv("THEFT4_PERFORMANCE_CAPTURE", _performanceCapture.on ? "1" : "0", 1);
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
@@ -389,21 +823,45 @@ static void bootEvent(void *context, const char *event) {
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
+        const char *shadowPresets[] = {"original", "enhanced", "ultra"};
+        const char *distancePresets[] = {"1", "2", "3"};
+        const char *reflectionPresets[] = {"original", "1080p", "full"};
+        const char *antiAliasingPresets[] = {"off", "fxaa", "smaa"};
+        setenv("THEFT4_SHADOW_QUALITY", shadowPresets[_shadowQuality.selectedSegmentIndex], 1);
+        setenv("THEFT4_DRAW_DISTANCE", distancePresets[_drawDistance.selectedSegmentIndex], 1);
+        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex ? "1" : "0", 1);
+        setenv("THEFT4_REFLECTION_RESOLUTION",
+            reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
+        setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
-        theft4_metal_set_output_mode(
-            _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
-                (_enhancedOutput.on ? THEFT4_OUTPUT_FSR_1080P : THEFT4_OUTPUT_720P),
-            (uint32_t)floor(_metalView.bounds.size.width * nativeScale),
-            (uint32_t)floor(_metalView.bounds.size.height * nativeScale));
+        const uint32_t nativeWidth = (uint32_t)floor(_metalView.bounds.size.width * nativeScale);
+        const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
+        if (_bringupOverlay.renderResolution) {
+            theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
+                _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
+                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0);
+        } else {
+            theft4_metal_set_output_mode(
+                _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
+                    (_enhancedOutput.on ? THEFT4_OUTPUT_FSR_1080P : THEFT4_OUTPUT_720P),
+                nativeWidth, nativeHeight);
+        }
         // Release all decorative GPU work before initializing the game device.
         [_bringupOverlay retireScene];
         _fsrBoost.enabled = NO;
+        _bringupOverlay.renderResolution.enabled = NO;
+        _bringupOverlay.fsrUpscaling.enabled = NO;
         _bringupOverlay.restartButton.enabled = NO;
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
+        _shadowQuality.enabled = NO;
+        _drawDistance.enabled = NO;
+        _modelDetail.enabled = NO;
+        _reflectionQuality.enabled = NO;
+        _antiAliasing.enabled = NO;
     }
     NSError *backupError = nil;
     if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])
@@ -455,6 +913,8 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)activate {
+    _sceneActive = YES;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:!_executionAttempted];
     _touchControls.active = _gamePresentation && _showControls.on;
     [self createCore];
@@ -488,12 +948,16 @@ static void bootEvent(void *context, const char *event) {
     [self refresh];
 }
 - (void)pause {
+    _sceneActive = NO;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:NO];
     _touchControls.active = NO;
     if (_core) [self accept:theft4_core_pause(_core) operation:@"pause"];
     [self refresh];
 }
 - (void)shutdown {
+    _sceneActive = NO;
+    [self updateFrameTimeHUD];
     [_bringupOverlay setActive:NO];
     _touchControls.active = NO;
     if (_core) {
@@ -519,6 +983,8 @@ static void bootEvent(void *context, const char *event) {
     // partially deallocated controller; scene ownership requires shutdown.
     NSCAssert(_core == NULL, @"Scene must shut down its core before release");
     [_fpsTimer invalidate];
+    [_frameTimeTimer invalidate];
+    theft4_frame_time_set_enabled(false);
     theft4_metal_unbind_layer((__bridge void *)_metalView.layer);
 }
 @end

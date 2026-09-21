@@ -18,6 +18,11 @@ python3 tests/ios/verify_release_build.py out/build/ios-device-release
 
 The native render worker also has an explicit 2 MiB stack on Apple platforms.
 The native backend, two-frame resource ring, and motion-blur option are retained.
+Version 0.2.0 enables the former Lab renderer path in the ordinary Theft4
+identity. The release script sets `THEFT4_LAB_BUILD=ON` for the promoted code;
+that internal CMake flag no longer means the app must use the separate Lab
+bundle identifier. The generated app must report `com.theft4.bringup`, display
+name `Theft4`, and version `0.2.0` before packaging or signing.
 
 The latest on-device Release tests reached the opening 3D cutscene and the first
 driving/player-control state on an M5 iPad Pro, with substantially improved audio.
@@ -26,7 +31,8 @@ controller combinations and lifecycle recovery need further validation.
 
 ## What is and isn't provided
 
-- Source and an Xcode-project generator, **not a signed IPA or TestFlight release**.
+- Source and an Xcode-project generator. GitHub sideload and TestFlight
+  distribution require separate packaging and signing workflows.
 - Real game startup, rendering and audio, not just the old core probe.
 - No ISO, title update, extracted game files, saves or private shader caches.
 - No requirement to run XeniOS alongside Theft4. Its public MoltenVK build is
@@ -149,7 +155,7 @@ optional argument fails fast if the intended version and plist disagree:
 
 ```sh
 THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
-  ./tools/build_ios_release.sh 0.1.3
+  ./tools/build_ios_release.sh 0.2.0
 ```
 
 You can install without attaching Xcode's debugger:
@@ -160,12 +166,14 @@ xcrun devicectl device install app --device YOUR_DEVICE_ID \
   out/build/ios-device-release/theft4/Release/Theft4.app
 ```
 
-## 4. Prepare and transfer your game files
+For a tester's low-FPS report, enable **System → Detailed Performance Capture**
+before launching the game. Double-tap the frame-time graph in the slow scene.
+After 600 captured frames, quit and relaunch, then
+use **Download Latest Log Capture** to save and share the bounded text export
+under Files → Theft4 → Diagnostics. The export includes native profile CSV/JSON
+files when present. Profiling adds overhead; compare normal runs with it off.
 
-If you installed a published IPA rather than building in Xcode, use the
-step-by-step [sideload installation guide](IOS_SIDELOAD_INSTALL.md). It is the
-canonical release-user guide and includes the exact accepted base/update
-identity, final file tree, and transfer troubleshooting.
+## 4. Prepare and transfer your game files
 
 Use your legally obtained supported Xbox 360 USA retail base (media ID
 `6AC07221`) and the matching TU8 patch for **0.0.0.5 → 0.0.8.5**. An ISO working
@@ -186,13 +194,9 @@ Theft4 Documents/
   game/
     default.xex
     default.xexp
-    update/  # present when staging an STFS/SVOD title-update package
+    update/
     ...the rest of the validated game installation...
 ```
-
-`default.xex` and `default.xexp` are always required as siblings. If staging
-used a raw `default.xexp` rather than a packaged update, an `update/` directory
-is not required.
 
 Launch Theft4 once. It creates **Files → On My iPhone/iPad → Theft4 → game**
 and a short instruction file automatically. Open `game` and copy the **contents**

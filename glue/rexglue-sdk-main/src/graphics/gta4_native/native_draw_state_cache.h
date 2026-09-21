@@ -10,7 +10,7 @@ namespace rex::graphics::gta4_native {
 // Tracks commands actually emitted into one command buffer. This owns no GPU
 // resources. Reset at recording boundaries and after any external draw path.
 // Floating-point state is passed as bits, preserving signed zero and NaN values.
-template <size_t DescriptorSetCount>
+template <size_t DescriptorSetCount, size_t VertexBindingCount = 16>
 class NativeDrawStateCache {
  public:
   void Reset() { *this = {}; }
@@ -28,6 +28,17 @@ class NativeDrawStateCache {
     blend_constants_ = {};
     push_constants_ = {};
     return true;
+  }
+
+  // Resource uploads/validation must happen before these checks. An unchanged
+  // binding says nothing about whether the resource's contents have changed.
+  // Buffer state survives pipeline switches, but never Reset/command boundaries.
+  bool UpdateVertexBuffer(size_t binding, uint64_t buffer, uint64_t offset) {
+    if (binding >= vertex_buffers_.size()) return true;
+    return vertex_buffers_[binding].Update({buffer, offset});
+  }
+  bool UpdateIndexBuffer(uint64_t buffer, uint64_t offset, uint32_t type) {
+    return index_buffer_.Update({buffer, offset, type});
   }
 
   bool UpdateDescriptors(uint64_t layout,
@@ -67,6 +78,8 @@ class NativeDrawStateCache {
   };
 
   Tracked<uint64_t> pipeline_;
+  std::array<Tracked<std::array<uint64_t, 2>>, VertexBindingCount> vertex_buffers_;
+  Tracked<std::array<uint64_t, 3>> index_buffer_;
   Tracked<LayoutValues<DescriptorSetCount>> descriptors_;
   Tracked<std::array<uint32_t, 6>> viewport_;
   Tracked<std::array<int64_t, 4>> scissor_;

@@ -16,10 +16,16 @@ void theft4_metal_unbind_layer(void* layer);
 // subsequent UIKit layout keeps this size rather than reverting to 720p.
 void theft4_metal_set_output_mode(theft4_output_mode mode,
                                   uint32_t native_width, uint32_t native_height);
+void theft4_metal_set_lab_output(uint32_t render_height, bool fsr1,
+                                uint32_t native_width, uint32_t native_height,
+                                bool a19_profile);
 theft4_output_policy theft4_metal_get_output_policy(void);
 void theft4_metal_resize_layer(void* layer, double width, double height,
                                double scale);
 bool theft4_metal_has_layer(void);
+// NSProcessInfoThermalState as a stable integer: 0 nominal, 1 fair, 2 serious,
+// 3 critical. This is intentionally a low-frequency diagnostic sample only.
+uint32_t theft4_platform_thermal_state(void);
 // Borrowed pointer retained by the UIKit bridge while bound. Used only to
 // create the MoltenVK surface; ownership remains with the view hierarchy.
 void* theft4_metal_bound_layer(void);
@@ -51,6 +57,17 @@ uint64_t theft4_metal_renderer_completed_frames(void);
 // on-screen FPS indicator; no logging or GPU readback is involved.
 void theft4_frame_counter_note_published(void);
 uint64_t theft4_frame_counter_published_frames(void);
+
+// Rolling publication intervals, not physical display scanout times. UI control
+// and snapshots are main-thread only; the presenter is the sole sample writer.
+#define THEFT4_FRAME_TIME_SAMPLES 180
+typedef struct theft4_frame_time_snapshot {
+  uint32_t count;
+  double milliseconds[THEFT4_FRAME_TIME_SAMPLES];
+  double pending_ms;
+} theft4_frame_time_snapshot;
+void theft4_frame_time_set_enabled(bool enabled);
+void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot);
 
 #ifdef __cplusplus
 }

@@ -658,8 +658,6 @@ docs/*.md
 !docs/RPF_EXTRACTION_DESIGN.md
 !docs/GTA4_COLLISION_VPKUWUS_ALIASING_FIX.md
 !docs/GTA_IV_ASSET_STREAMING_SYSTEM.md
-!docs/IOS_SIDELOAD_INSTALL.md
-!docs/RELEASE_0.1.3A.md
 # Claude and GitHub metadata - do not commit
 .claude/
 .github/
@@ -678,7 +676,6 @@ build-codegen/
 /dist/
 *.py
 /tools/*.py
-!tests/ios/*.py
 !glue/rexglue-sdk-main/gta4-recomp/tools/derive_frontend_advanced_menu_layout.py
 !glue/rexglue-sdk-main/gta4-recomp/tools/verify_gta4_keyboard_consumers.py
 !tools/analyze_native_memory.py
@@ -775,8 +772,12 @@ CMakeUserPresets.json
 !/tools/summarize_ios_time_profile.py
 !/tools/summarize_ios_game_trace.py
 !/docs/IOS_RELEASE_BUILD.md
+!/docs/IOS_SIDELOAD_INSTALL.md
+!/docs/RELEASE_0.2.0.md
 !/docs/THEFT4_LAUNCHER_AND_FSR_BOOST.md
 !/docs/THEFT4_CPU_PERFORMANCE_AUDIT.md
 !/docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md
 !/docs/THEFT4_MOTION_BLUR_AND_STREAMING.md
 !/tests/ios/test_xcode_generator.py
+!/docs/THEFT4_LAB_PACING_CAPTURE.md
+!/tools/analyze_lab_pacing.py

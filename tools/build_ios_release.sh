@@ -54,8 +54,12 @@ for library in $required_libraries; do
   fi
 done
 
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist_template")"
-build_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist_template")"
+version="$(sed -n 's:.*<key>CFBundleShortVersionString</key><string>\([^<]*\)</string>.*:\1:p' "$plist_template")"
+build_version="$(sed -n 's:.*<key>CFBundleVersion</key><string>\([^<]*\)</string>.*:\1:p' "$plist_template")"
+if [[ -z "$version" || -z "$build_version" ]]; then
+  print -u2 "Could not read the release version from $plist_template"
+  exit 65
+fi
 if [[ -n "${1:-}" && "$version" != "$1" ]]; then
   print -u2 "Expected release $1, but Info.plist.in contains $version."
   exit 65
@@ -72,7 +76,9 @@ print "Building Theft4 $version ($build_version) for public iOS sideloading"
   -DTHEFT4_ENABLE_GAME_STARTUP=ON \
   -DTHEFT4_COMPILE_GTA4_NATIVE_BACKEND=ON \
   -DTHEFT4_ENABLE_GTA4_NATIVE_BACKEND=ON \
-  -DTHEFT4_ARM64_TUNE= \
+  -DTHEFT4_LAB_BUILD=ON \
+  -DTHEFT4_BUNDLE_IDENTIFIER=com.theft4.bringup \
+  -DTHEFT4_DISPLAY_NAME=Theft4 \
   -DTHEFT4_SIGN_DEVICE=OFF \
   -DTHEFT4_PUBLIC_BUILD=ON \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
@@ -80,4 +86,10 @@ print "Building Theft4 $version ($build_version) for public iOS sideloading"
   -DTHEFT4_XENIOS_GENERATED_SHADER_DIR="$shader_dir"
 "$cmake_bin" --build --preset theft4-device-release --parallel "$build_jobs"
 python3 "$repo_root/tests/ios/verify_release_build.py" "$repo_root/out/build/ios-device-release"
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")" != "com.theft4.bringup" ||
+      "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")" != "$version" ||
+      "$(/usr/libexec/PlistBuddy -c 'Print :Theft4EnhancedBuild' "$app_path/Info.plist")" != "true" ]]; then
+  print -u2 "Release app identity, version, or promoted renderer flag is incorrect."
+  exit 65
+fi
 "$repo_root/tools/package_ios_ipa.sh" "$app_path" "$repo_root/dist"

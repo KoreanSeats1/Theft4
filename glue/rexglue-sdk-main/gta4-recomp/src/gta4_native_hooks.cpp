@@ -25,6 +25,11 @@
 #include <xxhash.h>
 
 #include <rex/cvar.h>
+#ifdef THEFT4_LAB_BUILD
+#include <rex/chrono/clock.h>
+#include <rex/graphics/gta4_native/pacing_profile.h>
+#include <rex/thread.h>
+#endif
 #include <rex/diagnostics/policy.h>
 #include <rex/graphics/gta4_native/anti_aliasing_policy.h>
 #include <rex/graphics/gta4_native/supersampling_policy.h>
@@ -348,18 +353,70 @@ std::mutex g_native_frame_limiter_mutex;
 gta4::frame_limiter::State g_native_frame_limiter_state;
 uint64_t g_native_frame_limiter_present_count = 0;
 
+#ifdef THEFT4_LAB_BUILD
+// iOS may resume a short sleep several milliseconds after its requested
+// deadline. Keep the established fixed limiter phase, but leave a bounded
+// final interval for an active wait so an otherwise-ready frame does not miss
+// the next display opportunity solely because of scheduler wake latency.
+// This is deliberately Lab-only: it costs at most 2 ms of one core per capped
+// frame and must earn its place with the device pacing capture.
+constexpr auto kLabPacingActiveWaitMargin = std::chrono::milliseconds(2);
+
+void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
+  using Clock = std::chrono::steady_clock;
+  const auto now = Clock::now();
+  if (now >= deadline) {
+    return;
+  }
+  const auto remaining = deadline - now;
+  if (remaining > kLabPacingActiveWaitMargin) {
+    std::this_thread::sleep_until(deadline - kLabPacingActiveWaitMargin);
+  }
+  while (Clock::now() < deadline) {
+  }
+}
+#endif
+
+#ifdef THEFT4_LAB_BUILD
+void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr) {
+#else
 void PaceNativePresent(uint32_t submitted_frame) {
+#endif
   using Clock = std::chrono::steady_clock;
   using Nanoseconds = std::chrono::nanoseconds;
 
+#ifdef THEFT4_LAB_BUILD
+  if (observation) observation->limiter_begin = rex::chrono::Clock::QueryHostTickCount();
+#endif
   const uint32_t requested_limit = rex::cvar::Query<uint32_t>("gta4_frame_limit");
-  std::lock_guard lock(g_native_frame_limiter_mutex);
+#ifdef THEFT4_LAB_BUILD
+  if (observation) observation->mutex_begin = rex::chrono::Clock::QueryHostTickCount();
+#endif
+  std::unique_lock lock(g_native_frame_limiter_mutex);
+#ifdef THEFT4_LAB_BUILD
+  if (observation) {
+    observation->mutex_acquired = rex::chrono::Clock::QueryHostTickCount();
+    observation->prior_deadline_ns = g_native_frame_limiter_state.next_deadline_ns;
+  }
+#endif
   const int64_t now_ns =
       std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
   const auto decision =
       gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
   g_native_frame_limiter_state = decision.next_state;
   ++g_native_frame_limiter_present_count;
+#ifdef THEFT4_LAB_BUILD
+  if (observation) {
+    observation->requested_fps = requested_limit;
+    observation->applied_fps = decision.next_state.frames_per_second;
+    observation->decision_ns = now_ns;
+    observation->wait_until_ns = decision.wait_until_ns;
+    observation->next_deadline_ns = decision.next_state.next_deadline_ns;
+    observation->wait_requested = decision.should_wait(now_ns);
+    observation->late_reset = decision.late_reset;
+    observation->mode_changed = decision.mode_changed;
+  }
+#endif
 
   if (decision.mode_changed) {
     REXLOG_INFO(
@@ -370,8 +427,26 @@ void PaceNativePresent(uint32_t submitted_frame) {
   }
 
   if (decision.should_wait(now_ns)) {
+#ifdef THEFT4_LAB_BUILD
+    if (observation) {
+      observation->sleep_begin = rex::chrono::Clock::QueryHostTickCount();
+      observation->sleep_begin_ns =
+          std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
+    }
+#endif
+#ifdef THEFT4_LAB_BUILD
+    WaitForLabPacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#else
     std::this_thread::sleep_until(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#endif
   }
+#ifdef THEFT4_LAB_BUILD
+  if (observation) {
+    observation->wake_ns =
+        std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
+    observation->wake = rex::chrono::Clock::QueryHostTickCount();
+  }
+#endif
 
   if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kGuestHooks) &&
       (g_native_frame_limiter_present_count <= 8 ||
@@ -386,6 +461,13 @@ void PaceNativePresent(uint32_t submitted_frame) {
         decision.late_reset, now_ns, completed_ns, decision.wait_until_ns,
         g_native_frame_limiter_state.next_deadline_ns);
   }
+#ifdef THEFT4_LAB_BUILD
+  if (observation) {
+    lock.unlock();
+    observation->limiter_end = rex::chrono::Clock::QueryHostTickCount();
+    pacing::capture.Record(*observation);
+  }
+#endif
 }
 
 struct VectorFontOwnerBinding {
@@ -7126,6 +7208,15 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
     return;
   }
 
+#ifdef THEFT4_LAB_BUILD
+  const bool observe_pacing = pacing::capture.Active();
+  pacing::Sample pacing_sample;
+  if (observe_pacing) {
+    pacing_sample.hook_begin = rex::chrono::Clock::QueryHostTickCount();
+    pacing_sample.system_thread = rex::thread::current_thread_system_id();
+    pacing_sample.guest_thread = rex::thread::current_thread_id();
+  }
+#endif
   const uint32_t device = ctx.r3.u32;
   const uint32_t submitted_frame = LoadU32(base, device + kSubmittedFrameOffset) + 1;
   StoreU32(base, device + kSubmittedFrameOffset, submitted_frame);
@@ -7212,9 +7303,26 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
         command.diagnostic_device_flag_10942, command.diagnostic_force_content_probe);
   }
   g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
+#ifdef THEFT4_LAB_BUILD
+  if (observe_pacing) {
+    pacing_sample.frame = submitted_frame;
+    pacing_sample.submit_begin = rex::chrono::Clock::QueryHostTickCount();
+  }
+  const bool submitted = SubmitNativeCommand(command);
+  if (observe_pacing) {
+    pacing_sample.submitted = submitted;
+    pacing_sample.submit_end = rex::chrono::Clock::QueryHostTickCount();
+  }
+  if (submitted) {
+    PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
+  } else if (observe_pacing) {
+    pacing::capture.Record(pacing_sample);
+  }
+#else
   if (SubmitNativeCommand(command)) {
     PaceNativePresent(submitted_frame);
   }
+#endif
   ctx.r3.u32 = device;
 }
 

@@ -94,6 +94,16 @@ enum class CpuRange : uint8_t {
   kHousekeepingTextureRetirement,
   kHousekeepingBufferReclamation,
   kHousekeepingPersistentBufferReclamation,
+  // Matching pre-submit spans measured on the native render worker. Comparing
+  // elapsed wall time against time actually scheduled on-core distinguishes a
+  // slow CPU path from a worker that was descheduled by the OS.
+  kRenderWorkerPreSubmitWall,
+  kRenderWorkerPreSubmitOnCore,
+  // Wall/CPU accounting of the interval from this frame's PublishFrame end
+  // to the next frame's PublishFrame begin on the same producer thread.
+  kGuestGapWall,
+  kGuestGapOnCore,
+  kGuestGapOffCore,
   kCount,
 };
 
@@ -104,6 +114,8 @@ enum class Counter : uint8_t {
   kIndexUploadBytes,
   kPersistentBufferUploadBytes,
   kPersistentBufferHits,
+  kPersistentBufferOwnerMemoHits,
+  kSharedConstantLastKeyHits,
   kPersistentBufferMisses,
   kPersistentBufferResidentBytes,
   kPersistentBufferLiveAllocations,
@@ -152,6 +164,10 @@ enum class Counter : uint8_t {
   kConstantBindingUploads,
   kTextureBindingReuses,
   kConstantBindingOwners,
+  kRenderWorkerQosClass,
+  kRenderWorkerQosRelativePriority,
+  kThermalState,
+  kGuestGapCpuValid,
   kCount,
 };
 

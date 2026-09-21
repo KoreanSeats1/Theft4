@@ -14,6 +14,10 @@
 #include <cstring>
 #include <thread>
 
+#if defined(THEFT4_LAB_BUILD) && defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS
+#include <pthread/qos.h>
+#endif
+
 #include <fmt/format.h>
 
 #include <rex/chrono/clock.h>
@@ -572,6 +576,19 @@ X_STATUS XThread::Terminate(int exit_code) {
 void XThread::Execute() {
   REXSYS_NOISY_DEBUG("Execute thid {} (handle={:08X}, '{}', native={:08X})", thread_id_, handle(),
                      thread_name_, thread_->system_id());
+
+#if defined(THEFT4_LAB_BUILD) && defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS
+  if (main_thread_) {
+    qos_class_t previous_class = QOS_CLASS_UNSPECIFIED;
+    int previous_relative_priority = 0;
+    const int query_result = pthread_get_qos_class_np(
+        pthread_self(), &previous_class, &previous_relative_priority);
+    const int set_result = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    REXSYS_INFO("Lab guest producer QoS previous={} relative={} query={} set={}",
+                static_cast<int>(previous_class), previous_relative_priority,
+                query_result, set_result);
+  }
+#endif
 
   // Let the kernel know we are starting.
   kernel_state_->OnThreadExecute(this);

@@ -148,6 +148,24 @@ development-signed `.app` or export your signing certificate for this workflow.
 The resulting IPA is not directly installable by itself; AltStore, SideStore or
 another compatible tool must re-sign it for the destination device.
 
+### Prepare a TestFlight archive
+
+TestFlight needs a separate Apple-distribution-signed upload. Do not upload the
+unsigned GitHub IPA. Configure the same Release source and stable
+`com.theft4.bringup` identifier with `THEFT4_SIGN_DEVICE=ON` and your
+`LIBERTY_IOS_DEVELOPMENT_TEAM`, then archive the `Theft4` scheme in Xcode or
+with `xcodebuild archive`. The generated app target has `SKIP_INSTALL=NO` and
+`INSTALL_PATH=/Applications`; verify that the resulting `.xcarchive` contains
+`Products/Applications/Theft4.app` before exporting or uploading it. Select
+the **TestFlight & App Store** distribution method, use automatic signing for
+your team, and upload through Xcode. Build 42 keeps version 0.2.0. After Apple
+finishes processing, assign the build to the existing external tester group
+in App Store Connect and complete any beta-review or compliance prompts.
+
+The local device install is different: build with development signing and use
+`devicectl device install app` on the existing bundle ID. Do not uninstall the
+current app to update it, because uninstalling can remove its container data.
+
 For subsequent releases, after updating the two version keys in
 `ios/Theft4/Info.plist.in`, the checked-in pipeline performs the same configure,
 unsigned Release build, privacy audit and IPA packaging in one command. The

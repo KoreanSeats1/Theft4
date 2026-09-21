@@ -91,7 +91,7 @@ def analyze(directory):
         result['guest_gap_cpu_valid_frames'] = len(valid)
         result['guest_gap_cpu_invalid_frames'] = len(frames) - len(valid)
         result['guest_gap_ms'] = {key: stats(row[key] for row in valid) for key in gap_keys}
-        result['limits'].append('Guest gap off-core includes voluntary waits and descheduling; '
+        result['limits'].append('Legacy guest_gap measures render-worker assembly/dispatch between publications, not guest simulation. Off-core includes waits/descheduling; '
                                 'this capture cannot isolate runnable queue delay.')
     return result
 

@@ -169,7 +169,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "command_acquire_sum_ms,command_storage_reuses,worker_recycle_sum_ms,"
          "unchanged_vertex_declarations,worker_constant_sum_ms,worker_snapshot_sum_ms,"
          "worker_frame_insert_sum_ms,worker_draw_commands,worker_state_commands,"
-         "worker_other_commands,command_pool_shared_slots,command_pool_shared_high_water\n";
+         "worker_other_commands,command_pool_shared_slots,command_pool_shared_high_water,producer_binding_skips,compact_state_commands\n";
   uint64_t origin = UINT64_MAX;
   for (const auto& frame : frames) {
     if (frame.cpu.enabled)
@@ -308,7 +308,8 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
               << t.worker_constant_ticks * ms << ',' << t.worker_snapshot_ticks * ms << ','
               << t.worker_frame_insert_ticks * ms << ',' << t.worker_draw_commands << ','
               << t.worker_state_commands << ',' << t.worker_other_commands << ','
-              << t.command_pool_shared_slots << ',' << t.command_pool_shared_high_water << '\n';
+              << t.command_pool_shared_slots << ',' << t.command_pool_shared_high_water << ','
+              << t.producer_binding_skips << ',' << t.compact_state_commands << '\n';
   }
   trace << "]}\n";
   metadata
@@ -328,7 +329,7 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "separate drill-down, never an additional cost\""
       << ",\"transport_accounting\":\"producer and queue dwell sums overlap commands and GPU work; "
          "paint observations keep their own frame identity\""
-      << ",\"guest_gap_accounting\":\"wall and cumulative CPU time sampled on the producer thread between consecutive PublishFrame calls; off-core includes waits and descheduling; cpu-valid marks matched threads\""
+      << ",\"guest_gap_accounting\":\"legacy guest_gap columns measure the render worker between consecutive PublishFrame calls, including command assembly; not guest simulation CPU; off-core includes waits and descheduling; cpu-valid marks matched threads\""
       << ",\"instrumentation_cost\":\"clock_pair_floor_estimate_ms is a measured clock-only lower "
          "estimate, not total profiler overhead; compare the same scene with detailed_gpu "
          "false/true\""

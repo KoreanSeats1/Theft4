@@ -8,7 +8,9 @@ extern "C" {
 #endif
 
 // The interval after one native PublishFrame returns and before the next
-// begins, measured only during a bounded Lab capture. Off-core includes both
+// begins on the render worker, including command assembly. The legacy name
+// does not indicate guest simulation CPU. Measured during a bounded Lab capture.
+// Off-core includes both
 // voluntary waits and scheduler delay; it is not a run-queue measurement.
 typedef struct theft4_lab_guest_gap_snapshot {
   uint32_t frame;

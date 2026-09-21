@@ -46,6 +46,8 @@ add_executable(unit_tests
     graphics/native_owner_retirement_test.cpp
     graphics/native_optimization_lifetime_test.cpp
     graphics/native_worker_batch_test.cpp
+    graphics/native_producer_binding_cache_test.cpp
+    graphics/native_command_packet_test.cpp
     graphics/native_buffer_metadata_test.cpp
     graphics/native_descriptor_backend_test.cpp
     graphics/native_working_set_test.cpp

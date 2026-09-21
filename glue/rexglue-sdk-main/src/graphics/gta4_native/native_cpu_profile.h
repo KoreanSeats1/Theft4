@@ -389,8 +389,8 @@ struct CommandTransport {
   uint64_t enqueued = 0, capture_ticks = 0, capture_lock_ticks = 0, queue_lock_ticks = 0,
            backpressure_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
            geometry_capture_ticks = 0, texture_capture_ticks = 0,
-           allocation_ticks = 0;
-  bool reused_storage = false;
+           allocation_ticks = 0, producer_binding_skips = 0;
+  bool reused_storage = false, compact_state = false;
 };
 struct TransportSummary {
   uint64_t commands = 0, measured_commands = 0, capture_ticks = 0, capture_lock_ticks = 0,
@@ -400,7 +400,7 @@ struct TransportSummary {
   uint64_t worker_assembly_ticks = 0, worker_idle_ticks = 0, internal_flush_ticks = 0,
            internal_flushes = 0;
   uint64_t allocation_ticks = 0, storage_reuses = 0, worker_recycle_ticks = 0,
-           unchanged_vertex_declarations = 0;
+           unchanged_vertex_declarations = 0, producer_binding_skips = 0, compact_state_commands = 0;
   uint64_t worker_constant_ticks = 0, worker_snapshot_ticks = 0,
            worker_frame_insert_ticks = 0;
   uint64_t worker_draw_commands = 0, worker_state_commands = 0,
@@ -455,6 +455,8 @@ struct TransportSummary {
     texture_capture_ticks = AddSaturated(texture_capture_ticks, p.texture_capture_ticks);
     allocation_ticks = AddSaturated(allocation_ticks, p.allocation_ticks);
     storage_reuses += p.reused_storage;
+    compact_state_commands += p.compact_state;
+    producer_binding_skips = AddSaturated(producer_binding_skips, p.producer_binding_skips);
     backpressure_ticks = AddSaturated(backpressure_ticks, p.backpressure_ticks);
     if (dequeued >= p.enqueued) {
       const auto d = dequeued - p.enqueued;

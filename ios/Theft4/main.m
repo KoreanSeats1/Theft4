@@ -502,12 +502,12 @@ static void bootEvent(void *context, const char *event) {
                 output.render_width, output.render_height, output.fsr1 ? @"FSR" : @"OUT",
                 output.output_width, output.output_height, thermal];
             theft4_lab_guest_gap_snapshot gap = {0};
-            NSString *gapLine = @"Gap split: double-tap to capture";
+            NSString *gapLine = @"Worker gap: double-tap to capture";
             if (rex_gta4_native_profile_guest_gap_copy(&gap)) {
                 gapLine = gap.cpu_valid
-                    ? [NSString stringWithFormat:@"Gap %.1f · on %.1f · off %.1f ms",
+                    ? [NSString stringWithFormat:@"Worker gap %.1f · on %.1f · off %.1f ms",
                         gap.wall_ms, gap.on_core_ms, gap.off_core_ms]
-                    : [NSString stringWithFormat:@"Gap %.1f ms · CPU unavailable", gap.wall_ms];
+                    : [NSString stringWithFormat:@"Worker gap %.1f ms · CPU unavailable", gap.wall_ms];
             }
             [controller->_frameTimeView setConfigurationLine:configuration gapLine:gapLine];
 #endif

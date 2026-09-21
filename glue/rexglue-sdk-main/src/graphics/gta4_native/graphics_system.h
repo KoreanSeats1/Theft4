@@ -41,8 +41,10 @@
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
 #include "native_texture_protection.h"
+#include "native_command_packet.h"
 #ifdef THEFT4_LAB_BUILD
 #include "native_command_recycler.h"
+#include "native_producer_binding_cache.h"
 #include "native_worker_batch.h"
 #endif
 #include "native_prepared_bindings.h"
@@ -1238,7 +1240,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void BeginModernShaderFrame();
   void TraceModernShaderDraw(const NativeCommand& command, VkPipeline pipeline,
                              VkSampleCountFlagBits samples);
-  void ApplyStateCommand(const NativeCommand& command);
+  void ApplyStateCommand(CommandType type, const void* bytes);
   bool ApplyShaderConstantDelta(NativeCommand& command, uint32_t device);
   bool InitializeShaderCache();
   static bool ReflectVertexInputs(const std::vector<uint32_t>& spirv,
@@ -1638,8 +1640,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
 #ifdef THEFT4_LAB_BUILD
   // Construct once on the producer, then move only the owning pointer through
   // the queue and batch. The worker still moves retained draws into its frame.
-  using NativeQueuedCommand = std::unique_ptr<NativeCommand>;
+  using NativeQueuedCommand = NativeCommandPacket<NativeCommand>;
   NativeCommandRecycler<NativeCommand, 128, 2048> command_recycler_;
+  NativeCommandRecycler<NativeStatePacket, 128, 8192> state_command_recycler_;
+  NativeProducerBindingCache producer_binding_cache_;
+  uint64_t producer_binding_skips_pending_ = 0;
   DirtyStateDelta producer_dirty_delta_;
   DirtyDeltaScratch producer_dirty_scratch_; // command_capture_mutex_ owns both.
 #else

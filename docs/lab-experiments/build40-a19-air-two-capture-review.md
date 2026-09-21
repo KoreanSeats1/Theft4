@@ -70,7 +70,18 @@ texture slots of thousands of state commands and unused draw slots. The
 existing exhaustive traversal remains the default for non-A19 profiles and a
 launch-time CVAR fallback. The A19 profile is already selected for `iPhone18,*`
 devices, including the requested iPhone 17 / Pro / Air family; it is not
-enabled for M5 iPad. No quality preset or user-selected resolution is changed.
+enabled for M5 iPad. No shadow, distance, reflection, or scene-resolution preset
+is changed.
+
+At the user's request, the A19 Lab output policy also fixes the final drawable
+to 1920×1080: 540p, 720p, and 900p scenes use FSR to that target, while 1080p
+is native and bypasses FSR. This replaces the previous fit-to-screen A19 Lab
+output, which was 2240×1260 in the newer trace. The launcher's FSR switch is
+latched and disabled for A19 so the displayed setting matches the effective
+policy. Non-A19 Lab output continues to fit the display; ordinary Theft4 is
+untouched. This output change is a deliberate quality/power tradeoff, distinct
+from the sparse-stage CPU optimization. The internal scene selection stays
+under the user's control, including 540p.
 
 This is a source-level hypothesis, not a measured FPS gain. Its likely impact
 is on the texture-preparation and upload-capacity parts of the CPU path, plus

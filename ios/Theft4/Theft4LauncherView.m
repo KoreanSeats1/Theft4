@@ -1,6 +1,8 @@
 #import "Theft4LauncherView.h"
 #import "Theft4CityView.h"
 #include "theft4_output_policy.h"
+#include <stdlib.h>
+#include <string.h>
 #import <QuartzCore/QuartzCore.h>
 
 static UIColor *Ink(unsigned rgb) {
@@ -233,7 +235,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
         [graphicsRows addObjectsFromArray:@[
             [self choice:@"INTERNAL RESOLUTION" detail:@"540p = 960 × 540, 56% of 720p's pixels. 720p = 1280 × 720. 900p and 1080p cost more GPU time." control:_renderResolution],
-            [self setting:@"FSR UPSCALING" detail:@"Fit the selected internal resolution to the display with spatial upscaling." toggle:_fsrUpscaling],
+            [self setting:@"FSR UPSCALING" detail:
+                (strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0
+                    ? @"A19: 540p, 720p and 900p upscale to 1080p; 1080p renders natively."
+                    : @"Fit the selected internal resolution to the display with spatial upscaling.")
+                toggle:_fsrUpscaling],
             _resolutionSummary
         ]];
         _lowPowerButton = Action(@"APPLY PERFORMANCE PRESET", NO);
@@ -491,13 +497,15 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [MAX(0, _drawDistance.selectedSegmentIndex)];
     if (_renderResolution) {
         UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
-        const theft4_output_policy output = theft4_output_policy_for_lab(
-            self.renderHeight, _fsrUpscaling.on,
-            (uint32_t)floor(self.bounds.size.width * screen.nativeScale),
-            (uint32_t)floor(self.bounds.size.height * screen.nativeScale));
+        const BOOL a19 = strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0;
+        const theft4_output_policy output = a19
+            ? theft4_output_policy_for_a19_lab(self.renderHeight)
+            : theft4_output_policy_for_lab(self.renderHeight, _fsrUpscaling.on,
+                (uint32_t)floor(self.bounds.size.width * screen.nativeScale),
+                (uint32_t)floor(self.bounds.size.height * screen.nativeScale));
         _resolutionSummary.text = [NSString stringWithFormat:@"%u × %u  →  %u × %u\n%@ · NEXT GAME LAUNCH",
             output.render_width, output.render_height, output.output_width, output.output_height,
-            _fsrUpscaling.on ? @"FSR ON" : @"FSR OFF"];
+            output.fsr1 ? @"FSR ON" : @"NATIVE"];
         _configuration.text = [NSString stringWithFormat:@"%up / %@ / %@",
             self.renderHeight, shadow, distance];
         return;

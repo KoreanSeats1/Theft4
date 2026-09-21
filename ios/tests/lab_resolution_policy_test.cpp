@@ -43,5 +43,16 @@ int main() {
         assert(fallback.render_width == 1280 && fallback.render_height == 720);
     }
 
+    for (uint32_t height : {540u, 720u, 900u, 1080u}) {
+        const auto p = theft4_output_policy_for_a19_lab(height);
+        assert(p.render_height == height);
+        assert(p.output_width == 1920 && p.output_height == 1080);
+        assert(p.fsr1 == (height < 1080));
+        const auto logical = gta4::aspect::resolution::Select(
+            {p.video_width,p.video_height}, "16:9", {2240,1260});
+        assert(uint32_t(std::round(logical.width / (p.fsr1 ? 1.5 : 1.0))) == p.render_width);
+        assert(uint32_t(std::round(logical.height / (p.fsr1 ? 1.5 : 1.0))) == p.render_height);
+    }
+
     puts("Lab 540p/720p/900p/1080p + FSR policies and native-hook extents passed");
 }

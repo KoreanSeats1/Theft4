@@ -81,6 +81,7 @@ extern int rex_gta4_native_profile_status(void);
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
 - (void)applyLowPowerPreset;
+- (void)syncA19OutputChoice;
 @end
 
 static void coreEvent(void *context, const char *event) {
@@ -222,6 +223,7 @@ static void bootEvent(void *context, const char *event) {
         if (![defaults objectForKey:@"Theft4LabFSREnabled"])
             [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
         _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
+        [self syncA19OutputChoice];
         [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
         [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
@@ -345,6 +347,7 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)displaySettingsChanged:(UIControl *)sender {
+    [self syncA19OutputChoice];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
@@ -376,6 +379,13 @@ static void bootEvent(void *context, const char *event) {
     _touchControls.active = _gamePresentation && _showControls.on;
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
+}
+
+- (void)syncA19OutputChoice {
+    if (!_bringupOverlay.renderResolution ||
+        strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") != 0) return;
+    _bringupOverlay.fsrUpscaling.on = _bringupOverlay.renderHeight < 1080;
+    _bringupOverlay.fsrUpscaling.enabled = NO;
 }
 
 - (void)applyLowPowerPreset {
@@ -611,7 +621,8 @@ static void bootEvent(void *context, const char *event) {
         const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
         if (_bringupOverlay.renderResolution) {
             theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
-                _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight);
+                _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
+                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0);
         } else {
             theft4_metal_set_output_mode(
                 _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :

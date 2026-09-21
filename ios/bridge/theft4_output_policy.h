@@ -73,3 +73,11 @@ static inline theft4_output_policy theft4_output_policy_for_lab(
     }
     return policy;
 }
+
+// The A19 phone profile has a fixed 1080p display budget. Lower scene modes
+// use FSR; selecting 1080p itself bypasses the unnecessary upscale pass.
+static inline theft4_output_policy theft4_output_policy_for_a19_lab(
+    uint32_t render_height) {
+    const uint32_t height = theft4_lab_render_height(render_height);
+    return theft4_output_policy_for_lab(height, height < 1080, 1920, 1080);
+}

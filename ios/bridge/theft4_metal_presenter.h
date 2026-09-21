@@ -17,7 +17,8 @@ void theft4_metal_unbind_layer(void* layer);
 void theft4_metal_set_output_mode(theft4_output_mode mode,
                                   uint32_t native_width, uint32_t native_height);
 void theft4_metal_set_lab_output(uint32_t render_height, bool fsr1,
-                                uint32_t native_width, uint32_t native_height);
+                                uint32_t native_width, uint32_t native_height,
+                                bool a19_profile);
 theft4_output_policy theft4_metal_get_output_policy(void);
 void theft4_metal_resize_layer(void* layer, double width, double height,
                                double scale);

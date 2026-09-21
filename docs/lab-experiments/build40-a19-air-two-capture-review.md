@@ -83,6 +83,14 @@ untouched. This output change is a deliberate quality/power tradeoff, distinct
 from the sparse-stage CPU optimization. The internal scene selection stays
 under the user's control, including 540p.
 
+The Lab launcher also uses a phone layout in both orientations. Portrait puts
+the four focusable tabs in a horizontal row and gives the selected page the
+full width beneath them, instead of leaving only a narrow strip after the
+iPad sidebar. Landscape uses almost the full safe-area width, hides the large
+wordmark, starts the page near the panel top, and keeps Play compact enough
+that its primary button is visible. Graphics and system settings retain
+vertical scrolling. The iPad layout remains unchanged.
+
 This is a source-level hypothesis, not a measured FPS gain. Its likely impact
 is on the texture-preparation and upload-capacity parts of the CPU path, plus
 some producer capture cost. It cannot by itself undo severe thermal slowdown

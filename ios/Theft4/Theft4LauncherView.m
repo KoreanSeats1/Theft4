@@ -78,9 +78,10 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UIScrollView *_scroll;
     UIStackView *_content, *_navigation;
     UIStackView *_play, *_graphics, *_interfacePage, *_system;
+    UILabel *_playHeadline, *_playIntro, *_playSaveNote;
     NSArray<UIButton *> *_tabs;
     NSArray<UIView *> *_pages;
-    BOOL _active, _retired;
+    BOOL _active, _retired, _portraitMenu, _landscapePhoneMenu;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -197,15 +198,15 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     [_menuPanel addSubview:_pageTitle];
     [_menuPanel addSubview:_pageDetail];
 
-    UILabel *headline = Copy(@"One more night\nin Liberty City.", 31, NO);
-    headline.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
+    _playHeadline = Copy(@"One more night\nin Liberty City.", 31, NO);
+    _playHeadline.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
         [UIFont systemFontOfSize:31 weight:UIFontWeightSemibold]];
-    headline.textColor = Ink(0xECE7D7);
-    UILabel *intro = Copy(@"Cross the river. Take the long way home.\nYour next story starts on these streets.", 15, NO);
+    _playHeadline.textColor = Ink(0xECE7D7);
+    _playIntro = Copy(@"Cross the river. Take the long way home.\nYour next story starts on these streets.", 15, NO);
     _startButton = Action(@"ENTER LIBERTY CITY", YES);
     _startButton.accessibilityIdentifier = @"game.start";
-    UILabel *saveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
-    _play = Column(@[headline, intro, _startButton, saveNote], 22);
+    _playSaveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
+    _play = Column(@[_playHeadline, _playIntro, _startButton, _playSaveNote], 22);
 
     _showFrameTime = [UISwitch new];
     _showFPS = [UISwitch new];
@@ -420,10 +421,55 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
-    CGFloat inset = w < 650 ? 22 : 42;
+    BOOL phone = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
+    BOOL portraitMenu = phone && h > w;
+    BOOL landscapePhoneMenu = phone && w >= h;
+    CGFloat inset = landscapePhoneMenu
+        ? MAX(20, MAX(self.safeAreaInsets.left, self.safeAreaInsets.right) + 8)
+        : (w < 650 ? 22 : 42);
     CGFloat top = MAX(24, self.safeAreaInsets.top + 12);
     CGFloat bottom = MAX(20, self.safeAreaInsets.bottom + 10);
-    BOOL compact = w < 850;
+    BOOL compact = w < 850 || phone;
+
+    if (_portraitMenu != portraitMenu || _landscapePhoneMenu != landscapePhoneMenu) {
+        _portraitMenu = portraitMenu;
+        _landscapePhoneMenu = landscapePhoneMenu;
+        _navigation.axis = portraitMenu ? UILayoutConstraintAxisHorizontal
+                                        : UILayoutConstraintAxisVertical;
+        _navigation.distribution = portraitMenu ? UIStackViewDistributionFillEqually
+                                                : UIStackViewDistributionFill;
+        _navigation.spacing = portraitMenu ? 3 : 5;
+        for (UIButton *tab in _tabs) {
+            UIButtonConfiguration *config = tab.configuration;
+            config.imagePlacement = portraitMenu ? NSDirectionalRectEdgeTop
+                                                 : NSDirectionalRectEdgeLeading;
+            config.imagePadding = portraitMenu ? 3 : 12;
+            config.contentInsets = portraitMenu
+                ? NSDirectionalEdgeInsetsMake(5, 2, 5, 2)
+                : NSDirectionalEdgeInsetsMake(13, 12, 13, 12);
+            config.titleTextAttributesTransformer = ^NSDictionary *(NSDictionary *attributes) {
+                NSMutableDictionary *updated = [attributes mutableCopy];
+                updated[NSFontAttributeName] = [UIFont monospacedSystemFontOfSize:
+                    portraitMenu ? 10 : 12 weight:UIFontWeightBold];
+                return updated;
+            };
+            tab.configuration = config;
+            tab.contentHorizontalAlignment = portraitMenu
+                ? UIControlContentHorizontalAlignmentCenter
+                : UIControlContentHorizontalAlignmentLeading;
+        }
+        _wordmark.font = [UIFont fontWithName:@"HelveticaNeue-CondensedBlack"
+            size:(portraitMenu ? 52 : 67)] ?: [UIFont systemFontOfSize:
+                (portraitMenu ? 52 : 67) weight:UIFontWeightBlack];
+        _playHeadline.text = landscapePhoneMenu ? @"Liberty City awaits."
+                                                : @"One more night\nin Liberty City.";
+        _playHeadline.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
+            [UIFont systemFontOfSize:(landscapePhoneMenu ? 22 : portraitMenu ? 26 : 31)
+                             weight:UIFontWeightSemibold]];
+        _playIntro.hidden = landscapePhoneMenu;
+        _playSaveNote.hidden = landscapePhoneMenu;
+        _play.spacing = landscapePhoneMenu ? 12 : portraitMenu ? 16 : 22;
+    }
 
     // Overscan the decorative world so an orbit never exposes the edge of the scene view.
     _city.frame = CGRectMake(compact ? -w * .20 : w * .25, -h * .08,
@@ -443,19 +489,40 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _edition.frame = CGRectMake(w - 350, top, 350 - inset, 20);
     _topRule.frame = CGRectMake(inset, top + 34, w - 2 * inset, 1);
 
-    CGFloat panelTop = top + 51;
-    CGFloat panelBottom = h - bottom - 60;
-    CGFloat panelWidth = compact ? MIN(w - 2 * inset, 650) : MIN(w * .61, 740);
-    _menuPanel.frame = CGRectMake(inset, panelTop, panelWidth, MAX(300, panelBottom - panelTop));
+    CGFloat panelTop = top + (portraitMenu ? 38 : landscapePhoneMenu ? 30 : 51);
+    CGFloat panelBottom = h - bottom - (portraitMenu ? 55 : landscapePhoneMenu ? 50 : 60);
+    CGFloat panelWidth = landscapePhoneMenu ? w - 2 * inset
+        : compact ? MIN(w - 2 * inset, 650) : MIN(w * .61, 740);
+    _menuPanel.frame = CGRectMake(inset, panelTop, panelWidth,
+        portraitMenu ? MAX(250, panelBottom - panelTop)
+                     : landscapePhoneMenu ? MAX(230, panelBottom - panelTop)
+                                          : MAX(300, panelBottom - panelTop));
     CGFloat pw = _menuPanel.bounds.size.width, ph = _menuPanel.bounds.size.height;
-    CGFloat navWidth = compact ? 145 : 174;
-    _wordmark.frame = CGRectMake(22, 12, pw - 44, 81);
-    _navigation.frame = CGRectMake(12, 120, navWidth - 16, 212);
-    _navRule.frame = CGRectMake(navWidth, 109, 1, ph - 127);
-    _controllerHint.frame = CGRectMake(17, ph - 42, navWidth - 26, 30);
-    _pageTitle.frame = CGRectMake(navWidth + 24, 111, pw - navWidth - 44, 20);
-    _pageDetail.frame = CGRectMake(navWidth + 24, 134, pw - navWidth - 44, 18);
-    _scroll.frame = CGRectMake(navWidth + 24, 168, pw - navWidth - 39, ph - 186);
+    _wordmark.hidden = landscapePhoneMenu;
+    if (portraitMenu) {
+        _wordmark.frame = CGRectMake(18, 5, pw - 36, 64);
+        _navigation.frame = CGRectMake(11, 70, pw - 22, 62);
+        _navRule.frame = CGRectMake(16, 140, pw - 32, 1);
+        _controllerHint.hidden = YES;
+        _pageTitle.frame = CGRectMake(18, 150, pw - 36, 20);
+        _pageDetail.frame = CGRectMake(18, 173, pw - 36, 18);
+        _scroll.frame = CGRectMake(18, 201, pw - 36, MAX(40, ph - 216));
+    } else {
+        CGFloat navWidth = landscapePhoneMenu ? 145 : compact ? 145 : 174;
+        _wordmark.frame = CGRectMake(22, 12, pw - 44, 81);
+        _navigation.frame = CGRectMake(12, landscapePhoneMenu ? 10 : 120,
+            navWidth - 16, 212);
+        _navRule.frame = CGRectMake(navWidth, landscapePhoneMenu ? 10 : 109,
+            1, ph - (landscapePhoneMenu ? 20 : 127));
+        _controllerHint.hidden = landscapePhoneMenu;
+        _controllerHint.frame = CGRectMake(17, ph - 42, navWidth - 26, 30);
+        _pageTitle.frame = CGRectMake(navWidth + 24, landscapePhoneMenu ? 10 : 111,
+            pw - navWidth - 44, 20);
+        _pageDetail.frame = CGRectMake(navWidth + 24, landscapePhoneMenu ? 33 : 134,
+            pw - navWidth - 44, 18);
+        _scroll.frame = CGRectMake(navWidth + 24, landscapePhoneMenu ? 63 : 168,
+            pw - navWidth - 39, ph - (landscapePhoneMenu ? 73 : 186));
+    }
 
     _bottomRule.frame = CGRectMake(inset, h - bottom - 46, w - 2 * inset, 1);
     _statusLabel.frame = CGRectMake(inset, h - bottom - 39, compact ? w - 2 * inset : w * .55, 38);

@@ -1,7 +1,11 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
+#ifdef THEFT4_LAB_BUILD
+#include <atomic>
+#include <chrono>
+#include <rex/logging.h>
+#endif
 
 namespace gta4::fps::physics
 {
@@ -50,6 +54,17 @@ private:
     bool started_ = false;
 };
 
-void ReportCollisionTraversalAbort(std::uint32_t iterations) noexcept;
+inline void ReportCollisionTraversalAbort(std::uint32_t iterations) noexcept
+{
+    static std::atomic<std::uint64_t> abortCount{0};
+    const std::uint64_t count = abortCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 16 || !(count % 64))
+    {
+        REXLOG_ERROR(
+            "gta4-physics-guard: aborted runaway collision traversal count={} iterations={} "
+            "budget-ms=50",
+            count, iterations);
+    }
+}
 #endif
 }

@@ -3,13 +3,11 @@
 #include "../../glue/rexglue-sdk-main/gta4-recomp/generated/gta4_init.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 
 #include <cpu/ppc_context.h>
 #include <kernel/function.h>
-#include <rex/logging.h>
 
 namespace gta4::fps::physics
 {
@@ -55,20 +53,6 @@ void BoundTimeStep(PPCContext& ctx, bool floor_pre_post) noexcept
 }
 }
 
-#ifdef THEFT4_LAB_BUILD
-void ReportCollisionTraversalAbort(std::uint32_t iterations) noexcept
-{
-    static std::atomic<std::uint64_t> abortCount{0};
-    const std::uint64_t count = abortCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (count <= 16 || !(count % 64))
-    {
-        REXLOG_ERROR(
-            "gta4-physics-guard: aborted runaway collision traversal count={} iterations={} "
-            "budget-ms=50",
-            count, iterations);
-    }
-}
-#endif
 }
 
 PPC_FUNC_IMPL(__imp__sub_824797C0);

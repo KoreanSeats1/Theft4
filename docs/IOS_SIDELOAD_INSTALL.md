@@ -153,10 +153,11 @@ container. Deleting the app removes it, including saves.
   and whether the device felt hot. Profiling adds overhead; also describe an
   ordinary run with capture off.
 
-TestFlight testers install the signed 0.2.0 build from TestFlight, then follow
-the same game-folder and diagnostics steps. Do not sideload the unsigned GitHub
-IPA over a TestFlight install unless you deliberately manage signing with the
-same bundle identifier and preserve the existing app container.
+TestFlight testers update the signed 0.2.0 build in TestFlight, then follow the
+same game-folder and diagnostics steps. The TestFlight app's existing identifier
+is `com.lukebrosious.theft4`; the GitHub sideload IPA uses
+`com.theft4.bringup`. They are separate installations with separate game files
+and saves. Do not uninstall either app merely to switch distribution methods.
 
 ## Common installation failures
 

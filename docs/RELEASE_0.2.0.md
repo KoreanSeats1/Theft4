@@ -1,9 +1,11 @@
 # Theft4 0.2.0 — Lab renderer promotion
 
 Theft4 Lab's renderer and gameplay performance work is now the regular Theft4
-build. The iOS app uses the existing `com.theft4.bringup` bundle identifier and
-is intended to update Theft4 in place. The separate historical Lab app has its
-own identifier and is not removed by the update.
+build. Direct device/sideload builds use the existing `com.theft4.bringup`
+identifier. The existing TestFlight app uses `com.lukebrosious.theft4`.
+Each 0.2.0 package updates its own prior app and container in place; they do
+not migrate data between these two identities. The historical Lab app has its
+own identifier and is not removed by either update.
 
 ## Performance and frame-time work
 
@@ -81,6 +83,7 @@ does not claim measured lower device temperature or universal stability.
 
 The GitHub `ios-arm64.ipa` asset is unsigned for users who sideload and re-sign
 with their own account. Use the [sideload guide](IOS_SIDELOAD_INSTALL.md).
-TestFlight receives a separate Apple-signed build with the same bundle
-identifier and version. The GitHub source archive is not an IPA and contains
+TestFlight receives a separate Apple-signed build under its existing
+`com.lukebrosious.theft4` identifier and the same 0.2.0 version. The GitHub
+source archive is not an IPA and contains
 no game files, title update, saves or private signing material.

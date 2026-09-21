@@ -20,7 +20,8 @@ This is not a source port and it is not a complete Xbox 360 emulator. It combine
 ahead-of-time translated game code with a compatibility runtime that recreates
 the Xbox services the title expects. The 0.2.0 iOS release promotes the GTA IV
 native renderer developed in Theft4 Lab. It presents through Vulkan, MoltenVK
-and Metal and keeps the regular `com.theft4.bringup` app identity.
+and Metal. Direct device builds keep `com.theft4.bringup`; the existing
+TestFlight app keeps `com.lukebrosious.theft4`.
 
 > [!WARNING]
 > Theft4 0.2.0 remains experimental. Dense scenes, extended play, physics,
@@ -29,10 +30,11 @@ and Metal and keeps the regular `com.theft4.bringup` app identity.
 
 ## What changed in 0.2.0
 
-Theft4 Lab is now the regular Theft4 codebase. The release uses the same
-`com.theft4.bringup` identifier as 0.1.3, so the app updates in place and its
-existing data remains available. The historical Lab app (`com.theft4.m5lab`)
-can remain installed separately.
+Theft4 Lab is now the regular Theft4 codebase. Direct device/sideload builds
+retain `com.theft4.bringup`; the existing TestFlight app retains
+`com.lukebrosious.theft4`. Each 0.2.0 build updates its corresponding 0.1.3
+installation in place, preserving that app's data. They do not share a data
+container. The historical Lab app (`com.theft4.m5lab`) remains separate.
 
 | Area | Substantial change | Effect |
 | --- | --- | --- |

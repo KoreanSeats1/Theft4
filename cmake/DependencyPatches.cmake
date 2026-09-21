@@ -11,7 +11,8 @@ function(liberty_apply_dependency_patches repository_root)
     if(THEFT4_LAB_BUILD)
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
            (NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.m5lab" AND
-            NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.bringup"))
+            NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.bringup" AND
+            NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4"))
             message(FATAL_ERROR "The promoted source-export path requires a Theft4 iOS identity")
         endif()
         # Promoted and frozen Lab inputs are already patched. Check every

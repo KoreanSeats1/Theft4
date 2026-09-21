@@ -151,8 +151,11 @@ another compatible tool must re-sign it for the destination device.
 ### Prepare a TestFlight archive
 
 TestFlight needs a separate Apple-distribution-signed upload. Do not upload the
-unsigned GitHub IPA. Configure the same Release source and stable
-`com.theft4.bringup` identifier with `THEFT4_SIGN_DEVICE=ON` and your
+unsigned GitHub IPA. The existing TestFlight app uses
+`com.lukebrosious.theft4`, whereas direct device/sideload builds use
+`com.theft4.bringup`. Build the same 0.2.0 source with the **existing
+TestFlight identifier** so Apple's TestFlight install updates that app and its
+container in place. Configure Release with `THEFT4_SIGN_DEVICE=ON` and your
 `LIBERTY_IOS_DEVELOPMENT_TEAM`, then archive the `Theft4` scheme in Xcode or
 with `xcodebuild archive`. The generated app target has `SKIP_INSTALL=NO` and
 `INSTALL_PATH=/Applications`; verify that the resulting `.xcarchive` contains
@@ -162,7 +165,8 @@ your team, and upload through Xcode. Build 42 keeps version 0.2.0. After Apple
 finishes processing, assign the build to the existing external tester group
 in App Store Connect and complete any beta-review or compliance prompts.
 
-The local device install is different: build with development signing and use
+The local device install is different: use the `com.theft4.bringup` identity,
+build with development signing and use
 `devicectl device install app` on the existing bundle ID. Do not uninstall the
 current app to update it, because uninstalling can remove its container data.
 

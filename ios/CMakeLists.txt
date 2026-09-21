@@ -45,6 +45,10 @@ if(THEFT4_BUILD_GAME_CODE)
     target_link_libraries(theft4_game_code PRIVATE rex::core)
     target_include_directories(theft4_game_code PRIVATE "${THEFT4_GENERATED_DIR}")
     target_compile_features(theft4_game_code PRIVATE cxx_std_23)
+    if(THEFT4_LAB_BUILD)
+        target_compile_definitions(theft4_game_code PRIVATE THEFT4_LAB_BUILD=1)
+        target_include_directories(theft4_game_code PRIVATE "${CMAKE_SOURCE_DIR}")
+    endif()
     # Tune instruction scheduling while preserving the deployment target's
     # default instruction set. Strict FP preserves generated guest math.
     target_compile_options(theft4_game_code PRIVATE

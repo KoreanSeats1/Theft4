@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <atomic>
 #include <condition_variable>
@@ -1426,7 +1427,17 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     };
     texture(command.resolve_destination); texture(command.depth_handoff_source);
     texture(command.present_source);
-    for (const auto& resource : command.textures) texture(resource);
+    // Validation only captures texture resources used by the active shaders.
+    // Walk that same sparse mask here instead of testing all 26 shared_ptr
+    // slots for every queued command on both the producer and worker paths.
+    constexpr uint32_t kTextureStageMask =
+        (uint32_t{1} << kTextureStageCount) - uint32_t{1};
+    uint32_t used = command.used_texture_mask & kTextureStageMask;
+    while (used) {
+      const uint32_t stage = std::countr_zero(used);
+      texture(command.textures[stage]);
+      used &= used - 1;
+    }
   }
   void QueueTextureProtection(const NativeCommand& command, bool retain);
   void AppendQueuedTextureProtection(std::unordered_set<uint64_t>& generations) const;

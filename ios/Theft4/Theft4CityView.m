@@ -57,10 +57,12 @@ static UIImage *CityWindows(unsigned seed) {
 @implementation Theft4CityView {
     SCNView *_sceneView;
     SCNNode *_orbit;
+    SCNNode *_camera;
     BOOL _retired;
     BOOL _active;
-    CGFloat _panOrigin;
-    CGFloat _yaw;
+    CGFloat _panYawOrigin, _panPitchOrigin;
+    CGFloat _yaw, _pitch;
+    CGFloat _pinchOrigin, _zoom;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -79,8 +81,8 @@ static UIImage *CityWindows(unsigned seed) {
     SCNScene *scene = [SCNScene new];
     scene.background.contents = CityColor(0x090F13);
     scene.fogColor = CityColor(0x0C171C);
-    scene.fogStartDistance = 34;
-    scene.fogEndDistance = 78;
+    scene.fogStartDistance = 62;
+    scene.fogEndDistance = 150;
     SCNNode *root = scene.rootNode;
 
     SCNNode *ambient = [SCNNode new];
@@ -113,8 +115,10 @@ static UIImage *CityWindows(unsigned seed) {
     lamp.emission.contents = CityColor(0xFFD6A0); lamp.emission.intensity = 2;
 
     SCNNode *staticCity = [SCNNode new];
-    [staticCity addChildNode:CityBox(32,0.55,14,SCNVector3Make(-1,0.28,-11),land)];
-    [staticCity addChildNode:CityBox(32,0.55,12,SCNVector3Make(-1,0.28,10),land)];
+    // The city now surrounds the camera pivot. The larger foundations and
+    // distant districts keep the model continuous through a full 360° orbit.
+    [staticCity addChildNode:CityBox(70,0.55,31,SCNVector3Make(0,0.28,-18),land)];
+    [staticCity addChildNode:CityBox(70,0.55,28,SCNVector3Make(0,0.28,20),land)];
     NSMutableArray<SCNMaterial *> *facades = [NSMutableArray new];
     for (unsigned i=0;i<7;++i) {
         SCNMaterial *m = CityMaterial(i%2 ? 0x3E4946 : 0x323F43, 0.75);
@@ -138,6 +142,29 @@ static UIImage *CityWindows(unsigned seed) {
         CGFloat x=-13+col*4, z=7+row*4, h=1.1+(col%3)*.8;
         if (col==4) continue;
         [staticCity addChildNode:CityBox(2.5,h,2,SCNVector3Make(x,h/2+.55,z),facades[(col+row)%7])];
+    }
+    // Far districts are deliberately lower-detail silhouettes. They add depth
+    // without making the launcher compete with the game for memory or GPU time.
+    for (int district = 0; district < 4; ++district) {
+        const BOOL alongX = district < 2;
+        const CGFloat side = (district & 1) ? 1 : -1;
+        for (int lane = -5; lane <= 5; ++lane) {
+            for (int depth = 0; depth < 3; ++depth) {
+                random = random * 1664525u + 1013904223u;
+                CGFloat tangent = lane * 5.2 + ((depth & 1) ? 1.5 : 0);
+                CGFloat radial = side * (18 + depth * 5.1);
+                CGFloat x = alongX ? radial : tangent;
+                CGFloat z = alongX ? tangent : radial;
+                CGFloat h = 2.0 + (random % 125) / 14.0;
+                CGFloat width = 2.1 + (random % 12) / 10.0;
+                [staticCity addChildNode:CityBox(width, h, 2.5,
+                    SCNVector3Make(x, h / 2 + .55, z), facades[(lane + depth + 14) % 7])];
+                if ((random & 3) == 0) {
+                    [staticCity addChildNode:CityBox(width * .55, .7, 1.2,
+                        SCNVector3Make(x, h + .9, z), iron)];
+                }
+            }
+        }
     }
     for (int row=0;row<4;++row)
         [staticCity addChildNode:CityBox(31,.02,.7,SCNVector3Make(-1,.57,-4.4-row*3.1),road)];
@@ -183,20 +210,23 @@ static UIImage *CityWindows(unsigned seed) {
         [root addChildNode:car];
     }
     _orbit = [SCNNode new]; [root addChildNode:_orbit];
-    SCNNode *camera = [SCNNode new]; camera.camera = [SCNCamera new];
-    camera.position = SCNVector3Make(22,17,25); [camera lookAt:SCNVector3Make(0,1,-2)];
-    camera.camera.fieldOfView = 43;
-    camera.camera.zNear = .1; camera.camera.zFar = 110;
-    camera.camera.wantsHDR = YES; camera.camera.wantsExposureAdaptation = NO;
-    camera.camera.exposureOffset = -.25;
-    camera.camera.bloomIntensity = .45; camera.camera.bloomThreshold = 1;
-    camera.camera.bloomBlurRadius = 8;
-    camera.camera.wantsDepthOfField = YES; camera.camera.focusDistance = 35;
-    camera.camera.fStop = 5.6; camera.camera.focalBlurSampleCount = 8;
-    camera.camera.vignettingIntensity = .65; camera.camera.vignettingPower = .8;
-    [_orbit addChildNode:camera]; _sceneView.pointOfView = camera;
+    _camera = [SCNNode new]; _camera.camera = [SCNCamera new];
+    _zoom = 1.0;
+    _camera.position = SCNVector3Make(26,18,29);
+    [_camera lookAt:SCNVector3Make(0,1,-2)];
+    _camera.camera.fieldOfView = 43;
+    _camera.camera.zNear = .1; _camera.camera.zFar = 220;
+    _camera.camera.wantsHDR = YES; _camera.camera.wantsExposureAdaptation = NO;
+    _camera.camera.exposureOffset = -.25;
+    _camera.camera.bloomIntensity = .45; _camera.camera.bloomThreshold = 1;
+    _camera.camera.bloomBlurRadius = 8;
+    _camera.camera.wantsDepthOfField = YES; _camera.camera.focusDistance = 44;
+    _camera.camera.fStop = 5.6; _camera.camera.focalBlurSampleCount = 8;
+    _camera.camera.vignettingIntensity = .65; _camera.camera.vignettingPower = .8;
+    [_orbit addChildNode:_camera]; _sceneView.pointOfView = _camera;
     _sceneView.scene = scene;
     [self addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(orbit:)]];
+    [self addGestureRecognizer:[[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(zoom:)]];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(motionChanged:)
         name:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
     [self setActive:YES];
@@ -206,10 +236,21 @@ static UIImage *CityWindows(unsigned seed) {
 - (void)orbit:(UIPanGestureRecognizer *)gesture {
     if (_retired) return;
     if (gesture.state==UIGestureRecognizerStateBegan) {
-        [_orbit removeAllActions]; _panOrigin=_yaw;
+        [_orbit removeAllActions];
+        _panYawOrigin = _yaw;
+        _panPitchOrigin = _pitch;
     }
-    _yaw = fmax(-.42, fmin(.42, _panOrigin+[gesture translationInView:self].x/650.0));
-    _orbit.eulerAngles = SCNVector3Make(0,_yaw,0);
+    CGPoint translation = [gesture translationInView:self];
+    _yaw = fmod(_panYawOrigin + translation.x / 430.0, (CGFloat)(M_PI * 2.0));
+    _pitch = fmax(-.22, fmin(.24, _panPitchOrigin + translation.y / 600.0));
+    _orbit.eulerAngles = SCNVector3Make(_pitch, _yaw, 0);
+}
+- (void)zoom:(UIPinchGestureRecognizer *)gesture {
+    if (_retired) return;
+    if (gesture.state == UIGestureRecognizerStateBegan) _pinchOrigin = _zoom;
+    _zoom = fmax(.72, fmin(1.38, _pinchOrigin / gesture.scale));
+    _camera.position = SCNVector3Make(26 * _zoom, 18 * _zoom, 29 * _zoom);
+    [_camera lookAt:SCNVector3Make(0,1,-2)];
 }
 - (void)motionChanged:(NSNotification *)note { [self setActive:_active]; }
 - (void)setActive:(BOOL)active {
@@ -233,7 +274,7 @@ static UIImage *CityWindows(unsigned seed) {
     _sceneView.playing = NO; _sceneView.scene.paused = YES;
     _sceneView.rendersContinuously = NO;
     [_sceneView.scene.rootNode removeAllActions];
-    _sceneView.pointOfView = nil; _sceneView.scene = nil; _orbit = nil;
+    _sceneView.pointOfView = nil; _sceneView.scene = nil; _camera = nil; _orbit = nil;
     [_sceneView removeFromSuperview]; _sceneView = nil;
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [self retire]; }

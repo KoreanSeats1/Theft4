@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <GameController/GameController.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/log.h>
 #include <stdio.h>
@@ -25,7 +26,7 @@ extern int rex_gta4_native_profile_status(void);
 + (Class)layerClass { return CAMetalLayer.class; }
 @end
 
-@interface Theft4ViewController : UIViewController {
+@interface Theft4ViewController : GCEventViewController {
     theft4_core *_core;
     NSURL *_supportURL;
     NSURL *_logURL;
@@ -56,6 +57,11 @@ extern int rex_gta4_native_profile_status(void);
     UISwitch *_enhancedOutput;
     UISwitch *_fsrBoost;
     UISwitch *_motionBlur;
+    UISegmentedControl *_shadowQuality;
+    UISegmentedControl *_drawDistance;
+    UISegmentedControl *_modelDetail;
+    UISegmentedControl *_reflectionQuality;
+    UISegmentedControl *_antiAliasing;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
 #ifdef THEFT4_LAB_NATIVE_CAPTURE
@@ -108,6 +114,9 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    // Route controller buttons and directional input through UIKit while the
+    // launcher is visible so every standard control participates in focus.
+    self.controllerUserInteractionEnabled = YES;
     configureDeviceProfile();
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
@@ -116,7 +125,12 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4AnisotropicFiltering": @YES,
         @"Theft4EnhancedOutput1080p": @YES,
         @"Theft4ExperimentalFSRBoost": @NO,
-        @"Theft4MotionBlur": @YES
+        @"Theft4MotionBlur": @YES,
+        @"Theft4ShadowQuality": @0,
+        @"Theft4DrawDistance": @0,
+        @"Theft4ModelDetail": @0,
+        @"Theft4ReflectionQuality": @0,
+        @"Theft4AntiAliasing": @2
     }];
     // All selectable game resolutions are 16:9. Keep the layer at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
@@ -159,6 +173,11 @@ static void bootEvent(void *context, const char *event) {
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
+    _shadowQuality = _bringupOverlay.shadowQuality;
+    _drawDistance = _bringupOverlay.drawDistance;
+    _modelDetail = _bringupOverlay.modelDetail;
+    _reflectionQuality = _bringupOverlay.reflectionQuality;
+    _antiAliasing = _bringupOverlay.antiAliasing;
     NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
     NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
@@ -166,6 +185,21 @@ static void bootEvent(void *context, const char *event) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
+    NSArray<UISegmentedControl *> *graphicsChoices = @[
+        _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing
+    ];
+    NSArray<NSString *> *graphicsKeys = @[
+        @"Theft4ShadowQuality", @"Theft4DrawDistance", @"Theft4ModelDetail",
+        @"Theft4ReflectionQuality", @"Theft4AntiAliasing"
+    ];
+    for (NSUInteger i = 0; i < graphicsChoices.count; ++i) {
+        UISegmentedControl *choice = graphicsChoices[i];
+        NSInteger persisted = [graphicsDefaults integerForKey:graphicsKeys[i]];
+        choice.selectedSegmentIndex = MAX(0, MIN(choice.numberOfSegments - 1, persisted));
+        [choice addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
     }
     if (_fsrBoost.on) _enhancedOutput.on = YES;
     if (_bringupOverlay.renderResolution) {
@@ -304,6 +338,16 @@ static void bootEvent(void *context, const char *event) {
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    [NSUserDefaults.standardUserDefaults setInteger:_shadowQuality.selectedSegmentIndex
+        forKey:@"Theft4ShadowQuality"];
+    [NSUserDefaults.standardUserDefaults setInteger:_drawDistance.selectedSegmentIndex
+        forKey:@"Theft4DrawDistance"];
+    [NSUserDefaults.standardUserDefaults setInteger:_modelDetail.selectedSegmentIndex
+        forKey:@"Theft4ModelDetail"];
+    [NSUserDefaults.standardUserDefaults setInteger:_reflectionQuality.selectedSegmentIndex
+        forKey:@"Theft4ReflectionQuality"];
+    [NSUserDefaults.standardUserDefaults setInteger:_antiAliasing.selectedSegmentIndex
+        forKey:@"Theft4AntiAliasing"];
     if (_bringupOverlay.renderResolution) {
         [NSUserDefaults.standardUserDefaults setInteger:_bringupOverlay.renderHeight forKey:@"Theft4LabRenderHeight"];
         [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
@@ -380,6 +424,9 @@ static void bootEvent(void *context, const char *event) {
     if (_gamePresentation) return;
     [_bringupOverlay retireScene];
     _gamePresentation = YES;
+    // The title owns GCController input after launch. Leaving UIKit controller
+    // routing enabled here would consume gameplay buttons as focus events.
+    self.controllerUserInteractionEnabled = NO;
     [UIView animateWithDuration:0.2 animations:^{
         self->_bringupOverlay.alpha = 0.0;
     } completion:^(BOOL finished) {
@@ -522,6 +569,16 @@ static void bootEvent(void *context, const char *event) {
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
+        const char *shadowPresets[] = {"original", "enhanced", "ultra"};
+        const char *distancePresets[] = {"1", "2", "3"};
+        const char *reflectionPresets[] = {"original", "1080p", "full"};
+        const char *antiAliasingPresets[] = {"off", "fxaa", "smaa"};
+        setenv("THEFT4_SHADOW_QUALITY", shadowPresets[_shadowQuality.selectedSegmentIndex], 1);
+        setenv("THEFT4_DRAW_DISTANCE", distancePresets[_drawDistance.selectedSegmentIndex], 1);
+        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex ? "1" : "0", 1);
+        setenv("THEFT4_REFLECTION_RESOLUTION",
+            reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
+        setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
@@ -545,6 +602,11 @@ static void bootEvent(void *context, const char *event) {
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
+        _shadowQuality.enabled = NO;
+        _drawDistance.enabled = NO;
+        _modelDetail.enabled = NO;
+        _reflectionQuality.enabled = NO;
+        _antiAliasing.enabled = NO;
     }
     NSError *backupError = nil;
     if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])

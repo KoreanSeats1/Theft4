@@ -8,7 +8,7 @@
     <key>Theft4LabBuild</key>${THEFT4_LAB_PLIST_VALUE}
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.3</string>
-    <key>CFBundleVersion</key><string>40</string>
+    <key>CFBundleVersion</key><string>41</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>

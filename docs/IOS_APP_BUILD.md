@@ -124,7 +124,7 @@ xcrun devicectl device process launch --device DEVICE_ID \
   com.theft4.bringup --theft4-self-test
 ```
 
-Default bundle ID is `com.theft4.bringup`; change it with
+Default bundle ID is `com.lukebrosious.theft4`; change it with
 `-DTHEFT4_BUNDLE_IDENTIFIER=...` and use that ID in commands. Xcode may need an
 authenticated developer account and permission to provision the target. The
 verified build has only development signing entitlements: app identifier,

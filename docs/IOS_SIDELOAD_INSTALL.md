@@ -1,6 +1,6 @@
 # Install a sideloaded Theft4 IPA
 
-These instructions are for the unsigned ARM64 IPA attached to the Theft4 0.2.0
+These instructions are for the unsigned ARM64 IPA attached to the Theft4 0.2.0b
 GitHub release. The IPA contains the application and statically recompiled game code,
 but it does **not** contain Grand Theft Auto IV game data or a title update.
 
@@ -28,10 +28,11 @@ rename an incompatible update or bypass the validation checks.
    download GitHub's **Source code** archives as a substitute for the IPA.
 2. Import the IPA into AltStore, SideStore, or your preferred compatible
    sideloading tool and let that tool sign it with your Apple account.
-3. Install Theft4 on the destination iPhone or iPad. Version 0.2.0 uses the
-   original `com.theft4.bringup` bundle identifier. Update the existing app
+3. Install Theft4 on the destination iPhone or iPad. Version 0.2.0b uses
+   `com.lukebrosious.theft4`, the official app identifier. Update that app
    in place to retain its game files and saves. Do not delete the old app.
-   The separate `com.theft4.m5lab` app is not the update target.
+   The separate `com.theft4.m5lab` app is not the update target and has a
+   separate container.
 4. Open Theft4 once, then close it. First launch creates the shared transfer
    location at **Files → Browse → On My iPhone/iPad → Theft4 → game** and the
    file `COPY GAME FILES HERE.txt` beside it.
@@ -154,10 +155,10 @@ container. Deleting the app removes it, including saves.
   ordinary run with capture off.
 
 TestFlight testers update the signed 0.2.0 build in TestFlight, then follow the
-same game-folder and diagnostics steps. The TestFlight app's existing identifier
-is `com.lukebrosious.theft4`; the GitHub sideload IPA uses
-`com.theft4.bringup`. They are separate installations with separate game files
-and saves. Do not uninstall either app merely to switch distribution methods.
+same game-folder and diagnostics steps. The official app identifier is
+`com.lukebrosious.theft4` for both distribution methods. The historical Lab
+app uses `com.theft4.m5lab` and keeps separate game files and saves. Before
+switching from Lab to official Theft4, copy or back up the Lab data.
 
 ## Common installation failures
 

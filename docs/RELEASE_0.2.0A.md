@@ -1,5 +1,9 @@
 # Theft4 0.2.0a — Lab foundation, setup and diagnostic update
 
+> **Withdrawn:** This release was superseded by [0.2.0b](RELEASE_0.2.0B.md).
+> Do not use build 43 as the current Lab-based official app. The notes below
+> are retained for historical context and do not describe the current release.
+
 0.2.0a is the corrective follow-up to 0.2.0. It keeps the **Theft4 Lab** renderer, scheduling, frame-pacing and quality-control implementation as the official Theft4 build. This is not a rollback or a merge with an older render path. The changes make first use and performance reports more practical for testers.
 
 ## What is included

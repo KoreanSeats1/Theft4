@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "frame_constant_arena.h"
@@ -21,7 +22,7 @@ template <typename Allocation>
 class NativeImmutableBindings {
  public:
   static_assert(std::is_trivially_copyable_v<Allocation>);
-  enum class Result { kFailure, kVersionHit, kContentHit, kUploaded };
+  enum class Result { kFailure, kVersionHit, kContentHit, kDeltaUploaded, kUploaded };
   struct Entry {
     Allocation allocation{};
     const std::vector<uint8_t>* bytes = nullptr;
@@ -30,18 +31,48 @@ class NativeImmutableBindings {
   Result Bind(FrameConstantKind kind, const std::shared_ptr<const ConstantStateVersion>& version,
               Allocation& allocation, const std::vector<uint8_t>*& bytes,
               Materialize&& materialize, Upload&& upload) {
+    return BindWithDelta(kind, version, allocation, bytes,
+                         std::forward<Materialize>(materialize),
+                         std::forward<Upload>(upload),
+                         [](auto&&...) { return false; });
+  }
+  template <typename Materialize, typename Upload, typename DeltaUpload>
+  Result BindWithDelta(FrameConstantKind kind,
+                       const std::shared_ptr<const ConstantStateVersion>& version,
+                       Allocation& allocation, const std::vector<uint8_t>*& bytes,
+                       Materialize&& materialize, Upload&& upload,
+                       DeltaUpload&& delta_upload) {
     bytes = nullptr;
     if (!version || !version->byte_size || kind == FrameConstantKind::kShared) return Result::kFailure;
     const FrameConstantIdentity identity{kind, uint64_t(reinterpret_cast<uintptr_t>(version.get()))};
     if (const auto* hit = versions_.Find(identity)) {
       allocation = hit->allocation; bytes = hit->bytes; return Result::kVersionHit;
     }
+    // The common GTA IV path changes a few constant registers between draws.
+    // If the immutable parent is already resident in this fence-owned arena,
+    // clone its host-order allocation and patch only the guest-order delta.
+    // This avoids allocating/materializing and endian-converting the complete
+    // 4 KiB/3.5 KiB block. Full snapshots and missing parents use the exact
+    // established fallback below.
+    if (version->parent && !version->delta.complete_snapshot &&
+        ValidateConstantPayloadDelta(version->delta, version->byte_size)) {
+      const FrameConstantIdentity parent_identity{
+          kind, uint64_t(reinterpret_cast<uintptr_t>(version->parent.get()))};
+      if (const auto* parent = versions_.Find(parent_identity);
+          parent && delta_upload(kind, identity.immutable_identity, parent->allocation,
+                                 version->delta, version->byte_size, allocation)) {
+        owners_.push_back(version);
+        const Entry entry{allocation, nullptr};
+        if (!versions_.Insert(identity, entry)) return Result::kFailure;
+        return Result::kDeltaUploaded;
+      }
+    }
     bytes = materialize(version);
     if (!bytes || bytes->size() != version->byte_size || bytes->size() > UINT32_MAX) return Result::kFailure;
     const NativeConstantContentKey key{version->content_hash, uint32_t(kind), uint32_t(bytes->size())};
     const Entry* candidate = contents_.Find(key);
     Result result = Result::kUploaded;
-    if (candidate && *candidate->bytes == *bytes) {
+    if (candidate && candidate->bytes && *candidate->bytes == *bytes) {
       allocation = candidate->allocation;
       result = Result::kContentHit;
     } else if (!upload(kind, uint64_t(reinterpret_cast<uintptr_t>(bytes)), *bytes, allocation)) {

@@ -198,14 +198,24 @@ def inventory(root, *, require_ready=False):
 
 
 class Patches:
-    def __init__(self, root, directory=None):
+    def __init__(self, root, directory=None, *, source_export=False):
         self.root = root
         self.directory = directory or root / 'cmake/dependency-patches'
         self.manifest = read_json(self.directory / 'manifest.json')
         if self.manifest.get('schema') != 1:
             raise SetupError('Unsupported dependency patch manifest schema')
         self.entries = self.manifest['dependencies']
-        self.receipt_path = git_path(root, 'liberty-dependency-state.json')
+        self.receipt_path = None if source_export else git_path(root, 'liberty-dependency-state.json')
+
+    def verify_export(self):
+        """Validate a private, already patched source export without Git or writes."""
+        self.validate()
+        for entry in self.entries:
+            source = source_path(self.root, entry['path'])
+            for item in entry['files']:
+                path = source_path(source, item['path'])
+                if file_hash(path) != item['after_sha256']:
+                    raise SetupError(f'Frozen dependency does not match reviewed patch: {path}')
 
     def validate(self):
         paths = set()
@@ -401,6 +411,7 @@ def main(argv=None):
     mode.add_argument('--check', action='store_true', help='Validate all dependencies offline, without changes')
     mode.add_argument('--check-metadata', action='store_true', help='Validate tracked paths, mappings and patch metadata offline')
     mode.add_argument('--prepare-only', action='store_true', help='Apply patches to initialized dependencies without downloading')
+    mode.add_argument('--check-export', action='store_true', help='Verify an already patched source export without Git or writes')
     parser.add_argument('--jobs', type=int, default=4, help='Parallel submodule downloads (default: 4)')
     parser.add_argument('--root', type=Path, default=ROOT, help=argparse.SUPPRESS)
     parser.add_argument('--patch-directory', type=Path, help=argparse.SUPPRESS)
@@ -412,8 +423,12 @@ def main(argv=None):
         if args.jobs < 1:
             raise SetupError('--jobs must be positive')
         root = args.root.resolve()
-        patches = Patches(root, args.patch_directory.resolve() if args.patch_directory else None)
-        if args.check or args.check_metadata:
+        patches = Patches(root, args.patch_directory.resolve() if args.patch_directory else None,
+                          source_export=args.check_export)
+        if args.check_export:
+            patches.verify_export()
+            print('Frozen dependency patch checks passed; no files changed.')
+        elif args.check or args.check_metadata:
             portable_paths(root)
             modules = inventory(root, require_ready=args.check)
             patches.validate()

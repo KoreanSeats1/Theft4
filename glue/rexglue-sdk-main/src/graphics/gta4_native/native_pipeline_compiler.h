@@ -65,14 +65,16 @@ class NativePipelineCompiler {
       return std::nullopt;
     }
     const auto job = found->second;
-    if (wait && !job->result) {
+    if (!job->result) {
       const auto queued = std::find(queue_.begin(), queue_.end(), key);
       if (queued != queue_.end() && queued != queue_.begin()) {
         queue_.erase(queued);
         queue_.push_front(key);
       }
       changed_.notify_all();
-      changed_.wait(lock, [&] { return job->result.has_value() || stopping_; });
+      if (wait) {
+        changed_.wait(lock, [&] { return job->result.has_value() || stopping_; });
+      }
     }
     if (!job->result) {
       return std::nullopt;

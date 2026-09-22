@@ -1,6 +1,28 @@
 # Theft4's native host is independent of the legacy desktop/SDL application.
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 development bundle ID")
+set(THEFT4_DISPLAY_NAME "Theft4" CACHE STRING "Name shown on the device")
+option(THEFT4_LAB_BUILD "Enable the promoted renderer and pacing improvements" ON)
+if(THEFT4_LAB_BUILD)
+    if(THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.m5lab")
+        if(NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4 Lab")
+            message(FATAL_ERROR "The isolated Lab identifier requires display name Theft4 Lab")
+        endif()
+        set(THEFT4_LAB_PLIST_VALUE "<true/>")
+    elseif(THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.bringup" OR
+           THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4")
+        if(NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4")
+            message(FATAL_ERROR "Theft4 release identifier requires display name Theft4")
+        endif()
+        set(THEFT4_LAB_PLIST_VALUE "<false/>")
+    else()
+        message(FATAL_ERROR "The promoted build requires a known Theft4 app identity")
+    endif()
+    set(THEFT4_ENHANCED_PLIST_VALUE "<true/>")
+else()
+    set(THEFT4_LAB_PLIST_VALUE "<false/>")
+    set(THEFT4_ENHANCED_PLIST_VALUE "<false/>")
+endif()
 set(THEFT4_LAB_INTRO_TEST_BUNDLE_IDENTIFIER "com.theft4.lab.intro-test" CACHE STRING
     "Isolated bundle ID for the Theft4 Lab intro-flow test app")
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
@@ -394,6 +416,9 @@ target_link_libraries(Theft4 PRIVATE theft4_core_bridge
     "-framework AVFoundation" "-framework AudioToolbox")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
 target_compile_options(Theft4 PRIVATE -fobjc-arc)
+if(THEFT4_LAB_BUILD AND THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+    target_compile_definitions(Theft4 PRIVATE THEFT4_LAB_NATIVE_CAPTURE=1)
+endif()
 if(THEFT4_ENABLE_THIN_LTO)
     set_property(TARGET theft4_core_bridge PROPERTY
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
@@ -407,7 +432,7 @@ set_target_properties(Theft4 PROPERTIES
     XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_SKIP_INSTALL NO
-    XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
+    XCODE_ATTRIBUTE_INSTALL_PATH "/Applications"
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
     XCODE_ATTRIBUTE_ENABLE_BITCODE NO
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/theft4")

@@ -4,6 +4,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/lock.h>
 #include <atomic>
+#include "theft4_frame_time_history.h"
 
 namespace {
 
@@ -18,9 +19,20 @@ dispatch_semaphore_t frame_slots = nil;
 std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
+theft4::FrameTimeHistory<> frame_time_history;
 
-// Protected by presenter_lock. Scene resolution stays 720p in every mode.
+// Protected by presenter_lock. Latched before the game renderer is created.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
+
+void SetOutputPolicy(theft4_output_policy output) {
+  os_unfair_lock_lock(&presenter_lock);
+  launch_output = output;
+  if (bound_layer) {
+    bound_layer.contentsScale = 1.0;
+    bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
+  }
+  os_unfair_lock_unlock(&presenter_lock);
+}
 
 void EnsureDeviceLocked() {
   if (!metal_device) metal_device = MTLCreateSystemDefaultDevice();
@@ -86,14 +98,15 @@ void theft4_metal_resize_layer(void* raw_layer, double width, double height,
 
 void theft4_metal_set_output_mode(theft4_output_mode mode,
                                 uint32_t native_width, uint32_t native_height) {
-  os_unfair_lock_lock(&presenter_lock);
-  launch_output = theft4_output_policy_for_mode(mode, native_width, native_height);
-  const auto output = launch_output;
-  if (bound_layer) {
-    bound_layer.contentsScale = 1.0;
-    bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
-  }
-  os_unfair_lock_unlock(&presenter_lock);
+  SetOutputPolicy(theft4_output_policy_for_mode(mode, native_width, native_height));
+}
+
+void theft4_metal_set_lab_output(uint32_t render_height, bool fsr1,
+                                uint32_t native_width, uint32_t native_height,
+                                bool a19_profile) {
+  SetOutputPolicy(a19_profile
+      ? theft4_output_policy_for_a19_lab(render_height)
+      : theft4_output_policy_for_lab(render_height, fsr1, native_width, native_height));
 }
 
 theft4_output_policy theft4_metal_get_output_policy(void) {
@@ -108,6 +121,10 @@ bool theft4_metal_has_layer(void) {
   const bool available = bound_layer && metal_device && command_queue;
   os_unfair_lock_unlock(&presenter_lock);
   return available;
+}
+
+uint32_t theft4_platform_thermal_state(void) {
+  return static_cast<uint32_t>(NSProcessInfo.processInfo.thermalState);
 }
 
 void* theft4_metal_bound_layer(void) {
@@ -161,6 +178,19 @@ bool theft4_metal_present_clear(double red, double green, double blue,
 
 void theft4_frame_counter_note_published(void) {
   published_game_frames.fetch_add(1, std::memory_order_relaxed);
+  if (frame_time_history.Enabled())
+    frame_time_history.Record(uint64_t(CACurrentMediaTime() * 1e9));
+}
+
+void theft4_frame_time_set_enabled(bool enabled) {
+  frame_time_history.SetEnabled(enabled);
+}
+
+void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot) {
+  if (!snapshot) return;
+  snapshot->count = (uint32_t)frame_time_history.Copy(
+      uint64_t(CACurrentMediaTime() * 1e9), snapshot->milliseconds,
+      THEFT4_FRAME_TIME_SAMPLES, snapshot->pending_ms);
 }
 
 uint64_t theft4_frame_counter_published_frames(void) {

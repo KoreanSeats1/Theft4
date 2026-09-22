@@ -105,7 +105,11 @@ namespace rex::graphics::gta4_native::profile {
                                                                           "profiler-bookkeeping")    \
                                                                           X(TraceFormatting,         \
                                                                             "diagnostic-"            \
-                                                                            "formatting")
+                                                                          "formatting") X(          \
+                                                                          SharedDrawConstants,      \
+                                                                          "shared-draw-constants") X(\
+                                                                          DynamicDrawState,         \
+                                                                          "dynamic-draw-state")
 
 enum class CpuPhase : uint8_t {
 #define X(id, name) k##id,
@@ -383,23 +387,76 @@ class CpuRecorder {
 // particular must never be described as a serial CPU workload.
 struct CommandTransport {
   uint64_t enqueued = 0, capture_ticks = 0, capture_lock_ticks = 0, queue_lock_ticks = 0,
-           backpressure_ticks = 0;
+           backpressure_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
+           geometry_capture_ticks = 0, texture_capture_ticks = 0,
+           allocation_ticks = 0, producer_binding_skips = 0;
+  bool reused_storage = false, compact_state = false;
 };
 struct TransportSummary {
   uint64_t commands = 0, measured_commands = 0, capture_ticks = 0, capture_lock_ticks = 0,
-           queue_lock_ticks = 0;
+           queue_lock_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
+           geometry_capture_ticks = 0, texture_capture_ticks = 0;
   uint64_t backpressure_ticks = 0, dwell_ticks = 0, max_dwell_ticks = 0, queue_peak = 0;
   uint64_t worker_assembly_ticks = 0, worker_idle_ticks = 0, internal_flush_ticks = 0,
            internal_flushes = 0;
-  void Observe(const CommandTransport& p, uint64_t dequeued, uint64_t queue_depth) {
+  uint64_t allocation_ticks = 0, storage_reuses = 0, worker_recycle_ticks = 0,
+           unchanged_vertex_declarations = 0, producer_binding_skips = 0, compact_state_commands = 0;
+  uint64_t worker_constant_ticks = 0, worker_snapshot_ticks = 0,
+           worker_frame_insert_ticks = 0;
+  uint64_t worker_draw_commands = 0, worker_state_commands = 0,
+           worker_other_commands = 0;
+  uint64_t command_pool_shared_slots = 0, command_pool_shared_high_water = 0;
+  uint64_t first_capture_tick = 0, first_enqueue_tick = 0, last_enqueue_tick = 0;
+  uint64_t first_dequeue_tick = 0, last_dequeue_tick = 0, first_sequence = 0, last_sequence = 0;
+  uint64_t worker_mutex_ticks = 0, worker_condition_ticks = 0, worker_transfer_ticks = 0,
+           worker_protection_ticks = 0, worker_dispatch_ticks = 0, worker_batches = 0,
+           worker_condition_waits = 0,
+           worker_partition_errors = 0;
+  // Legacy worker_idle_ticks includes ALL acquisition/dispatch work. The new
+  // components partition it; condition ticks include mutex reacquisition.
+  void ObserveWorker(uint64_t total, uint64_t mutex, uint64_t condition, uint64_t transfer,
+                     uint64_t protection, bool batch, bool waited) {
+    worker_idle_ticks = AddSaturated(worker_idle_ticks, total);
+    worker_mutex_ticks = AddSaturated(worker_mutex_ticks, mutex);
+    worker_condition_ticks = AddSaturated(worker_condition_ticks, condition);
+    worker_transfer_ticks = AddSaturated(worker_transfer_ticks, transfer);
+    worker_protection_ticks = AddSaturated(worker_protection_ticks, protection);
+    const auto measured = AddSaturated(
+        AddSaturated(AddSaturated(mutex, condition), transfer), protection);
+    if (measured > total) ++worker_partition_errors;
+    worker_dispatch_ticks = AddSaturated(worker_dispatch_ticks, total > measured ? total - measured : 0);
+    worker_batches += batch;
+    worker_condition_waits += waited;
+  }
+  void Observe(const CommandTransport& p, uint64_t dequeued, uint64_t queue_depth,
+               uint64_t sequence = 0) {
     ++commands;
     queue_peak = std::max(queue_peak, queue_depth);
     if (!p.enqueued)
       return;
     ++measured_commands;
+    const auto keep_first = [](uint64_t& value, uint64_t tick) {
+      if (tick && (!value || tick < value)) value = tick;
+    };
+    if (p.enqueued >= p.capture_ticks)
+      keep_first(first_capture_tick, p.enqueued - p.capture_ticks);
+    keep_first(first_enqueue_tick, p.enqueued);
+    last_enqueue_tick = std::max(last_enqueue_tick, p.enqueued);
+    keep_first(first_dequeue_tick, dequeued);
+    last_dequeue_tick = std::max(last_dequeue_tick, dequeued);
+    keep_first(first_sequence, sequence);
+    last_sequence = std::max(last_sequence, sequence);
     capture_ticks = AddSaturated(capture_ticks, p.capture_ticks);
     capture_lock_ticks = AddSaturated(capture_lock_ticks, p.capture_lock_ticks);
     queue_lock_ticks = AddSaturated(queue_lock_ticks, p.queue_lock_ticks);
+    validation_ticks = AddSaturated(validation_ticks, p.validation_ticks);
+    state_capture_ticks = AddSaturated(state_capture_ticks, p.state_capture_ticks);
+    geometry_capture_ticks = AddSaturated(geometry_capture_ticks, p.geometry_capture_ticks);
+    texture_capture_ticks = AddSaturated(texture_capture_ticks, p.texture_capture_ticks);
+    allocation_ticks = AddSaturated(allocation_ticks, p.allocation_ticks);
+    storage_reuses += p.reused_storage;
+    compact_state_commands += p.compact_state;
+    producer_binding_skips = AddSaturated(producer_binding_skips, p.producer_binding_skips);
     backpressure_ticks = AddSaturated(backpressure_ticks, p.backpressure_ticks);
     if (dequeued >= p.enqueued) {
       const auto d = dequeued - p.enqueued;

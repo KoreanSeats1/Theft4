@@ -3,7 +3,7 @@
 #include "graphics/gta4_native/native_draw_state_cache.h"
 
 namespace {
-using Cache = rex::graphics::gta4_native::NativeDrawStateCache<6>;
+using Cache = rex::graphics::gta4_native::NativeDrawStateCache<6, 17>;
 
 struct Draw {
   uint64_t pipeline = 1;
@@ -107,4 +107,79 @@ TEST_CASE("native draw cache preserves state across draw and external command tr
     REQUIRE(cache.UpdatePushConstants(requested.layout, requested.constants));
     REQUIRE_FALSE(cache.UpdateDescriptors(requested.layout, requested.descriptors));
   }
+}
+
+TEST_CASE("native geometry bindings retain exact buffer offset and index format",
+          "[gta4-native][draw-state]") {
+  Cache cache;
+  REQUIRE(cache.UpdateVertexBuffer(0, 100, 0));
+  REQUIRE_FALSE(cache.UpdateVertexBuffer(0, 100, 0));
+  REQUIRE(cache.UpdateVertexBuffer(0, 100, 256));
+  REQUIRE(cache.UpdateVertexBuffer(0, 101, 256));
+  REQUIRE(cache.UpdateVertexBuffer(1, 101, 256));
+  REQUIRE(cache.UpdateVertexBuffer(15, 101, 256));
+  REQUIRE_FALSE(cache.UpdateVertexBuffer(15, 101, 256));
+  REQUIRE(cache.UpdateIndexBuffer(200, 0, 0));
+  REQUIRE_FALSE(cache.UpdateIndexBuffer(200, 0, 0));
+  REQUIRE(cache.UpdateIndexBuffer(200, 0, 1));
+  REQUIRE(cache.UpdateIndexBuffer(200, 128, 1));
+  REQUIRE(cache.UpdateIndexBuffer(201, 128, 1));
+
+  // Pipeline switches affect dynamic pipeline state, not geometry bindings.
+  REQUIRE(cache.UpdatePipeline(42));
+  REQUIRE_FALSE(cache.UpdateVertexBuffer(0, 101, 256));
+  REQUIRE_FALSE(cache.UpdateIndexBuffer(201, 128, 1));
+  cache.Reset();
+  REQUIRE(cache.UpdateVertexBuffer(0, 101, 256));
+  REQUIRE(cache.UpdateVertexBuffer(15, 101, 256));
+  REQUIRE(cache.UpdateIndexBuffer(201, 128, 1));
+  REQUIRE(cache.UpdateVertexBuffer(16, 100, 0));
+  REQUIRE_FALSE(cache.UpdateVertexBuffer(16, 100, 0));
+  // Unsupported slots are never silently suppressed or used as array indices.
+  REQUIRE(cache.UpdateVertexBuffer(17, 100, 0));
+  REQUIRE(cache.UpdateVertexBuffer(17, 100, 0));
+}
+
+TEST_CASE("filtered geometry commands match unconditional draw state across frames",
+          "[gta4-native][draw-state]") {
+  Cache cache;
+  using Vertex = std::array<uint64_t, 2>;
+  using Index = std::array<uint64_t, 3>;
+  std::array<Vertex, 17> reference{}, recorded{};
+  Index expected_index{}, recorded_index{};
+  uint32_t random = 0x4D434C41;
+  const auto next = [&] {
+    random = random * 1664525u + 1013904223u;
+    return random;
+  };
+  size_t requested_binds = 0, emitted_binds = 0;
+  for (uint32_t draw = 0; draw < 2000; ++draw) {
+    // New command buffers and intervening external rendering invalidate state.
+    if (draw % 137 == 0) {
+      cache.Reset();
+      recorded.fill({999, 999});
+      recorded_index = {999, 999, 999};
+    }
+    cache.UpdatePipeline(next() % 7);
+    const size_t changed = next() % reference.size();
+    if (draw % 4 == 0) reference[changed] = {1 + next() % 8, next() % 16 * 256};
+    if (draw % 9 == 0) expected_index = {1 + next() % 4, next() % 8 * 128, next() % 2};
+    for (size_t binding = 0; binding < reference.size(); ++binding) {
+      const auto& value = reference[binding];
+      ++requested_binds;
+      if (cache.UpdateVertexBuffer(binding, value[0], value[1])) {
+        recorded[binding] = value;
+        ++emitted_binds;
+      }
+    }
+    ++requested_binds;
+    if (cache.UpdateIndexBuffer(expected_index[0], expected_index[1], expected_index[2])) {
+      recorded_index = expected_index;
+      ++emitted_binds;
+    }
+    REQUIRE(recorded == reference);
+    REQUIRE(recorded_index == expected_index);
+  }
+  // This synthetic workload demonstrates suppression, not an FPS prediction.
+  REQUIRE(emitted_binds < requested_binds / 10);
 }

@@ -1,5 +1,9 @@
 #include "gta4_init.h"
 
+#ifdef THEFT4_LAB_BUILD
+#include "LibertyRecomp/patches/gta4_fps_physics_fix.h"
+#endif
+
 DEFINE_REX_FUNC(sub_82970300) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
@@ -30937,6 +30941,19 @@ DEFINE_REX_FUNC(sub_8297CE78) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
+#ifdef THEFT4_LAB_BUILD
+	gta4::fps::physics::CollisionTraversalWatchdog collision_watchdog;
+#define THEFT4_COLLISION_WATCHDOG_OR_CLEANUP()                                      \
+	do {                                                                              \
+		if (!collision_watchdog.Continue()) {                                            \
+			gta4::fps::physics::ReportCollisionTraversalAbort(                             \
+				collision_watchdog.iterations());                                             \
+			goto loc_8297DE14;                                                             \
+		}                                                                               \
+	} while (false)
+#else
+#define THEFT4_COLLISION_WATCHDOG_OR_CLEANUP() do {} while (false)
+#endif
 	// mflr r12
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x829ff790
@@ -31203,6 +31220,7 @@ loc_8297CFF4:
 	// lwz r15,44(r11)
 	ctx.r15.u64 = REX_LOAD_U32(ctx.r11.u32 + 44);
 loc_8297D058:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// lis r11,0
 	ctx.r11.s64 = 0;
 	// cmplwi cr6,r15,0
@@ -31253,6 +31271,7 @@ loc_8297D0A4:
 	// beq cr6,0x8297d0c4
 	if (ctx.cr6.eq) goto loc_8297D0C4;
 loc_8297D0B4:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// mr r10,r11
 	ctx.r10.u64 = ctx.r11.u64;
 	// lwz r11,28(r11)
@@ -31400,6 +31419,7 @@ loc_8297D1C4:
 	// mr r25,r17
 	ctx.r25.u64 = ctx.r17.u64;
 loc_8297D1C8:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplwi cr6,r24,0
 	ctx.cr6.compare<uint32_t>(ctx.r24.u32, 0, ctx.xer);
 	// beq cr6,0x8297d1f0
@@ -31450,6 +31470,7 @@ loc_8297D1F8:
 	// lwzx r11,r9,r11
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r9.u32 + ctx.r11.u32);
 loc_8297D224:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplw cr6,r10,r11
 	ctx.cr6.compare<uint32_t>(ctx.r10.u32, ctx.r11.u32, ctx.xer);
 	// beq cr6,0x8297d490
@@ -31770,6 +31791,7 @@ loc_8297D464:
 	// bne cr6,0x8297d1c4
 	if (!ctx.cr6.eq) goto loc_8297D1C4;
 loc_8297D46C:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplwi cr6,r11,0
 	ctx.cr6.compare<uint32_t>(ctx.r11.u32, 0, ctx.xer);
 	// beq cr6,0x8297d1c4
@@ -31795,6 +31817,7 @@ loc_8297D494:
 	// mr r22,r17
 	ctx.r22.u64 = ctx.r17.u64;
 loc_8297D498:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplwi cr6,r24,0
 	ctx.cr6.compare<uint32_t>(ctx.r24.u32, 0, ctx.xer);
 	// beq cr6,0x8297d4c0
@@ -31845,6 +31868,7 @@ loc_8297D4C8:
 	// lwzx r11,r9,r11
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r9.u32 + ctx.r11.u32);
 loc_8297D4F4:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplw cr6,r10,r11
 	ctx.cr6.compare<uint32_t>(ctx.r10.u32, ctx.r11.u32, ctx.xer);
 	// beq cr6,0x8297da38
@@ -32405,6 +32429,7 @@ loc_8297D8E8:
 	// addi r30,r24,293
 	ctx.r30.s64 = ctx.r24.s64 + 293;
 loc_8297D900:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// addi r29,r30,-165
 	ctx.r29.s64 = ctx.r30.s64 + -165;
 	// mr r3,r29
@@ -32554,6 +32579,7 @@ loc_8297DA08:
 	// bne cr6,0x8297da30
 	if (!ctx.cr6.eq) goto loc_8297DA30;
 loc_8297DA10:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// cmplwi cr6,r11,0
 	ctx.cr6.compare<uint32_t>(ctx.r11.u32, 0, ctx.xer);
 	// beq cr6,0x8297da30
@@ -32886,6 +32912,7 @@ loc_8297DC54:
 	// mr r9,r17
 	ctx.r9.u64 = ctx.r17.u64;
 loc_8297DC64:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// lwz r11,32(r21)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r21.u32 + 32);
 	// lwz r8,0(r20)
@@ -32977,6 +33004,7 @@ loc_8297DCFC:
 	// ble cr6,0x8297ddf8
 	if (!ctx.cr6.gt) goto loc_8297DDF8;
 loc_8297DD0C:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// lwz r3,0(r30)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
 	// bl 0x82999378
@@ -33089,6 +33117,7 @@ loc_8297DDC4:
 	// ble cr6,0x8297ddf8
 	if (!ctx.cr6.gt) goto loc_8297DDF8;
 loc_8297DDD4:
+	THEFT4_COLLISION_WATCHDOG_OR_CLEANUP();
 	// lwz r3,0(r30)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
 	// bl 0x82999378
@@ -33126,6 +33155,7 @@ loc_8297DDFC:
 	// b 0x8297d058
 	goto loc_8297D058;
 loc_8297DE14:
+#undef THEFT4_COLLISION_WATCHDOG_OR_CLEANUP
 	// li r10,1684
 	ctx.r10.s64 = 1684;
 	// stw r14,16(r20)
@@ -52403,4 +52433,3 @@ loc_82985D14:
 	__restgprlr_29(ctx, base);
 	return;
 }
-

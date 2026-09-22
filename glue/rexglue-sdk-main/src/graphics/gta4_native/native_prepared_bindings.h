@@ -40,8 +40,8 @@ void CopyNativePreparedTextureBindings(const Command& previous, Command& next) {
   next.room_light_input_bindings.reset();
 }
 
-// Borrowed pointers are valid only during one indexed preparation batch.
-// Every hinted hit is verified against the complete active binding input.
+// Pointers are borrowed for one indexed preparation batch only. Hinted hits
+// are always checked against the complete binding input before reuse.
 template <typename Command, size_t Capacity = 64>
 class NativePreparedBindingMemo {
   static_assert(Capacity && (Capacity & (Capacity - 1)) == 0);
@@ -52,11 +52,13 @@ class NativePreparedBindingMemo {
     return candidate && candidate != previous_ &&
                    NativePreparedTextureInputsEqual(*candidate, next) ? candidate : nullptr;
   }
+
   void Remember(const Command& command) {
     if (!command.bindings_prepared || command.failed_texture_mask || !command.pipeline_state) return;
     previous_ = &command;
     entries_[Bucket(command)] = &command;
   }
+
  private:
   static size_t Bucket(const Command& command) {
     uint64_t hint = command.used_texture_mask;
@@ -70,6 +72,7 @@ class NativePreparedBindingMemo {
     hint *= 0x9E3779B185EBCA87ull;
     return size_t(hint >> 32) & (Capacity - 1);
   }
+
   std::array<const Command*, Capacity> entries_{};
   const Command* previous_ = nullptr;
 };

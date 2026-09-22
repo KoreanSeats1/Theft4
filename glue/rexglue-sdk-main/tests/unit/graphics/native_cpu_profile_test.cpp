@@ -131,6 +131,22 @@ TEST_CASE("producer dwell is recorded as overlapping per-command data",
   CHECK(s.queue_peak == 3);
 }
 
+TEST_CASE("Transport reports producer skips without inventing queued commands", "[native-profiler-detail]") {
+  prof::TransportSummary summary;
+  prof::CommandTransport measured{};
+  measured.enqueued = 100;
+  measured.producer_binding_skips = 7;
+  measured.compact_state = true;
+  summary.Observe(measured, 105, 1);
+  measured.enqueued = 0;
+  measured.producer_binding_skips = 900;
+  summary.Observe(measured, 106, 1);
+  CHECK(summary.producer_binding_skips == 7);
+  CHECK(summary.compact_state_commands == 1);
+  CHECK(summary.commands == 2);
+  CHECK(summary.measured_commands == 1);
+}
+
 TEST_CASE("detailed CPU collector generations are independent across threads",
           "[native-profiler-detail]") {
   std::array<prof::CpuFrameData, 2> frames;

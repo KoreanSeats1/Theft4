@@ -42,6 +42,68 @@ TEST_CASE("Immutable constant identity avoids materialization and uploads on rep
   }
   REQUIRE(materializations==1);REQUIRE(alloc.calls==1);REQUIRE(bindings.owner_count()==1);
 }
+TEST_CASE("Resident parent deltas clone and patch without materializing complete blocks", "[hotpath][constants]") {
+  Binding bindings;Allocator alloc;Allocation allocation;const std::vector<uint8_t>* bytes=nullptr;
+  AuthoritativeConstantState state(64);uint64_t materializations=0,delta_uploads=0;
+  const auto hash=[](std::span<const uint8_t> value){
+    uint64_t result=0;for(uint8_t byte:value)result=result*131+byte;return result;
+  };
+  std::vector<uint8_t> expected(64,0x10);ConstantPayloadDelta bootstrap;
+  REQUIRE(CaptureCompleteConstantSnapshot(expected,bootstrap));
+  const auto root=state.Apply(bootstrap,hash).version;REQUIRE(root);
+  const auto mat=[&](const auto& value){++materializations;return materialize(value);};
+  const auto full=[&](FrameConstantKind kind,uint64_t identity,const auto& value,Allocation& out){
+    return alloc(kind,identity,value,out);
+  };
+  const auto delta=[&](FrameConstantKind,uint64_t,const Allocation& parent,
+                       const ConstantPayloadDelta& change,size_t byte_size,Allocation& out){
+    ++delta_uploads;REQUIRE(parent.offset>0);REQUIRE(parent.offset<=alloc.data.size());
+    auto copy=alloc.data[parent.offset-1];REQUIRE(copy.size()==byte_size);
+    for(const auto& range:change.ranges)
+      std::copy_n(change.payload.begin()+range.payload_offset,range.byte_count,
+                  copy.begin()+range.destination_offset);
+    out={++alloc.calls,byte_size};alloc.data.push_back(std::move(copy));return true;
+  };
+  REQUIRE(bindings.BindWithDelta(FrameConstantKind::kVertex,root,allocation,bytes,mat,full,delta)==Result::kUploaded);
+  REQUIRE(materializations==1);REQUIRE(delta_uploads==0);REQUIRE(bytes);
+
+  ConstantPayloadDelta first;first.ranges={{12,0,4}};first.payload={1,2,3,4};
+  std::copy(first.payload.begin(),first.payload.end(),expected.begin()+12);
+  const auto child=state.Apply(first,hash).version;REQUIRE(child);REQUIRE(child->parent==root);
+  REQUIRE(bindings.BindWithDelta(FrameConstantKind::kVertex,child,allocation,bytes,mat,full,delta)==Result::kDeltaUploaded);
+  REQUIRE_FALSE(bytes);REQUIRE(materializations==1);REQUIRE(delta_uploads==1);
+  REQUIRE(alloc.data.back()==expected);
+  const auto child_allocation=allocation;
+  REQUIRE(bindings.BindWithDelta(FrameConstantKind::kVertex,child,allocation,bytes,mat,full,delta)==Result::kVersionHit);
+  REQUIRE(allocation.offset==child_allocation.offset);REQUIRE_FALSE(bytes);REQUIRE(delta_uploads==1);
+
+  ConstantPayloadDelta second;second.ranges={{40,0,8}};
+  second.payload={9,8,7,6,5,4,3,2};
+  std::copy(second.payload.begin(),second.payload.end(),expected.begin()+40);
+  const auto grandchild=state.Apply(second,hash).version;REQUIRE(grandchild);REQUIRE(grandchild->parent==child);
+  REQUIRE(bindings.BindWithDelta(FrameConstantKind::kVertex,grandchild,allocation,bytes,mat,full,delta)==Result::kDeltaUploaded);
+  REQUIRE_FALSE(bytes);REQUIRE(materializations==1);REQUIRE(delta_uploads==2);
+  REQUIRE(alloc.data.back()==expected);REQUIRE(bindings.owner_count()==3);
+}
+TEST_CASE("Constant delta binding falls back when its parent is not resident", "[hotpath][constants]") {
+  AuthoritativeConstantState state(64);const auto hash=[](std::span<const uint8_t> value){
+    uint64_t result=0;for(uint8_t byte:value)result=result*131+byte;return result;
+  };
+  std::vector<uint8_t> expected(64,0x21);ConstantPayloadDelta bootstrap;
+  REQUIRE(CaptureCompleteConstantSnapshot(expected,bootstrap));
+  const auto root=state.Apply(bootstrap,hash).version;REQUIRE(root);
+  ConstantPayloadDelta change;change.ranges={{20,0,4}};change.payload={4,3,2,1};
+  std::copy(change.payload.begin(),change.payload.end(),expected.begin()+20);
+  const auto child=state.Apply(change,hash).version;REQUIRE(child);REQUIRE(child->parent==root);
+
+  Binding bindings;Allocator alloc;Allocation allocation;const std::vector<uint8_t>* bytes=nullptr;
+  uint64_t materializations=0,delta_uploads=0;
+  const auto mat=[&](const auto& value){++materializations;return materialize(value);};
+  const auto delta=[&](auto&&...){++delta_uploads;return false;};
+  REQUIRE(bindings.BindWithDelta(FrameConstantKind::kVertex,child,allocation,bytes,mat,alloc,delta)==Result::kUploaded);
+  REQUIRE(materializations==1);REQUIRE(delta_uploads==0);REQUIRE(bytes);REQUIRE(*bytes==expected);
+  REQUIRE(alloc.calls==1);REQUIRE(alloc.data.back()==expected);
+}
 TEST_CASE("Constant content collisions never alias different bytes or shader stages", "[hotpath]") {
   Binding bindings;Allocator alloc;auto a=version(1),same=version(1),collision=version(2);
   Allocation first,copy,different,pixel;const std::vector<uint8_t>* bytes=nullptr;

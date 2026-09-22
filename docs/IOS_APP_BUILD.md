@@ -179,16 +179,13 @@ to produce the three teardown checkpoints used by this verifier.
   approximately 256 KiB by restarting it at the limit. No save/import data is
   touched. Production log rotation and crash capture belong to later work.
 - No app icon/product artwork or game-import UI is included in this harness.
-- The System tab includes **Detailed performance capture** and **Download Latest
-  Log Capture**. Turn the capture switch on before launching the game, keep the
-  slow scene visible long enough for the bounded 600-frame capture to complete,
-  quit and relaunch Theft4, then tap the download button. The export is saved
-  under Documents/Diagnostics and includes the lifecycle and runtime logs plus
-  the native CPU/GPU profile files. The native profile records coarse frame
-  envelopes and detailed CPU/GPU pass data where the device exposes valid
-  Vulkan/Metal timestamps; timestamp-unavailable fields remain explicitly
-  unavailable. Profiling adds some workload overhead, so use it for diagnosis
-  rather than as a clean FPS benchmark.
+- In Theft4 0.2.0, the System tab has **Detailed Performance Capture** and
+  **Download Latest Log Capture**. Enable capture before launch, double-tap
+  the frame-time graph in the slow scene, wait for the bounded 600-frame
+  profile to complete, then quit, reopen and export. The app saves a dated
+  text bundle under Documents/Diagnostics and opens the share sheet. It
+  includes lifecycle/runtime logs and available native CPU/GPU CSV/JSON
+  artifacts; device timestamp support determines which GPU fields are valid.
 
 ## Original M3 proposal (boot-priority direction below supersedes the sequence)
 

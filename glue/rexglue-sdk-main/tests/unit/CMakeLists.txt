@@ -20,6 +20,7 @@ add_executable(unit_tests
     graphics/alpha_to_coverage_util_test.cpp
     graphics/native_clip_control_test.cpp
     graphics/native_fixed_function_policy_test.cpp
+    graphics/native_fixed_function_state_test.cpp
     graphics/native_pipeline_policy_test.cpp
     graphics/native_pipeline_recipe_test.cpp
     graphics/native_pipeline_compiler_test.cpp
@@ -27,6 +28,7 @@ add_executable(unit_tests
     graphics/native_draw_state_cache_test.cpp
     graphics/native_resource_content_policy_test.cpp
     graphics/native_sampler_cache_key_test.cpp
+    graphics/native_texture_content_key_test.cpp
     graphics/native_sampler_lod_bias_test.cpp
     graphics/smaa_source_sync_test.cpp
     graphics/lighting_semantics_test.cpp
@@ -43,6 +45,9 @@ add_executable(unit_tests
     graphics/native_buffer_arena_test.cpp
     graphics/native_owner_retirement_test.cpp
     graphics/native_optimization_lifetime_test.cpp
+    graphics/native_worker_batch_test.cpp
+    graphics/native_producer_binding_cache_test.cpp
+    graphics/native_command_packet_test.cpp
     graphics/native_buffer_metadata_test.cpp
     graphics/native_descriptor_backend_test.cpp
     graphics/native_working_set_test.cpp
@@ -62,7 +67,8 @@ add_executable(unit_tests
     graphics/shadow_distance_util_test.cpp
     graphics/gta4_native_surface_view_test.cpp
     graphics/native_performance_samples_test.cpp
-  graphics/native_cpu_profile_test.cpp
+    graphics/native_cpu_profile_test.cpp
+    graphics/native_pacing_profile_test.cpp
     graphics/native_memory_samples_test.cpp
     graphics/pipeline_cache_file_test.cpp
     graphics/primitive_restart_test.cpp

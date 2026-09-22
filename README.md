@@ -18,19 +18,19 @@ code at runtime and does not require a JIT entitlement.
 
 This is not a source port and it is not a complete Xbox 360 emulator. It combines
 ahead-of-time translated game code with a compatibility runtime that recreates
-the Xbox services the title expects. The 0.2.0 iOS release promotes the GTA IV
+the Xbox services the title expects. The 0.2.0a iOS corrective release retains the GTA IV
 native renderer developed in Theft4 Lab. It presents through Vulkan, MoltenVK
 and Metal. Direct device builds keep `com.theft4.bringup`; the existing
 TestFlight app keeps `com.lukebrosious.theft4`.
 
 > [!WARNING]
-> Theft4 0.2.0 remains experimental. Dense scenes, extended play, physics,
+> Theft4 0.2.0a remains experimental. Dense scenes, extended play, physics,
 > heat and device compatibility still need testing. The GitHub IPA is an
 > unsigned sideload package; TestFlight uses a separately signed build.
 
-## What changed in 0.2.0
+## What changed in 0.2.0a
 
-Theft4 Lab is now the regular Theft4 codebase. Direct device/sideload builds
+Theft4 Lab is the regular Theft4 codebase. Direct device/sideload builds
 retain `com.theft4.bringup`; the existing TestFlight app retains
 `com.lukebrosious.theft4`. Each 0.2.0 build updates its corresponding 0.1.3
 installation in place, preserving that app's data. They do not share a data
@@ -64,7 +64,7 @@ Lower resolution reduces planned pixel work, while the CPU changes reduce
 measured command overhead. Same-route, same-settings play after warmup is needed
 to measure sustained frame times, comfort and battery use. See the
 [A19 capture review](docs/lab-experiments/build40-a19-air-two-capture-review.md)
-and [0.2.0 release notes](docs/RELEASE_0.2.0.md).
+and [0.2.0a release notes](docs/RELEASE_0.2.0A.md).
 
 ### Capture and share a slow scene
 

@@ -1,5 +1,19 @@
 # Theft4 engineering changelog
 
+## 2026-09-22 — 0.2.0a Lab corrective release
+
+- Keep Theft4 Lab’s promoted native renderer and performance implementation as
+  the official Theft4 foundation; no legacy renderer path was restored.
+- Add the first-launch installation route for creating the shared `game`
+  location, detecting prepared base-game data, and guiding title-update
+  selection/validation.
+- Preserve the bounded detailed performance capture across relaunch and expose
+  **Download Latest Log Capture** so TestFlight testers can export a dated
+  diagnostic bundle from Files after reproducing a slow route.
+- Publish a getting-started, sideload/TestFlight, and diagnostic workflow in
+  [the 0.2.0a release notes](docs/RELEASE_0.2.0A.md). Performance and heat
+  claims remain route/device dependent until supported by comparable captures.
+
 ## 2026-09-18 — Lab limiter and queue timing (build 9)
 
 - **Opt-in, device test pending:** extend the manual Lab capture with present

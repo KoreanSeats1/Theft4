@@ -58,6 +58,10 @@ if(THEFT4_BUILD_GAME_CODE)
     target_link_libraries(theft4_game_code PRIVATE rex::core)
     target_include_directories(theft4_game_code PRIVATE "${THEFT4_GENERATED_DIR}")
     target_compile_features(theft4_game_code PRIVATE cxx_std_23)
+    if(THEFT4_LAB_BUILD)
+        target_compile_definitions(theft4_game_code PRIVATE THEFT4_LAB_BUILD=1)
+        target_include_directories(theft4_game_code PRIVATE "${CMAKE_SOURCE_DIR}")
+    endif()
     # Tune instruction scheduling while preserving the deployment target's
     # default instruction set. Strict FP preserves generated guest math.
     target_compile_options(theft4_game_code PRIVATE
@@ -115,6 +119,10 @@ add_library(theft4_core_bridge STATIC bridge/theft4_core.cpp bridge/theft4_touch
 target_include_directories(theft4_core_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
 target_link_libraries(theft4_core_bridge PRIVATE rex::core)
 target_compile_features(theft4_core_bridge PRIVATE cxx_std_23)
+if(THEFT4_LAB_BUILD)
+    target_compile_definitions(theft4_core_bridge PRIVATE THEFT4_LAB_BUILD=1)
+    target_compile_definitions(rexruntime PRIVATE THEFT4_LAB_BUILD=1)
+endif()
 if(REXGLUE_RUNTIME_ONLY)
     target_sources(theft4_core_bridge PRIVATE bridge/theft4_boot.cpp)
     target_link_libraries(theft4_core_bridge PRIVATE rex::runtime theft4_game_install)
@@ -188,6 +196,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         target_include_directories(theft4_gta4_native_compile PRIVATE
             "${THEFT4_GTA4_NATIVE_ROOT}"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
             "${THEFT4_GENERATED_DIR}"
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}"
             "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}"
@@ -203,6 +212,9 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             REX_HAS_VULKAN=1
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
             GTA4_NATIVE_FONT_ASSET_ROOT="${THEFT4_NATIVE_FONT_ASSET_ROOT}")
+        if(THEFT4_LAB_BUILD)
+            target_compile_definitions(theft4_gta4_native_compile PRIVATE THEFT4_LAB_BUILD=1)
+        endif()
         target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
         target_compile_options(theft4_gta4_native_compile PRIVATE
             -Wno-unused-variable)

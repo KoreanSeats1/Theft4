@@ -15,7 +15,7 @@ namespace rex::graphics::gta4_native {
 // Increment whenever native shader translation, fixed-function decoding, or
 // pipeline layout compatibility changes. This is deliberately independent of
 // the guest title-command ABI.
-inline constexpr uint32_t kNativePipelineCacheAbi = 1;
+inline constexpr uint32_t kNativePipelineCacheAbi = 2;
 
 struct NativePipelineCacheIdentity {
   uint32_t title_id = 0;

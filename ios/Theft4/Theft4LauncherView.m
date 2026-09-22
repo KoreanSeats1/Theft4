@@ -129,11 +129,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _masthead.textColor = Ink(0xE5DECA);
     [self addSubview:_masthead];
     BOOL lab = [NSBundle.mainBundle.infoDictionary[@"Theft4LabBuild"] boolValue];
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"Theft4ReleaseName"] ?: @"0.2.0b";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"0";
-    _edition = Copy([NSString stringWithFormat:lab
-        ? @"M5 LAB   /   v%@ (%@)   /   EXPERIMENTAL"
-        : @"AFTER HOURS   /   v%@ (%@)", version, build], 11, YES);
+    _edition = Copy([NSString stringWithFormat:@"AFTER HOURS   /   v%@ (%@)", version, build], 11, YES);
     _edition.textAlignment = NSTextAlignmentRight;
     [self addSubview:_edition];
     _topRule = [UIView new];
@@ -305,12 +303,19 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+    _performanceCapture = [UISwitch new];
+    _performanceCapture.onTintColor = Ink(0xB6884D);
+    _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
+    _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE", NO);
+    _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
     _detailLabel = Copy(@"Waiting for runtime information…", 12, YES);
     _detailLabel.accessibilityIdentifier = @"core.details";
     NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
+        [self setting:@"DETAILED PERFORMANCE CAPTURE" detail:@"Capture up to 600 detailed frames on the next game launch. Reproduce the slow scene, quit, reopen Theft4, then export the latest capture." toggle:_performanceCapture],
+        _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)
     ], 20);

@@ -10,8 +10,8 @@ function(liberty_apply_dependency_patches repository_root)
         --patch-directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/dependency-patches")
     if(THEFT4_LAB_BUILD)
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
-           NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.theft4.m5lab")
-            message(FATAL_ERROR "The Lab source-export path requires the isolated iOS Lab identity")
+           NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4")
+            message(FATAL_ERROR "The M5 source-export path requires the official iOS Theft4 identity")
         endif()
         # Frozen Lab inputs are already patched. Check every expected checksum
         # without initializing dependencies, writing Git state or applying fixes.

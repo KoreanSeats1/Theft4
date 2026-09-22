@@ -310,10 +310,13 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // workload and are unnecessary for the CPU/physics comparison.
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
-        REXCVAR_SET(gta4_profile_native_autostart, false);
+        const char* capture_setting = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
+        const bool capture_on_launch = capture_setting &&
+            std::string_view(capture_setting) == "1";
+        REXCVAR_SET(gta4_profile_native_autostart, capture_on_launch);
         REXLOG_INFO(
-            "Theft4 Lab bounded CPU/pacing plus coarse-GPU profiler ready; "
-            "double-tap the frame-time graph to capture 600 frames");
+            "Theft4 bounded CPU/pacing plus coarse-GPU profiler ready; "
+            "capture on launch: {}", capture_on_launch);
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep
         // the renderer's conservative false default.

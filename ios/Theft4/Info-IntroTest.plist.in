@@ -1,17 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleExecutable</key><string>Theft4</string>
-    <key>CFBundleIdentifier</key><string>${THEFT4_BUNDLE_IDENTIFIER}</string>
-    <key>CFBundleName</key><string>${THEFT4_DISPLAY_NAME}</string>
-    <key>CFBundleDisplayName</key><string>${THEFT4_DISPLAY_NAME}</string>
-    <key>Theft4LabBuild</key>${THEFT4_LAB_PLIST_VALUE}
+    <key>CFBundleExecutable</key><string>Theft4IntroTest</string>
+    <key>CFBundleIdentifier</key><string>${THEFT4_LAB_INTRO_TEST_BUNDLE_IDENTIFIER}</string>
+    <key>CFBundleName</key><string>Theft4 Lab Intro Test</string>
+    <key>CFBundleDisplayName</key><string>Theft4 Lab Intro Test</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>Theft4ReleaseName</key><string>0.2.0b</string>
-    <key>CFBundleVersion</key><string>44</string>
-    <!-- Declares App Store export-compliance status for standard/exempt crypto only. -->
-    <key>ITSAppUsesNonExemptEncryption</key><false/>
+    <key>CFBundleVersion</key><string>43</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
@@ -26,7 +22,7 @@
         <key>UIApplicationSupportsMultipleScenes</key><false/>
         <key>UISceneConfigurations</key><dict>
             <key>UIWindowSceneSessionRoleApplication</key><array><dict>
-                <key>UISceneConfigurationName</key><string>Theft4</string>
+                <key>UISceneConfigurationName</key><string>Theft4 Lab Intro Test</string>
                 <key>UISceneDelegateClassName</key><string>Theft4SceneDelegate</string>
             </dict></array>
         </dict>

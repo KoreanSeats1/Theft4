@@ -896,6 +896,94 @@ bool IsInstallReady(const std::filesystem::path& game_root, std::string* reason)
   return ready;
 }
 
+Result InstallTitleUpdate(const std::filesystem::path& game_root,
+                          const std::filesystem::path& update_source) {
+  try {
+    Result result;
+    if (update_source.empty()) {
+      result.error = "No title update was selected.";
+      return result;
+    }
+
+    std::vector<uint8_t> base_bytes;
+    if (!ReadHostFile(game_root / "default.xex", base_bytes, result.error)) {
+      result.error = "Copy the extracted GTA IV base game before selecting a title update.";
+      return result;
+    }
+    XexInfo base;
+    if (!ParseXex(base_bytes, base, result.error) || !ValidateBaseXex(base, result.error)) {
+      return result;
+    }
+    if (XXH3_64bits(base_bytes.data(), base_bytes.size()) != kRequiredBaseXexXxh3) {
+      result.error = "default.xex does not match GTA IV USA retail 1.00.";
+      return result;
+    }
+
+    auto update = PrepareUpdateSource(update_source, base, result.error);
+    if (!update) {
+      return result;
+    }
+
+    // Keep all new update output isolated until the patch has been copied and
+    // validated. The base game is never rewritten by this import path.
+    const auto staging_root = game_root / ".title-update-staging";
+    const auto staged_patch = staging_root / "default.xexp";
+    const auto staged_update = staging_root / "update";
+    std::error_code fs_error;
+    std::filesystem::remove_all(staging_root, fs_error);
+    fs_error.clear();
+    std::filesystem::create_directories(staged_update, fs_error);
+    if (fs_error) {
+      result.error = "Could not prepare title-update storage: " + fs_error.message();
+      return result;
+    }
+
+    auto fail = [&](std::string error) {
+      std::error_code cleanup_error;
+      std::filesystem::remove_all(staging_root, cleanup_error);
+      return Result{false, std::move(error)};
+    };
+
+    Progress progress;
+    if (update->raw_patch) {
+      if (!CopyHostFile(update_source, staged_patch, progress, result.error)) {
+        return fail(std::move(result.error));
+      }
+    } else {
+      if (!CopyTree(update->payload_root, staged_update, progress, result.error) ||
+          !CopyFileEntry(update->patch.entry, staged_patch, progress, result.error)) {
+        return fail(std::move(result.error));
+      }
+    }
+
+    std::vector<uint8_t> staged_patch_bytes;
+    XexInfo staged_patch_info;
+    if (!ReadHostFile(staged_patch, staged_patch_bytes, result.error) ||
+        !ParseXex(staged_patch_bytes, staged_patch_info, result.error) ||
+        !ValidatePatch(base, staged_patch_info, staged_patch_bytes, result.error)) {
+      return fail(std::move(result.error));
+    }
+
+    std::vector<PublishItem> publish = {
+        {staged_patch, game_root / "default.xexp", game_root / ".default.xexp-backup"},
+        {staged_update, game_root / "update", game_root / ".update-backup"},
+    };
+    if (!PublishDirectories(publish, result.error)) {
+      return fail(std::move(result.error));
+    }
+
+    std::filesystem::remove_all(staging_root, fs_error);
+    result.success = true;
+    return result;
+  } catch (const std::filesystem::filesystem_error& exception) {
+    return Result{false, "The title update could not be installed: " +
+                             std::string(exception.what())};
+  } catch (const std::exception& exception) {
+    return Result{false, "The selected title update is malformed: " +
+                             std::string(exception.what())};
+  }
+}
+
 bool IsEpisodeReady(const std::filesystem::path& marketplace_root, Episode episode) {
   return ValidateStagedEpisode(marketplace_root / EpisodeDirectory(episode), episode);
 }

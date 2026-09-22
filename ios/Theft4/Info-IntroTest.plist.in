@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleExecutable</key><string>Theft4</string>
-    <key>CFBundleIdentifier</key><string>${THEFT4_BUNDLE_IDENTIFIER}</string>
-    <key>CFBundleName</key><string>Theft4</string>
-    <key>CFBundleDisplayName</key><string>Theft4</string>
+    <key>CFBundleExecutable</key><string>Theft4IntroTest</string>
+    <key>CFBundleIdentifier</key><string>${THEFT4_LAB_INTRO_TEST_BUNDLE_IDENTIFIER}</string>
+    <key>CFBundleName</key><string>Theft4 Lab Intro Test</string>
+    <key>CFBundleDisplayName</key><string>Theft4 Lab Intro Test</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.2.0</string>
     <key>CFBundleVersion</key><string>43</string>
@@ -22,7 +22,7 @@
         <key>UIApplicationSupportsMultipleScenes</key><false/>
         <key>UISceneConfigurations</key><dict>
             <key>UIWindowSceneSessionRoleApplication</key><array><dict>
-                <key>UISceneConfigurationName</key><string>Theft4</string>
+                <key>UISceneConfigurationName</key><string>Theft4 Lab Intro Test</string>
                 <key>UISceneDelegateClassName</key><string>Theft4SceneDelegate</string>
             </dict></array>
         </dict>

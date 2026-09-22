@@ -7,6 +7,7 @@
 #include <rex/system/xex_module.h>
 #include <rex/runtime.h>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
@@ -16,11 +17,80 @@
 int theft4_configure_boot_diagnostics(void) {
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
     const bool detailed = enabled && std::string_view(enabled) == "1";
+    // Keep the profiler category available for a later in-process toggle.
+    // The profiler itself remains dormant unless startup enables autostart.
+    const char* categories = detailed
+        ? "logging,transition,audio,vulkan,presenter,guest-hooks,native-profiler"
+        : "logging,native-profiler";
     return rex::diagnostics::Configure(
-               true, detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
-                              : "logging")
+               true, categories)
                ? 0
                : 1;
+}
+
+static void WriteImportMessage(char* message, size_t capacity, const std::string& value) {
+    if (message && capacity) std::snprintf(message, capacity, "%s", value.c_str());
+}
+
+int theft4_install_title_update(const char* game_directory, const char* update_source,
+                                char* message, size_t message_capacity) {
+    if (!game_directory || !update_source) {
+        WriteImportMessage(message, message_capacity, "No title update was selected.");
+        return 2;
+    }
+    try {
+        const auto result = gta4::install::InstallTitleUpdate(game_directory, update_source);
+        WriteImportMessage(message, message_capacity,
+            result.success ? "Title Update 8 installed and verified." : result.error);
+        return result.success ? 0 : 1;
+    } catch (const std::exception& error) {
+        WriteImportMessage(message, message_capacity,
+            std::string("The title update could not be installed: ") + error.what());
+        return 1;
+    }
+}
+
+int theft4_validate_base_game(const char* game_directory, char* message,
+                              size_t message_capacity) {
+    if (!game_directory) {
+        WriteImportMessage(message, message_capacity, "No game directory is available.");
+        return 2;
+    }
+    try {
+        const auto inspection = gta4::install::InspectGameSource(game_directory);
+        if (inspection.supported()) {
+            WriteImportMessage(message, message_capacity,
+                "GTA IV USA retail base verified. Select the matching title update.");
+            return 0;
+        }
+        WriteImportMessage(message, message_capacity,
+            inspection.rejection_reason.empty() ? "The transferred base game is not supported."
+                                                : inspection.rejection_reason);
+        return 1;
+    } catch (const std::exception& error) {
+        WriteImportMessage(message, message_capacity,
+            std::string("The transferred base game could not be checked: ") + error.what());
+        return 1;
+    }
+}
+
+int theft4_validate_installed_game(const char* game_directory, char* message,
+                                   size_t message_capacity) {
+    if (!game_directory) {
+        WriteImportMessage(message, message_capacity, "No game directory is available.");
+        return 2;
+    }
+    try {
+        std::string reason;
+        const bool ready = gta4::install::IsInstallReady(game_directory, &reason);
+        WriteImportMessage(message, message_capacity,
+            ready ? "GTA IV and Title Update 8 are verified." : reason);
+        return ready ? 0 : 1;
+    } catch (const std::exception& error) {
+        WriteImportMessage(message, message_capacity,
+            std::string("The installed game could not be checked: ") + error.what());
+        return 1;
+    }
 }
 
 static std::vector<uint8_t> ReadExecutable(const std::filesystem::path& path) {

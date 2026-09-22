@@ -13,6 +13,8 @@
 @property(nonatomic, readonly) UISwitch *enhancedOutput;
 @property(nonatomic, readonly) UISwitch *fsrBoost;
 @property(nonatomic, readonly) UISwitch *motionBlur;
+@property(nonatomic, readonly) UISwitch *performanceCapture;
+@property(nonatomic, readonly) UIButton *downloadLogButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;
 - (void)retireScene;

@@ -46,6 +46,9 @@ REXCVAR_DECLARE(uint32_t, gta4_native_pipeline_queue_capacity);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_gpu_query_budget);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_interval);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_samples);
 #endif
 
 extern const rex::PPCImageInfo PPCImageConfig;
@@ -157,14 +160,22 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_pipeline_prewarm, pipeline_prewarm);
         const uint32_t pipeline_queue_capacity = legacy_ipad_profile ? 4u : 64u;
         REXCVAR_SET(gta4_native_pipeline_queue_capacity, pipeline_queue_capacity);
-        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
-        REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
-        REXCVAR_SET(gta4_profile_native_autostart, false);
+        const char* performance_capture_value = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
+        const bool performance_capture =
+            performance_capture_value && std::string_view(performance_capture_value) == "1";
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, performance_capture);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, performance_capture);
+        REXCVAR_SET(gta4_profile_native_autostart, performance_capture);
+        if (performance_capture) {
+            REXCVAR_SET(gta4_profile_native_gpu_query_budget, 512u);
+            REXCVAR_SET(gta4_profile_native_interval, 1u);
+            REXCVAR_SET(gta4_profile_native_samples, 600u);
+        }
         REXLOG_INFO(
-            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile=false "
-            "pipeline-queue-capacity={} profile-autostart=false legacy-ipad={}",
+            "Theft4 device profile: {} pipeline-prewarm={} detailed-profile={} "
+            "pipeline-queue-capacity={} profile-autostart={} legacy-ipad={}",
             device_profile, pipeline_prewarm, pipeline_queue_capacity,
-            legacy_ipad_profile);
+            performance_capture, performance_capture, legacy_ipad_profile);
 
         // Match the desktop FSR setup, with a deliberately fixed 720p scene.
         // Native hooks derive input = output / 1.5 for FSR's Quality mode:

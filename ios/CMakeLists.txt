@@ -1,6 +1,8 @@
 # Theft4's native host is independent of the legacy desktop/SDL application.
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.theft4.bringup" CACHE STRING "Theft4 development bundle ID")
+set(THEFT4_LAB_INTRO_TEST_BUNDLE_IDENTIFIER "com.theft4.lab.intro-test" CACHE STRING
+    "Isolated bundle ID for the Theft4 Lab intro-flow test app")
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
 set(THEFT4_ARM64_TUNE "" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
@@ -425,6 +427,53 @@ if(THEFT4_SIGN_DEVICE AND NOT CMAKE_OSX_SYSROOT MATCHES "(iphonesimulator|iPhone
         message(FATAL_ERROR "THEFT4_SIGN_DEVICE requires LIBERTY_IOS_DEVELOPMENT_TEAM")
     endif()
     set_target_properties(Theft4 PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED YES
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${LIBERTY_IOS_DEVELOPMENT_TEAM}")
+endif()
+
+# This is an independently installed Lab app for exercising the first-run
+# setup screen. Its bundle ID gives it a separate Documents container and
+# preferences domain, so it cannot inspect or alter the configured Theft4 app.
+set(THEFT4_INTRO_TEST_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Info-IntroTest.plist.in")
+add_executable(Theft4IntroTest MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
+    Theft4/Theft4LauncherView.m Theft4/Theft4CityView.m
+    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
+target_compile_definitions(Theft4IntroTest PRIVATE
+    THEFT4_LAB_BUILD=1
+    THEFT4_INTRO_TEST_BUILD=1)
+target_link_libraries(Theft4IntroTest PRIVATE theft4_core_bridge
+    "-framework UIKit" "-framework Metal" "-framework QuartzCore" "-framework SceneKit" "-framework CoreGraphics"
+    "-framework GameController" "-framework CoreHaptics"
+    "-framework AVFoundation" "-framework AudioToolbox")
+target_link_options(Theft4IntroTest PRIVATE "LINKER:-dead_strip")
+target_compile_options(Theft4IntroTest PRIVATE -fobjc-arc)
+if(THEFT4_ENABLE_THIN_LTO)
+    set_property(TARGET Theft4IntroTest PROPERTY
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+set_target_properties(Theft4IntroTest PROPERTIES
+    LINKER_LANGUAGE CXX
+    MACOSX_BUNDLE_INFO_PLIST "${THEFT4_INTRO_TEST_INFO_PLIST}"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${THEFT4_LAB_INTRO_TEST_BUNDLE_IDENTIFIER}"
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
+    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_SKIP_INSTALL NO
+    XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
+    XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
+    XCODE_ATTRIBUTE_ENABLE_BITCODE NO
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/theft4-lab")
+if(CMAKE_CONFIGURATION_TYPES STREQUAL "Release")
+    set_target_properties(Theft4IntroTest PROPERTIES
+        XCODE_GENERATE_SCHEME TRUE
+        XCODE_SCHEME_LAUNCH_CONFIGURATION Release
+        XCODE_SCHEME_ENABLE_GPU_FRAME_CAPTURE_MODE Disabled
+        XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+        XCODE_SCHEME_ENABLE_GPU_SHADER_VALIDATION OFF)
+endif()
+if(THEFT4_SIGN_DEVICE AND NOT CMAKE_OSX_SYSROOT MATCHES "(iphonesimulator|iPhoneSimulator)")
+    set_target_properties(Theft4IntroTest PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED YES
         XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
         XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"

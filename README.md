@@ -190,17 +190,16 @@ build.
 
 The unsigned IPA attached to a GitHub release must be re-signed with AltStore,
 SideStore, or another compatible sideloading tool. It does not contain game
-files. After installation, launch Theft4 once, then place the **contents** of a
-validated prepared game folder in **Files → Browse → On My iPhone/iPad → Theft4
-→ game**. The final layout must put `default.xex` and the matching TU8
-`default.xexp` directly beside each other; do not create `game/game` and do not
-copy a raw ISO or unopened title-update package to the device.
+files. On first launch, Theft4 creates **Files → Browse → On My iPhone/iPad →
+Theft4 → game**. Copy the **contents** of your legally obtained, extracted Xbox
+360 game into that folder, with `default.xex` directly in `game`—do not create
+`game/game` or copy a raw ISO. Reopen Theft4 and select the matching title-update
+file from the Files picker; the app validates and installs the required TU8.
 
 See [Install a sideloaded Theft4 IPA](docs/IOS_SIDELOAD_INSTALL.md) for the exact
-supported base/TU8 versions and hashes, staging step, complete file tree, Finder
-and Files transfer paths, verification step, update-in-place warning, and common
-failure fixes. These instructions apply to release 0.1.3 and later unless a
-newer release explicitly says otherwise.
+supported base/TU8 versions and hashes, Files-transfer and update-import steps,
+update-in-place warning, and common failure fixes. These instructions apply to
+release 0.1.3 and later unless a newer release explicitly says otherwise.
 
 ## Building
 

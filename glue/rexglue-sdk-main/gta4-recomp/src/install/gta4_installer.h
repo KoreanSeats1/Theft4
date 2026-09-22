@@ -37,6 +37,11 @@ struct Result {
 };
 
 bool IsInstallReady(const std::filesystem::path& game_root, std::string* reason = nullptr);
+// Installs and validates a supported title update for an already-copied retail
+// game directory. The update source may be either an STFS package or a raw
+// default.xexp patch; the base game is never copied or replaced.
+Result InstallTitleUpdate(const std::filesystem::path& game_root,
+                          const std::filesystem::path& update_source);
 bool IsEpisodeReady(const std::filesystem::path& marketplace_root, Episode episode);
 Result VerifyInstall(const std::filesystem::path& game_root,
                      const std::filesystem::path& marketplace_root);

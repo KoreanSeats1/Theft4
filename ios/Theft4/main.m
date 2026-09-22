@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/utsname.h>
+#include <stdint.h>
 #include "theft4_core.h"
 #include "theft4_device_profile.h"
 #include "theft4_metal_presenter.h"
@@ -20,7 +21,126 @@
 + (Class)layerClass { return CAMetalLayer.class; }
 @end
 
-@interface Theft4ViewController : UIViewController {
+typedef NS_ENUM(NSInteger, Theft4InstallationStep) {
+    Theft4InstallationStepNone,
+    Theft4InstallationStepCreatingDirectory,
+    Theft4InstallationStepCopyBaseGame,
+    Theft4InstallationStepCheckingBaseGame,
+    Theft4InstallationStepSelectingUpdate,
+    Theft4InstallationStepInstallingUpdate,
+    Theft4InstallationStepUpdateFailed,
+    Theft4InstallationStepReady,
+};
+
+static NSString *Theft4DisplayName(void) {
+    NSString *name = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"];
+    return name.length ? name : @"Theft4";
+}
+
+static NSString *Theft4SetupCompleteDefaultsKey(void) {
+#ifdef THEFT4_INTRO_TEST_BUILD
+    return @"Theft4IntroTestSetupComplete";
+#else
+    return @"Theft4SetupComplete";
+#endif
+}
+
+static NSString *Theft4InstallationDirectoryCreatedDefaultsKey(void) {
+#ifdef THEFT4_INTRO_TEST_BUILD
+    return @"Theft4IntroTestDirectoryCreated";
+#else
+    return @"Theft4InstallationDirectoryCreated";
+#endif
+}
+
+static NSURL *Theft4GameDirectoryURL(NSURL *documents) {
+#ifdef THEFT4_INTRO_TEST_BUILD
+    NSURL *testRoot = [documents URLByAppendingPathComponent:@"intro-test" isDirectory:YES];
+    return [testRoot URLByAppendingPathComponent:@"game" isDirectory:YES];
+#else
+    return [documents URLByAppendingPathComponent:@"game" isDirectory:YES];
+#endif
+}
+
+static NSURL *Theft4InstructionsURL(NSURL *documents) {
+#ifdef THEFT4_INTRO_TEST_BUILD
+    NSURL *testRoot = [documents URLByAppendingPathComponent:@"intro-test" isDirectory:YES];
+    return [testRoot URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
+#else
+    return [documents URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
+#endif
+}
+
+static NSString *Theft4FilesGamePath(void) {
+#ifdef THEFT4_INTRO_TEST_BUILD
+    return [NSString stringWithFormat:@"On My iPhone/iPad → %@ → intro-test → game",
+        Theft4DisplayName()];
+#else
+    return [NSString stringWithFormat:@"On My iPhone/iPad → %@ → game", Theft4DisplayName()];
+#endif
+}
+
+static BOOL Theft4WriteBytes(NSOutputStream *stream, const uint8_t *bytes,
+                             NSUInteger length, NSUInteger *budget) {
+    if (!stream || !bytes || !budget || length > *budget) return NO;
+    NSUInteger offset = 0;
+    while (offset < length) {
+        NSInteger written = [stream write:bytes + offset maxLength:length - offset];
+        if (written <= 0) return NO;
+        offset += (NSUInteger)written;
+    }
+    *budget -= length;
+    return YES;
+}
+
+static BOOL Theft4WriteString(NSOutputStream *stream, NSString *value, NSUInteger *budget) {
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    return data && Theft4WriteBytes(stream, data.bytes, data.length, budget);
+}
+
+static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSString *label,
+                                       NSUInteger *budget, NSMutableArray<NSString *> *included,
+                                       NSMutableArray<NSString *> *skipped) {
+    BOOL directory = NO;
+    if (!url || ![NSFileManager.defaultManager fileExistsAtPath:url.path isDirectory:&directory] ||
+        directory) return YES;
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:nil];
+    unsigned long long fileSize = [attributes fileSize];
+    if (fileSize > *budget) {
+        [skipped addObject:[NSString stringWithFormat:@"%@ (%llu bytes; export budget exceeded)",
+                             label, fileSize]];
+        return YES;
+    }
+    NSString *header = [NSString stringWithFormat:@"\n\n===== %@ (%llu bytes) =====\n",
+                        label, fileSize];
+    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
+    if (!headerData || headerData.length > *budget ||
+        !Theft4WriteBytes(stream, headerData.bytes, headerData.length, budget)) return NO;
+    NSInputStream *input = [NSInputStream inputStreamWithURL:url];
+    [input open];
+    uint8_t buffer[64 * 1024];
+    BOOL success = YES;
+    while (success) {
+        NSInteger count = [input read:buffer maxLength:sizeof(buffer)];
+        if (count < 0) { success = NO; break; }
+        if (count == 0) break;
+        success = Theft4WriteBytes(stream, buffer, (NSUInteger)count, budget);
+    }
+    [input close];
+    if (success) [included addObject:label];
+    return success;
+}
+
+static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
+    static NSSet<NSString *> *extensions;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        extensions = [NSSet setWithObjects:@"log", @"json", @"jsonl", @"csv", @"txt", @"partial", nil];
+    });
+    return [extensions containsObject:extension.lowercaseString];
+}
+
+@interface Theft4ViewController : UIViewController <UIDocumentPickerDelegate> {
     theft4_core *_core;
     NSURL *_supportURL;
     NSURL *_logURL;
@@ -46,9 +166,22 @@
     UISwitch *_enhancedOutput;
     UISwitch *_fsrBoost;
     UISwitch *_motionBlur;
+    UISwitch *_performanceCapture;
+    UIButton *_downloadLogButton;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
     BOOL _legacyIPadProfile;
+    NSURL *_gameURL;
+    UIView *_installationOverlay;
+    UILabel *_installationTitle;
+    UILabel *_installationDetail;
+    UIActivityIndicatorView *_installationSpinner;
+    UIButton *_installationAction;
+    Theft4InstallationStep _installationStep;
+    BOOL _installationFlowPresented;
+    BOOL _baseGameChecked;
+    BOOL _baseGameCheckAttempted;
+    BOOL _setupValidated;
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -61,6 +194,17 @@
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
+- (BOOL)hasInstalledBaseAndUpdate;
+- (BOOL)isSetupComplete;
+- (void)markSetupComplete;
+- (void)presentInstallationFlowIfNeeded;
+- (void)routeInstallationFlow;
+- (void)checkBaseGame;
+- (void)chooseTitleUpdate;
+- (void)downloadLatestLogCapture;
+#ifdef THEFT4_INTRO_TEST_BUILD
+- (void)runIntroTestImportSmokeIfRequested;
+#endif
 @end
 
 static void coreEvent(void *context, const char *event) {
@@ -108,7 +252,8 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4AnisotropicFiltering": @(!_legacyIPadProfile),
         @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
-        @"Theft4MotionBlur": @(!_legacyIPadProfile)
+        @"Theft4MotionBlur": @(!_legacyIPadProfile),
+        @"Theft4DetailedPerformanceCapture": @NO
     }];
     // The native game image is 1280x720. Keep its layer itself at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
@@ -150,9 +295,15 @@ static void bootEvent(void *context, const char *event) {
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
-    NSArray *toggles = @[_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,_motionBlur];
+    _performanceCapture = _bringupOverlay.performanceCapture;
+    _downloadLogButton = _bringupOverlay.downloadLogButton;
+    [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
+                 forControlEvents:UIControlEventTouchUpInside];
+    NSArray *toggles = @[_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
+                         _motionBlur,_performanceCapture];
     NSArray *keys = @[@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
-                      @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur"];
+                      @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
+                      @"Theft4DetailedPerformanceCapture"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
@@ -214,44 +365,448 @@ static void bootEvent(void *context, const char *event) {
     [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
     [self createCore];
+#ifdef THEFT4_INTRO_TEST_BUILD
+    [self runIntroTestImportSmokeIfRequested];
+#endif
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if ([self isSetupComplete]) {
+        _installationOverlay.hidden = YES;
+        return;
+    }
+    if (_installationFlowPresented && _installationStep == Theft4InstallationStepCopyBaseGame) {
+        [self routeInstallationFlow];
+    } else {
+        [self presentInstallationFlowIfNeeded];
+    }
 }
 
 - (void)initializeSharedGameDirectory {
     NSError *error = nil;
     NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
-        inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
-    NSURL *game = [documents URLByAppendingPathComponent:@"game" isDirectory:YES];
-    if (!documents || !game || ![NSFileManager.defaultManager createDirectoryAtURL:game
+        inDomain:NSUserDomainMask appropriateForURL:nil create:NO error:&error];
+    if (!documents) {
+        _failure = [NSString stringWithFormat:@"Cannot access the app Documents folder: %@",
+            error.localizedDescription ?: @"Documents is unavailable"];
+        return;
+    }
+    _gameURL = Theft4GameDirectoryURL(documents);
+    if ([self hasInstalledBaseAndUpdate]) {
+        // Migration for an already-configured app: only inspect the existing
+        // files, then record completion in this app's private preferences.
+        // Do not create, rewrite, move, or import anything in Documents.
+        [self markSetupComplete];
+        _bootStatus = @"Game files detected. Ready to play.";
+        return;
+    }
+    if (![NSFileManager.defaultManager createDirectoryAtURL:_gameURL
         withIntermediateDirectories:YES attributes:nil error:&error]) {
         _failure = [NSString stringWithFormat:@"Cannot create the shared game folder: %@",
             error.localizedDescription ?: @"Documents is unavailable"];
         return;
     }
 
-    NSURL *instructionsURL = [documents URLByAppendingPathComponent:@"COPY GAME FILES HERE.txt"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path]) {
-        NSString *instructions =
-            @"Theft4 game-file transfer\n\n"
-            @"Open the game folder next to this file and copy the CONTENTS of your prepared "
-            @"installation into it. The final layout must include game/default.xex, "
-            @"game/default.xexp, and game/update. A raw ISO will not work.\n\n"
-            @"Return to Theft4 and choose Verify Game Files when the transfer finishes.\n";
-        if (![instructions writeToURL:instructionsURL atomically:YES
-            encoding:NSUTF8StringEncoding error:&error]) {
-            _failure = [NSString stringWithFormat:@"Cannot create transfer instructions: %@",
-                error.localizedDescription ?: @"write failed"];
-            return;
-        }
+    NSURL *instructionsURL = Theft4InstructionsURL(documents);
+    NSString *instructions = [NSString stringWithFormat:
+        @"%@ game-file transfer\n\n"
+        @"Copy the CONTENTS of your legally obtained, extracted Xbox 360 GTA IV game "
+        @"folder into the game folder next to this file. The folder must contain "
+        @"game/default.xex directly; do not create game/game and do not copy a raw ISO.\n\n"
+        @"Return to %@ after the copy finishes. The app will ask you to select the "
+        @"matching title-update file and install it for you.\n", Theft4DisplayName(), Theft4DisplayName()];
+    if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path] &&
+        ![instructions writeToURL:instructionsURL atomically:YES
+        encoding:NSUTF8StringEncoding error:&error]) {
+        _failure = [NSString stringWithFormat:@"Cannot create transfer instructions: %@",
+            error.localizedDescription ?: @"write failed"];
+        return;
     }
 
-    [game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+    [_gameURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
     BOOL hasBase = [NSFileManager.defaultManager
-        fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xex"] path]];
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
     BOOL hasUpdate = [NSFileManager.defaultManager
-        fileExistsAtPath:[[game URLByAppendingPathComponent:@"default.xexp"] path]];
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xexp"] path]];
     _bootStatus = hasBase && hasUpdate
-        ? @"Game files detected. Verify them before starting."
-        : @"Transfer folder ready: Files → On My iPhone → Theft4 → game";
+        ? @"Game files detected. Ready to play."
+        : (hasBase ? @"Base game detected. Select the title update to continue."
+                   : [NSString stringWithFormat:@"Transfer folder ready: Files → %@",
+                        Theft4FilesGamePath()]);
+}
+
+- (BOOL)hasInstalledBaseAndUpdate {
+    if (!_gameURL) return NO;
+    const BOOL hasBase = [NSFileManager.defaultManager
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
+    const BOOL hasUpdate = [NSFileManager.defaultManager
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xexp"] path]];
+    if (!hasBase || !hasUpdate) {
+        _setupValidated = NO;
+        return NO;
+    }
+#ifdef THEFT4_HAS_GAME_LOADER
+    char message[1024] = {};
+    _setupValidated = theft4_validate_installed_game(_gameURL.fileSystemRepresentation,
+        message, sizeof(message)) == 0;
+    return _setupValidated;
+#else
+    return NO;
+#endif
+}
+
+- (BOOL)isSetupComplete {
+    return [NSUserDefaults.standardUserDefaults boolForKey:Theft4SetupCompleteDefaultsKey()] &&
+        [self hasInstalledBaseAndUpdate];
+}
+
+- (void)markSetupComplete {
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:Theft4SetupCompleteDefaultsKey()];
+}
+
+- (void)createInstallationOverlayIfNeeded {
+    if (_installationOverlay) return;
+    _installationOverlay = [UIView new];
+    _installationOverlay.translatesAutoresizingMaskIntoConstraints = NO;
+    _installationOverlay.backgroundColor = [UIColor colorWithRed:0.043 green:0.078 blue:0.094 alpha:0.985];
+    [self.view addSubview:_installationOverlay];
+    [NSLayoutConstraint activateConstraints:@[
+        [_installationOverlay.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_installationOverlay.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_installationOverlay.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_installationOverlay.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    UILabel *eyebrow = [UILabel new];
+    eyebrow.text = @"THEFT4  /  SETUP";
+    eyebrow.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightSemibold];
+    eyebrow.textColor = [UIColor colorWithRed:0.90 green:0.71 blue:0.42 alpha:1.0];
+    _installationTitle = [UILabel new];
+    _installationTitle.numberOfLines = 0;
+    _installationTitle.font = [UIFont systemFontOfSize:30 weight:UIFontWeightBold];
+    _installationTitle.textColor = [UIColor colorWithRed:0.93 green:0.91 blue:0.84 alpha:1.0];
+    _installationDetail = [UILabel new];
+    _installationDetail.numberOfLines = 0;
+    _installationDetail.font = [UIFont systemFontOfSize:16 weight:UIFontWeightRegular];
+    _installationDetail.textColor = [UIColor colorWithRed:0.67 green:0.72 blue:0.71 alpha:1.0];
+    _installationSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+    _installationSpinner.color = [UIColor colorWithRed:0.90 green:0.71 blue:0.42 alpha:1.0];
+    _installationAction = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+    configuration.baseForegroundColor = [UIColor colorWithRed:0.07 green:0.11 blue:0.12 alpha:1.0];
+    configuration.baseBackgroundColor = [UIColor colorWithRed:0.90 green:0.71 blue:0.42 alpha:1.0];
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(16, 18, 16, 18);
+    _installationAction.configuration = configuration;
+    _installationAction.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
+    [_installationAction addTarget:self action:@selector(handleInstallationAction)
+                   forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        eyebrow, _installationTitle, _installationDetail, _installationSpinner, _installationAction
+    ]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 20;
+    stack.alignment = UIStackViewAlignmentFill;
+    [_installationOverlay addSubview:stack];
+    NSLayoutConstraint *preferredWidth = [stack.widthAnchor
+        constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.widthAnchor constant:-60];
+    preferredWidth.priority = UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.centerXAnchor constraintEqualToAnchor:_installationOverlay.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:_installationOverlay.centerYAnchor],
+        [stack.widthAnchor constraintLessThanOrEqualToConstant:480],
+        preferredWidth,
+        [_installationAction.heightAnchor constraintGreaterThanOrEqualToConstant:54],
+    ]];
+}
+
+- (void)showInstallationTitle:(NSString *)title detail:(NSString *)detail
+                    actionTitle:(NSString *)actionTitle spinner:(BOOL)spinner
+                           step:(Theft4InstallationStep)step {
+    [self createInstallationOverlayIfNeeded];
+    _installationStep = step;
+    _installationOverlay.hidden = NO;
+    _installationTitle.text = title;
+    _installationDetail.text = detail;
+    _installationSpinner.hidden = !spinner;
+    if (spinner) [_installationSpinner startAnimating];
+    else [_installationSpinner stopAnimating];
+    _installationAction.hidden = actionTitle.length == 0;
+    _installationAction.enabled = actionTitle.length > 0;
+    UIButtonConfiguration *configuration = _installationAction.configuration;
+    configuration.title = actionTitle;
+    _installationAction.configuration = configuration;
+}
+
+- (void)presentInstallationFlowIfNeeded {
+    if (_installationFlowPresented || _failure || !_gameURL) return;
+    if ([self isSetupComplete]) return;
+    _installationFlowPresented = YES;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    const BOOL firstLaunch = ![defaults boolForKey:Theft4InstallationDirectoryCreatedDefaultsKey()];
+    [defaults setBool:YES forKey:Theft4InstallationDirectoryCreatedDefaultsKey()];
+    if (!firstLaunch) {
+        [self routeInstallationFlow];
+        return;
+    }
+
+    [self showInstallationTitle:@"CREATING DIRECTORY"
+                         detail:[NSString stringWithFormat:@"Preparing %@ for your game files…",
+                             Theft4FilesGamePath()]
+                    actionTitle:nil spinner:YES step:Theft4InstallationStepCreatingDirectory];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (self->_installationStep == Theft4InstallationStepCreatingDirectory)
+            [self routeInstallationFlow];
+    });
+}
+
+- (void)routeInstallationFlow {
+    if (!_gameURL) return;
+    const BOOL hasBase = [NSFileManager.defaultManager
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
+    if (!hasBase) {
+        NSString *title = _baseGameCheckAttempted ? @"GAME FILES NOT FOUND"
+                                                   : @"QUIT APP & LOAD GAME FILES";
+        NSString *detail = _baseGameCheckAttempted
+            ? [NSString stringWithFormat:@"No default.xex was found in:\n\n%@\n\nCopy the extracted game contents there, then check again.",
+                Theft4FilesGamePath()]
+            : [NSString stringWithFormat:@"In Files, copy the contents of your legally obtained, extracted Xbox 360 GTA IV game into:\n\n%@\n\nThe folder must contain default.xex directly. Do not copy a raw ISO. When the transfer finishes, reopen %@.",
+                Theft4FilesGamePath(), Theft4DisplayName()];
+        [self showInstallationTitle:title detail:detail
+                        actionTitle:_baseGameCheckAttempted ? @"CHECK AGAIN" : @"CHECK FOR GAME FILES" spinner:NO
+                               step:Theft4InstallationStepCopyBaseGame];
+        return;
+    }
+    if (!_baseGameChecked) {
+        [self showInstallationTitle:@"GAME FILES DETECTED"
+                             detail:@"The extracted base game was found. Check it before selecting a title update; this check reads the files and does not change them."
+                        actionTitle:@"CHECK GAME FILES" spinner:NO
+                               step:Theft4InstallationStepCopyBaseGame];
+        return;
+    }
+    [self showInstallationTitle:@"SELECT TITLE UPDATE"
+                         detail:@"Your base game is verified. Select the matching GTA IV Xbox 360 title-update file from Files. Theft4 will validate it, extract it, and install it automatically."
+                    actionTitle:@"SELECT TITLE UPDATE" spinner:NO
+                           step:Theft4InstallationStepSelectingUpdate];
+}
+
+- (void)handleInstallationAction {
+    switch (_installationStep) {
+        case Theft4InstallationStepCopyBaseGame:
+            [self checkBaseGame];
+            break;
+        case Theft4InstallationStepSelectingUpdate:
+        case Theft4InstallationStepUpdateFailed:
+            [self chooseTitleUpdate];
+            break;
+        case Theft4InstallationStepReady:
+            [self markSetupComplete];
+            _installationOverlay.hidden = YES;
+            _bootStatus = @"Game files detected. Ready to play.";
+            [self record:@"install.ready"];
+            [self refresh];
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)checkBaseGame {
+    if (!_gameURL) return;
+    const BOOL hasBase = [NSFileManager.defaultManager
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
+    _baseGameCheckAttempted = YES;
+    if (!hasBase) {
+        [self routeInstallationFlow];
+        return;
+    }
+
+    [self showInstallationTitle:@"CHECKING GAME FILES"
+                         detail:@"Validating the extracted GTA IV base game without changing it…"
+                    actionTitle:nil spinner:YES step:Theft4InstallationStepCheckingBaseGame];
+    NSURL *game = _gameURL;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+#ifdef THEFT4_HAS_GAME_LOADER
+        char message[1024] = {};
+        const int result = theft4_validate_base_game(game.fileSystemRepresentation,
+            message, sizeof(message));
+        NSString *detail = [NSString stringWithUTF8String:message];
+#else
+        const int result = 1;
+        NSString *detail = @"This build does not include the game-file validator.";
+#endif
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (result == 0) {
+                self->_baseGameChecked = YES;
+                [self routeInstallationFlow];
+                return;
+            }
+            [self showInstallationTitle:@"GAME FILES NOT READY"
+                                 detail:detail.length ? detail : @"The extracted base game could not be verified."
+                            actionTitle:@"CHECK AGAIN" spinner:NO
+                                   step:Theft4InstallationStepCopyBaseGame];
+        });
+    });
+}
+
+#ifdef THEFT4_INTRO_TEST_BUILD
+- (void)runIntroTestImportSmokeIfRequested {
+    if (![NSProcessInfo.processInfo.arguments containsObject:@"--theft4-intro-import-smoke"] ||
+        !_gameURL) return;
+    _installationFlowPresented = YES;
+    NSURL *testRoot = [_gameURL URLByDeletingLastPathComponent];
+    NSURL *source = [[testRoot URLByAppendingPathComponent:@"title-update-source" isDirectory:YES]
+        URLByAppendingPathComponent:@"default.xexp"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:source.path]) {
+        _bootStatus = @"Intro importer smoke test failed: default.xexp was not staged.";
+        [self record:@"intro_test.raw_patch_import_failed"];
+        return;
+    }
+    [self showInstallationTitle:@"RUNNING IMPORTER TEST"
+                         detail:@"Checking the isolated raw title-update install…"
+                    actionTitle:nil spinner:YES step:Theft4InstallationStepInstallingUpdate];
+    NSURL *game = _gameURL;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        char base_message[1024] = {};
+        const int base_validated = theft4_validate_base_game(game.fileSystemRepresentation,
+            base_message, sizeof(base_message));
+        char import_message[1024] = {};
+        const int imported = base_validated == 0 ? theft4_install_title_update(
+            game.fileSystemRepresentation, source.fileSystemRepresentation,
+            import_message, sizeof(import_message)) : 1;
+        char verify_message[1024] = {};
+        const int verified = imported == 0 ? theft4_validate_installed_game(
+            game.fileSystemRepresentation, verify_message, sizeof(verify_message)) : 1;
+        NSString *detail = [NSString stringWithUTF8String:
+            base_validated != 0 ? base_message : (imported == 0 ? verify_message : import_message)];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (base_validated == 0 && imported == 0 && verified == 0) {
+                self->_bootStatus = @"Intro importer smoke test passed.";
+                self->_setupValidated = YES;
+                [self record:@"intro_test.raw_patch_import_passed"];
+                [self showInstallationTitle:@"IMPORTER TEST PASSED"
+                                     detail:detail.length ? detail : @"The raw title update was installed and verified."
+                                actionTitle:@"OPEN MAIN SCREEN" spinner:NO
+                                       step:Theft4InstallationStepReady];
+            } else {
+                self->_bootStatus = @"Intro importer smoke test failed.";
+                [self record:@"intro_test.raw_patch_import_failed"];
+                [self showInstallationTitle:@"IMPORTER TEST FAILED"
+                                     detail:detail.length ? detail : @"The raw title update could not be installed."
+                                actionTitle:nil spinner:NO step:Theft4InstallationStepUpdateFailed];
+            }
+        });
+    });
+}
+#endif
+
+- (void)chooseTitleUpdate {
+    if (!_gameURL) return;
+    const BOOL hasBase = [NSFileManager.defaultManager
+        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
+    if (!hasBase) {
+        [self routeInstallationFlow];
+        return;
+    }
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"public.data"] inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)controller;
+    NSURL *selected = urls.firstObject;
+    if (!selected || !_gameURL) {
+        [self showInstallationTitle:@"TITLE UPDATE NOT INSTALLED"
+                             detail:@"No title-update file was selected."
+                        actionTitle:@"CHOOSE TITLE UPDATE" spinner:NO
+                               step:Theft4InstallationStepUpdateFailed];
+        return;
+    }
+    [self showInstallationTitle:@"INSTALLING TITLE UPDATE"
+                         detail:@"Validating and extracting the selected Xbox 360 update…"
+                    actionTitle:nil spinner:YES step:Theft4InstallationStepInstallingUpdate];
+    const BOOL scoped = [selected startAccessingSecurityScopedResource];
+    NSURL *game = _gameURL;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *fileError = nil;
+        NSURL *sourceDirectory = [game URLByAppendingPathComponent:@".title-update-source"
+                                                        isDirectory:YES];
+        [NSFileManager.defaultManager removeItemAtURL:sourceDirectory error:nil];
+        if (![NSFileManager.defaultManager createDirectoryAtURL:sourceDirectory
+                                     withIntermediateDirectories:YES attributes:nil error:&fileError]) {
+            if (scoped) [selected stopAccessingSecurityScopedResource];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showInstallationTitle:@"TITLE UPDATE NOT INSTALLED"
+                                     detail:fileError.localizedDescription ?: @"Could not prepare title-update storage."
+                                actionTitle:@"CHOOSE TITLE UPDATE" spinner:NO
+                                       step:Theft4InstallationStepUpdateFailed];
+            });
+            return;
+        }
+        NSString *extension = selected.pathExtension;
+        NSString *name = NSUUID.UUID.UUIDString;
+        if (extension.length) name = [name stringByAppendingFormat:@".%@", extension];
+        NSURL *stagedSource = [sourceDirectory URLByAppendingPathComponent:name];
+        if (![NSFileManager.defaultManager copyItemAtURL:selected toURL:stagedSource error:&fileError]) {
+            if (scoped) [selected stopAccessingSecurityScopedResource];
+            [NSFileManager.defaultManager removeItemAtURL:sourceDirectory error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showInstallationTitle:@"TITLE UPDATE NOT INSTALLED"
+                                     detail:fileError.localizedDescription ?: @"Could not import the selected file."
+                                actionTitle:@"CHOOSE TITLE UPDATE" spinner:NO
+                                       step:Theft4InstallationStepUpdateFailed];
+            });
+            return;
+        }
+        if (scoped) [selected stopAccessingSecurityScopedResource];
+
+#ifdef THEFT4_HAS_GAME_LOADER
+        char message[1024] = {};
+        const int result = theft4_install_title_update(game.fileSystemRepresentation,
+            stagedSource.fileSystemRepresentation, message, sizeof(message));
+        NSString *detail = [NSString stringWithUTF8String:message];
+#else
+        const int result = 1;
+        NSString *detail = @"This build does not include the title-update importer.";
+#endif
+        [NSFileManager.defaultManager removeItemAtURL:sourceDirectory error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (result == 0) {
+                self->_bootStatus = @"Title Update 8 installed. Ready to play.";
+                self->_setupValidated = YES;
+                [self showInstallationTitle:@"READY TO PLAY"
+                                     detail:@"Theft4 validated and installed the matching title update."
+                                actionTitle:@"OPEN MAIN SCREEN" spinner:NO
+                                       step:Theft4InstallationStepReady];
+                [self record:@"install.title_update_ready"];
+                [self refresh];
+            } else {
+                [self showInstallationTitle:@"TITLE UPDATE NOT INSTALLED"
+                                     detail:detail.length ? detail : @"The selected file is not a supported title update."
+                                actionTitle:@"CHOOSE ANOTHER FILE" spinner:NO
+                                       step:Theft4InstallationStepUpdateFailed];
+                [self record:@"install.title_update_failed"];
+            }
+        });
+    });
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    (void)controller;
+    if (_installationStep == Theft4InstallationStepSelectingUpdate) {
+        [self showInstallationTitle:@"SELECT TITLE UPDATE"
+                             detail:@"Choose the matching GTA IV Xbox 360 title-update file when you are ready."
+                        actionTitle:@"SELECT TITLE UPDATE" spinner:NO
+                               step:Theft4InstallationStepSelectingUpdate];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -265,6 +820,8 @@ static void bootEvent(void *context, const char *event) {
 - (void)displaySettingsChanged:(UISwitch *)sender {
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
+    [NSUserDefaults.standardUserDefaults setBool:_performanceCapture.on
+                                          forKey:@"Theft4DetailedPerformanceCapture"];
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
     [_bringupOverlay refreshConfigurationSummary];
@@ -309,12 +866,190 @@ static void bootEvent(void *context, const char *event) {
     }
 }
 
+- (void)downloadLatestLogCapture {
+    if (!_supportURL || !_downloadLogButton.enabled) return;
+    [self record:@"diagnostics.export_requested"];
+    _downloadLogButton.enabled = NO;
+    NSURL *supportURL = [_supportURL copy];
+    NSURL *lifecycleURL = [_logURL copy];
+    BOOL performanceCapture = _performanceCapture.on;
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown";
+    NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"unknown";
+    NSString *systemVersion = UIDevice.currentDevice.systemVersion ?: @"unknown";
+    NSString *deviceName = UIDevice.currentDevice.model ?: @"unknown";
+    uint64_t physicalMemory = NSProcessInfo.processInfo.physicalMemory;
+    const char *machineCString = getenv("THEFT4_DEVICE_MODEL");
+    NSString *machine = machineCString ? [NSString stringWithUTF8String:machineCString] : nil;
+    if (!machine.length) {
+        struct utsname systemInfo = {};
+        machine = uname(&systemInfo) == 0 ? [NSString stringWithUTF8String:systemInfo.machine] : @"unknown";
+    }
+    NSString *profile = [NSString stringWithUTF8String:getenv("THEFT4_DEVICE_PROFILE") ?: "unknown"];
+    BOOL showFPS = _showFPS.on;
+    BOOL anisotropy = _anisotropicFiltering.on;
+    BOOL enhancedOutput = _enhancedOutput.on;
+    BOOL fsrBoost = _fsrBoost.on;
+    BOOL motionBlur = _motionBlur.on;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSError *error = nil;
+        NSURL *documents = [fm URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask
+                             appropriateForURL:nil create:YES error:&error];
+        NSURL *diagnosticsURL = [documents URLByAppendingPathComponent:@"Diagnostics"
+                                                              isDirectory:YES];
+        if (!documents || ![fm createDirectoryAtURL:diagnosticsURL withIntermediateDirectories:YES
+                                         attributes:nil error:&error]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_downloadLogButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
+                    message:error.localizedDescription ?: @"The Files folder is unavailable."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                    style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+            return;
+        }
+
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd-HH-mm-ss";
+        NSString *stamp = [formatter stringFromDate:[NSDate date]];
+        NSURL *outputURL = [diagnosticsURL
+            URLByAppendingPathComponent:[NSString stringWithFormat:@"Theft4-Performance-Capture-%@.txt",
+                                         stamp]];
+        NSOutputStream *stream = [NSOutputStream outputStreamWithURL:outputURL append:NO];
+        [stream open];
+        NSUInteger budget = 50u * 1024u * 1024u;
+        NSMutableArray<NSString *> *included = [NSMutableArray new];
+        NSMutableArray<NSString *> *skipped = [NSMutableArray new];
+        NSString *metadata = [NSString stringWithFormat:
+            @"Theft4 performance capture export\n"
+             "Generated: %@\n"
+             "App: %@ %@ (%@)\n"
+             "Bundle: %@\n"
+             "Device: %@ / %@\n"
+             "iOS/iPadOS: %@\n"
+             "Physical memory: %llu MiB\n"
+             "Theft4 device profile: %@\n"
+             "Detailed capture switch at export: %@\n"
+             "Frame counter enabled: %@\n"
+             "Anisotropic filtering: %@\n"
+             "Enhanced 1080p output: %@\n"
+             "FSR boost: %@\n"
+             "Motion blur: %@\n"
+             "This is a bounded text bundle. Native performance CSV/JSON artifacts are included below when available.\n",
+            [NSDate date], Theft4DisplayName(), version, build,
+            NSBundle.mainBundle.bundleIdentifier ?: @"unknown", deviceName, machine,
+            systemVersion, (unsigned long long)(physicalMemory >> 20), profile,
+            performanceCapture ? @"ON" : @"OFF", showFPS ? @"ON" : @"OFF",
+            anisotropy ? @"ON" : @"OFF", enhancedOutput ? @"ON" : @"OFF",
+            fsrBoost ? @"ON" : @"OFF", motionBlur ? @"ON" : @"OFF"];
+        BOOL success = Theft4WriteString(stream, metadata, &budget);
+
+        NSURL *applicationSupport = [supportURL URLByDeletingLastPathComponent];
+        NSURL *startupURL = [supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES];
+        NSURL *nativeDiagnosticsURL = [[applicationSupport
+            URLByAppendingPathComponent:@"LibertyRecomp" isDirectory:YES]
+            URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
+            @"Theft4/lifecycle.jsonl", &budget, included, skipped);
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"runtime.log"],
+            @"Theft4/runtime.log", &budget, included, skipped);
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [startupURL URLByAppendingPathComponent:@"runtime.log"],
+            @"Theft4/startup/runtime.log", &budget, included, skipped);
+
+        NSDirectoryEnumerator *nativeEnumerator =
+            [fm enumeratorAtURL:nativeDiagnosticsURL
+     includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+                        options:0 errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
+                            [skipped addObject:[NSString stringWithFormat:@"%@ (%@)",
+                                url.lastPathComponent, enumerationError.localizedDescription]];
+                            return YES;
+                        }];
+        for (NSURL *url in nativeEnumerator) {
+            NSNumber *regular = nil;
+            [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+            if (!regular.boolValue || !Theft4DiagnosticTextExtension(url.pathExtension)) continue;
+            NSString *label = [NSString stringWithFormat:@"LibertyRecomp/Diagnostics/%@",
+                               [url.path substringFromIndex:nativeDiagnosticsURL.path.length + 1]];
+            success = success && Theft4AppendDiagnosticFile(stream, url, label,
+                                                              &budget, included, skipped);
+            if (!success) break;
+        }
+
+        for (NSString *directoryName in @[@"audio-timing", @"frame-captures"]) {
+            NSURL *directoryURL = [startupURL URLByAppendingPathComponent:directoryName
+                                                               isDirectory:YES];
+            NSDirectoryEnumerator *enumerator =
+                [fm enumeratorAtURL:directoryURL includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+                            options:0 errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
+                                [skipped addObject:[NSString stringWithFormat:@"%@ (%@)",
+                                    url.lastPathComponent, enumerationError.localizedDescription]];
+                                return YES;
+                            }];
+            for (NSURL *url in enumerator) {
+                NSNumber *regular = nil;
+                [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+                if (!regular.boolValue || !Theft4DiagnosticTextExtension(url.pathExtension)) continue;
+                NSString *label = [NSString stringWithFormat:@"Theft4/startup/%@/%@",
+                                   directoryName,
+                                   [url.path substringFromIndex:directoryURL.path.length + 1]];
+                success = success && Theft4AppendDiagnosticFile(stream, url, label,
+                                                                  &budget, included, skipped);
+                if (!success) break;
+            }
+            if (!success) break;
+        }
+
+        if (success) {
+            NSString *manifest = [NSString stringWithFormat:
+                @"\n\n===== EXPORT MANIFEST =====\nIncluded files (%lu):\n%@\n"
+                 "Skipped files (%lu):\n%@\nRemaining export budget: %lu bytes\n",
+                (unsigned long)included.count, [included componentsJoinedByString:@"\n"],
+                (unsigned long)skipped.count, [skipped componentsJoinedByString:@"\n"],
+                (unsigned long)budget];
+            success = Theft4WriteString(stream, manifest, &budget);
+        }
+        [stream close];
+
+        if (!success) {
+            [fm removeItemAtURL:outputURL error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_downloadLogButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
+                    message:@"The diagnostic bundle could not be written."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                    style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_downloadLogButton.enabled = YES;
+            [self record:@"diagnostics.export_completed"];
+            UIActivityViewController *share =
+                [[UIActivityViewController alloc] initWithActivityItems:@[outputURL]
+                                                    applicationActivities:nil];
+            UIPopoverPresentationController *popover = share.popoverPresentationController;
+            popover.sourceView = self->_downloadLogButton;
+            popover.sourceRect = self->_downloadLogButton.bounds;
+            [self presentViewController:share animated:YES completion:nil];
+        });
+    });
+}
+
 - (void)refresh {
     theft4_core_snapshot snapshot = {.struct_size = sizeof(snapshot), .abi_version = THEFT4_CORE_ABI_VERSION};
     if (_core && theft4_core_get_snapshot(_core, &snapshot) == THEFT4_OK) {
         NSArray *states = @[@"Core ready", @"Core active", @"Core paused", @"Core stopped"];
         _status.text = _failure ?: (_bootStatus ?: states[snapshot.state]);
-        _detail.text = [NSString stringWithFormat:@"Platform  %s\nCore      %s\nC ABI     %u\nPage size %llu bytes\nGame progress is reported above.\n\nLogs: Application Support/Theft4/lifecycle.jsonl",
+        _detail.text = [NSString stringWithFormat:@"Platform  %s\nCore      %s\nC ABI     %u\nPage size %llu bytes\nGame progress is reported above.\n\nLogs: System → Download Latest Log Capture",
             snapshot.platform, snapshot.core_version, snapshot.abi_version, (unsigned long long)snapshot.host_page_bytes];
     } else {
         _status.text = _failure ?: @"Core stopped";
@@ -370,9 +1105,7 @@ static void bootEvent(void *context, const char *event) {
 - (BOOL)prefersHomeIndicatorAutoHidden { return _executionAttempted; }
 
 - (void)prepareTransferredGame {
-    NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
-        inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
-    [self startGamePreparation:[documents URLByAppendingPathComponent:@"game" isDirectory:YES]];
+    [self startGamePreparation:_gameURL];
 }
 
 - (void)startGamePreparation:(NSURL *)game {
@@ -380,9 +1113,7 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)startTransferredGame {
-    NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
-        inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
-    [self startGamePreparation:[documents URLByAppendingPathComponent:@"game" isDirectory:YES] execute:YES];
+    [self startGamePreparation:_gameURL execute:YES];
 }
 
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute {
@@ -393,9 +1124,13 @@ static void bootEvent(void *context, const char *event) {
 #endif
     BOOL directory = NO;
     if (![NSFileManager.defaultManager fileExistsAtPath:game.path isDirectory:&directory] || !directory) {
-        [self bootEvent:@"Copy the prepared game folder into Theft4 using Finder first."];
+        [self bootEvent:@"Copy the extracted base game into Theft4, then select its title update."];
         return;
     }
+    // The native profiler is armed before the one-shot runtime is created.
+    // Its bounded files survive process termination and are exported from the
+    // System tab on the next launch.
+    setenv("THEFT4_PERFORMANCE_CAPTURE", _performanceCapture.on ? "1" : "0", 1);
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
@@ -421,9 +1156,11 @@ static void bootEvent(void *context, const char *event) {
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
     }
-    NSError *backupError = nil;
-    if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])
-        [self record:@"boot.cannot_exclude_game_from_backup"];
+    if (![self isSetupComplete]) {
+        NSError *backupError = nil;
+        if (![game setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&backupError])
+            [self record:@"boot.cannot_exclude_game_from_backup"];
+    }
     _loading = YES;
     _prepare.enabled = NO;
     _start.enabled = NO;

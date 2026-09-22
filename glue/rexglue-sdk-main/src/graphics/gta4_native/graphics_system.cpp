@@ -1481,11 +1481,58 @@ bool StockShaderCacheEntryMatchesStage(const ShaderCacheEntry& entry, ShaderStag
            (stage == ShaderStage::kPixel && filename_is_vertex && !filename_is_pixel));
 }
 
-// Cached descriptors normally expose the title's 26 logical sampler slots as
-// one Vulkan binding. Pre-M-series Apple GPUs only allow 16 samplers in one
-// shader stage, even though GTA IV uses at most 16 pixel and 10 vertex samplers.
-// Move the vertex shader's sampler array from set 4 to set 6 so MoltenVK emits
-// a separate Metal argument buffer for each shader stage.
+// Diagnostic variant for comparing cached descriptors with Metal direct
+// bindings. The normal bindless shaders contain runtime-sized arrays, which
+// SPIRV-Cross cannot lower without argument buffers.
+bool BoundCachedDescriptorArrays(std::vector<uint32_t>& spirv) {
+  const char* enabled = std::getenv("REX_GTA4_FIXED_DESCRIPTOR_ARRAYS");
+  if (!enabled || std::strcmp(enabled, "1") != 0) return true;
+  if (spirv.size() < 5 || spirv[0] != kSpirvMagic) return false;
+  std::unordered_map<uint32_t, uint32_t> resource_types;
+  std::vector<uint32_t> bounded(spirv.begin(), spirv.begin() + 5);
+  uint32_t next_id = spirv[3];
+  uint32_t uint_type = 0;
+  uint32_t image_length = 0, sampler_length = 0;
+  for (size_t cursor = 5; cursor < spirv.size();) {
+    const uint32_t words = spirv[cursor] >> 16;
+    const uint32_t opcode = spirv[cursor] & 0xFFFFu;
+    if (!words || words > spirv.size() - cursor) return false;
+    if (opcode == 21 && words == 4 && spirv[cursor + 2] == 32 &&
+        spirv[cursor + 3] == 0) uint_type = spirv[cursor + 1];
+    // OpTypeImage, OpTypeSampler and OpTypeSampledImage.
+    if ((opcode == 25 || opcode == 26 || opcode == 27) && words >= 2)
+      resource_types.emplace(spirv[cursor + 1], opcode);
+    const auto resource = opcode == 29 && words == 3
+                              ? resource_types.find(spirv[cursor + 2])
+                              : resource_types.end();
+    if (resource != resource_types.end()) {
+      if (!image_length) {
+        if (!uint_type) {
+          uint_type = next_id++;
+          bounded.insert(bounded.end(), {(4u << 16) | 21u, uint_type, 32u, 0u});
+        }
+        image_length = next_id++;
+        sampler_length = next_id++;
+        bounded.insert(bounded.end(), {
+            (4u << 16) | 43u, uint_type, image_length, kShaderTextureCount,
+            (4u << 16) | 43u, uint_type, sampler_length, kPortableShaderSamplerCount});
+      }
+      // Preserve the result ID and element type; only replace the unbounded
+      // descriptor array with the exact cached layout's declared capacity.
+      bounded.insert(bounded.end(), {(4u << 16) | 28u, spirv[cursor + 1],
+          spirv[cursor + 2], resource->second == 26 ? sampler_length : image_length});
+    } else {
+      bounded.insert(bounded.end(), spirv.begin() + cursor, spirv.begin() + cursor + words);
+    }
+    cursor += words;
+  }
+  bounded[3] = next_id;
+  spirv = std::move(bounded);
+  return true;
+}
+
+// Give vertex samplers a separate set so each shader stage stays within its
+// own sampler limit. Logical fetch slots are compacted separately at draw time.
 bool RemapVertexSamplerSetForSplitCache(std::vector<uint32_t>& spirv) {
   constexpr uint32_t kSpirvHeaderWordCount = 5;
   constexpr uint32_t kOpDecorate = 71;
@@ -6884,7 +6931,10 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     override_entry = nullptr;
   }
 
-  if (!InitializeShaderCache()) {
+  // Shader SPIR-V must use the descriptor ABI selected for this device. Shader
+  // registration can precede the first present, which previously left the
+  // split-sampler decision at its default while building the initial modules.
+  if (!InitializeNativeRendererObjects() || !InitializeShaderCache()) {
     return;
   }
 
@@ -6971,6 +7021,15 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
                      cache_entry->filename);
         return;
       }
+    }
+    if (native_cached_split_sampler_layout_) {
+      if (!BoundCachedDescriptorArrays(stock_early_spirv) ||
+          (!stock_late_spirv.empty() && !BoundCachedDescriptorArrays(stock_late_spirv))) {
+        REXLOG_ERROR("gta4-native: failed to bound cached descriptor arrays");
+        return;
+      }
+      stock_early_spirv_size = stock_early_spirv.size() * sizeof(uint32_t);
+      stock_late_spirv_size = stock_late_spirv.size() * sizeof(uint32_t);
     }
     uint32_t stock_color_output_mask = 0;
     if (command.stage == ShaderStage::kPixel) {
@@ -7140,6 +7199,11 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
            (!override_late_spirv.empty() &&
             !RemapVertexSamplerSetForSplitCache(override_late_spirv)))) {
         override_rejection = "split-sampler-binding";
+      }
+      if (!override_rejection && native_cached_split_sampler_layout_ &&
+          (!BoundCachedDescriptorArrays(override_early_spirv) ||
+           (!override_late_spirv.empty() && !BoundCachedDescriptorArrays(override_late_spirv)))) {
+        override_rejection = "bounded-descriptor-arrays";
       }
       if (!override_rejection && command.stage == ShaderStage::kPixel &&
           HasAlphaTestCapability(override_entry->specialization_constants_mask) &&
@@ -14913,7 +14977,13 @@ bool Gta4NativeGraphicsSystem::InitializeNativePipelineCache() {
   std::copy_n(properties.pipelineCacheUUID, identity.uuid.size(), identity.uuid.begin());
 
   std::vector<uint8_t> initial_data;
-  if (!native_pipeline_cache_root_.empty()) {
+  const char* bypass_cache = std::getenv("REX_GTA4_BYPASS_PIPELINE_CACHE");
+  const bool diagnostic_cache_bypass = bypass_cache && std::strcmp(bypass_cache, "1") == 0;
+  if (diagnostic_cache_bypass) {
+    // Keep diagnostic shader variants out of the user's persistent driver cache.
+    native_pipeline_cache_path_.clear();
+    REXLOG_WARN("gta4-native: persistent pipeline cache bypassed for diagnostics");
+  } else if (!native_pipeline_cache_root_.empty()) {
     native_pipeline_cache_path_ = GetNativePipelineCachePath(native_pipeline_cache_root_, identity);
     if (auto data = ReadBinaryFile(native_pipeline_cache_path_);
         data && ValidateNativePipelineCacheData(*data, identity)) {

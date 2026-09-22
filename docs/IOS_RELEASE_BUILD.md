@@ -172,34 +172,33 @@ Use your legally obtained supported Xbox 360 USA retail base (media ID
 in an emulator is not sufficient proof of this exact version match. Intermediate
 updates are unnecessary for that validated patch. Never bypass identity checks.
 
-The current iOS shell expects a **prepared installation**, not a raw ISO or TU
-package. The repository installer validates/stages the game and update; the
-developer `theft4_inspect`/`theft4_stage` tools and their earlier simulator usage
-are documented in [IOS_APP_BUILD.md](IOS_APP_BUILD.md). There is not yet a polished
-on-device ISO import flow. If you do not have a validated prepared installation,
-complete that developer staging step first; copying an ISO into Files won't boot.
+The current iOS shell accepts an extracted base-game folder, not a raw ISO. On
+first launch it creates the Files transfer folder and asks the user to copy the
+contents of the extracted game into it. After the base copy is present, Theft4
+opens a Files picker for the raw title-update package and validates/extracts the
+required patch itself. The developer `theft4_inspect`/`theft4_stage` tools remain
+available for inspection and offline staging, but they are not required for the
+normal on-device update-import flow.
 
-The transferred layout must be:
+Before selecting the title update, the transferred layout must include:
 
 ```text
 Theft4 Documents/
   game/
     default.xex
-    default.xexp
-    update/  # present when staging an STFS/SVOD title-update package
-    ...the rest of the validated game installation...
+    ...the rest of the extracted game installation...
 ```
 
-`default.xex` and `default.xexp` are always required as siblings. If staging
-used a raw `default.xexp` rather than a packaged update, an `update/` directory
-is not required.
+After the app accepts the update, it publishes `default.xexp` beside
+`default.xex` and, for a packaged update, its extracted payload under `update/`.
+The app rejects wrong-region, wrong-base, or unverified update files.
 
 Launch Theft4 once. It creates **Files → On My iPhone/iPad → Theft4 → game**
 and a short instruction file automatically. Open `game` and copy the **contents**
-of the prepared game folder into it. On a Mac, the same location is available at
+of the extracted base-game folder into it. On a Mac, the same location is available at
 **Finder → your device → Files → Theft4 → game**. Wait until transfer finishes.
-Do not create another nested `game` folder. Preserve the original ISO/update and
-existing saves.
+Do not create another nested `game` folder or copy a raw ISO. Preserve the
+original ISO/update and existing saves.
 
 The current startup path stores runtime user/save/cache data under
 `Library/Application Support/Theft4/startup`, not a transferred `Documents/User`

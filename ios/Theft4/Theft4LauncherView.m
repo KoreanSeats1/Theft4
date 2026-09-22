@@ -143,13 +143,22 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     ],18);
     _prepareButton = Action(@"VERIFY GAME FILES",NO);
     _restartButton = Action(@"RESTART CORE PROBE",NO); _restartButton.accessibilityIdentifier = @"core.restart";
+    _performanceCapture = [UISwitch new];
+    _performanceCapture.onTintColor = Ink(0xB6884D);
+    _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
+    _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE",NO);
+    _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
     _detailLabel = Copy(@"Waiting for runtime information…",12,YES);
     _detailLabel.accessibilityIdentifier = @"core.details";
     _system = Column(@[
         Copy(@"UNDER THE HOOD",13,YES),
         Copy(@"Native ARM64 game code. Your own game files. Your own city.",17,NO),
+        [self setting:@"Detailed performance capture"
+               detail:@"Record up to 600 detailed CPU/GPU frames during the next game launch. Turn this on before playing, keep the slow scene visible long enough to finish the capture, then quit, relaunch, and export. Profiling adds some overhead."
+               toggle:_performanceCapture],
+        _downloadLogButton,
         _prepareButton,_restartButton,_detailLabel,
-        Copy(@"On first launch, Theft4 creates Files → On My iPhone → Theft4 → game. Copy the contents of your prepared game folder into game, then verify. Saves remain private.",13,NO)
+        Copy(@"On first launch, Theft4 creates Files → On My iPhone → Theft4 → game. Copy your extracted game files there, then select the title update when Theft4 asks. Saves remain private.",13,NO)
     ],20);
     _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO;
     _scroll.alwaysBounceVertical = NO; [self addSubview:_scroll];

@@ -160,6 +160,21 @@ same game-folder and diagnostics steps. The official app identifier is
 app uses `com.theft4.m5lab` and keeps separate game files and saves. Before
 switching from Lab to official Theft4, copy or back up the Lab data.
 
+## Back up or transfer saves
+
+The save-transfer controls are in source after build 44 and require a newer
+app build; the published 0.2.0b build 44 does not have them.
+
+With the game closed, reopen Theft4 and choose **System → Export Saves to
+Files**. In Files, open **On My iPhone/iPad → Theft4 → Save Exports** and copy
+the entire dated `Theft4-Saves-…` folder to your backup destination. On the
+destination device, choose **System → Import Saves from Files**, select that
+folder, and confirm the replacement. Theft4 validates the export and creates
+a dated backup of existing saves in **Save Exports** before importing. Restart
+the game after import. The export contains GTA IV saves and profile data, not
+the game installation or title update. The separate historical Lab app has a
+different private container and is not migrated automatically.
+
 ## Common installation failures
 
 | Message or symptom | Cause and fix |

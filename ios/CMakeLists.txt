@@ -415,7 +415,8 @@ set_source_files_properties("${THEFT4_ASSET_CATALOG}" PROPERTIES
 target_link_libraries(Theft4 PRIVATE theft4_core_bridge
     "-framework UIKit" "-framework Metal" "-framework QuartzCore" "-framework SceneKit" "-framework CoreGraphics"
     "-framework GameController" "-framework CoreHaptics"
-    "-framework AVFoundation" "-framework AudioToolbox")
+    "-framework AVFoundation" "-framework AudioToolbox"
+    "-framework UniformTypeIdentifiers")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
 target_compile_options(Theft4 PRIVATE -fobjc-arc)
 if(THEFT4_LAB_BUILD AND THEFT4_ENABLE_GTA4_NATIVE_BACKEND)

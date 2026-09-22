@@ -25,6 +25,8 @@
 @property(nonatomic, readonly) UISegmentedControl *antiAliasing;
 @property(nonatomic, readonly) UISwitch *performanceCapture;
 @property(nonatomic, readonly) UIButton *downloadLogButton;
+@property(nonatomic, readonly) UIButton *exportSavesButton;
+@property(nonatomic, readonly) UIButton *importSavesButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;
 - (void)retireScene;

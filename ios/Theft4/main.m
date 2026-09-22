@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <os/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,6 +146,192 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     return [extensions containsObject:extension.lowercaseString];
 }
 
+static NSError *Theft4SaveError(NSString *message) {
+    return [NSError errorWithDomain:@"Theft4SaveTransfer" code:1
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
+// Only regular files and directories are accepted. A provider-supplied link must
+// never redirect a copy out of the selected folder or into another app location.
+static BOOL Theft4ValidateSaveTree(NSURL *root, NSError **error) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSNumber *isDirectory = nil, *isLink = nil;
+    if (![root getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:error] ||
+        ![root getResourceValue:&isLink forKey:NSURLIsSymbolicLinkKey error:error] ||
+        !isDirectory.boolValue || isLink.boolValue) {
+        if (error && !*error) *error = Theft4SaveError(@"The save set is not a folder.");
+        return NO;
+    }
+    __block NSError *scanFailure = nil;
+    NSDirectoryEnumerator<NSURL *> *items = [fm enumeratorAtURL:root
+        includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey,
+                                     NSURLIsSymbolicLinkKey, NSURLFileSizeKey]
+                           options:0 errorHandler:^BOOL(NSURL *url, NSError *scanError) {
+        scanFailure = scanError ?: Theft4SaveError([NSString stringWithFormat:
+            @"Could not read %@.", url.lastPathComponent]);
+        return NO;
+    }];
+    if (!items) {
+        if (error && !*error) *error = Theft4SaveError(@"Could not enumerate the save set.");
+        return NO;
+    }
+    unsigned long long bytes = 0;
+    NSUInteger count = 0;
+    for (NSURL *item in items) {
+        NSNumber *directory = nil, *regular = nil, *link = nil, *size = nil;
+        if (![item getResourceValue:&directory forKey:NSURLIsDirectoryKey error:error] ||
+            ![item getResourceValue:&regular forKey:NSURLIsRegularFileKey error:error] ||
+            ![item getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:error] ||
+            (regular.boolValue && ![item getResourceValue:&size forKey:NSURLFileSizeKey error:error])) return NO;
+        if (link.boolValue || (!directory.boolValue && !regular.boolValue)) {
+            if (error) *error = Theft4SaveError(@"The save set contains a link or unsupported file.");
+            return NO;
+        }
+        bytes += size.unsignedLongLongValue;
+        if (++count > 8192 || bytes > 1024ULL * 1024ULL * 1024ULL) {
+            if (error) *error = Theft4SaveError(@"The save set exceeds the 1 GB / 8192-item safety limit.");
+            return NO;
+        }
+    }
+    if (scanFailure) {
+        if (error) *error = scanFailure;
+        return NO;
+    }
+    return error == nil || *error == nil;
+}
+
+static NSURL *Theft4SaveProfileURL(NSURL *support) {
+    return [[[[support URLByAppendingPathComponent:@"user" isDirectory:YES]
+        URLByAppendingPathComponent:@"545407F2" isDirectory:YES]
+        URLByAppendingPathComponent:@"profile" isDirectory:YES] copy];
+}
+
+static NSURL *Theft4CreateSaveExport(NSURL *support, NSURL *documents, NSError **error) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *saves = [support URLByAppendingPathComponent:@"saves" isDirectory:YES];
+    NSURL *profile = Theft4SaveProfileURL(support);
+    BOOL hasSaves = [fm fileExistsAtPath:saves.path];
+    BOOL hasProfile = [fm fileExistsAtPath:profile.path];
+    if (!hasSaves && !hasProfile) {
+        if (error) *error = Theft4SaveError(@"No saves or GTA IV profile data exist yet.");
+        return nil;
+    }
+    if ((hasSaves && !Theft4ValidateSaveTree(saves, error)) ||
+        (hasProfile && !Theft4ValidateSaveTree(profile, error))) return nil;
+    NSURL *exports = [documents URLByAppendingPathComponent:@"Save Exports" isDirectory:YES];
+    if (![fm createDirectoryAtURL:exports withIntermediateDirectories:YES attributes:nil error:error]) return nil;
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"yyyy-MM-dd-HHmmss";
+    NSString *name = [NSString stringWithFormat:@"Theft4-Saves-%@-%@",
+        [formatter stringFromDate:NSDate.date], [NSUUID.UUID.UUIDString substringToIndex:8]];
+    NSURL *output = [exports URLByAppendingPathComponent:name isDirectory:YES];
+    if (![fm createDirectoryAtURL:output withIntermediateDirectories:NO attributes:nil error:error]) return nil;
+    BOOL success = (!hasSaves || [fm copyItemAtURL:saves
+        toURL:[output URLByAppendingPathComponent:@"saves" isDirectory:YES] error:error]) &&
+        (!hasProfile || [fm copyItemAtURL:profile
+        toURL:[output URLByAppendingPathComponent:@"profile" isDirectory:YES] error:error]);
+    if (success) {
+        NSDictionary *manifest = @{@"format": @"theft4-save-export", @"version": @1,
+            @"title_id": @"545407F2", @"saves": @(hasSaves), @"profile": @(hasProfile)};
+        NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:error];
+        success = data && [data writeToURL:[output URLByAppendingPathComponent:@"theft4-saves.json"]
+                                  options:NSDataWritingAtomic error:error];
+    }
+    if (!success) { [fm removeItemAtURL:output error:nil]; return nil; }
+    return output;
+}
+
+static BOOL Theft4ValidateSaveExport(NSURL *selected, BOOL *hasSaves, BOOL *hasProfile,
+                                     NSError **error) {
+    NSURL *manifestURL = [selected URLByAppendingPathComponent:@"theft4-saves.json"];
+    NSNumber *regular = nil, *link = nil, *size = nil;
+    if (![manifestURL getResourceValue:&regular forKey:NSURLIsRegularFileKey error:error] ||
+        ![manifestURL getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:error] ||
+        ![manifestURL getResourceValue:&size forKey:NSURLFileSizeKey error:error] ||
+        !regular.boolValue || link.boolValue || size.unsignedLongLongValue > 65536) {
+        if (error) *error = Theft4SaveError(@"The selected folder has no valid Theft4 save manifest.");
+        return NO;
+    }
+    NSData *data = [NSData dataWithContentsOfURL:manifestURL options:0 error:error];
+    NSDictionary *manifest = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:error] : nil;
+    if (![manifest isKindOfClass:NSDictionary.class] ||
+        ![manifest[@"format"] isEqual:@"theft4-save-export"] ||
+        ![manifest[@"version"] isEqual:@1] ||
+        ![manifest[@"title_id"] isEqual:@"545407F2"]) {
+        if (error) *error = Theft4SaveError(@"Choose a Theft4-Saves export folder for GTA IV.");
+        return NO;
+    }
+    *hasSaves = [manifest[@"saves"] boolValue];
+    *hasProfile = [manifest[@"profile"] boolValue];
+    if (!*hasSaves && !*hasProfile) {
+        if (error) *error = Theft4SaveError(@"The selected save export is empty.");
+        return NO;
+    }
+    return (!*hasSaves || Theft4ValidateSaveTree(
+        [selected URLByAppendingPathComponent:@"saves" isDirectory:YES], error)) &&
+        (!*hasProfile || Theft4ValidateSaveTree(
+        [selected URLByAppendingPathComponent:@"profile" isDirectory:YES], error));
+}
+
+static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *documents,
+                                    NSURL **backupURL, NSError **error) {
+    BOOL hasSaves = NO, hasProfile = NO;
+    if (!Theft4ValidateSaveExport(selected, &hasSaves, &hasProfile, error)) return NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *staging = [support URLByAppendingPathComponent:
+        [@"save-import-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
+    if (![fm createDirectoryAtURL:staging withIntermediateDirectories:NO attributes:nil error:error])
+        return NO;
+    NSURL *stagedSaves = [staging URLByAppendingPathComponent:@"saves" isDirectory:YES];
+    NSURL *stagedProfile = [staging URLByAppendingPathComponent:@"profile" isDirectory:YES];
+    BOOL staged = (!hasSaves || [fm copyItemAtURL:
+        [selected URLByAppendingPathComponent:@"saves" isDirectory:YES]
+        toURL:stagedSaves error:error]) &&
+        (!hasProfile || [fm copyItemAtURL:
+        [selected URLByAppendingPathComponent:@"profile" isDirectory:YES]
+        toURL:stagedProfile error:error]);
+    if (!staged) { [fm removeItemAtURL:staging error:nil]; return NO; }
+
+    NSURL *saves = [support URLByAppendingPathComponent:@"saves" isDirectory:YES];
+    NSURL *profile = Theft4SaveProfileURL(support);
+    BOOL oldSaves = hasSaves && [fm fileExistsAtPath:saves.path];
+    BOOL oldProfile = hasProfile && [fm fileExistsAtPath:profile.path];
+    if (oldSaves || oldProfile) {
+        // Preserve a user-visible recovery copy before modifying either root.
+        *backupURL = Theft4CreateSaveExport(support, documents, error);
+        if (!*backupURL) { [fm removeItemAtURL:staging error:nil]; return NO; }
+    }
+    NSURL *rollbackSaves = [staging URLByAppendingPathComponent:@"old-saves" isDirectory:YES];
+    NSURL *rollbackProfile = [staging URLByAppendingPathComponent:@"old-profile" isDirectory:YES];
+    BOOL savedOldSaves = NO, savedOldProfile = NO;
+    BOOL installedSaves = NO, installedProfile = NO;
+    BOOL success = YES;
+    if (oldSaves) success = savedOldSaves = [fm moveItemAtURL:saves toURL:rollbackSaves error:error];
+    if (success && oldProfile)
+        success = savedOldProfile = [fm moveItemAtURL:profile toURL:rollbackProfile error:error];
+    if (success && hasSaves)
+        success = installedSaves = [fm moveItemAtURL:stagedSaves toURL:saves error:error];
+    if (success && hasProfile) {
+        success = [fm createDirectoryAtURL:profile.URLByDeletingLastPathComponent
+             withIntermediateDirectories:YES attributes:nil error:error];
+        if (success) success = installedProfile = [fm moveItemAtURL:stagedProfile
+                                                              toURL:profile error:error];
+    }
+    if (!success) {
+        if (installedSaves) [fm removeItemAtURL:saves error:nil];
+        if (installedProfile) [fm removeItemAtURL:profile error:nil];
+        BOOL restored = YES;
+        if (savedOldSaves) restored &= [fm moveItemAtURL:rollbackSaves toURL:saves error:nil];
+        if (savedOldProfile) restored &= [fm moveItemAtURL:rollbackProfile toURL:profile error:nil];
+        if (!restored && error) *error = Theft4SaveError(
+            @"Import failed and automatic rollback was incomplete. Your backup is in Files → Theft4 → Save Exports.");
+        else [fm removeItemAtURL:staging error:nil];
+        return NO;
+    }
+    [fm removeItemAtURL:staging error:nil];
+    return YES;
+}
+
 @interface Theft4ViewController : GCEventViewController <UIDocumentPickerDelegate> {
     theft4_core *_core;
     NSURL *_supportURL;
@@ -185,6 +372,10 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISegmentedControl *_antiAliasing;
     UISwitch *_performanceCapture;
     UIButton *_downloadLogButton;
+    UIButton *_exportSavesButton;
+    UIButton *_importSavesButton;
+    UIDocumentPickerViewController *_saveImportPicker;
+    BOOL _saveTransferBusy;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
     BOOL _legacyIPadProfile;
@@ -219,6 +410,9 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
 - (void)checkBaseGame;
 - (void)chooseTitleUpdate;
 - (void)downloadLatestLogCapture;
+- (void)exportSavesToFiles;
+- (void)importSavesFromFiles;
+- (void)showSaveMessage:(NSString *)title detail:(NSString *)detail;
 - (void)updateFrameTimeHUD;
 - (void)applyLowPowerPreset;
 - (void)syncA19OutputChoice;
@@ -334,6 +528,12 @@ static void bootEvent(void *context, const char *event) {
     _downloadLogButton = _bringupOverlay.downloadLogButton;
     [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
                  forControlEvents:UIControlEventTouchUpInside];
+    _exportSavesButton = _bringupOverlay.exportSavesButton;
+    _importSavesButton = _bringupOverlay.importSavesButton;
+    [_exportSavesButton addTarget:self action:@selector(exportSavesToFiles)
+                forControlEvents:UIControlEventTouchUpInside];
+    [_importSavesButton addTarget:self action:@selector(importSavesFromFiles)
+                forControlEvents:UIControlEventTouchUpInside];
     NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
                          _motionBlur,_performanceCapture];
     NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
@@ -778,6 +978,65 @@ static void bootEvent(void *context, const char *event) {
 }
 #endif
 
+- (void)showSaveMessage:(NSString *)title detail:(NSString *)detail {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+        message:detail preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+        style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)exportSavesToFiles {
+    if (!_supportURL || _loading || _gamePresentation || _saveTransferBusy) {
+        [self showSaveMessage:@"CLOSE THE GAME FIRST"
+                     detail:@"Quit and reopen Theft4 before transferring saves."];
+        return;
+    }
+    NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
+        inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
+    if (!documents) {
+        [self showSaveMessage:@"SAVE EXPORT FAILED" detail:@"The Files folder is unavailable."];
+        return;
+    }
+    _saveTransferBusy = YES;
+    _exportSavesButton.enabled = NO;
+    _importSavesButton.enabled = NO;
+    NSURL *support = [_supportURL copy];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        NSURL *output = Theft4CreateSaveExport(support, documents, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_exportSavesButton.enabled = YES;
+            self->_importSavesButton.enabled = YES;
+            self->_saveTransferBusy = NO;
+            if (output) {
+                [self record:@"saves.export_completed"];
+                [self showSaveMessage:@"SAVES EXPORTED"
+                             detail:[NSString stringWithFormat:
+                    @"Open Files → On My iPhone/iPad → Theft4 → Save Exports → %@. Copy this entire folder to your backup location.",
+                    output.lastPathComponent]];
+            } else {
+                [self record:@"saves.export_failed"];
+                [self showSaveMessage:@"SAVE EXPORT FAILED"
+                             detail:error.localizedDescription ?: @"Could not copy the save data."];
+            }
+        });
+    });
+}
+
+- (void)importSavesFromFiles {
+    if (!_supportURL || _loading || _gamePresentation || _saveTransferBusy) {
+        [self showSaveMessage:@"CLOSE THE GAME FIRST"
+                     detail:@"Quit and reopen Theft4 before transferring saves."];
+        return;
+    }
+    _saveImportPicker = [[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+    _saveImportPicker.delegate = self;
+    _saveImportPicker.allowsMultipleSelection = NO;
+    [self presentViewController:_saveImportPicker animated:YES completion:nil];
+}
+
 - (void)chooseTitleUpdate {
     if (!_gameURL) return;
     const BOOL hasBase = [NSFileManager.defaultManager
@@ -787,7 +1046,7 @@ static void bootEvent(void *context, const char *event) {
         return;
     }
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initWithDocumentTypes:@[@"public.data"] inMode:UIDocumentPickerModeImport];
+        initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     [self presentViewController:picker animated:YES completion:nil];
@@ -795,7 +1054,65 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller
 didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    (void)controller;
+    if (controller == _saveImportPicker) {
+        _saveImportPicker = nil;
+        NSURL *selected = urls.firstObject;
+        if (!selected) return;
+        BOOL scoped = [selected startAccessingSecurityScopedResource];
+        NSError *validationError = nil;
+        BOOL hasSaves = NO, hasProfile = NO;
+        BOOL valid = Theft4ValidateSaveExport(selected, &hasSaves, &hasProfile,
+                                              &validationError);
+        if (!valid) {
+            if (scoped) [selected stopAccessingSecurityScopedResource];
+            [self showSaveMessage:@"INVALID SAVE EXPORT"
+                         detail:validationError.localizedDescription ?: @"Choose a Theft4-Saves folder."];
+            return;
+        }
+        NSString *contents = hasSaves && hasProfile ? @"saved games and profile data" :
+            (hasSaves ? @"saved games" : @"profile data");
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"IMPORT SAVES?"
+            message:[NSString stringWithFormat:
+                @"This will replace this app's %@ with the selected export. Existing data will be backed up to Files → Theft4 → Save Exports first. Keep the game closed during import.",
+                contents] preferredStyle:UIAlertControllerStyleAlert];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"CANCEL"
+            style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+                (void)action;
+                if (scoped) [selected stopAccessingSecurityScopedResource];
+            }]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"IMPORT"
+            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                (void)action;
+                self->_saveTransferBusy = YES;
+                self->_importSavesButton.enabled = NO;
+                self->_exportSavesButton.enabled = NO;
+                NSURL *support = [self->_supportURL copy];
+                NSURL *documents = [NSFileManager.defaultManager URLForDirectory:NSDocumentDirectory
+                    inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    NSError *error = nil;
+                    NSURL *backup = nil;
+                    BOOL success = documents && Theft4InstallSaveExport(selected, support,
+                                                                         documents, &backup, &error);
+                    if (scoped) [selected stopAccessingSecurityScopedResource];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        self->_importSavesButton.enabled = YES;
+                        self->_exportSavesButton.enabled = YES;
+                        self->_saveTransferBusy = NO;
+                        [self record:success ? @"saves.import_completed" : @"saves.import_failed"];
+                        NSString *detail = success ?
+                            (backup ? [NSString stringWithFormat:
+                                @"Save data is ready for the next game launch. Previous data was backed up as %@ in Files → Theft4 → Save Exports.",
+                                backup.lastPathComponent] : @"Save data is ready for the next game launch.") :
+                            (error.localizedDescription ?: @"The save data could not be imported.");
+                        [self showSaveMessage:success ? @"SAVES IMPORTED" : @"SAVE IMPORT FAILED"
+                                     detail:detail];
+                    });
+                });
+            }]];
+        [self presentViewController:confirm animated:YES completion:nil];
+        return;
+    }
     NSURL *selected = urls.firstObject;
     if (!selected || !_gameURL) {
         [self showInstallationTitle:@"TITLE UPDATE NOT INSTALLED"
@@ -874,7 +1191,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    (void)controller;
+    if (controller == _saveImportPicker) {
+        _saveImportPicker = nil;
+        return;
+    }
     if (_installationStep == Theft4InstallationStepSelectingUpdate) {
         [self showInstallationTitle:@"SELECT TITLE UPDATE"
                              detail:@"Choose the matching GTA IV Xbox 360 title-update file when you are ready."
@@ -1266,7 +1586,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute {
 #ifdef THEFT4_HAS_GAME_LOADER
-    if (_loading || _executionAttempted || !game || !_supportURL || _failure) return;
+    if (_loading || _executionAttempted || _saveTransferBusy || !game || !_supportURL || _failure) return;
 #ifndef THEFT4_HAS_GAME_STARTUP
     if (execute) return;
 #endif

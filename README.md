@@ -77,6 +77,25 @@ opens the share sheet. Send the file with the device model, scene/route,
 graphics settings and whether the device felt hot. Profiling adds overhead;
 repeat normal play with capture off when judging FPS.
 
+### Move or back up saves with Files
+
+This feature is in `main` after the 0.2.0b build 44 release; it requires a
+subsequent app build and is not present in the currently published IPA/TestFlight
+build 44.
+
+Quit the game and reopen Theft4, then open **System → Export Saves to Files**.
+Theft4 copies the saved-game packages and GTA IV profile data into a dated
+`Theft4-Saves-…` folder under **Files → On My iPhone/iPad → Theft4 → Save Exports**.
+Copy the **entire folder** to iCloud Drive, another device, or another backup
+location. To restore, open **System → Import Saves from Files** and select that
+`Theft4-Saves-…` folder. Theft4 validates it, asks before replacing data, and
+backs up the current saves to **Save Exports** first. Restart the game after
+import. Game installation files are not included in save exports.
+
+The historical `com.theft4.m5lab` app has a separate private container; this
+feature does not automatically extract its saves. Keep that app until its data
+has been transferred or backed up.
+
 ## Current status
 
 The following has been demonstrated on a physical ARM64 iPad:

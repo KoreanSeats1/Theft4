@@ -308,6 +308,10 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
     _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE", NO);
     _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
+    _exportSavesButton = Action(@"EXPORT SAVES TO FILES", NO);
+    _exportSavesButton.accessibilityIdentifier = @"saves.export";
+    _importSavesButton = Action(@"IMPORT SAVES FROM FILES", NO);
+    _importSavesButton.accessibilityIdentifier = @"saves.import";
     _detailLabel = Copy(@"Waiting for runtime information…", 12, YES);
     _detailLabel.accessibilityIdentifier = @"core.details";
     NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
@@ -316,6 +320,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"DETAILED PERFORMANCE CAPTURE" detail:@"Capture up to 600 detailed frames on the next game launch. Reproduce the slow scene, quit, reopen Theft4, then export the latest capture." toggle:_performanceCapture],
         _downloadLogButton,
+        Copy(@"SAVE TRANSFER", 13, YES),
+        Copy(@"Export a dated backup to Files → On My iPhone/iPad → Theft4 → Save Exports. Import a Theft4 save-export folder only while the game is closed; current saves are backed up first.", 12, NO),
+        _exportSavesButton, _importSavesButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)
     ], 20);

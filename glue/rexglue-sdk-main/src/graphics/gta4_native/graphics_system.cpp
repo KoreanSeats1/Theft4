@@ -175,11 +175,6 @@ REXCVAR_DEFINE_STRING(
 REXCVAR_DEFINE_BOOL(
     gta4_native_pipeline_prewarm, true, "GTA IV/Graphics/Native Renderer",
     "Compile draw pipelines on the render worker as draw commands arrive, before frame recording");
-REXCVAR_DEFINE_UINT32(
-    gta4_native_pipeline_queue_capacity, 64, "GTA IV/Graphics/Native Renderer",
-    "Maximum demanded and speculative native pipeline jobs retained by the compiler")
-    .range(1, 64)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(
     gta4_native_light_overrides, "pair", "GTA IV/Graphics/Native Renderer",
     "Shader override selection: stock modules, legacy stage selection, or approved pipeline pairs")
@@ -1645,18 +1640,11 @@ constexpr DirtyStateLayout NativeConstantDirtyLayout() {
   layout.boolean_constants = {kBooleanConstantDirtySpans, 1};
   return layout;
 }
-constexpr uint32_t kDescriptorSetCount = 7;
+constexpr uint32_t kDescriptorSetCount = 6;
 constexpr uint32_t kShaderTextureCount = kTextureStageCount;
-// Apple 7 GPUs expose only 16 samplers to each shader stage. The guest's 26
-// logical fetch slots are shared by vertex and pixel shaders, so compact the
-// slots used by each draw into a stage-local table rather than partitioning
-// the logical slot numbers between stages.
-constexpr uint32_t kPortableShaderSamplerCount = 16;
-constexpr uint32_t kSplitSamplerDescriptorCount = kPortableShaderSamplerCount * 2;
 static_assert(kShaderTextureCount < std::numeric_limits<uint32_t>::digits);
 constexpr uint32_t kSupportedShaderTextureMask = (uint32_t{1} << kShaderTextureCount) - uint32_t{1};
-constexpr uint32_t kDrawDescriptorSetCount = 6;
-constexpr uint32_t kIndexedDrawDescriptorSetCount = 5;
+constexpr uint32_t kDrawDescriptorSetCount = 5;
 constexpr uint32_t kNativeDescriptorFrameCopyCount = 2;
 constexpr uint32_t kNativeIndexedImageDescriptorSetCount = 4;
 constexpr uint32_t kNativeIndexedStorageDescriptorsPerCopy = 1;
@@ -1666,7 +1654,7 @@ constexpr uint32_t kNativeIndexedDesiredSamplerCapacity = 1024;
 // null/fallback slot require 27 stable locations in each table.
 constexpr uint32_t kNativeIndexedMinimumTextureCapacity = kShaderTextureCount + 1;
 constexpr uint32_t kNativeIndexedMinimumSamplerCapacity = kShaderTextureCount + 1;
-static_assert(kNativeIndexedImageDescriptorSetCount + 3 == kDescriptorSetCount);
+static_assert(kNativeIndexedImageDescriptorSetCount + 2 == kDescriptorSetCount);
 constexpr uint32_t kTextureFetchBase = 0x480;
 constexpr uint32_t kTextureFetchSize = 0x18;
 constexpr uint32_t kTextureHandleBase = 0x30F8;
@@ -1689,106 +1677,6 @@ bool StockShaderCacheEntryMatchesStage(const ShaderCacheEntry& entry, ShaderStag
   const bool filename_is_pixel = std::strstr(entry.filename, "_ps") != nullptr;
   return !((stage == ShaderStage::kVertex && filename_is_pixel && !filename_is_vertex) ||
            (stage == ShaderStage::kPixel && filename_is_vertex && !filename_is_pixel));
-}
-
-// Diagnostic variant for comparing cached descriptors with Metal direct
-// bindings. The normal bindless shaders contain runtime-sized arrays, which
-// SPIRV-Cross cannot lower without argument buffers.
-bool BoundCachedDescriptorArrays(std::vector<uint32_t>& spirv) {
-  const char* enabled = std::getenv("REX_GTA4_FIXED_DESCRIPTOR_ARRAYS");
-  if (!enabled || std::strcmp(enabled, "1") != 0) return true;
-  if (spirv.size() < 5 || spirv[0] != kSpirvMagic) return false;
-  std::unordered_map<uint32_t, uint32_t> resource_types;
-  std::vector<uint32_t> bounded(spirv.begin(), spirv.begin() + 5);
-  uint32_t next_id = spirv[3];
-  uint32_t uint_type = 0;
-  uint32_t image_length = 0, sampler_length = 0;
-  for (size_t cursor = 5; cursor < spirv.size();) {
-    const uint32_t words = spirv[cursor] >> 16;
-    const uint32_t opcode = spirv[cursor] & 0xFFFFu;
-    if (!words || words > spirv.size() - cursor) return false;
-    if (opcode == 21 && words == 4 && spirv[cursor + 2] == 32 &&
-        spirv[cursor + 3] == 0) uint_type = spirv[cursor + 1];
-    // OpTypeImage, OpTypeSampler and OpTypeSampledImage.
-    if ((opcode == 25 || opcode == 26 || opcode == 27) && words >= 2)
-      resource_types.emplace(spirv[cursor + 1], opcode);
-    const auto resource = opcode == 29 && words == 3
-                              ? resource_types.find(spirv[cursor + 2])
-                              : resource_types.end();
-    if (resource != resource_types.end()) {
-      if (!image_length) {
-        if (!uint_type) {
-          uint_type = next_id++;
-          bounded.insert(bounded.end(), {(4u << 16) | 21u, uint_type, 32u, 0u});
-        }
-        image_length = next_id++;
-        sampler_length = next_id++;
-        bounded.insert(bounded.end(), {
-            (4u << 16) | 43u, uint_type, image_length, kShaderTextureCount,
-            (4u << 16) | 43u, uint_type, sampler_length, kPortableShaderSamplerCount});
-      }
-      // Preserve the result ID and element type; only replace the unbounded
-      // descriptor array with the exact cached layout's declared capacity.
-      bounded.insert(bounded.end(), {(4u << 16) | 28u, spirv[cursor + 1],
-          spirv[cursor + 2], resource->second == 26 ? sampler_length : image_length});
-    } else {
-      bounded.insert(bounded.end(), spirv.begin() + cursor, spirv.begin() + cursor + words);
-    }
-    cursor += words;
-  }
-  bounded[3] = next_id;
-  spirv = std::move(bounded);
-  return true;
-}
-
-// Give vertex samplers a separate set so each shader stage stays within its
-// own sampler limit. Logical fetch slots are compacted separately at draw time.
-bool RemapVertexSamplerSetForSplitCache(std::vector<uint32_t>& spirv) {
-  constexpr uint32_t kSpirvHeaderWordCount = 5;
-  constexpr uint32_t kOpDecorate = 71;
-  constexpr uint32_t kDecorationDescriptorSet = 34;
-  constexpr uint32_t kSamplerDescriptorSet = 4;
-  constexpr uint32_t kVertexSamplerDescriptorSet = 6;
-  if (spirv.size() < kSpirvHeaderWordCount || spirv[0] != kSpirvMagic) {
-    return false;
-  }
-
-  std::vector<uint32_t> sampler_targets;
-  for (size_t cursor = kSpirvHeaderWordCount; cursor < spirv.size();) {
-    const uint32_t instruction = spirv[cursor];
-    const uint32_t word_count = instruction >> 16;
-    const uint32_t opcode = instruction & 0xFFFFu;
-    if (!word_count || word_count > spirv.size() - cursor) {
-      return false;
-    }
-    if (opcode == kOpDecorate && word_count >= 4 &&
-        spirv[cursor + 2] == kDecorationDescriptorSet &&
-        spirv[cursor + 3] == kSamplerDescriptorSet) {
-      sampler_targets.push_back(spirv[cursor + 1]);
-    }
-    cursor += word_count;
-  }
-  if (sampler_targets.empty()) {
-    return true;
-  }
-  if (sampler_targets.size() != 1) {
-    return false;
-  }
-
-  uint32_t patched_sets = 0;
-  for (size_t cursor = kSpirvHeaderWordCount; cursor < spirv.size();) {
-    const uint32_t word_count = spirv[cursor] >> 16;
-    const uint32_t opcode = spirv[cursor] & 0xFFFFu;
-    if (opcode == kOpDecorate && word_count >= 4 &&
-        spirv[cursor + 1] == sampler_targets.front() &&
-        spirv[cursor + 2] == kDecorationDescriptorSet &&
-        spirv[cursor + 3] == kSamplerDescriptorSet) {
-      spirv[cursor + 3] = kVertexSamplerDescriptorSet;
-      ++patched_sets;
-    }
-    cursor += word_count;
-  }
-  return patched_sets == 1;
 }
 constexpr uint32_t kDepthStencilOffset = 12448;
 constexpr uint32_t kResourceDataOffset = 24;
@@ -2442,8 +2330,6 @@ static_assert(sizeof(NativeSharedConstants) == 0x420);
 
 struct NativeDrawDescriptorKey {
   uint64_t layout_epoch = 0;
-  uint32_t vertex_sampler_mask = 0;
-  uint32_t pixel_sampler_mask = 0;
   // One incarnation per real image in each shader slot. Dimensions remain part
   // of the typed view arrays; recycled VkImageView handles cannot alias a key.
   std::array<uint64_t, kShaderTextureCount> image_lifetimes{};
@@ -2463,8 +2349,6 @@ struct NativeDrawDescriptorKeyHash {
       hash = XXH3_64bits_withSeed(&value, sizeof(value), hash);
     };
     add(key.layout_epoch);
-    add(key.vertex_sampler_mask);
-    add(key.pixel_sampler_mask);
     add(key.image_lifetimes);
     add(key.images_2d);
     add(key.images_2d_array);
@@ -2474,37 +2358,6 @@ struct NativeDrawDescriptorKeyHash {
     return size_t(hash);
   }
 };
-
-bool BuildSplitSamplerMapping(
-    uint32_t vertex_mask, uint32_t pixel_mask,
-    std::array<uint32_t, kShaderTextureCount>& descriptor_indices) {
-  vertex_mask &= kSupportedShaderTextureMask;
-  pixel_mask &= kSupportedShaderTextureMask;
-  descriptor_indices.fill(0);
-
-  uint32_t shared_count = 0;
-  const uint32_t shared_mask = vertex_mask & pixel_mask;
-  for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-    if (shared_mask & (uint32_t{1} << stage)) {
-      if (shared_count >= kPortableShaderSamplerCount) return false;
-      descriptor_indices[stage] = shared_count++;
-    }
-  }
-  uint32_t vertex_count = shared_count;
-  uint32_t pixel_count = shared_count;
-  for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-    const uint32_t stage_bit = uint32_t{1} << stage;
-    if ((vertex_mask & stage_bit) && !(shared_mask & stage_bit)) {
-      if (vertex_count >= kPortableShaderSamplerCount) return false;
-      descriptor_indices[stage] = vertex_count++;
-    }
-    if ((pixel_mask & stage_bit) && !(shared_mask & stage_bit)) {
-      if (pixel_count >= kPortableShaderSamplerCount) return false;
-      descriptor_indices[stage] = pixel_count++;
-    }
-  }
-  return true;
-}
 
 float MotionBlurTimeScale(const EnvironmentalDataV1* environmental_data) {
   constexpr float kReferenceFramesPerSecond = 30.0f;
@@ -7521,10 +7374,7 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     override_entry = nullptr;
   }
 
-  // Shader SPIR-V must use the descriptor ABI selected for this device. Shader
-  // registration can precede the first present, which previously left the
-  // split-sampler decision at its default while building the initial modules.
-  if (!InitializeNativeRendererObjects() || !InitializeShaderCache()) {
+  if (!InitializeShaderCache()) {
     return;
   }
 
@@ -7602,24 +7452,6 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
       REXLOG_ERROR("gta4-native: invalid stock early SPIR-V module for shader {}",
                    cache_entry->filename);
       return;
-    }
-    if (command.stage == ShaderStage::kVertex && native_cached_split_sampler_layout_) {
-      if (!RemapVertexSamplerSetForSplitCache(stock_early_spirv) ||
-          (!stock_late_spirv.empty() &&
-           !RemapVertexSamplerSetForSplitCache(stock_late_spirv))) {
-        REXLOG_ERROR("gta4-native: failed to split cached vertex sampler binding for shader {}",
-                     cache_entry->filename);
-        return;
-      }
-    }
-    if (native_cached_split_sampler_layout_) {
-      if (!BoundCachedDescriptorArrays(stock_early_spirv) ||
-          (!stock_late_spirv.empty() && !BoundCachedDescriptorArrays(stock_late_spirv))) {
-        REXLOG_ERROR("gta4-native: failed to bound cached descriptor arrays");
-        return;
-      }
-      stock_early_spirv_size = stock_early_spirv.size() * sizeof(uint32_t);
-      stock_late_spirv_size = stock_late_spirv.size() * sizeof(uint32_t);
     }
     uint32_t stock_color_output_mask = 0;
     if (command.stage == ShaderStage::kPixel) {
@@ -7782,18 +7614,6 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
         } else if (late_early_tests == EarlyFragmentTestsStatus::kPresent) {
           override_rejection = "late-early-fragment-tests";
         }
-      }
-      if (!override_rejection && command.stage == ShaderStage::kVertex &&
-          native_cached_split_sampler_layout_ &&
-          (!RemapVertexSamplerSetForSplitCache(override_early_spirv) ||
-           (!override_late_spirv.empty() &&
-            !RemapVertexSamplerSetForSplitCache(override_late_spirv)))) {
-        override_rejection = "split-sampler-binding";
-      }
-      if (!override_rejection && native_cached_split_sampler_layout_ &&
-          (!BoundCachedDescriptorArrays(override_early_spirv) ||
-           (!override_late_spirv.empty() && !BoundCachedDescriptorArrays(override_late_spirv)))) {
-        override_rejection = "bounded-descriptor-arrays";
       }
       if (!override_rejection && command.stage == ShaderStage::kPixel &&
           HasAlphaTestCapability(override_entry->specialization_constants_mask) &&
@@ -15012,9 +14832,6 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
   }
   native_descriptor_backend_ = policy.backend;
   const bool indexed = native_descriptor_backend_ == NativeDescriptorBackend::kIndexed;
-  native_cached_split_sampler_layout_ =
-      !indexed && limits.maxPerStageDescriptorSamplers < kShaderTextureCount &&
-      limits.maxPerStageDescriptorSamplers >= kPortableShaderSamplerCount;
   native_descriptor_capacity_ =
       indexed ? indexed_capacity.sampled_images_per_set : kShaderTextureCount;
   native_sampler_descriptor_capacity_ = indexed ? indexed_capacity.samplers : kShaderTextureCount;
@@ -15027,25 +14844,15 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
   native_descriptor_layouts_update_after_bind_ = indexed;
 
   for (uint32_t set = 0; set < kDescriptorSetCount; ++set) {
-    std::array<VkDescriptorSetLayoutBinding, 1> bindings{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorCount = set < 4 ? native_descriptor_capacity_
-                                   : set == 4 ? native_sampler_descriptor_capacity_
-                                   : set == 5 ? 1
-                                              : 0;
-    bindings[0].descriptorType = set < 4 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                  : set == 4 || set == 6 ? VK_DESCRIPTOR_TYPE_SAMPLER
-                                                        : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    uint32_t binding_count = set == 6 ? 0 : 1;
-    if (set == 4 && native_cached_split_sampler_layout_) {
-      bindings[0].descriptorCount = kPortableShaderSamplerCount;
-      bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    } else if (set == 6 && native_cached_split_sampler_layout_) {
-      bindings[0].descriptorCount = kPortableShaderSamplerCount;
-      bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-      binding_count = 1;
-    }
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorCount = set < 4    ? native_descriptor_capacity_
+                              : set == 4 ? native_sampler_descriptor_capacity_
+                                         : 1;
+    binding.descriptorType = set < 4    ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                             : set == 4 ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                        : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     const VkDescriptorBindingFlags binding_flags =
@@ -15060,8 +14867,8 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
     layout_info.pNext = indexed && set < 5 ? &binding_flags_info : nullptr;
     layout_info.flags =
         indexed && set < 5 ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0;
-    layout_info.bindingCount = binding_count;
-    layout_info.pBindings = bindings.data();
+    layout_info.bindingCount = 1;
+    layout_info.pBindings = &binding;
     if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreateDescriptorSetLayout(device, &layout_info, nullptr,
                                         &descriptor_set_layouts_[set]); }) != VK_SUCCESS) {
       return false;
@@ -15083,7 +14890,7 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
       binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
       VkDescriptorSetLayoutCreateInfo layout_info{};
       layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-      layout_info.bindingCount = set == 5 ? 0 : 1;
+      layout_info.bindingCount = 1;
       layout_info.pBindings = &binding;
       if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreateDescriptorSetLayout(device, &layout_info, nullptr,
                                           &cached_descriptor_set_layouts_[set]); }) != VK_SUCCESS) {
@@ -15096,7 +14903,7 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
                                          kNativeDescriptorFrameCopyCount};
   VkDescriptorPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = kNativeDescriptorFrameCopyCount * 2;
+  pool_info.maxSets = kNativeDescriptorFrameCopyCount;
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &storage_pool_size;
   if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreateDescriptorPool(device, &pool_info, nullptr, &descriptor_pool_); }) != VK_SUCCESS) {
@@ -15116,21 +14923,6 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
   }
   for (uint32_t frame_copy = 0; frame_copy < kNativeDescriptorFrameCopyCount; ++frame_copy) {
     descriptor_sets_[frame_copy][5] = storage_sets[frame_copy];
-  }
-
-  if (!native_cached_split_sampler_layout_) {
-    const std::array<VkDescriptorSetLayout, kNativeDescriptorFrameCopyCount> empty_layouts = {
-        descriptor_set_layouts_[6], descriptor_set_layouts_[6]};
-    std::array<VkDescriptorSet, kNativeDescriptorFrameCopyCount> empty_sets{};
-    set_allocate_info.pSetLayouts = empty_layouts.data();
-    if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] {
-          return dfn.vkAllocateDescriptorSets(device, &set_allocate_info, empty_sets.data());
-        }) != VK_SUCCESS) {
-      return false;
-    }
-    for (uint32_t frame_copy = 0; frame_copy < kNativeDescriptorFrameCopyCount; ++frame_copy) {
-      descriptor_sets_[frame_copy][6] = empty_sets[frame_copy];
-    }
   }
 
   std::array<VkDescriptorBufferInfo, kNativeDescriptorFrameCopyCount> buffer_infos{};
@@ -15222,9 +15014,8 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
   } else {
     REXLOG_WARN(
         "gta4-native-descriptors: backend=cached requested={} indexed-rejection={} "
-        "tuple-slots={} split-samplers={} safe-fallback=true",
-        requested_backend, uint32_t(policy.indexed_rejection), native_descriptor_capacity_,
-        native_cached_split_sampler_layout_);
+        "tuple-slots={} safe-fallback=true",
+        requested_backend, uint32_t(policy.indexed_rejection), native_descriptor_capacity_);
   }
 
   VkPushConstantRange push_range{};
@@ -15244,8 +15035,7 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
     const std::array<VkDescriptorSetLayout, kDescriptorSetCount> cached_pipeline_layouts = {
         cached_descriptor_set_layouts_[0], cached_descriptor_set_layouts_[1],
         cached_descriptor_set_layouts_[2], cached_descriptor_set_layouts_[3],
-        cached_descriptor_set_layouts_[4], descriptor_set_layouts_[5],
-        cached_descriptor_set_layouts_[5]};
+        cached_descriptor_set_layouts_[4], descriptor_set_layouts_[5]};
     pipeline_layout_info.pSetLayouts = cached_pipeline_layouts.data();
     if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr,
                                    &cached_pipeline_layout_); }) != VK_SUCCESS) {
@@ -15281,7 +15071,7 @@ bool Gta4NativeGraphicsSystem::EnsureIndexedDescriptorPages(uint32_t page_count)
   const uint64_t image_descriptor_count =
       uint64_t(native_descriptor_capacity_) * kNativeIndexedImageDescriptorSetCount;
   const uint64_t sampler_descriptor_count = native_sampler_descriptor_capacity_;
-  const uint64_t descriptor_set_count = kIndexedDrawDescriptorSetCount;
+  const uint64_t descriptor_set_count = kDrawDescriptorSetCount;
   if (image_descriptor_count > std::numeric_limits<uint32_t>::max() ||
       sampler_descriptor_count > std::numeric_limits<uint32_t>::max() ||
       descriptor_set_count > std::numeric_limits<uint32_t>::max()) {
@@ -15304,13 +15094,13 @@ bool Gta4NativeGraphicsSystem::EnsureIndexedDescriptorPages(uint32_t page_count)
     return false;
   }
 
-  const std::array<VkDescriptorSetLayout, kIndexedDrawDescriptorSetCount> page_layouts = {
+  const std::array<VkDescriptorSetLayout, kDrawDescriptorSetCount> page_layouts = {
       descriptor_set_layouts_[0], descriptor_set_layouts_[1], descriptor_set_layouts_[2],
       descriptor_set_layouts_[3], descriptor_set_layouts_[4]};
   VkDescriptorSetAllocateInfo allocate_info{};
   allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocate_info.descriptorPool = page.pool;
-  allocate_info.descriptorSetCount = kIndexedDrawDescriptorSetCount;
+  allocate_info.descriptorSetCount = kDrawDescriptorSetCount;
   allocate_info.pSetLayouts = page_layouts.data();
   if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkAllocateDescriptorSets(device, &allocate_info, page.descriptor_sets.data()); }) !=
       VK_SUCCESS) {
@@ -15341,7 +15131,6 @@ bool Gta4NativeGraphicsSystem::ActivateCachedDescriptorFallback(NativeDescriptor
     return native_cached_descriptor_state_ != nullptr;
   }
   native_descriptor_backend_ = NativeDescriptorBackend::kCached;
-  native_cached_split_sampler_layout_ = false;
   native_descriptor_layouts_update_after_bind_ = false;
   native_draw_state_cache_.Reset();
   if (!native_cached_descriptor_state_) {
@@ -15724,8 +15513,7 @@ bool Gta4NativeGraphicsSystem::InitializeNativeRendererObjects() {
   native_pipeline_compiler_->writer = std::make_unique<NativePipelineCompilerState::Writer>(1);
   native_pipeline_compiler_->checkpoint_tick.store(rex::chrono::Clock::QueryHostTickCount());
   native_pipeline_compiler_->compiler = std::make_unique<NativePipelineCompilerState::Compiler>(
-      REXCVAR_GET(gta4_native_pipeline_queue_capacity),
-      [this] { ScheduleNativePipelineCheckpoint(); });
+      64, [this] { ScheduleNativePipelineCheckpoint(); });
   LoadNativePipelineRecipes();
   ReplayNativePipelineRecipes();
   return true;
@@ -15753,13 +15541,7 @@ bool Gta4NativeGraphicsSystem::InitializeNativePipelineCache() {
   std::copy_n(properties.pipelineCacheUUID, identity.uuid.size(), identity.uuid.begin());
 
   std::vector<uint8_t> initial_data;
-  const char* bypass_cache = std::getenv("REX_GTA4_BYPASS_PIPELINE_CACHE");
-  const bool diagnostic_cache_bypass = bypass_cache && std::strcmp(bypass_cache, "1") == 0;
-  if (diagnostic_cache_bypass) {
-    // Keep diagnostic shader variants out of the user's persistent driver cache.
-    native_pipeline_cache_path_.clear();
-    REXLOG_WARN("gta4-native: persistent pipeline cache bypassed for diagnostics");
-  } else if (!native_pipeline_cache_root_.empty()) {
+  if (!native_pipeline_cache_root_.empty()) {
     native_pipeline_cache_path_ = GetNativePipelineCachePath(native_pipeline_cache_root_, identity);
     if (auto data = ReadBinaryFile(native_pipeline_cache_path_);
         data && ValidateNativePipelineCacheData(*data, identity)) {
@@ -17409,9 +17191,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameDescriptorPool(uint32_t draw_count,
 
   const uint64_t sampled_image_count =
       uint64_t(draw_count) * kShaderTextureCount * kNativeIndexedImageDescriptorSetCount;
-  const uint64_t sampler_count = uint64_t(draw_count) *
-      (native_cached_split_sampler_layout_ ? kSplitSamplerDescriptorCount
-                                           : kShaderTextureCount);
+  const uint64_t sampler_count = uint64_t(draw_count) * kShaderTextureCount;
   const uint64_t descriptor_set_count =
       uint64_t(draw_count) * kDrawDescriptorSetCount + combined_set_count;
   const uint64_t uint32_max = std::numeric_limits<uint32_t>::max();
@@ -17514,9 +17294,7 @@ bool Gta4NativeGraphicsSystem::EnsureCachedDescriptorCapacity(uint32_t frame_cop
       NativeCachedDescriptorState::kMaximumEntries - allocated_capacity);
   const uint64_t sampled_image_count =
       growth_capacity * kShaderTextureCount * kNativeIndexedImageDescriptorSetCount;
-  const uint64_t sampler_count = growth_capacity *
-      (native_cached_split_sampler_layout_ ? kSplitSamplerDescriptorCount
-                                           : kShaderTextureCount);
+  const uint64_t sampler_count = growth_capacity * kShaderTextureCount;
   const uint64_t descriptor_set_count = growth_capacity * kDrawDescriptorSetCount;
   const uint64_t uint32_max = std::numeric_limits<uint32_t>::max();
   if (!growth_capacity || growth_capacity > uint32_max || sampled_image_count > uint32_max ||
@@ -17700,8 +17478,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       use_cached_layout_variant ? cached_descriptor_set_layouts_[1] : descriptor_set_layouts_[1],
       use_cached_layout_variant ? cached_descriptor_set_layouts_[2] : descriptor_set_layouts_[2],
       use_cached_layout_variant ? cached_descriptor_set_layouts_[3] : descriptor_set_layouts_[3],
-      use_cached_layout_variant ? cached_descriptor_set_layouts_[4] : descriptor_set_layouts_[4],
-      use_cached_layout_variant ? cached_descriptor_set_layouts_[5] : descriptor_set_layouts_[6]};
+      use_cached_layout_variant ? cached_descriptor_set_layouts_[4] : descriptor_set_layouts_[4]};
   const NativeDescriptorBackend descriptor_backend_at_entry = native_descriptor_backend_;
   std::vector<std::pair<NativeCommand*, NativeDrawDescriptorKey>> cached_draws;
   std::vector<NativeCommand*> indexed_draw_commands;
@@ -18082,21 +17859,14 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       }
       if (NativeBindingFailed(realization)) {
         command.failed_texture_mask |= stage_bit;
-        static std::atomic<uint64_t> required_binding_failure_count{0};
-        const uint64_t failure_count =
-            NextNativeTraceDiagnosticCount(required_binding_failure_count);
-        if (failure_count <= 128 || !(failure_count % 65536)) {
-          REXLOG_ERROR(
-              "gta4-native-cause: point=required-binding-failed count={} frame={} cmd={} stage={} "
-              "status={} handle={:08X} generation={} requested-mask={:08X} "
-              "image-mask={:08X} sampler-mask={:08X}",
-              failure_count, submitted_frame, command_index, stage,
-              NativeBindingRealizationName(realization),
-              command.pipeline_state ? command.pipeline_state->textures[stage] : 0,
-              command.textures[stage] ? command.textures[stage]->generation : 0,
-              command.used_texture_mask, command.realized_image_mask,
-              command.realized_sampler_mask);
-        }
+        REXLOG_ERROR(
+            "gta4-native-cause: point=required-binding-failed frame={} cmd={} stage={} "
+            "status={} handle={:08X} generation={} requested-mask={:08X} "
+            "image-mask={:08X} sampler-mask={:08X}",
+            submitted_frame, command_index, stage, NativeBindingRealizationName(realization),
+            command.pipeline_state ? command.pipeline_state->textures[stage] : 0,
+            command.textures[stage] ? command.textures[stage]->generation : 0,
+            command.used_texture_mask, command.realized_image_mask, command.realized_sampler_mask);
         continue;
       }
       if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && !native_descriptor_paging_) {
@@ -18133,32 +17903,8 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       continue;
     }
 
-    uint32_t vertex_sampler_mask = 0;
-    uint32_t pixel_sampler_mask = 0;
-    if (native_cached_split_sampler_layout_) {
-      vertex_sampler_mask = command.pipeline_state &&
-                                    command.pipeline_state->vertex_shader_resource
-                                ? command.pipeline_state->vertex_shader_resource->used_texture_mask
-                                : 0;
-      pixel_sampler_mask = command.pipeline_state &&
-                                   command.pipeline_state->pixel_shader_resource
-                               ? command.pipeline_state->pixel_shader_resource->used_texture_mask
-                               : 0;
-      if (!BuildSplitSamplerMapping(vertex_sampler_mask, pixel_sampler_mask,
-                                    command.sampler_descriptor_indices)) {
-        REXLOG_ERROR(
-            "gta4-native-descriptors: per-stage sampler compaction overflow frame={} cmd={} "
-            "vertex-mask={:08X} pixel-mask={:08X} limit={}",
-            submitted_frame, command_index, vertex_sampler_mask, pixel_sampler_mask,
-            kPortableShaderSamplerCount);
-        return false;
-      }
-    }
-
     NativeDrawDescriptorKey descriptor_key{};
     descriptor_key.layout_epoch = next_cached_descriptor_epoch_;
-    descriptor_key.vertex_sampler_mask = vertex_sampler_mask;
-    descriptor_key.pixel_sampler_mask = pixel_sampler_mask;
     descriptor_key.image_lifetimes = image_lifetimes;
     for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
       descriptor_key.images_2d[stage] = images_2d[stage].imageView;
@@ -18229,11 +17975,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     return false;
   }
   const uint64_t written_set_count = missing_count * kDrawDescriptorSetCount;
-  const uint64_t descriptors_per_tuple =
-      uint64_t(kShaderTextureCount) * kNativeIndexedImageDescriptorSetCount +
-      (native_cached_split_sampler_layout_ ? kSplitSamplerDescriptorCount
-                                           : kShaderTextureCount);
-  const uint64_t written_entry_count = missing_count * descriptors_per_tuple;
+  const uint64_t written_entry_count = written_set_count * kShaderTextureCount;
   const uint32_t persistent_missing = uint32_t(std::min<uint64_t>(
       missing_count, cached_slot.descriptors.capacity() - cached_slot.descriptors.size()));
   const uint32_t transient_missing = uint32_t(missing_count - persistent_missing);
@@ -18303,63 +18045,17 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
       descriptor_infos[4][stage] = {key.samplers[stage], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
     }
-    std::array<VkDescriptorImageInfo, kPortableShaderSamplerCount> pixel_sampler_infos{};
-    std::array<VkDescriptorImageInfo, kPortableShaderSamplerCount> vertex_sampler_infos{};
-    if (native_cached_split_sampler_layout_) {
-      pixel_sampler_infos.fill(
-          {null_sampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED});
-      vertex_sampler_infos.fill(
-          {null_sampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED});
-      std::array<uint32_t, kShaderTextureCount> compact_indices{};
-      if (!BuildSplitSamplerMapping(key.vertex_sampler_mask, key.pixel_sampler_mask,
-                                    compact_indices)) {
-        return false;
-      }
-      for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-        const uint32_t stage_bit = uint32_t{1} << stage;
-        const VkDescriptorImageInfo sampler_info = {
-            key.samplers[stage], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
-        if (key.pixel_sampler_mask & stage_bit) {
-          pixel_sampler_infos[compact_indices[stage]] = sampler_info;
-        }
-        if (key.vertex_sampler_mask & stage_bit) {
-          vertex_sampler_infos[compact_indices[stage]] = sampler_info;
-        }
-      }
-    }
-    std::array<VkWriteDescriptorSet, kDrawDescriptorSetCount + 1> writes{};
-    for (uint32_t set = 0; set < kNativeIndexedImageDescriptorSetCount; ++set) {
+    std::array<VkWriteDescriptorSet, kDrawDescriptorSetCount> writes{};
+    for (uint32_t set = 0; set < kDrawDescriptorSetCount; ++set) {
       writes[set].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[set].dstSet = descriptor_sets[set];
       writes[set].dstBinding = 0;
       writes[set].descriptorCount = kShaderTextureCount;
-      writes[set].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[set].descriptorType =
+          set < 4 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
       writes[set].pImageInfo = descriptor_infos[set].data();
     }
-    uint32_t write_count = kNativeIndexedImageDescriptorSetCount;
-    VkWriteDescriptorSet& pixel_sampler_write = writes[write_count++];
-    pixel_sampler_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    pixel_sampler_write.dstSet = descriptor_sets[4];
-    pixel_sampler_write.dstBinding = 0;
-    pixel_sampler_write.descriptorCount = native_cached_split_sampler_layout_
-                                              ? kPortableShaderSamplerCount
-                                              : kShaderTextureCount;
-    pixel_sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    pixel_sampler_write.pImageInfo = native_cached_split_sampler_layout_
-                                         ? pixel_sampler_infos.data()
-                                         : descriptor_infos[4].data();
-    if (native_cached_split_sampler_layout_) {
-      VkWriteDescriptorSet& vertex_sampler_write = writes[write_count++];
-      vertex_sampler_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      vertex_sampler_write.dstSet = descriptor_sets[5];
-      vertex_sampler_write.dstBinding = 0;
-      vertex_sampler_write.descriptorCount = kPortableShaderSamplerCount;
-      vertex_sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-      vertex_sampler_write.pImageInfo = vertex_sampler_infos.data();
-    }
-    profile::CpuCall(profile::CpuOp::kDriverDescriptor, [&] {
-      return dfn.vkUpdateDescriptorSets(device, write_count, writes.data(), 0, nullptr);
-    });
+    profile::CpuCall(profile::CpuOp::kDriverDescriptor, [&] { return dfn.vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr); });
     if (persistent) {
       if (!cached_slot.descriptors.Insert(key, descriptor_sets)) {
         return false;
@@ -21155,14 +20851,12 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                               NativeVulkanHandleIdentity(page.pool));
     draw_descriptor_sets = {page.descriptor_sets[0], page.descriptor_sets[1],
                             page.descriptor_sets[2], page.descriptor_sets[3],
-                            page.descriptor_sets[4], descriptor_sets_[active_descriptor_copy_][5],
-                            descriptor_sets_[active_descriptor_copy_][6]};
+                            page.descriptor_sets[4], descriptor_sets_[active_descriptor_copy_][5]};
   } else {
     draw_descriptor_sets = {
         command.draw_descriptor_sets[0], command.draw_descriptor_sets[1],
         command.draw_descriptor_sets[2], command.draw_descriptor_sets[3],
-        command.draw_descriptor_sets[4], descriptor_sets_[active_descriptor_copy_][5],
-        command.draw_descriptor_sets[5]};
+        command.draw_descriptor_sets[4], descriptor_sets_[active_descriptor_copy_][5]};
   }
   for (VkDescriptorSet descriptor_set : draw_descriptor_sets) {
     if (!descriptor_set) {

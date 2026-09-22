@@ -42,7 +42,6 @@ REXCVAR_DECLARE(std::string, present_effect);
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
-REXCVAR_DECLARE(uint32_t, gta4_native_pipeline_queue_capacity);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
@@ -158,8 +157,6 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             pipeline_prewarm = value == "1";
         }
         REXCVAR_SET(gta4_native_pipeline_prewarm, pipeline_prewarm);
-        const uint32_t pipeline_queue_capacity = legacy_ipad_profile ? 4u : 64u;
-        REXCVAR_SET(gta4_native_pipeline_queue_capacity, pipeline_queue_capacity);
         const char* performance_capture_value = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
         const bool performance_capture =
             performance_capture_value && std::string_view(performance_capture_value) == "1";
@@ -173,9 +170,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         }
         REXLOG_INFO(
             "Theft4 device profile: {} pipeline-prewarm={} detailed-profile={} "
-            "pipeline-queue-capacity={} profile-autostart={} legacy-ipad={}",
-            device_profile, pipeline_prewarm, pipeline_queue_capacity,
-            performance_capture, performance_capture, legacy_ipad_profile);
+            "profile-autostart={} legacy-ipad={}",
+            device_profile, pipeline_prewarm, performance_capture,
+            performance_capture, legacy_ipad_profile);
 
         // Match the desktop FSR setup, with a deliberately fixed 720p scene.
         // Native hooks derive input = output / 1.5 for FSR's Quality mode:

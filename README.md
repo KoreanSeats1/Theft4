@@ -5,12 +5,6 @@
 > Please support their projects and the upstream developers who made this work possible.
 
 <p align="center">
-  <a href="https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL"><img src="https://img.shields.io/badge/Support%20our%20work-Donate-0070ba?logo=paypal&logoColor=white" alt="Support our work via PayPal"></a>
-</p>
-
-> **[Support our work via PayPal](https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL)** — donations support continued development, testing, and future projects: MCLA, Max Payne 3, Call of Duty: World at War Zombies, and Saints Row.
-
-<p align="center">
   <img src="docs/images/theft4-logo.png" alt="Theft4" width="800">
 </p>
 

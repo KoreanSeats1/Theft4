@@ -89,6 +89,8 @@ NativePassKey BuildNativePassKey(const NativePassKeyInput& input) {
   key.vertex_shader_hash = input.vertex_shader_hash;
   key.pixel_shader_hash = input.pixel_shader_hash;
   key.depth_blend_class = ClassifyNativeDepthBlend(input);
+  key.shadow_viewport_bits = input.shadow_viewport_bits;
+  key.shadow_scissor = input.shadow_scissor;
   return key;
 }
 
@@ -107,9 +109,11 @@ bool NativePassKeyLess(const NativePassKey& left, const NativePassKey& right) {
     return SurfaceKeyLess(left.depth_target, right.depth_target);
   }
   return std::tie(left.reflection_family, left.render_phase, left.shader_family,
-                  left.vertex_shader_hash, left.pixel_shader_hash, left.depth_blend_class) <
+                  left.vertex_shader_hash, left.pixel_shader_hash, left.depth_blend_class,
+                  left.shadow_viewport_bits, left.shadow_scissor) <
          std::tie(right.reflection_family, right.render_phase, right.shader_family,
-                  right.vertex_shader_hash, right.pixel_shader_hash, right.depth_blend_class);
+                  right.vertex_shader_hash, right.pixel_shader_hash, right.depth_blend_class,
+                  right.shadow_viewport_bits, right.shadow_scissor);
 }
 
 uint64_t EstimateNativePrimitiveCount(uint32_t primitive_type, uint32_t element_count) {

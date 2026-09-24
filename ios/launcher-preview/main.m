@@ -12,6 +12,12 @@
     self.launcher.showFPS.on = YES;
     self.launcher.motionBlur.on = NO;
     NSArray *args = NSProcessInfo.processInfo.arguments;
+    // Documentation screenshots use the real launcher controls, without
+    // starting captures or touching either physical device's game container.
+    self.launcher.showFrameTime.on = [args containsObject:@"--capture-guide"];
+    self.launcher.constantReuse.on = YES;
+    self.launcher.frameStageTiming.on = YES;
+    self.launcher.displayPacing.on = NO;
     self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 3 :
         [args containsObject:@"--900p"] ? 2 : [args containsObject:@"--540p"] ? 0 : 1;
     self.launcher.fsrUpscaling.on = ![args containsObject:@"--no-fsr"];
@@ -47,8 +53,10 @@
             initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscapeRight];
         [self.view.window.windowScene requestGeometryUpdateWithPreferences:geometry errorHandler:nil];
     }
-    if ([args containsObject:@"--display"] || [args containsObject:@"--system"]) {
-        NSString *identifier = [args containsObject:@"--display"] ? @"launcher.tab.1" : @"launcher.tab.2";
+    if ([args containsObject:@"--display"] || [args containsObject:@"--interface"] ||
+        [args containsObject:@"--system"]) {
+        NSString *identifier = [args containsObject:@"--display"] ? @"launcher.tab.1" :
+            [args containsObject:@"--interface"] ? @"launcher.tab.2" : @"launcher.tab.3";
         [self selectInView:self.launcher identifier:identifier];
     }
     if ([args containsObject:@"--retire"]) [self retire];

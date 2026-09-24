@@ -40,6 +40,7 @@
 #include "frame_constant_arena.h"
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
+#include "native_constant_projection.h"
 #include "native_texture_protection.h"
 #include "native_command_packet.h"
 #ifdef THEFT4_LAB_BUILD
@@ -156,6 +157,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     VkShaderModule early_module = VK_NULL_HANDLE;
     VkShaderModule late_module = VK_NULL_HANDLE;
     std::array<uint64_t, 4> module_code_hashes{};
+    NativeConstantUsage constant_usage; // Union of stock and accepted overrides.
     std::string filename;
     std::vector<NativeVertexInput> vertex_inputs;
 
@@ -1163,6 +1165,15 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   };
 
   struct NativeFrameConstantArena {
+    struct ProjectedBinding {
+      const NativeShader* vertex = nullptr;
+      const NativeShader* pixel = nullptr;
+      std::shared_ptr<const ConstantStateVersion> version;
+      NativeUploadAllocation allocation{};
+      NativeConstantMask mask{};
+    };
+    // Bounded direct-mapped memo, independent of the full-bank cache.
+    std::array<std::array<ProjectedBinding, 64>, 2> projected_bindings{};
     NativeUploadBuffer storage;
     FrameConstantArenaIndex index;
     FrameGenerationMap<NativeSharedConstantSemanticKey, uint64_t,
@@ -1174,8 +1185,15 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeSharedConstantSemanticKey last_shared_key{};
     uint64_t last_shared_identity = 0;
     bool has_last_shared_key = false;
+    // The allocation cannot move while this frame slot is recording. Reuse it
+    // alongside the last semantic key instead of probing the arena index again.
+    NativeUploadAllocation last_shared_allocation{};
+    bool has_last_shared_allocation = false;
     NativeImmutableBindings<NativeUploadAllocation> immutable_bindings;
     uint64_t next_shared_identity = 1;
+    uint64_t projection_reuses = 0;
+    uint64_t projection_changed_version_reuses = 0;
+    uint64_t projection_fallbacks = 0;
   };
 
   enum class NativeUploadKind : uint8_t {
@@ -1999,6 +2017,25 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
   NativeDrawStateCache<6, kVertexStreamCount> native_draw_state_cache_;
+  // Derived Vulkan dynamic state is pure for a fixed Xenos state plus target
+  // shape. Dense exterior scenes repeat that combination across thousands of
+  // draws; retain the calculation while the normal draw-state cache continues
+  // to decide whether a Vulkan command must actually be emitted.
+  struct NativeDynamicDrawDerivationCache {
+    bool valid = false;
+    NativeFixedFunctionState fixed{};
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t logical_width = 0;
+    uint32_t logical_height = 0;
+    uint32_t color_write_mask = 0;
+    std::array<VkFormat, kRenderTargetCount> color_formats{};
+    VkViewport viewport{0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+    bool viewport_empty = true;
+    VkRect2D scissor{};
+    float depth_bias_constant = 0.0f;
+    float depth_bias_slope = 0.0f;
+  } native_dynamic_draw_derivation_cache_;
   NativeDescriptorSlotHandle native_null_image_descriptor_{};
   NativeDescriptorSlotHandle native_null_sampler_descriptor_{};
   uint32_t active_descriptor_copy_ = 0;

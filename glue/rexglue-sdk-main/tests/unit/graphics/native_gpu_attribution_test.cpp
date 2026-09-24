@@ -129,6 +129,31 @@ TEST_CASE("GTA IV native pass grouping combines only contiguous compatible comma
   CHECK(groups[2].key == pass_a);
 }
 
+TEST_CASE("GTA IV directional shadow pass keys distinguish atlas tiles") {
+  NativePassKeyInput input{};
+  input.command_class = NativePassCommandClass::kDrawIndexed;
+  input.depth_target = {0x4000, 7, 130, 1};
+  input.origin.retail_phase = 21;
+  input.origin.source = GpuPassOriginSource::kVerifiedBoth;
+  input.depth_enabled = true;
+  input.depth_write_enabled = true;
+  input.shadow_viewport_bits = {0, 0, 0x44000000, 0x44000000, 0, 0x3F800000};
+  input.shadow_scissor = {0, 0, 512, 512};
+  const NativePassKey first_tile = BuildNativePassKey(input);
+  input.shadow_scissor = {512, 0, 1024, 512};
+  const NativePassKey second_tile = BuildNativePassKey(input);
+  CHECK(first_tile != second_tile);
+  CHECK(NativePassKeyLess(first_tile, second_tile) !=
+        NativePassKeyLess(second_tile, first_tile));
+  const std::array observations = {
+      MakeObservation(1, first_tile), MakeObservation(2, first_tile),
+      MakeObservation(3, second_tile)};
+  const auto groups = GroupNativePassObservations(observations);
+  REQUIRE(groups.size() == 2);
+  CHECK(groups[0].draw_count == 2);
+  CHECK(groups[1].draw_count == 1);
+}
+
 TEST_CASE("GTA IV native attribution budget coalesces detail without dropping accounting") {
   const NativePassKey pass_a = MakePassKey(0xAA);
   const NativePassKey pass_b = MakePassKey(0xBB);

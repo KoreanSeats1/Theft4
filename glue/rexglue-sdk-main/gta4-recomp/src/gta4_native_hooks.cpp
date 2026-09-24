@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +30,9 @@
 #include <rex/chrono/clock.h>
 #include <rex/graphics/gta4_native/pacing_profile.h>
 #include <rex/thread.h>
+#if REX_PLATFORM_IOS
+#include "theft4_metal_presenter.h"
+#endif
 #endif
 #include <rex/diagnostics/policy.h>
 #include <rex/graphics/gta4_native/anti_aliasing_policy.h>
@@ -68,6 +72,7 @@ REXCVAR_DECLARE(std::string, gta4_native_upscaler);
 REXCVAR_DECLARE(std::string, gta4_fsr1_quality);
 REXCVAR_DECLARE(std::string, gta4_aspect_ratio);
 REXCVAR_DECLARE(bool, gta4_force_highest_lod);
+REXCVAR_DECLARE(double, gta4_lod_selection_distance_scale);
 REXCVAR_DECLARE(double, gta4_draw_distance_scale);
 REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 REXCVAR_DEFINE_BOOL(gta4_native_pixel_snap_fonts, true, "GTA IV/Graphics/Text",
@@ -219,6 +224,12 @@ constexpr uint32_t kPointShadowCacheBaseMultiplier = 8;
 constexpr uint32_t kShadowQualityTable = 0x82C595C0;
 constexpr uint32_t kShadowQualityContextStride = 0x100;
 constexpr uint32_t kShadowQualityRangeOffset = 0x14;
+// sub_82273B08 walks 128-byte shadow candidates and 240-byte point-cache
+// records. Observe the title's existing cache ownership before changing its
+// update cadence; a skipped draw is only valid when its atlas tile survives.
+constexpr uint32_t kShadowCandidateCountGlobal = 0x82CF260C;
+constexpr uint32_t kShadowCandidateListGlobal = 0x82A9977C;
+constexpr uint32_t kPointShadowCacheRecords = 0x82C59840;
 // Native rendering consumes the resource descriptors, not their Xbox GPU
 // backing allocation. Keep the guest allocation at the API-valid minimum and
 // patch only the descriptor extents after the trusted D3D constructor returns.
@@ -358,9 +369,37 @@ uint64_t g_native_frame_limiter_present_count = 0;
 // deadline. Keep the established fixed limiter phase, but leave a bounded
 // final interval for an active wait so an otherwise-ready frame does not miss
 // the next display opportunity solely because of scheduler wake latency.
-// This is deliberately Lab-only: it costs at most 2 ms of one core per capped
-// frame and must earn its place with the device pacing capture.
-constexpr auto kLabPacingActiveWaitMargin = std::chrono::milliseconds(2);
+//
+// The M5 idle pacing capture measured up to 3.015 ms of wake overshoot, so a
+// fixed 2 ms margin still produced a visible long/short frame cadence. Start
+// at 3.5 ms, learn the current device's observed overshoot, and cap the cost
+// at 4 ms per capped frame (12% of one core at 30 FPS). This function is
+// called while g_native_frame_limiter_mutex is held, so the adaptive state is
+// naturally serialized with the limiter state.
+constexpr auto kLabPacingMinimumActiveWaitMargin = std::chrono::microseconds(2000);
+constexpr auto kLabPacingInitialActiveWaitMargin = std::chrono::microseconds(3500);
+constexpr auto kLabPacingMaximumActiveWaitMargin = std::chrono::microseconds(4000);
+constexpr auto kLabPacingWakeSafetyMargin = std::chrono::microseconds(500);
+std::chrono::microseconds g_lab_pacing_active_wait_margin = kLabPacingInitialActiveWaitMargin;
+
+void UpdateLabPacingActiveWaitMargin(std::chrono::steady_clock::duration observed_overshoot) {
+  using Microseconds = std::chrono::microseconds;
+  const auto overshoot =
+      std::max(Microseconds::zero(), std::chrono::duration_cast<Microseconds>(observed_overshoot));
+  const auto target =
+      std::clamp(overshoot + kLabPacingWakeSafetyMargin, kLabPacingMinimumActiveWaitMargin,
+                 kLabPacingMaximumActiveWaitMargin);
+  if (target >= g_lab_pacing_active_wait_margin) {
+    // React immediately when the scheduler proves the current margin is too small.
+    g_lab_pacing_active_wait_margin = target;
+    return;
+  }
+
+  // Decay slowly on quieter samples so one favorable wake does not reintroduce
+  // the alternating cadence on the next normal scheduler delay.
+  g_lab_pacing_active_wait_margin =
+      Microseconds((g_lab_pacing_active_wait_margin.count() * 7 + target.count()) / 8);
+}
 
 void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
   using Clock = std::chrono::steady_clock;
@@ -369,16 +408,18 @@ void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
     return;
   }
   const auto remaining = deadline - now;
-  if (remaining > kLabPacingActiveWaitMargin) {
-    std::this_thread::sleep_until(deadline - kLabPacingActiveWaitMargin);
+  if (remaining > g_lab_pacing_active_wait_margin) {
+    const auto sleep_deadline = deadline - g_lab_pacing_active_wait_margin;
+    std::this_thread::sleep_until(sleep_deadline);
+    UpdateLabPacingActiveWaitMargin(Clock::now() - sleep_deadline);
   }
-  while (Clock::now() < deadline) {
-  }
+  while (Clock::now() < deadline) {}
 }
 #endif
 
 #ifdef THEFT4_LAB_BUILD
-void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr) {
+void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr,
+                       int64_t display_target_ns = 0) {
 #else
 void PaceNativePresent(uint32_t submitted_frame) {
 #endif
@@ -401,8 +442,18 @@ void PaceNativePresent(uint32_t submitted_frame) {
 #endif
   const int64_t now_ns =
       std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
-  const auto decision =
-      gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
+#ifdef THEFT4_LAB_BUILD
+  static bool previous_pre_submit = false; // Protected by limiter mutex.
+  const bool pre_submit = display_target_ns != 0;
+  if (previous_pre_submit != pre_submit) g_native_frame_limiter_state = {};
+  previous_pre_submit = pre_submit;
+  const auto decision = pre_submit
+      ? gta4::frame_limiter::PlanDisplayAligned(g_native_frame_limiter_state, requested_limit,
+                                               now_ns, display_target_ns)
+      : gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
+#else
+  const auto decision = gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
+#endif
   g_native_frame_limiter_state = decision.next_state;
   ++g_native_frame_limiter_present_count;
 #ifdef THEFT4_LAB_BUILD
@@ -465,8 +516,10 @@ void PaceNativePresent(uint32_t submitted_frame) {
   if (observation) {
     lock.unlock();
     observation->limiter_end = rex::chrono::Clock::QueryHostTickCount();
-    pacing::capture.Record(*observation);
   }
+#if REX_PLATFORM_IOS
+  theft4_frame_stage_record(THEFT4_STAGE_LIMITER_END, submitted_frame, display_target_ns != 0, 0);
+#endif
 #endif
 }
 
@@ -4737,6 +4790,97 @@ extern "C" void sub_821F1670(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+extern "C" void sub_82273B08(PPCContext& ctx, uint8_t* base) {
+  static const bool trace_enabled = [] {
+    const char* setting = std::getenv("THEFT4_SHADOW_CACHE_TRACE");
+    return setting && std::strcmp(setting, "1") == 0;
+  }();
+  const uint32_t frame = trace_enabled && IsNativeMode()
+                             ? GetNativeLightSubmittedFrame(base) : 0;
+  static std::atomic<uint32_t> last_sampled_frame{0};
+  static std::atomic<uint32_t> sample_count{0};
+  const uint32_t previous_frame = last_sampled_frame.load(std::memory_order_relaxed);
+  const bool sample = frame && sample_count.load(std::memory_order_relaxed) < 120 &&
+                      (previous_frame == 0 || frame >= previous_frame + 60) &&
+                      last_sampled_frame.exchange(frame, std::memory_order_relaxed) != frame;
+  struct Candidate {
+    uint32_t ordinal;
+    uint32_t address;
+    uint32_t flags;
+    uint32_t index_before;
+    uint32_t token_before;
+    std::array<float, 3> position;
+    float extent;
+  };
+  std::array<Candidate, 8> candidates{};
+  uint32_t sampled_count = 0;
+  uint32_t eligible_count = 0;
+  uint32_t flagged_count = 0;
+  uint32_t count = 0;
+  uint32_t list = 0;
+  if (sample) {
+    sample_count.fetch_add(1, std::memory_order_relaxed);
+    count = LoadU32(base, kShadowCandidateCountGlobal);
+    list = LoadU32(base, kShadowCandidateListGlobal);
+    if (count > 256 || !list) {
+      REXLOG_INFO("gta4-point-shadow-cache: frame={} candidate-count={} list={:08X} invalid-sample",
+                  frame, count, list);
+    } else {
+      for (uint32_t ordinal = 0; ordinal < count; ++ordinal) {
+        const uint32_t record = list + ordinal * 128;
+        const uint32_t flags = LoadU32(base, record + 72);
+        if (flags) ++flagged_count;
+        if (flags & 0x6u) ++eligible_count;
+        // Include the first two raw slots to expose list layout, then only
+        // active candidates so a moving light beyond slot four is visible.
+        if (sampled_count >= candidates.size() || (ordinal >= 2 && !(flags & 0x6u)))
+          continue;
+        candidates[sampled_count++] = {
+            ordinal, record, flags, LoadU32(base, record + 100),
+            LoadU32(base, record + 96),
+            {LoadF32(base, record + 32), LoadF32(base, record + 36),
+             LoadF32(base, record + 40)}, LoadF32(base, record + 84)};
+      }
+    }
+  }
+  __imp__sub_82273B08(ctx, base);
+  if (sample && count <= 256 && list) {
+    const uint32_t viewport = LoadU32(base, kCurrentViewportGlobal);
+    const std::array<float, 3> camera = viewport
+        ? std::array<float, 3>{LoadF32(base, viewport + kViewportCameraPositionOffset),
+                               LoadF32(base, viewport + kViewportCameraPositionOffset + 4),
+                               LoadF32(base, viewport + kViewportCameraPositionOffset + 8)}
+        : std::array<float, 3>{};
+    REXLOG_INFO(
+        "gta4-point-shadow-cache: frame={} candidate-count={} flagged={} eligible={} list={:08X} "
+        "viewport={:08X} camera={:.2f},{:.2f},{:.2f}",
+        frame, count, flagged_count, eligible_count, list, viewport,
+        camera[0], camera[1], camera[2]);
+    for (uint32_t i = 0; i < sampled_count; ++i) {
+      const Candidate& candidate = candidates[i];
+      const uint32_t after = LoadU32(base, candidate.address + 100);
+      const uint32_t cache_index = after < 56 ? after : candidate.index_before;
+      const bool cache_valid = cache_index < 56;
+      const uint32_t cache_record = kPointShadowCacheRecords + cache_index * 240;
+      REXLOG_INFO(
+          "gta4-point-shadow-cache: frame={} ordinal={} record={:08X} flags={:08X}->{:08X} "
+          "token={:08X}->{:08X} position={:.2f},{:.2f},{:.2f} "
+          "extent={:.2f} index={}->{} "
+          "cache-valid={} cache-word220={:08X} cache-word224={:08X} "
+          "cache-word228={:08X} cache-word232={:08X}",
+          frame, candidate.ordinal, candidate.address, candidate.flags,
+          LoadU32(base, candidate.address + 72), candidate.token_before,
+          LoadU32(base, candidate.address + 96),
+          candidate.position[0], candidate.position[1], candidate.position[2],
+          candidate.extent, candidate.index_before, after, cache_valid,
+          cache_valid ? LoadU32(base, cache_record + 220) : 0,
+          cache_valid ? LoadU32(base, cache_record + 224) : 0,
+          cache_valid ? LoadU32(base, cache_record + 228) : 0,
+          cache_valid ? LoadU32(base, cache_record + 232) : 0);
+    }
+  }
+}
+
 extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
   if (!IsNativeMode() || ctx.r3.u32 != kOriginalShadowMapBaseSize) {
     __imp__sub_82270A08(ctx, base);
@@ -4750,7 +4894,7 @@ extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
     const uint32_t maximum_base_size =
         capabilities.max_image_dimension_2d / kPointShadowCacheBaseMultiplier;
     effective_base_size = std::min(effective_base_size, maximum_base_size);
-    effective_base_size = std::max(effective_base_size, kOriginalShadowMapBaseSize);
+    effective_base_size = std::max(effective_base_size, 128u);
   } else {
     effective_base_size = kOriginalShadowMapBaseSize;
     REXLOG_WARN(
@@ -4774,7 +4918,24 @@ extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
 }
 
 extern "C" void sub_824F3418(PPCContext& ctx, uint8_t* base) {
-  if (!IsNativeMode() || !REXCVAR_GET(gta4_force_highest_lod) || !ctx.r4.u32) {
+  if (!IsNativeMode() || !ctx.r4.u32) {
+    __imp__sub_824F3418(ctx, base);
+    return;
+  }
+
+  if (!REXCVAR_GET(gta4_force_highest_lod)) {
+    const double bias = REXCVAR_GET(gta4_lod_selection_distance_scale);
+    const double original = ctx.f1.f64;
+    if (bias > 1.0 && std::isfinite(original) && original >= 0.0) {
+      // The retail selector compares f1 against the drawable's own LOD
+      // thresholds and verifies the chosen resident mesh. Bias only that
+      // comparison input, then restore the guest register; leave all fallback
+      // and blend logic in the original selector untouched.
+      ctx.f1.f64 = double(float(original * bias));
+      __imp__sub_824F3418(ctx, base);
+      ctx.f1.f64 = original;
+      return;
+    }
     __imp__sub_824F3418(ctx, base);
     return;
   }
@@ -6141,6 +6302,25 @@ extern "C" void sub_822D1710(PPCContext& ctx, uint8_t* base) {
   const uint32_t device = postfx_device_link ? LoadU32(base, postfx_device_link + 24) : 0;
   const uint32_t caller = ctx.lr;
 
+  // The title multiplies its near/far DOF radii by this native scalar when
+  // preparing the stock composite. Keep the authored projection, bloom and
+  // tone-map path intact; only neutralize blur amplitude when opted out.
+  // Other platforms and absent settings retain the original game value.
+  static const bool disable_depth_of_field = [] {
+    const char* value = std::getenv("THEFT4_DEPTH_OF_FIELD");
+    return value && std::strcmp(value, "0") == 0;
+  }();
+  if (disable_depth_of_field) {
+    constexpr uint32_t kNativeDofBlurMultiplier = 0x82A2E900;
+    const float multiplier = LoadF32(base, kNativeDofBlurMultiplier);
+    if (std::isfinite(multiplier) && multiplier > 0.0f && multiplier <= 32.0f) {
+      StoreF32(base, kNativeDofBlurMultiplier, 0.0f);
+      static std::atomic<bool> reported{false};
+      if (!reported.exchange(true, std::memory_order_relaxed))
+        REXLOG_INFO("gta4-native-dof: disabled authored near/far blur multiplier={}", multiplier);
+    }
+  }
+
   SubmitEnvironmentalData(base, device, postfx);
   ScopedNativeLightingExecution lighting_scope(
       base, 0x822D1710, RenderExecutionStage::kCompositePostFx, LightPassRole::kNone);
@@ -7304,20 +7484,36 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
   }
   g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
 #ifdef THEFT4_LAB_BUILD
+  int64_t display_target = 0;
+#if REX_PLATFORM_IOS
+  static const bool display_pacing = [] {
+    const char* value = std::getenv("THEFT4_DISPLAY_PACING");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  if (display_pacing && rex::cvar::Query<uint32_t>("gta4_frame_limit") == 30)
+    display_target = theft4_pacing_display_target_ns();
+#endif
+  if (display_target)
+    PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr, display_target);
   if (observe_pacing) {
     pacing_sample.frame = submitted_frame;
     pacing_sample.submit_begin = rex::chrono::Clock::QueryHostTickCount();
   }
+#if REX_PLATFORM_IOS
+  theft4_frame_stage_record(THEFT4_STAGE_GUEST_SUBMIT_BEGIN, submitted_frame, 0, 0);
+#endif
   const bool submitted = SubmitNativeCommand(command);
+#if REX_PLATFORM_IOS
+  theft4_frame_stage_record(THEFT4_STAGE_GUEST_SUBMIT_END, submitted_frame, submitted, 0);
+#endif
   if (observe_pacing) {
     pacing_sample.submitted = submitted;
     pacing_sample.submit_end = rex::chrono::Clock::QueryHostTickCount();
   }
-  if (submitted) {
+  if (submitted && !display_target) {
     PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
-  } else if (observe_pacing) {
-    pacing::capture.Record(pacing_sample);
   }
+  if (observe_pacing) pacing::capture.Record(pacing_sample);
 #else
   if (SubmitNativeCommand(command)) {
     PaceNativePresent(submitted_frame);

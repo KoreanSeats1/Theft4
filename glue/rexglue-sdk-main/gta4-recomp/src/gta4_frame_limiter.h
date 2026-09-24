@@ -97,4 +97,31 @@ constexpr Decision Plan(State previous, uint32_t frames_per_second, int64_t now_
   return decision;
 }
 
+// Opt-in experiment: gate the guest present BEFORE it reaches the renderer,
+// with its initial phase anchored to a display-link prediction. Steady-state
+// fractional deadlines and ordinary one-frame catch-up remain unchanged.
+// After a full missed interval, re-anchor the NEXT deadline without adding a
+// new wait to an already-late frame. Never adds a render frame to the queue.
+constexpr Decision PlanDisplayAligned(State previous, uint32_t fps, int64_t now,
+                                      int64_t display_target) noexcept {
+  Decision d = Plan(previous, fps, now);
+  if (fps != 30 || now <= 0 || now > std::numeric_limits<int64_t>::max() - 200'000'000 || display_target <= 0 ||
+      display_target < now - 100'000'000 || display_target > now + 100'000'000)
+    return d;
+  if (!d.mode_changed && previous.next_deadline_ns > 0 && !d.late_reset) return d;
+  constexpr int64_t period = kNanosecondsPerSecond / 30;
+  int64_t next = display_target;
+  while (next <= now) next += period;
+  while (next - now > period) next -= period;
+  State aligned{.frames_per_second = fps};
+  if (d.late_reset) {
+    aligned.next_deadline_ns = next;
+  } else {
+    d.wait_until_ns = next;
+    AdvanceDeadline(aligned, next);
+  }
+  d.next_state = aligned;
+  return d;
+}
+
 }  // namespace gta4::frame_limiter

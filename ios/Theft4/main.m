@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CADisplayLink.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <os/log.h>
 #include <stdio.h>
@@ -107,6 +108,7 @@ static BOOL Theft4WriteString(NSOutputStream *stream, NSString *value, NSUIntege
 static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSString *label,
                                        NSUInteger *budget, NSMutableArray<NSString *> *included,
                                        NSMutableArray<NSString *> *skipped) {
+    if ([included containsObject:label]) return YES;
     BOOL directory = NO;
     if (!url || ![NSFileManager.defaultManager fileExistsAtPath:url.path isDirectory:&directory] ||
         directory) return YES;
@@ -201,15 +203,94 @@ static BOOL Theft4ValidateSaveTree(NSURL *root, NSError **error) {
 }
 
 static NSURL *Theft4SaveProfileURL(NSURL *support) {
-    return [[[[support URLByAppendingPathComponent:@"user" isDirectory:YES]
+    NSURL *runtimeSupport = [support URLByAppendingPathComponent:@"startup" isDirectory:YES];
+    return [[[[runtimeSupport URLByAppendingPathComponent:@"user" isDirectory:YES]
         URLByAppendingPathComponent:@"545407F2" isDirectory:YES]
         URLByAppendingPathComponent:@"profile" isDirectory:YES] copy];
 }
 
+static NSString *Theft4ActiveSaveIdentity(NSURL *support, NSError **error) {
+    NSURL *identityURL = [[[support URLByAppendingPathComponent:@"startup" isDirectory:YES]
+        URLByAppendingPathComponent:@"user" isDirectory:YES]
+        URLByAppendingPathComponent:@"liberty_live_identity.bin"];
+    NSData *data = [NSData dataWithContentsOfURL:identityURL options:NSDataReadingMappedIfSafe
+                                           error:error];
+    static const uint8_t magic[8] = {'L', 'B', 'R', 'L', 'I', 'V', 'E', 0};
+    uint32_t version = 0;
+    uint64_t xuid = 0;
+    if (!data || data.length < 24 || memcmp(data.bytes, magic, sizeof(magic)) != 0) {
+        if (error && !*error) *error = Theft4SaveError(
+            @"Launch the game once in this app before importing saves.");
+        return nil;
+    }
+    memcpy(&version, (const uint8_t *)data.bytes + 8, sizeof(version));
+    memcpy(&xuid, (const uint8_t *)data.bytes + 16, sizeof(xuid));
+    if (version != 1 || !xuid) {
+        if (error) *error = Theft4SaveError(@"The destination player identity is invalid.");
+        return nil;
+    }
+    return [NSString stringWithFormat:@"%016llX", (unsigned long long)xuid];
+}
+
+static NSSet<NSString *> *Theft4SaveIdentityDirectories(NSURL *root, NSError **error) {
+    NSArray<NSURL *> *items = [NSFileManager.defaultManager contentsOfDirectoryAtURL:root
+        includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsSymbolicLinkKey]
+                           options:NSDirectoryEnumerationSkipsHiddenFiles error:error];
+    if (!items) return nil;
+    NSMutableSet<NSString *> *identities = [NSMutableSet new];
+    for (NSURL *item in items) {
+        NSNumber *directory = nil, *link = nil;
+        if (![item getResourceValue:&directory forKey:NSURLIsDirectoryKey error:error] ||
+            ![item getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:error]) return nil;
+        if (directory.boolValue && !link.boolValue) [identities addObject:item.lastPathComponent];
+    }
+    return identities;
+}
+
+static BOOL Theft4RemapImportedIdentity(NSURL *stagedSaves, BOOL hasSaves,
+                                        NSURL *stagedProfile, BOOL hasProfile,
+                                        NSURL *support, NSError **error) {
+    NSString *destination = Theft4ActiveSaveIdentity(support, error);
+    if (!destination) return NO;
+    NSMutableSet<NSString *> *sources = [NSMutableSet new];
+    if (hasSaves) {
+        NSSet *saveSources = Theft4SaveIdentityDirectories(stagedSaves, error);
+        if (!saveSources) return NO;
+        [sources unionSet:saveSources];
+    }
+    if (hasProfile) {
+        NSSet *profileSources = Theft4SaveIdentityDirectories(stagedProfile, error);
+        if (!profileSources) return NO;
+        [sources unionSet:profileSources];
+    }
+    if (sources.count != 1) {
+        if (error) *error = Theft4SaveError(
+            @"The save export must contain exactly one player identity.");
+        return NO;
+    }
+    NSString *source = sources.anyObject;
+    if ([source isEqualToString:destination]) return YES;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSURL *root in @[stagedSaves, stagedProfile]) {
+        BOOL applies = (root == stagedSaves) ? hasSaves : hasProfile;
+        if (!applies) continue;
+        NSURL *from = [root URLByAppendingPathComponent:source isDirectory:YES];
+        NSURL *to = [root URLByAppendingPathComponent:destination isDirectory:YES];
+        if (![fm fileExistsAtPath:from.path] || [fm fileExistsAtPath:to.path] ||
+            ![fm moveItemAtURL:from toURL:to error:error]) return NO;
+    }
+    return YES;
+}
+
 static NSURL *Theft4CreateSaveExport(NSURL *support, NSURL *documents, NSError **error) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSURL *saves = [support URLByAppendingPathComponent:@"saves" isDirectory:YES];
-    NSURL *profile = Theft4SaveProfileURL(support);
+    NSString *identity = Theft4ActiveSaveIdentity(support, error);
+    if (!identity) return nil;
+    NSURL *runtimeSupport = [support URLByAppendingPathComponent:@"startup" isDirectory:YES];
+    NSURL *saves = [[runtimeSupport URLByAppendingPathComponent:@"saves" isDirectory:YES]
+        URLByAppendingPathComponent:identity isDirectory:YES];
+    NSURL *profile = [Theft4SaveProfileURL(support)
+        URLByAppendingPathComponent:identity isDirectory:YES];
     BOOL hasSaves = [fm fileExistsAtPath:saves.path];
     BOOL hasProfile = [fm fileExistsAtPath:profile.path];
     if (!hasSaves && !hasProfile) {
@@ -226,13 +307,22 @@ static NSURL *Theft4CreateSaveExport(NSURL *support, NSURL *documents, NSError *
         [formatter stringFromDate:NSDate.date], [NSUUID.UUID.UUIDString substringToIndex:8]];
     NSURL *output = [exports URLByAppendingPathComponent:name isDirectory:YES];
     if (![fm createDirectoryAtURL:output withIntermediateDirectories:NO attributes:nil error:error]) return nil;
-    BOOL success = (!hasSaves || [fm copyItemAtURL:saves
-        toURL:[output URLByAppendingPathComponent:@"saves" isDirectory:YES] error:error]) &&
-        (!hasProfile || [fm copyItemAtURL:profile
-        toURL:[output URLByAppendingPathComponent:@"profile" isDirectory:YES] error:error]);
+    NSURL *exportSaves = [output URLByAppendingPathComponent:@"saves" isDirectory:YES];
+    NSURL *exportProfile = [output URLByAppendingPathComponent:@"profile" isDirectory:YES];
+    BOOL success = (!hasSaves ||
+        ([fm createDirectoryAtURL:exportSaves withIntermediateDirectories:NO
+                       attributes:nil error:error] &&
+         [fm copyItemAtURL:saves toURL:[exportSaves URLByAppendingPathComponent:identity
+                                                                  isDirectory:YES] error:error])) &&
+        (!hasProfile ||
+        ([fm createDirectoryAtURL:exportProfile withIntermediateDirectories:NO
+                       attributes:nil error:error] &&
+         [fm copyItemAtURL:profile toURL:[exportProfile URLByAppendingPathComponent:identity
+                                                                      isDirectory:YES] error:error]));
     if (success) {
         NSDictionary *manifest = @{@"format": @"theft4-save-export", @"version": @1,
-            @"title_id": @"545407F2", @"saves": @(hasSaves), @"profile": @(hasProfile)};
+            @"title_id": @"545407F2", @"source_identity": identity,
+            @"saves": @(hasSaves), @"profile": @(hasProfile)};
         NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:error];
         success = data && [data writeToURL:[output URLByAppendingPathComponent:@"theft4-saves.json"]
                                   options:NSDataWritingAtomic error:error];
@@ -291,8 +381,14 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
         [selected URLByAppendingPathComponent:@"profile" isDirectory:YES]
         toURL:stagedProfile error:error]);
     if (!staged) { [fm removeItemAtURL:staging error:nil]; return NO; }
+    if (!Theft4RemapImportedIdentity(stagedSaves, hasSaves, stagedProfile, hasProfile,
+                                     support, error)) {
+        [fm removeItemAtURL:staging error:nil];
+        return NO;
+    }
 
-    NSURL *saves = [support URLByAppendingPathComponent:@"saves" isDirectory:YES];
+    NSURL *runtimeSupport = [support URLByAppendingPathComponent:@"startup" isDirectory:YES];
+    NSURL *saves = [runtimeSupport URLByAppendingPathComponent:@"saves" isDirectory:YES];
     NSURL *profile = Theft4SaveProfileURL(support);
     BOOL oldSaves = hasSaves && [fm fileExistsAtPath:saves.path];
     BOOL oldProfile = hasProfile && [fm fileExistsAtPath:profile.path];
@@ -350,6 +446,15 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     Theft4LauncherView *_bringupOverlay;
     UILabel *_fpsLabel;
     NSTimer *_fpsTimer;
+    dispatch_queue_t _publicationCaptureQueue;
+    NSURL *_publicationCaptureURL;
+    uint64_t _publicationCaptureCursor; // accessed only on _publicationCaptureQueue
+    BOOL _publicationCaptureActive;
+    BOOL _publicationCaptureWriteFailed;
+    BOOL _publicationCaptureStartedForNativeProfile;
+    CFTimeInterval _publicationCaptureLastDrainTime;
+    uint64_t _frameStageCaptureCursor; // export queue only
+    CADisplayLink *_pacingDisplayLink;
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
     UISwitch *_showFPS;
@@ -365,12 +470,16 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     UISwitch *_enhancedOutput;
     UISwitch *_fsrBoost;
     UISwitch *_motionBlur;
+    UISwitch *_depthOfField;
     UISegmentedControl *_shadowQuality;
     UISegmentedControl *_drawDistance;
     UISegmentedControl *_modelDetail;
     UISegmentedControl *_reflectionQuality;
     UISegmentedControl *_antiAliasing;
     UISwitch *_performanceCapture;
+    UISwitch *_constantReuse;
+    UISwitch *_frameStageTiming;
+    UISwitch *_displayPacing;
     UIButton *_downloadLogButton;
     UIButton *_exportSavesButton;
     UIButton *_importSavesButton;
@@ -378,7 +487,9 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     BOOL _saveTransferBusy;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
+    BOOL _launcherDuringGame;
     BOOL _legacyIPadProfile;
+    BOOL _limitedMemoryProfile;
     NSURL *_gameURL;
     UIView *_installationOverlay;
     UILabel *_installationTitle;
@@ -405,16 +516,23 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (BOOL)hasInstalledBaseAndUpdate;
 - (BOOL)isSetupComplete;
 - (void)markSetupComplete;
+- (BOOL)completeSetupForInstalledGame;
+- (void)refreshInstallationFlow;
 - (void)presentInstallationFlowIfNeeded;
 - (void)routeInstallationFlow;
 - (void)checkBaseGame;
 - (void)chooseTitleUpdate;
 - (void)downloadLatestLogCapture;
+- (void)resetAutomaticCaptureForNewSession;
 - (void)exportSavesToFiles;
 - (void)importSavesFromFiles;
 - (void)showSaveMessage:(NSString *)title detail:(NSString *)detail;
 - (void)updateFrameTimeHUD;
+- (void)showInGameMenu:(UITapGestureRecognizer *)gesture;
+- (void)returnToLauncherDuringGame;
+- (void)resumeGameFromLauncher;
 - (void)applyLowPowerPreset;
+- (void)applyLimitedMemoryCaps;
 - (void)syncA19OutputChoice;
 #ifdef THEFT4_INTRO_TEST_BUILD
 - (void)runIntroTestImportSmokeIfRequested;
@@ -446,6 +564,32 @@ static BOOL configureDeviceProfile(void) {
     return strcmp(profile, "legacy-ipad") == 0;
 }
 
+typedef NS_ENUM(NSInteger, Theft4AutomaticGraphicsTier) {
+    Theft4AutomaticGraphicsTierOriginal,
+    Theft4AutomaticGraphicsTierLow,
+    Theft4AutomaticGraphicsTierIPhone17Pro,
+    Theft4AutomaticGraphicsTierM5IPad
+};
+
+static Theft4AutomaticGraphicsTier automaticGraphicsTier(void) {
+    const char *machine = getenv("THEFT4_DEVICE_MODEL");
+    struct utsname systemInfo = {};
+    if (!machine && uname(&systemInfo) == 0) machine = systemInfo.machine;
+    if (!machine) return Theft4AutomaticGraphicsTierOriginal;
+    unsigned major = 0, minor = 0;
+    if (sscanf(machine, "iPad%u,%u", &major, &minor) == 2)
+        return major == 17 && minor >= 1 && minor <= 4
+            ? Theft4AutomaticGraphicsTierM5IPad : Theft4AutomaticGraphicsTierOriginal;
+    if (sscanf(machine, "iPhone%u,%u", &major, &minor) != 2)
+        return Theft4AutomaticGraphicsTierOriginal;
+    if (major <= 16 || (major == 18 && minor == 4))
+        return Theft4AutomaticGraphicsTierLow;
+    if (major == 18 && (minor == 1 || minor == 2))
+        return Theft4AutomaticGraphicsTierIPhone17Pro;
+    // iPhone17,* is the 16 family; iPhone18,3/5 are the standard 17 family.
+    return Theft4AutomaticGraphicsTierOriginal;
+}
+
 #ifdef THEFT4_HAS_GAME_LOADER
 static void bootEvent(void *context, const char *event) {
     fprintf(stderr, "Theft4 loader: %s\n", event);
@@ -461,6 +605,9 @@ static void bootEvent(void *context, const char *event) {
     [super viewDidLoad];
     self.controllerUserInteractionEnabled = YES;
     _legacyIPadProfile = configureDeviceProfile();
+    const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
+    _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 ||
+        strcmp(deviceProfile, "legacy-ipad") == 0;
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowFrameTime": @NO,
@@ -469,31 +616,49 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
         @"Theft4MotionBlur": @NO,
-        @"Theft4ShadowQuality": @0,
-        @"Theft4DrawDistance": @0,
-        @"Theft4ModelDetail": @0,
+        @"Theft4DepthOfField": @(strcmp(getenv("THEFT4_DEVICE_MODEL") ?: "", "iPhone18,4") != 0),
+        @"Theft4ShadowQuality": @1,
+        @"Theft4DrawDistance": @1,
+        @"Theft4ModelDetail": @1,
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2,
-        @"Theft4DetailedPerformanceCapture": @NO
+        @"Theft4Round1ConstantReuse": @YES,
+        @"Theft4Round1FrameStageTiming": @YES,
+        @"Theft4Round1DisplayPacing": @YES
     }];
-    // The native game image is 1280x720. Keep its layer itself at 16:9 so
-    // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
+    // Apply this new all-on baseline once to existing installations. Subsequent
+    // launches preserve the user's individual switch choices for rollback.
+    static NSString *const round1DefaultsMigration = @"Theft4Round1DefaultsOnMigration20260923";
+    if (![NSUserDefaults.standardUserDefaults boolForKey:round1DefaultsMigration]) {
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1ConstantReuse"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1FrameStageTiming"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1DisplayPacing"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:round1DefaultsMigration];
+    }
+    // Old builds stored Original=0 and Highest=1. Preserve that choice when
+    // inserting Lower before Original, including on existing installations.
+    static NSString *const lodTierMigration = @"Theft4ModelDetailTierMigration20260924";
+    if (![NSUserDefaults.standardUserDefaults boolForKey:lodTierMigration]) {
+        NSDictionary *storedSettings = [NSUserDefaults.standardUserDefaults
+            persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
+        NSNumber *oldDetail = storedSettings[@"Theft4ModelDetail"];
+        [NSUserDefaults.standardUserDefaults setInteger:(oldDetail && oldDetail.integerValue == 1 ? 2 : 1)
+                                                forKey:@"Theft4ModelDetail"];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:lodTierMigration];
+    }
+    // The 3D camera and render targets follow the full device aspect. Aspect
+    // hooks retain the authored 16:9 HUD projection without stretching it.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
     _metalView.translatesAutoresizingMaskIntoConstraints = NO;
     _metalView.userInteractionEnabled = NO;
     [self.view addSubview:_metalView];
     [NSLayoutConstraint activateConstraints:@[
-        [_metalView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [_metalView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [_metalView.widthAnchor constraintEqualToAnchor:_metalView.heightAnchor multiplier:(16.0 / 9.0)],
-        [_metalView.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor],
-        [_metalView.heightAnchor constraintLessThanOrEqualToAnchor:self.view.heightAnchor]
+        [_metalView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_metalView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_metalView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_metalView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
-    NSLayoutConstraint *preferFullWidth =
-        [_metalView.widthAnchor constraintEqualToAnchor:self.view.widthAnchor];
-    preferFullWidth.priority = 999;
-    preferFullWidth.active = YES;
     theft4_metal_bind_layer((__bridge void *)_metalView.layer);
     _bringupOverlay = [Theft4LauncherView new];
     _bringupOverlay.translatesAutoresizingMaskIntoConstraints = NO;
@@ -511,6 +676,8 @@ static void bootEvent(void *context, const char *event) {
     [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.lowPowerButton addTarget:self action:@selector(applyLowPowerPreset)
         forControlEvents:UIControlEventTouchUpInside];
+    [_bringupOverlay.originalPresetButton addTarget:self action:@selector(applyOriginalGraphicsPreset)
+        forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
@@ -519,12 +686,16 @@ static void bootEvent(void *context, const char *event) {
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
+    _depthOfField = _bringupOverlay.depthOfField;
     _shadowQuality = _bringupOverlay.shadowQuality;
     _drawDistance = _bringupOverlay.drawDistance;
     _modelDetail = _bringupOverlay.modelDetail;
     _reflectionQuality = _bringupOverlay.reflectionQuality;
     _antiAliasing = _bringupOverlay.antiAliasing;
     _performanceCapture = _bringupOverlay.performanceCapture;
+    _constantReuse = _bringupOverlay.constantReuse;
+    _frameStageTiming = _bringupOverlay.frameStageTiming;
+    _displayPacing = _bringupOverlay.displayPacing;
     _downloadLogButton = _bringupOverlay.downloadLogButton;
     [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
                  forControlEvents:UIControlEventTouchUpInside];
@@ -535,15 +706,18 @@ static void bootEvent(void *context, const char *event) {
     [_importSavesButton addTarget:self action:@selector(importSavesFromFiles)
                 forControlEvents:UIControlEventTouchUpInside];
     NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
-                         _motionBlur,_performanceCapture];
+                         _motionBlur,_depthOfField,_constantReuse,_frameStageTiming,_displayPacing];
     NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
-                      @"Theft4DetailedPerformanceCapture"];
+                      @"Theft4DepthOfField",
+                      @"Theft4Round1ConstantReuse",
+                      @"Theft4Round1FrameStageTiming",@"Theft4Round1DisplayPacing"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
+    [self resetAutomaticCaptureForNewSession];
     NSArray<UISegmentedControl *> *graphicsChoices = @[
         _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *graphicsKeys = @[
@@ -560,15 +734,23 @@ static void bootEvent(void *context, const char *event) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
         _bringupOverlay.renderResolution.selectedSegmentIndex =
-            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 : 1;
+            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 :
+            height == THEFT4_LAB_NATIVE_16_9 ? 4 : 1;
         if (![defaults objectForKey:@"Theft4LabFSREnabled"])
             [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
         _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
-        [self syncA19OutputChoice];
         [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
         [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
+    }
+    // This release changes both segment indices and the device defaults. Apply
+    // Auto once to installed builds; later manual edits remain persistent.
+    static NSString *const graphicsMigration = @"Theft4GraphicsAutoPresetMigration20260924";
+    if (_bringupOverlay.renderResolution &&
+        ![NSUserDefaults.standardUserDefaults boolForKey:graphicsMigration]) {
+        [self applyLowPowerPreset];
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:graphicsMigration];
     }
     // Older installs may have M-series defaults persisted. Start pre-M iPads
     // in a conservative mode on every process launch, while still allowing an
@@ -579,6 +761,7 @@ static void bootEvent(void *context, const char *event) {
         _fsrBoost.on = NO;
         _motionBlur.on = NO;
     }
+    [self applyLimitedMemoryCaps];
     if (_fsrBoost.on) _enhancedOutput.on = YES;
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
@@ -590,6 +773,12 @@ static void bootEvent(void *context, const char *event) {
         [_touchControls.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_touchControls.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
     ]];
+    UITapGestureRecognizer *gameMenuTap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(showInGameMenu:)];
+    gameMenuTap.numberOfTouchesRequired = 3;
+    gameMenuTap.numberOfTapsRequired = 1;
+    gameMenuTap.cancelsTouchesInView = YES;
+    [self.view addGestureRecognizer:gameMenuTap];
     _fpsLabel = [UILabel new];
     _fpsLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _fpsLabel.text = @"--.- FPS";
@@ -615,6 +804,9 @@ static void bootEvent(void *context, const char *event) {
         initWithTarget:self action:@selector(requestNativeProfile)];
     capture.numberOfTapsRequired = 2;
     [_frameTimeView addGestureRecognizer:capture];
+    UILongPressGestureRecognizer *marker = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:self action:@selector(markPerformanceScene:)];
+    [_frameTimeView addGestureRecognizer:marker];
     [self.view addSubview:_frameTimeView];
     _frameTimeTop = [_frameTimeView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52];
     [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
@@ -626,6 +818,7 @@ static void bootEvent(void *context, const char *event) {
                                               selector:@selector(refreshFrameRate)
                                               userInfo:nil
                                                repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:_fpsTimer forMode:NSRunLoopCommonModes];
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -646,15 +839,7 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    if ([self isSetupComplete]) {
-        _installationOverlay.hidden = YES;
-        return;
-    }
-    if (_installationFlowPresented && _installationStep == Theft4InstallationStepCopyBaseGame) {
-        [self routeInstallationFlow];
-    } else {
-        [self presentInstallationFlowIfNeeded];
-    }
+    [self refreshInstallationFlow];
 }
 
 - (void)initializeSharedGameDirectory {
@@ -688,8 +873,9 @@ static void bootEvent(void *context, const char *event) {
         @"Copy the CONTENTS of your legally obtained, extracted Xbox 360 GTA IV game "
         @"folder into the game folder next to this file. The folder must contain "
         @"game/default.xex directly; do not create game/game and do not copy a raw ISO.\n\n"
-        @"Return to %@ after the copy finishes. The app will ask you to select the "
-        @"matching title-update file and install it for you.\n", Theft4DisplayName(), Theft4DisplayName()];
+        @"Return to %@ after the copy finishes. An already-installed matching "
+        @"title update is detected automatically. Otherwise, select its file "
+        @"when prompted and the app will install it for you.\n", Theft4DisplayName(), Theft4DisplayName()];
     if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path] &&
         ![instructions writeToURL:instructionsURL atomically:YES
         encoding:NSUTF8StringEncoding error:&error]) {
@@ -701,26 +887,22 @@ static void bootEvent(void *context, const char *event) {
     [_gameURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
     BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
-    BOOL hasUpdate = [NSFileManager.defaultManager
-        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xexp"] path]];
-    _bootStatus = hasBase && hasUpdate
-        ? @"Game files detected. Ready to play."
-        : (hasBase ? @"Base game detected. Select the title update to continue."
-                   : [NSString stringWithFormat:@"Transfer folder ready: Files → %@",
-                        Theft4FilesGamePath()]);
+    _bootStatus = hasBase ? @"Game files detected. Checking the installed update is required."
+        : [NSString stringWithFormat:@"Transfer folder ready: Files → %@", Theft4FilesGamePath()];
 }
 
 - (BOOL)hasInstalledBaseAndUpdate {
     if (!_gameURL) return NO;
     const BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
-    const BOOL hasUpdate = [NSFileManager.defaultManager
-        fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xexp"] path]];
-    if (!hasBase || !hasUpdate) {
+    if (!hasBase) {
         _setupValidated = NO;
         return NO;
     }
 #ifdef THEFT4_HAS_GAME_LOADER
+    // The canonical validator accepts either the verified retail base + TU8
+    // pair or the exact, already-patched target XEX. A sibling .xexp is not
+    // required in the latter case; file presence alone never proves readiness.
     char message[1024] = {};
     _setupValidated = theft4_validate_installed_game(_gameURL.fileSystemRepresentation,
         message, sizeof(message)) == 0;
@@ -731,12 +913,43 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (BOOL)isSetupComplete {
-    return [NSUserDefaults.standardUserDefaults boolForKey:Theft4SetupCompleteDefaultsKey()] &&
-        [self hasInstalledBaseAndUpdate];
+    // Files may have arrived while this process was backgrounded. Preferences
+    // record completion, but must not gate detection or override validation.
+    return [self hasInstalledBaseAndUpdate];
 }
 
 - (void)markSetupComplete {
     [NSUserDefaults.standardUserDefaults setBool:YES forKey:Theft4SetupCompleteDefaultsKey()];
+}
+
+- (BOOL)completeSetupForInstalledGame {
+    if (_loading || _executionAttempted ||
+        _installationStep == Theft4InstallationStepCheckingBaseGame ||
+        _installationStep == Theft4InstallationStepInstallingUpdate) return NO;
+    if (![self isSetupComplete]) return NO;
+    const BOOL newlyDetected = _installationStep != Theft4InstallationStepReady;
+    [self markSetupComplete];
+    _baseGameChecked = YES;
+    _installationStep = Theft4InstallationStepReady;
+    _installationOverlay.hidden = YES;
+    [_installationSpinner stopAnimating];
+    _bootStatus = @"Game files and Title Update 8 verified. Ready to play.";
+    if (newlyDetected) [self record:@"install.existing_update_detected"];
+    [self refresh];
+    return YES;
+}
+
+- (void)refreshInstallationFlow {
+    // Returning from Files does not recreate the controller. Reconcile on
+    // foreground/view appearance, but never race an import, validation, picker,
+    // or a running game. This is not a timer or a gameplay file scan.
+    if (_failure || !_gameURL || _loading || _executionAttempted ||
+        _saveTransferBusy || self.presentedViewController ||
+        _installationStep == Theft4InstallationStepCreatingDirectory ||
+        _installationStep == Theft4InstallationStepCheckingBaseGame ||
+        _installationStep == Theft4InstallationStepInstallingUpdate) return;
+    if (_installationFlowPresented) [self routeInstallationFlow];
+    else [self presentInstallationFlowIfNeeded];
 }
 
 - (void)createInstallationOverlayIfNeeded {
@@ -817,7 +1030,7 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)presentInstallationFlowIfNeeded {
     if (_installationFlowPresented || _failure || !_gameURL) return;
-    if ([self isSetupComplete]) return;
+    if ([self completeSetupForInstalledGame]) return;
     _installationFlowPresented = YES;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     const BOOL firstLaunch = ![defaults boolForKey:Theft4InstallationDirectoryCreatedDefaultsKey()];
@@ -839,7 +1052,10 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)routeInstallationFlow {
-    if (!_gameURL) return;
+    if (!_gameURL || _loading || _executionAttempted ||
+        _installationStep == Theft4InstallationStepCheckingBaseGame ||
+        _installationStep == Theft4InstallationStepInstallingUpdate) return;
+    if ([self completeSetupForInstalledGame]) return;
     const BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
     if (!hasBase) {
@@ -890,7 +1106,11 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)checkBaseGame {
-    if (!_gameURL) return;
+    if (!_gameURL || _installationStep == Theft4InstallationStepCheckingBaseGame ||
+        _installationStep == Theft4InstallationStepInstallingUpdate) return;
+    // Check the complete installation first, including an already-patched XEX
+    // that the retail-base-only validator would otherwise reject.
+    if ([self completeSetupForInstalledGame]) return;
     const BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
     _baseGameCheckAttempted = YES;
@@ -914,6 +1134,7 @@ static void bootEvent(void *context, const char *event) {
         NSString *detail = @"This build does not include the game-file validator.";
 #endif
         dispatch_async(dispatch_get_main_queue(), ^{
+            self->_installationStep = Theft4InstallationStepCopyBaseGame;
             if (result == 0) {
                 self->_baseGameChecked = YES;
                 [self routeInstallationFlow];
@@ -1039,6 +1260,7 @@ static void bootEvent(void *context, const char *event) {
 
 - (void)chooseTitleUpdate {
     if (!_gameURL) return;
+    if ([self completeSetupForInstalledGame]) return;
     const BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
     if (!hasBase) {
@@ -1195,11 +1417,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         _saveImportPicker = nil;
         return;
     }
-    if (_installationStep == Theft4InstallationStepSelectingUpdate) {
-        [self showInstallationTitle:@"SELECT TITLE UPDATE"
-                             detail:@"Choose the matching GTA IV Xbox 360 title-update file when you are ready."
-                        actionTitle:@"SELECT TITLE UPDATE" spinner:NO
-                               step:Theft4InstallationStepSelectingUpdate];
+    if (_installationStep == Theft4InstallationStepSelectingUpdate ||
+        _installationStep == Theft4InstallationStepUpdateFailed) {
+        [self routeInstallationFlow];
     }
 }
 
@@ -1211,14 +1431,28 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                               _metalView.bounds.size.height, scale);
 }
 
+- (void)resetAutomaticCaptureForNewSession {
+    // Automatic capture is a per-launch opt-in, not a graphics preference.
+    // Retire the old persisted switch so an earlier ON value cannot silently
+    // arm another recording after reopening or updating the app. The graph's
+    // manual short-profile gesture is independent of this switch.
+    _performanceCapture.on = NO;
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4DetailedPerformanceCapture"];
+}
+
 - (void)displaySettingsChanged:(UIControl *)sender {
-    [self syncA19OutputChoice];
+    if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
+    if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4)
+        _bringupOverlay.fsrUpscaling.on = NO;
+    [self applyLimitedMemoryCaps];
+    [NSUserDefaults.standardUserDefaults setBool:_constantReuse.on forKey:@"Theft4Round1ConstantReuse"];
+    [NSUserDefaults.standardUserDefaults setBool:_frameStageTiming.on forKey:@"Theft4Round1FrameStageTiming"];
+    [NSUserDefaults.standardUserDefaults setBool:_displayPacing.on forKey:@"Theft4Round1DisplayPacing"];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
-    [NSUserDefaults.standardUserDefaults setBool:_performanceCapture.on
-                                          forKey:@"Theft4DetailedPerformanceCapture"];
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    [NSUserDefaults.standardUserDefaults setBool:_depthOfField.on forKey:@"Theft4DepthOfField"];
     NSArray<UISegmentedControl *> *choices = @[_shadowQuality, _drawDistance, _modelDetail,
         _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *keys = @[@"Theft4ShadowQuality", @"Theft4DrawDistance",
@@ -1236,31 +1470,108 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         forKey:@"Theft4AnisotropicFiltering"];
     [NSUserDefaults.standardUserDefaults setBool:_enhancedOutput.on
         forKey:@"Theft4EnhancedOutput1080p"];
-    _fpsLabel.hidden = !_gamePresentation || !_showFPS.on;
+    _fpsLabel.hidden = !_gamePresentation || _launcherDuringGame || !_showFPS.on;
     [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
     [self updateFrameTimeHUD];
-    _touchControls.active = _gamePresentation && _showControls.on;
+    _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
 }
 
-- (void)syncA19OutputChoice {
-    if (!_bringupOverlay.renderResolution ||
-        strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") != 0) return;
-    _bringupOverlay.fsrUpscaling.on = _bringupOverlay.renderHeight < 1080;
-    _bringupOverlay.fsrUpscaling.enabled = NO;
+- (void)applyOriginalGraphicsChoices {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    _bringupOverlay.renderResolution.selectedSegmentIndex = 1;
+    _bringupOverlay.fsrUpscaling.on = NO;
+    _shadowQuality.selectedSegmentIndex = 1;
+    _drawDistance.selectedSegmentIndex = 1;
+    _modelDetail.selectedSegmentIndex = 1;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
+    _anisotropicFiltering.on = NO;
+    _motionBlur.on = YES;
+    _depthOfField.on = YES;
+    _enhancedOutput.on = NO;
+    _fsrBoost.on = NO;
+}
+
+- (void)applyOriginalGraphicsPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    [self applyOriginalGraphicsChoices];
+    [self displaySettingsChanged:nil];
+    [NSUserDefaults.standardUserDefaults setObject:@"original" forKey:@"Theft4GraphicsPreset"];
 }
 
 - (void)applyLowPowerPreset {
     if (!_bringupOverlay.renderResolution || _executionAttempted) return;
-    _bringupOverlay.renderResolution.selectedSegmentIndex = 0;
+    [self applyOriginalGraphicsChoices];
+    switch (automaticGraphicsTier()) {
+        case Theft4AutomaticGraphicsTierLow:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 0;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 1; // Optimized requires shadow cache validation.
+            _drawDistance.selectedSegmentIndex = 0;
+            _motionBlur.on = NO;
+            _depthOfField.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierIPhone17Pro:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 2;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 2;
+            _antiAliasing.selectedSegmentIndex = 2;
+            _anisotropicFiltering.on = YES;
+            _motionBlur.on = NO;
+            _depthOfField.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierM5IPad:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 3;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 2;
+            _modelDetail.selectedSegmentIndex = 2;
+            _antiAliasing.selectedSegmentIndex = 2;
+            _anisotropicFiltering.on = YES;
+            _motionBlur.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierOriginal:
+            break;
+    }
+    [self displaySettingsChanged:nil];
+    [NSUserDefaults.standardUserDefaults setObject:@"auto" forKey:@"Theft4GraphicsPreset"];
+}
+
+- (void)applyLimitedMemoryCaps {
+    if (!_limitedMemoryProfile || !_bringupOverlay.renderResolution || _executionAttempted) return;
+
+    // Devices with 6 GiB or less stay inside a 900p scene / 1080p presentation
+    // ceiling, with settings that add render targets, samples, or draws removed.
+    if (_bringupOverlay.renderResolution.selectedSegmentIndex > 2)
+        _bringupOverlay.renderResolution.selectedSegmentIndex = 2;
     _bringupOverlay.fsrUpscaling.on = YES;
-    for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
-                                          _reflectionQuality, _antiAliasing])
-        choice.selectedSegmentIndex = 0;
+    if (_shadowQuality.selectedSegmentIndex > 1) _shadowQuality.selectedSegmentIndex = 1;
+    _drawDistance.selectedSegmentIndex = 0;
+    if (_modelDetail.selectedSegmentIndex > 1) _modelDetail.selectedSegmentIndex = 1;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
     _anisotropicFiltering.on = NO;
     _motionBlur.on = NO;
-    [self displaySettingsChanged:_bringupOverlay.renderResolution];
+    _depthOfField.on = NO;
+    _fsrBoost.on = NO;
+    _enhancedOutput.on = YES;
+
+    [_bringupOverlay.renderResolution setEnabled:NO forSegmentAtIndex:3];
+    [_bringupOverlay.renderResolution setEnabled:NO forSegmentAtIndex:4];
+    for (NSInteger index = 2; index < _shadowQuality.numberOfSegments; ++index)
+        [_shadowQuality setEnabled:NO forSegmentAtIndex:index];
+    for (NSInteger index = 1; index < _drawDistance.numberOfSegments; ++index)
+        [_drawDistance setEnabled:NO forSegmentAtIndex:index];
+    if (_modelDetail.numberOfSegments > 2) [_modelDetail setEnabled:NO forSegmentAtIndex:2];
+    for (NSInteger index = 1; index < _reflectionQuality.numberOfSegments; ++index)
+        [_reflectionQuality setEnabled:NO forSegmentAtIndex:index];
+    for (NSInteger index = 1; index < _antiAliasing.numberOfSegments; ++index)
+        [_antiAliasing setEnabled:NO forSegmentAtIndex:index];
+    _anisotropicFiltering.enabled = NO;
+    _motionBlur.enabled = NO;
+    _depthOfField.enabled = NO;
+    _fsrBoost.enabled = NO;
 }
 
 - (void)record:(NSString *)event {
@@ -1316,6 +1627,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     BOOL enhancedOutput = _enhancedOutput.on;
     BOOL fsrBoost = _fsrBoost.on;
     BOOL motionBlur = _motionBlur.on;
+    BOOL depthOfField = _depthOfField.on;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSFileManager *fm = NSFileManager.defaultManager;
@@ -1359,19 +1671,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
              "iOS/iPadOS: %@\n"
              "Physical memory: %llu MiB\n"
              "Theft4 device profile: %@\n"
-             "Detailed capture switch at export: %@\n"
+             "Lightweight capture switch at export: %@\n"
              "Frame counter enabled: %@\n"
              "Anisotropic filtering: %@\n"
              "Enhanced 1080p output: %@\n"
              "FSR boost: %@\n"
              "Motion blur: %@\n"
+             "Depth of field: %@\n"
              "This is a bounded text bundle. Native performance CSV/JSON artifacts are included below when available.\n",
             [NSDate date], Theft4DisplayName(), version, build,
             NSBundle.mainBundle.bundleIdentifier ?: @"unknown", deviceName, machine,
             systemVersion, (unsigned long long)(physicalMemory >> 20), profile,
             performanceCapture ? @"ON" : @"OFF", showFPS ? @"ON" : @"OFF",
             anisotropy ? @"ON" : @"OFF", enhancedOutput ? @"ON" : @"OFF",
-            fsrBoost ? @"ON" : @"OFF", motionBlur ? @"ON" : @"OFF"];
+            fsrBoost ? @"ON" : @"OFF", motionBlur ? @"ON" : @"OFF",
+            depthOfField ? @"ON" : @"OFF"];
         BOOL success = Theft4WriteString(stream, metadata, &budget);
 
         NSURL *applicationSupport = [supportURL URLByDeletingLastPathComponent];
@@ -1379,6 +1693,29 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         NSURL *nativeDiagnosticsURL = [[applicationSupport
             URLByAppendingPathComponent:@"LibertyRecomp" isDirectory:YES]
             URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        // Preserve the newest lightweight/stage capture before older deep
+        // profiles consume the bounded export budget. The normal enumeration
+        // below skips this already-included file, without deleting anything.
+        NSURL *frameDirectory = [startupURL URLByAppendingPathComponent:@"frame-captures" isDirectory:YES];
+        NSURL *latestFrameCapture = nil;
+        NSDate *latestFrameDate = NSDate.distantPast;
+        for (NSURL *candidate in [fm contentsOfDirectoryAtURL:frameDirectory
+            includingPropertiesForKeys:@[NSURLContentModificationDateKey, NSURLIsRegularFileKey]
+            options:NSDirectoryEnumerationSkipsHiddenFiles error:nil]) {
+            if (![candidate.lastPathComponent hasPrefix:@"publication-trace-"] ||
+                ![candidate.pathExtension isEqualToString:@"csv"]) continue;
+            NSNumber *regular = nil;
+            NSDate *modified = nil;
+            [candidate getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+            [candidate getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+            if (regular.boolValue && modified && [modified compare:latestFrameDate] == NSOrderedDescending) {
+                latestFrameCapture = candidate;
+                latestFrameDate = modified;
+            }
+        }
+        if (latestFrameCapture) success = success && Theft4AppendDiagnosticFile(stream,
+            latestFrameCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:
+                latestFrameCapture.lastPathComponent], &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
             @"Theft4/lifecycle.jsonl", &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream,
@@ -1510,14 +1847,81 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _fpsLastTime = CACurrentMediaTime();
     _fpsLabel.text = @"--.- FPS";
     _fpsLabel.hidden = !_showFPS.on;
+    // The System switch records publication times with low overhead. The
+    // sampled CPU/GPU pass profiler is requested separately by double-tap.
     _touchControls.active = _showControls.on &&
         self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive;
     [self updateFrameTimeHUD];
     [self record:@"ui.game_presentation_mode"];
 }
 
+- (void)showInGameMenu:(UITapGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateRecognized || !_gamePresentation ||
+        _launcherDuringGame || self.presentedViewController) return;
+    // The recognizer cancels the three touches after recognition; release any
+    // virtual buttons that may have been pressed while the tap was forming.
+    [_touchControls releaseAllTouches];
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"GAME MENU"
+        message:@"Returning to the main menu ends this game session and closes Theft4. Reopen the app to change any graphics setting before a fresh launch. Save your progress first."
+        preferredStyle:UIAlertControllerStyleAlert];
+    NSString *controlsTitle = _showControls.on ? @"Hide On-Screen Controls" : @"Show On-Screen Controls";
+    [menu addAction:[UIAlertAction actionWithTitle:controlsTitle style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            self->_showControls.on = !self->_showControls.on;
+            [self displaySettingsChanged:self->_showControls];
+            self->_touchControls.active = self->_sceneActive && self->_showControls.on;
+            [self record:self->_showControls.on ? @"ui.touch_controls_shown" : @"ui.touch_controls_hidden"];
+        }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Quit Game · Reopen to Main Menu"
+        style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+            [self returnToLauncherDuringGame];
+        }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Resume Game"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)returnToLauncherDuringGame {
+    if (!_gamePresentation) return;
+    // The recompiled Xbox runtime is deliberately one-shot per process: its
+    // guest threads and graphics resources cannot safely be reset in place.
+    // End this process only after an explicit player action. The next app open
+    // presents the real launcher with every graphics control enabled.
+    _touchControls.active = NO;
+    theft4_publication_capture_stop();
+    [self drainPublicationCapture];
+    _publicationCaptureActive = NO;
+    [self record:@"ui.quit_game_for_fresh_launcher"];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    // Drain queued lightweight-capture writes before leaving. Do not call
+    // Runtime::Shutdown here while guest threads are still live.
+    dispatch_queue_t captureQueue = _publicationCaptureQueue;
+    if (captureQueue) {
+        dispatch_async(captureQueue, ^{
+            [self appendPublicationCaptureText:@"status,,,,saved-on-quit\n"];
+            dispatch_async(dispatch_get_main_queue(), ^{ exit(0); });
+        });
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{ exit(0); });
+    }
+}
+
+- (void)resumeGameFromLauncher {
+    if (!_launcherDuringGame) return;
+    _launcherDuringGame = NO;
+    _start.enabled = NO;
+    _bringupOverlay.userInteractionEnabled = NO;
+    _bringupOverlay.hidden = YES;
+    _bringupOverlay.alpha = 0.0;
+    [_bringupOverlay setActive:NO];
+    _fpsLabel.hidden = !_showFPS.on;
+    _touchControls.active = _sceneActive && _showControls.on;
+    [self updateFrameTimeHUD];
+    [self record:@"ui.resume_from_launcher"];
+}
+
 - (void)updateFrameTimeHUD {
-    BOOL visible = _gamePresentation && _sceneActive && _showFrameTime.on;
+    BOOL visible = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
     _frameTimeTop.constant = _showFPS.on ? 52 : 10;
     theft4_frame_time_set_enabled(visible);
@@ -1540,6 +1944,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 controller->_nativeProfileFinished = YES;
                 [controller->_frameTimeView setCaptureCompleted:(status == 2)];
                 [controller record:(status == 2 ? @"capture.complete" : @"capture.failed")];
+                if (controller->_publicationCaptureStartedForNativeProfile) {
+                    theft4_publication_capture_stop();
+                    [controller drainPublicationCapture];
+                    controller->_publicationCaptureActive = NO;
+                    controller->_publicationCaptureStartedForNativeProfile = NO;
+                    dispatch_async(controller->_publicationCaptureQueue, ^{
+                        [controller appendPublicationCaptureText:@"status,,,,saved-with-native-profile\n"];
+                    });
+                }
             }
         }];
         [NSRunLoop.mainRunLoop addTimer:_frameTimeTimer forMode:NSRunLoopCommonModes];
@@ -1548,18 +1961,235 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)requestNativeProfile {
     if (!_gamePresentation || _nativeProfileRequested) return;
+    const int existingStatus = rex_gta4_native_profile_status();
+    if (existingStatus == 1 || existingStatus == 2) {
+        if (existingStatus == 1 && !_publicationCaptureActive && [self beginPublicationCapture])
+            _publicationCaptureStartedForNativeProfile = YES;
+        _nativeProfileRequested = YES;
+        _nativeProfileFinished = existingStatus == 2;
+        if (existingStatus == 2) {
+            [_frameTimeView setCaptureCompleted:YES];
+            [self record:@"capture.already_complete"];
+        } else {
+            [_frameTimeView setCaptureRequested:YES];
+            [self record:@"capture.attached"];
+        }
+        return;
+    }
+    if (!_publicationCaptureActive && [self beginPublicationCapture])
+        _publicationCaptureStartedForNativeProfile = YES;
     if (rex_gta4_native_profile_start()) {
         _nativeProfileRequested = YES;
         _nativeProfileFinished = NO;
         [_frameTimeView setCaptureRequested:YES];
         [self record:@"capture.requested"];
+    } else if (_publicationCaptureStartedForNativeProfile) {
+        theft4_publication_capture_stop();
+        [self drainPublicationCapture];
+        _publicationCaptureActive = NO;
+        _publicationCaptureStartedForNativeProfile = NO;
     }
 }
 
+- (void)appendPublicationCaptureText:(NSString *)text {
+    if (!_publicationCaptureURL || !text.length) return;
+    NSError *error = nil;
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingToURL:_publicationCaptureURL
+                                                          error:&error];
+    if (file) {
+        [file seekToEndOfFile];
+        if (![file writeData:[text dataUsingEncoding:NSUTF8StringEncoding] error:&error]) {
+            [file closeFile];
+        } else {
+            [file closeFile];
+            return;
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self->_publicationCaptureActive = NO;
+        self->_publicationCaptureWriteFailed = YES;
+        theft4_publication_capture_stop();
+        [self record:[NSString stringWithFormat:@"capture.lightweight_write_failed: %@",
+            error.localizedDescription ?: @"unknown error"]];
+    });
+}
+
+- (void)drainPublicationCapture {
+    if (!_publicationCaptureActive || !_publicationCaptureQueue) return;
+    dispatch_async(_publicationCaptureQueue, ^{
+        theft4_publication_sample samples[256];
+        NSMutableString *text = [NSMutableString new];
+        uint64_t lost = 0;
+        uint64_t lostTotal = 0;
+        for (unsigned batch = 0; batch < 64; ++batch) {
+            const uint32_t count = theft4_publication_capture_read(
+                &self->_publicationCaptureCursor, samples, 256, &lost);
+            lostTotal += lost;
+            for (uint32_t i = 0; i < count; ++i)
+                [text appendFormat:@"frame,%llu,%llu,,\n",
+                    (unsigned long long)samples[i].frame,
+                    (unsigned long long)samples[i].monotonic_ns];
+            if (count < 256) break;
+        }
+        if (lostTotal) [text appendFormat:@"lost,,,%llu,\n", (unsigned long long)lostTotal];
+        theft4_frame_stage_sample stages[256];
+        uint64_t stageLost = 0;
+        for (unsigned batch = 0; batch < 64; ++batch) {
+            const uint32_t count = theft4_frame_stages_read(
+                &self->_frameStageCaptureCursor, stages, 256, &lost);
+            stageLost += lost;
+            for (uint32_t i = 0; i < count; ++i)
+                [text appendFormat:@"guest_stage,%llu,%llu,,stage=%llu a=%llu b=%llu\n",
+                    (unsigned long long)stages[i].frame, (unsigned long long)stages[i].monotonic_ns,
+                    (unsigned long long)stages[i].stage, (unsigned long long)stages[i].a,
+                    (unsigned long long)stages[i].b];
+            if (count < 256) break;
+        }
+        if (stageLost) [text appendFormat:@"stage_lost,,,%llu,\n", (unsigned long long)stageLost];
+        const theft4_output_policy output = theft4_metal_get_output_policy();
+        [text appendFormat:@"context,,%llu,,thermal=%ld render=%ux%u output=%ux%u\n",
+            (unsigned long long)(CACurrentMediaTime() * 1e9),
+            (long)NSProcessInfo.processInfo.thermalState,
+            output.render_width, output.render_height, output.output_width, output.output_height];
+        [self appendPublicationCaptureText:text];
+    });
+}
+
+- (BOOL)beginPublicationCapture {
+    if (_publicationCaptureActive) return YES;
+    if (!_supportURL || _publicationCaptureWriteFailed) return NO;
+    if (_publicationCaptureQueue) {
+        const uint64_t cursor = theft4_publication_capture_start();
+        const uint64_t stageCursor = _frameStageTiming.on ? theft4_frame_stages_start() : 0;
+        [self startPacingDisplayLinkIfNeeded];
+        _publicationCaptureActive = YES;
+        _publicationCaptureLastDrainTime = CACurrentMediaTime();
+        dispatch_async(_publicationCaptureQueue, ^{
+            self->_publicationCaptureCursor = cursor;
+            self->_frameStageCaptureCursor = stageCursor;
+            [self appendPublicationCaptureText:@"status,,,,resumed\n"];
+        });
+        [self record:@"capture.lightweight_resumed"];
+        return YES;
+    }
+    NSURL *directory = [[_supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES]
+        URLByAppendingPathComponent:@"frame-captures" isDirectory:YES];
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:directory
+        withIntermediateDirectories:YES attributes:nil error:&error]) {
+        [self record:[NSString stringWithFormat:@"capture.lightweight_start_failed: %@",
+            error.localizedDescription ?: @"directory unavailable"]];
+        return NO;
+    }
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd-HH-mm-ss";
+    _publicationCaptureURL = [directory URLByAppendingPathComponent:
+        [NSString stringWithFormat:@"publication-trace-%@.csv", [formatter stringFromDate:NSDate.date]]];
+    NSString *header = [NSString stringWithFormat:
+        @"# round1-v1: publication IDs and guest_stage frame IDs are different namespaces; monotonic_ns is one host clock\n"
+         "# no GPU duration or actual displayed time; display targets are predictions; fence end is CPU observation\n"
+         "# stages: 1 guest-submit-begin; 2 guest-submit-end(a=success); 3 limiter-end(a=pre-submit); 4 worker-begin; 5 worker-end; 6 queue-begin; 7 queue-end(a=submission b=slot); 8 fence-begin; 9 fence-end(frame=0 a=submission b=slot); 10 present-queued(a=content b=result); 11 constants(a=reuses b=changed-version-reuses); 12 constants-fallback(a=count b=arena-bytes); 13 display-target(frame=0 a=predicted-host-ns)\n"
+         "kind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n"
+         "config,,,,constant_reuse=%d display_pacing=%d stage_timing=%d\n",
+         _constantReuse.on, _displayPacing.on, _frameStageTiming.on];
+    if (![header writeToURL:_publicationCaptureURL atomically:YES
+                   encoding:NSUTF8StringEncoding error:&error]) {
+        _publicationCaptureURL = nil;
+        [self record:[NSString stringWithFormat:@"capture.lightweight_start_failed: %@",
+            error.localizedDescription ?: @"file unavailable"]];
+        return NO;
+    }
+    _publicationCaptureQueue = dispatch_queue_create("theft4.publication-capture", DISPATCH_QUEUE_SERIAL);
+    _publicationCaptureCursor = theft4_publication_capture_start();
+    _frameStageCaptureCursor = _frameStageTiming.on ? theft4_frame_stages_start() : 0;
+    [self startPacingDisplayLinkIfNeeded];
+    _publicationCaptureActive = YES;
+    _publicationCaptureLastDrainTime = CACurrentMediaTime();
+    [self record:@"capture.lightweight_started"];
+    return YES;
+}
+
+- (void)startPacingDisplayLinkIfNeeded {
+    if (_pacingDisplayLink || (!_displayPacing.on && !_frameStageTiming.on)) return;
+    _pacingDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(pacingDisplayTick:)];
+    _pacingDisplayLink.preferredFramesPerSecond = 30;
+    [_pacingDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+- (void)pacingDisplayTick:(CADisplayLink *)link {
+    theft4_pacing_note_display_target(link.targetTimestamp);
+}
+
+- (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    if (!_publicationCaptureActive) {
+        UIAlertController *start = [UIAlertController alertControllerWithTitle:@"LONG CAPTURE IS OFF"
+            message:@"No lightweight frame trace was recorded this run. The System switch starts one on the next launch, or you can start one now. A double-tap records a separate short detailed profile."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [start addAction:[UIAlertAction actionWithTitle:@"Start long capture now"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                if (![self beginPublicationCapture]) {
+                    [self record:@"capture.lightweight_manual_start_failed"];
+                    UIAlertController *failed = [UIAlertController alertControllerWithTitle:@"CAPTURE FAILED"
+                        message:@"Theft4 could not create the trace file. Check free storage, then reopen the app."
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [failed addAction:[UIAlertAction actionWithTitle:@"OK"
+                        style:UIAlertActionStyleDefault handler:nil]];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self presentViewController:failed animated:YES completion:nil];
+                    });
+                }
+            }]];
+        [start addAction:[UIAlertAction actionWithTitle:@"Cancel"
+            style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:start animated:YES completion:nil];
+        return;
+    }
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"MARK CAPTURE"
+        message:@"Choose the view or motion for this point in the trace."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *label in @[@"city-in-view", @"facing-away", @"stationary", @"moving", @"heavy-area"]) {
+        [menu addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                const uint64_t frame = theft4_frame_counter_published_frames();
+                const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
+                dispatch_async(self->_publicationCaptureQueue, ^{
+                    [self appendPublicationCaptureText:[NSString stringWithFormat:
+                        @"marker,%llu,%llu,,%@\n", (unsigned long long)frame,
+                        (unsigned long long)timestamp, label]];
+                });
+            }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Stop and save capture"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            theft4_publication_capture_stop();
+            [self drainPublicationCapture];
+            self->_publicationCaptureActive = NO;
+            if (!self->_displayPacing.on) {
+                [self->_pacingDisplayLink invalidate];
+                self->_pacingDisplayLink = nil;
+                theft4_pacing_note_display_target(0);
+            }
+            dispatch_async(self->_publicationCaptureQueue, ^{
+                [self appendPublicationCaptureText:@"status,,,,saved\n"];
+            });
+            [self record:@"capture.lightweight_stopped"];
+        }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = _frameTimeView;
+    menu.popoverPresentationController.sourceRect = _frameTimeView.bounds;
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
 - (void)refreshFrameRate {
+    const CFTimeInterval now = CACurrentMediaTime();
+    if (_publicationCaptureActive && now - _publicationCaptureLastDrainTime >= 1.0) {
+        _publicationCaptureLastDrainTime = now;
+        [self drainPublicationCapture];
+    }
     if (_fpsLabel.hidden) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
-    const CFTimeInterval now = CACurrentMediaTime();
     const CFTimeInterval elapsed = now - _fpsLastTime;
     if (elapsed >= 0.2) {
         const double fps = (double)(frames - _fpsLastFrames) / elapsed;
@@ -1581,6 +2211,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)startTransferredGame {
+    if (_launcherDuringGame) {
+        [self resumeGameFromLauncher];
+        return;
+    }
     [self startGamePreparation:_gameURL execute:YES];
 }
 
@@ -1598,23 +2232,36 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // The native profiler is armed before the one-shot runtime is created.
     // Its bounded files survive process termination and are exported from the
     // System tab on the next launch.
-    setenv("THEFT4_PERFORMANCE_CAPTURE", _performanceCapture.on ? "1" : "0", 1);
+    // Keep the detailed profiler unarmed during the ordinary long capture.
+    // It remains available from the HUD on demand.
+    setenv("THEFT4_PERFORMANCE_CAPTURE", "0", 1);
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
     }
     if (execute) {
+        // Re-apply hardware caps at the final launch boundary before deriving
+        // any renderer environment variables from the controls.
+        [self applyLimitedMemoryCaps];
+        setenv("THEFT4_CONSTANT_REUSE", _constantReuse.on ? "1" : "0", 1);
+        setenv("THEFT4_DISPLAY_PACING", _displayPacing.on ? "1" : "0", 1);
+        if (_displayPacing.on) [self startPacingDisplayLinkIfNeeded];
+        if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
-        const char *shadowPresets[] = {"original", "enhanced", "ultra"};
-        const char *distancePresets[] = {"1", "2", "3"};
+        setenv("THEFT4_DEPTH_OF_FIELD", _depthOfField.on ? "1" : "0", 1);
+        setenv("THEFT4_SHADOW_CACHE_TRACE", "1", 1); // 0.2.1 diagnostic build only.
+        const char *shadowPresets[] = {"optimized", "original", "enhanced", "ultra"};
+        const char *distancePresets[] = {"0.70", "1", "2", "3"};
         const char *reflectionPresets[] = {"original", "1080p", "full"};
         const char *antiAliasingPresets[] = {"off", "fxaa", "smaa"};
         setenv("THEFT4_SHADOW_QUALITY", shadowPresets[_shadowQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_DRAW_DISTANCE", distancePresets[_drawDistance.selectedSegmentIndex], 1);
-        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex ? "1" : "0", 1);
+        setenv("THEFT4_OPTIMIZED_LOCAL_LIGHTS", _drawDistance.selectedSegmentIndex == 0 ? "1" : "0", 1);
+        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex == 2 ? "1" : "0", 1);
+        setenv("THEFT4_LOD_SELECTION_BIAS", _modelDetail.selectedSegmentIndex == 0 ? "1.75" : "1", 1);
         setenv("THEFT4_REFLECTION_RESOLUTION",
             reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
@@ -1624,9 +2271,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         const uint32_t nativeWidth = (uint32_t)floor(_metalView.bounds.size.width * nativeScale);
         const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
         if (_bringupOverlay.renderResolution) {
+            const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
+            const BOOL fixed1080Output = strcmp(deviceProfile, "a19") == 0 ||
+                strcmp(deviceProfile, "iphone-6gb") == 0 ||
+                strcmp(deviceProfile, "legacy-ipad") == 0;
             theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
                 _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
-                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0);
+                fixed1080Output);
         } else {
             theft4_metal_set_output_mode(
                 _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
@@ -1637,11 +2288,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [_bringupOverlay retireScene];
         _fsrBoost.enabled = NO;
         _bringupOverlay.renderResolution.enabled = NO;
-        _bringupOverlay.fsrUpscaling.enabled = NO;
+        // This is a next-process setting, but users can still prepare the
+        // comparison while viewing the in-game launcher. The saved choice is
+        // applied only when a fresh game runtime is created after relaunch.
         _bringupOverlay.restartButton.enabled = NO;
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
+        _depthOfField.enabled = NO;
         for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
                                               _reflectionQuality, _antiAliasing])
             choice.enabled = NO;
@@ -1701,10 +2355,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [_bringupOverlay setActive:!_executionAttempted];
     _sceneActive = YES;
     [self updateFrameTimeHUD];
-    _touchControls.active = _gamePresentation && _showControls.on;
+    _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
     [self createCore];
     if (_core) [self accept:theft4_core_activate(_core) operation:@"activate"];
     [self record:@"scene.active"];
+    [self refreshInstallationFlow];
 #ifdef THEFT4_HAS_GAME_STARTUP
     if (!_bootRan && [NSProcessInfo.processInfo.arguments containsObject:@"--theft4-start-game"]) {
         _bootRan = YES;
@@ -1733,6 +2388,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)pause {
+    [self drainPublicationCapture];
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];
@@ -1741,6 +2397,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)shutdown {
+    [_pacingDisplayLink invalidate];
+    _pacingDisplayLink = nil;
+    theft4_pacing_note_display_target(0);
+    const BOOL captureWasActive = _publicationCaptureActive;
+    theft4_publication_capture_stop();
+    [self drainPublicationCapture];
+    _publicationCaptureActive = NO;
+    if (captureWasActive && _publicationCaptureQueue) dispatch_async(_publicationCaptureQueue, ^{
+        [self appendPublicationCaptureText:@"status,,,,saved-on-shutdown\n"];
+    });
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];

@@ -1,5 +1,39 @@
 # Theft4 engineering changelog
 
+## 0.2.1 — important iPhone and iPad update — 2026-09-24
+
+- **Validated build and installation:** version 0.2.1 build 52 was compiled as
+  an optimized ARM64 Release app and installed in place on an iPhone Air and an
+  M5 iPad Pro under the existing `com.lukebrosious.theft4` identity. Updating
+  preserves the existing app container; users should not delete the old app.
+- Gameplay now uses the device's native iPhone or iPad aspect ratio by default.
+  The 3D camera fills the display while the original HUD proportions are kept.
+- iPhones and iPads with less than 7 GiB of usable memory use a conservative
+  profile: requests above 900p are capped at a 900p scene with FSR output, and
+  pressure-heavy optional effects are constrained. Devices with 8 GiB or more
+  retain their device-optimized settings.
+- The redesigned launcher adds automatic and original-Xbox-360 presets,
+  expanded graphics controls, save export/import with a pre-import backup,
+  improved touch/diagnostic controls, and a new app icon.
+- CPU-side renderer work reduces command-packet copying, transient allocation,
+  queue-lock duration, redundant state publication, repeated buffer binding,
+  and whole-block shader-constant rematerialization.
+- GPU and pipeline work improves persistent-buffer reuse, descriptor and
+  resource retirement, frame-slot ownership, resolve synchronization, pipeline
+  attribution, and diagnostics for invalid or missing bindings.
+- The detailed performance log now samples 120 frames across roughly 360
+  submitted frames instead of instrumenting every frame of a 600-frame window.
+  GPU query boundaries are bounded, expensive resource inventories are sampled
+  periodically, and trace draining is throttled to reduce capture interference.
+- Every detailed capture aligns a lightweight all-frame stage trace. Exports can
+  correlate GPU passes and pipelines with CPU self/inclusive time, worker dwell,
+  guest-production gaps, uploads, descriptors, buffer reuse, fences, thermal
+  state, effective output settings, and periodic memory/resource inventory.
+  This is diagnostic evidence for finding work above the 33.3 ms frame budget;
+  it is not a promise of locked 30 FPS in every scene.
+- Full user-facing notes, safeguards, capture instructions, and remaining test
+  limits are documented in [the 0.2.1 release notes](docs/RELEASE_0.2.1.md).
+
 ## 2026-09-18 — Lab limiter and queue timing (build 9)
 
 - **Opt-in, device test pending:** extend the manual Lab capture with present

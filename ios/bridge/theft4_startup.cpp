@@ -42,6 +42,9 @@ REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_gpu_query_budget);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_interval);
+REXCVAR_DECLARE(uint32_t, gta4_profile_native_samples);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -53,8 +56,10 @@ REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
 REXCVAR_DECLARE(uint32_t, gta4_shadow_map_base_size);
 REXCVAR_DECLARE(double, gta4_shadow_distance_scale);
 REXCVAR_DECLARE(std::string, gta4_reflection_resolution);
+REXCVAR_DECLARE(std::string, gta4_aspect_ratio);
 REXCVAR_DECLARE(std::string, gta4_native_anti_aliasing);
 REXCVAR_DECLARE(bool, gta4_force_highest_lod);
+REXCVAR_DECLARE(double, gta4_lod_selection_distance_scale);
 REXCVAR_DECLARE(double, gta4_draw_distance_scale);
 REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 #endif
@@ -176,7 +181,17 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             blur_trace && std::string_view(blur_trace) == "1");
         REXLOG_INFO("Theft4 motion blur: {} (stock composite-pass selection)",
                     motion_blur ? "on" : "off");
+        const char* depth_of_field_value = std::getenv("THEFT4_DEPTH_OF_FIELD");
+        if (depth_of_field_value && std::string_view(depth_of_field_value) != "0" &&
+            std::string_view(depth_of_field_value) != "1")
+            throw std::runtime_error("THEFT4_DEPTH_OF_FIELD must be 0 or 1");
+        REXLOG_INFO("Theft4 depth of field: {} (native title multiplier)",
+                    depth_of_field_value && std::string_view(depth_of_field_value) == "0" ? "off" : "on");
         const auto output = theft4_metal_get_output_policy();
+        // Theft4 is full-screen by default: the 3D camera follows the actual
+        // iPhone/iPad drawable. GTA IV's aspect hooks independently preserve
+        // the authored HUD geometry and safe layout.
+        REXCVAR_SET(gta4_aspect_ratio, std::string("auto"));
         // Use the policy's logical size, not the physical drawable: its FSR
         // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
@@ -186,8 +201,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(present_effect, output.fsr1 ? "fsr" : "bilinear");
         REXCVAR_SET(present_fsr_sharpness_reduction,
                     REXCVAR_GET(gta4_fsr1_sharpness_reduction));
-        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} upscaler={} "
-                    "quality=quality sharpness-reduction={} fps-counter=content-sequence",
+        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect=native-display "
+                    "hud=authored-16:9 upscaler={} quality=quality sharpness-reduction={} "
+                    "fps-counter=content-sequence",
                     output.render_width, output.render_height,
                     output.output_width, output.output_height,
                     output.fsr1 ? "fsr1" : "native",
@@ -217,7 +233,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         const std::string_view shadow = shadow_override ? shadow_override : "original";
         uint32_t shadow_map_size = 0;
         double shadow_distance = 0.0;
-        if (shadow == "original") {
+        if (shadow == "optimized") {
+            shadow_map_size = 128;
+            shadow_distance = 0.75;
+        } else if (shadow == "original") {
             shadow_map_size = 256;
             shadow_distance = 1.0;
         } else if (shadow == "enhanced") {
@@ -228,7 +247,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             shadow_distance = 1.5;
         } else {
             throw std::runtime_error(
-                "THEFT4_SHADOW_QUALITY must be original, enhanced, or ultra");
+                "THEFT4_SHADOW_QUALITY must be optimized, original, enhanced, or ultra");
         }
         REXCVAR_SET(gta4_shadow_map_base_size, shadow_map_size);
         REXCVAR_SET(gta4_shadow_distance_scale, shadow_distance);
@@ -238,7 +257,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             draw_distance_override ? draw_distance_override : "1";
         double draw_distance_scale = 0.0;
         uint32_t drawable_reference_limit = 0;
-        if (draw_distance == "1") {
+        if (draw_distance == "0.70") {
+            draw_distance_scale = 0.70;
+            drawable_reference_limit = 13000;
+        } else if (draw_distance == "1") {
             draw_distance_scale = 1.0;
             drawable_reference_limit = 13000;
         } else if (draw_distance == "2") {
@@ -250,7 +272,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             // the heavy-area producer workload beyond the proven capacity.
             drawable_reference_limit = 20000;
         } else {
-            throw std::runtime_error("THEFT4_DRAW_DISTANCE must be 1, 2, or 3");
+            throw std::runtime_error("THEFT4_DRAW_DISTANCE must be 0.70, 1, 2, or 3");
         }
         REXCVAR_SET(gta4_draw_distance_scale, draw_distance_scale);
         REXCVAR_SET(gta4_drawable_reference_limit, drawable_reference_limit);
@@ -262,6 +284,14 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             throw std::runtime_error("THEFT4_FORCE_HIGHEST_LOD must be 0 or 1");
         }
         REXCVAR_SET(gta4_force_highest_lod, highest_lod == "1");
+        const char* lod_distance_override = std::getenv("THEFT4_LOD_SELECTION_BIAS");
+        const std::string_view lod_distance =
+            lod_distance_override ? lod_distance_override : "1";
+        if (lod_distance != "1" && lod_distance != "1.75") {
+            throw std::runtime_error("THEFT4_LOD_SELECTION_BIAS must be 1 or 1.75");
+        }
+        REXCVAR_SET(gta4_lod_selection_distance_scale,
+                    lod_distance == "1.75" ? 1.75 : 1.0);
 
         const char* reflection_override = std::getenv("THEFT4_REFLECTION_RESOLUTION");
         const std::string_view reflection =
@@ -282,9 +312,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_anti_aliasing, std::string(anti_aliasing));
         REXLOG_INFO(
             "Theft4 graphics: shadows={} ({} map, {}x range) draw-distance={}x "
-            "drawable-limit={} highest-lod={} reflections={} anti-aliasing={}",
+            "drawable-limit={} highest-lod={} lod-selection-bias={} reflections={} anti-aliasing={}",
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
-            drawable_reference_limit, highest_lod == "1", reflection, anti_aliasing);
+            drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
 
         // Use both independently owned native frame slots so the CPU can record
         // frame n+1 while the GPU completes frame n.  The renderer keeps command
@@ -305,18 +335,26 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
-        // Keep CPU/transport detail for attribution, but use only the coarse
-        // GPU envelope. Per-pass Metal timestamp blits measurably perturb the
-        // workload and are unnecessary for the CPU/physics comparison.
-        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
+        // A manual performance capture is bounded to a short, explicit run.
+        // Spend that diagnostic budget on pass-level GPU timestamps so an
+        // exterior capture can distinguish scene draws, reflections and
+        // post-processing instead of reporting one unattributed envelope.
+        // The profiler emits no timestamps during normal play.
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
+        // Keep the all-frame publication/stage trace cheap, and sample enough
+        // deep frames to identify CPU operations and GPU pass families without
+        // placing hundreds of timestamp boundaries into every submitted frame.
+        REXCVAR_SET(gta4_profile_native_gpu_query_budget, 128u);
+        REXCVAR_SET(gta4_profile_native_interval, 3u);
+        REXCVAR_SET(gta4_profile_native_samples, 120u);
         const char* capture_setting = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
         const bool capture_on_launch = capture_setting &&
             std::string_view(capture_setting) == "1";
         REXCVAR_SET(gta4_profile_native_autostart, capture_on_launch);
         REXLOG_INFO(
-            "Theft4 bounded CPU/pacing plus coarse-GPU profiler ready; "
-            "capture on launch: {}", capture_on_launch);
+            "Theft4 bounded profiler ready: 120 samples / 3-frame interval / "
+            "128 GPU boundaries; capture on launch: {}", capture_on_launch);
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep
         // the renderer's conservative false default.

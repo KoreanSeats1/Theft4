@@ -19,7 +19,7 @@
     self.isAccessibilityElement = YES;
     self.accessibilityIdentifier = @"game.frameTime";
     self.accessibilityLabel = @"Frame-time graph";
-    self.accessibilityHint = @"Double-tap to capture 600 profiled frames";
+    self.accessibilityHint = @"Double-tap to sample 120 detailed frames across about 360 submitted frames";
     return self;
 }
 - (void)setCaptureRequested:(BOOL)requested {
@@ -34,7 +34,7 @@
         : UIColor.clearColor.CGColor;
     self.accessibilityHint = requested
         ? @"Frame-timing capture requested for this launch"
-        : @"Double-tap to capture 600 profiled frames";
+        : @"Double-tap to sample 120 detailed frames across about 360 submitted frames";
     [self setNeedsDisplay];
 }
 - (void)setCaptureCompleted:(BOOL)success {

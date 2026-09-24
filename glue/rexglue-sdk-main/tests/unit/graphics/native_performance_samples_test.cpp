@@ -279,8 +279,25 @@ TEST_CASE("GTA IV native performance names cover streaming validation and memory
         "process-physical-footprint-bytes");
   CHECK(std::string_view(CounterName(Counter::kPendingTextureReleases)) ==
         "pending-texture-releases");
+  CHECK(std::string_view(CounterName(Counter::kResourceInventoryCaptured)) ==
+        "resource-inventory-captured");
   CHECK(std::string_view(CpuRangeName(CpuRange::kPresenterAcquire)) == "presenter-acquire");
   CHECK(std::string_view(CpuRangeName(CpuRange::kPresenterTotal)) == "presenter-total");
+}
+
+TEST_CASE("GTA IV native performance sampling is bounded and deterministic") {
+  CHECK_FALSE(ShouldSampleProfileFrame(0, 0, 3));
+  CHECK(ShouldSampleProfileFrame(100, 0, 3));
+  CHECK_FALSE(ShouldSampleProfileFrame(101, 100, 3));
+  CHECK_FALSE(ShouldSampleProfileFrame(102, 100, 3));
+  CHECK(ShouldSampleProfileFrame(103, 100, 3));
+  CHECK(ShouldSampleProfileFrame(101, 100, 0));
+
+  CHECK(ShouldCaptureResourceInventory(1));
+  CHECK_FALSE(ShouldCaptureResourceInventory(2));
+  CHECK(ShouldCaptureResourceInventory(10));
+  CHECK(ShouldCaptureResourceInventory(20));
+  CHECK_FALSE(ShouldCaptureResourceInventory(20, 0));
 }
 
 }  // namespace

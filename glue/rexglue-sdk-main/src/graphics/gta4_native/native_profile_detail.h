@@ -6,6 +6,7 @@
 #include "native_pacing_export.h"
 #endif
 #include <filesystem>
+#include <bit>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -145,7 +146,9 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
          "keys,draws,primitives,gpu_ms,render_phase,reflection_family,vertex_shader,pixel_shader,"
          "shader_family,depth_blend,rt0_handle,rt0_generation,rt0_format,rt0_declared_samples,"
          "depth_handle,depth_generation,depth_format,depth_declared_samples,retail_phase,retail_phase_name,"
-         "origin_source,origin_scope,origin_arena,origin_offset,origin_ordinal,origin_list_id\n";
+         "origin_source,origin_scope,origin_arena,origin_offset,origin_ordinal,origin_list_id,"
+         "shadow_viewport_x,shadow_viewport_y,shadow_viewport_width,shadow_viewport_height,"
+         "shadow_scissor_left,shadow_scissor_top,shadow_scissor_right,shadow_scissor_bottom\n";
   slices << "frame,sequence,slice,range,status,begin_query,end_query,region,raw_begin,raw_end,"
             "relative_begin_ms,duration_ms\n";
   transport
@@ -251,7 +254,15 @@ inline bool ExportProfileDetails(const std::filesystem::path& dir,
       if(k.origin.attributed())gpu<<k.origin.retail_phase;
       gpu<<','<<RetailGpuPassName(k.origin.retail_phase)<<','<<GpuPassOriginSourceName(k.origin.source)
          <<','<<k.origin.scope<<','<<HexIdentity(k.origin.arena)<<','<<k.origin.offset
-         <<','<<k.origin.ordinal<<','<<k.origin.list_id<<'\n';
+         <<','<<k.origin.ordinal<<','<<k.origin.list_id;
+      if (k.origin.retail_phase == 21 && k.depth_target.handle) {
+        for (size_t coordinate = 0; coordinate < 4; ++coordinate)
+          gpu << ',' << std::bit_cast<float>(k.shadow_viewport_bits[coordinate]);
+        for (const int32_t edge : k.shadow_scissor) gpu << ',' << edge;
+      } else {
+        gpu << ",,,,,,,,";
+      }
+      gpu << '\n';
     }
     for (size_t i = 0; i < f.slices.size(); ++i) {
       const auto& s = f.slices[i];

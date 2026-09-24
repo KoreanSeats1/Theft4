@@ -7,12 +7,15 @@
     <key>CFBundleDisplayName</key><string>${THEFT4_DISPLAY_NAME}</string>
     <key>Theft4LabBuild</key>${THEFT4_LAB_PLIST_VALUE}
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>Theft4ReleaseName</key><string>0.2.0b</string>
-    <key>CFBundleVersion</key><string>44</string>
+    <key>CFBundleShortVersionString</key><string>0.2.1</string>
+    <key>Theft4ReleaseName</key><string>0.2.1</string>
+    <key>CFBundleVersion</key><string>52</string>
     <!-- Declares App Store export-compliance status for standard/exempt crypto only. -->
     <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>LSRequiresIPhoneOS</key><true/>
+    <!-- Lets iOS/iPadOS activate Game Mode while Theft4 is running. -->
+    <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+    <key>LSSupportsGameMode</key><true/>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
     <key>UILaunchScreen</key><dict/>

@@ -10,6 +10,27 @@
 
 namespace gta4 = rex::graphics::gta4_native;
 
+TEST_CASE("GTA IV resolve omits only redundant read-only source transitions") {
+  REQUIRE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true));
+  REQUIRE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, true));
+  REQUIRE_FALSE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true));
+  REQUIRE_FALSE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, true));
+  REQUIRE_FALSE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false));
+  REQUIRE_FALSE(gta4::CanElideNativeResolveSourceReadBarrier(
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true));
+}
+
 TEST_CASE("GTA IV native resolve discards only complete destination subresources") {
   REQUIRE(gta4::IsFullNativeResolveSubresourceOverwrite({0, 0, 1920, 1080, 1920, 1080}));
   REQUIRE_FALSE(gta4::IsFullNativeResolveSubresourceOverwrite({1, 0, 1920, 1080, 1920, 1080}));

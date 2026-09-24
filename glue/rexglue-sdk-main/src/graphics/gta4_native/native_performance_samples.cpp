@@ -371,6 +371,7 @@ const char* CounterName(Counter counter) {
       "postfx-direct-writes", "constant-version-hits", "constant-content-hits", "constant-binding-uploads", "texture-binding-reuses", "constant-binding-owners",
       "render-worker-qos-class", "render-worker-qos-relative-priority", "thermal-state",
       "guest-gap-cpu-valid",
+      "resource-inventory-captured",
   };
   const size_t index = EnumIndex(counter);
   return index < kNames.size() ? kNames[index] : "unknown";

@@ -54,8 +54,21 @@ for library in $required_libraries; do
   fi
 done
 
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist_template")"
-build_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist_template")"
+plist_string_value() {
+  local key="$1"
+  sed -n "s|.*<key>${key}</key><string>\\([^<]*\\)</string>.*|\\1|p" "$plist_template" | head -n 1
+}
+
+# Info.plist.in is a CMake template rather than a parseable plist: fields such
+# as THEFT4_LAB_PLIST_VALUE expand to complete XML nodes during configuration.
+# Read only the two literal release strings instead of asking PlistBuddy to
+# parse unresolved template syntax.
+version="$(plist_string_value CFBundleShortVersionString)"
+build_version="$(plist_string_value CFBundleVersion)"
+if [[ -z "$version" || -z "$build_version" ]]; then
+  print -u2 "Could not read release version fields from: $plist_template"
+  exit 65
+fi
 if [[ -n "${1:-}" && "$version" != "$1" ]]; then
   print -u2 "Expected release $1, but Info.plist.in contains $version."
   exit 65

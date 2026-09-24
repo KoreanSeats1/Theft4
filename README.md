@@ -8,6 +8,13 @@
   <img src="docs/images/theft4-logo.png" alt="Theft4" width="800">
 </p>
 
+**SUBMIT your custom device log here: [Theft4 Tester Log & Bug Submission](https://docs.google.com/forms/d/e/1FAIpQLScZNq2hjni8wgChCYl1oaRdJU0XPsVLFWwmVtqYxnIQ708t7A/viewform?usp=publish-editor)**
+
+Help improve Theft4 on your device: capture a slow or problematic scene with the
+built-in **short performance capture**, export the saved log, and upload it with
+your survey answers and screenshots. Smooth runs are useful comparisons too.
+**[Follow the capture, export, and submission instructions below.](#capture-and-submit-a-short-performance-log)**
+
 # Theft4
 
 Theft4 is an experimental, title-specific static ahead-of-time recompilation of
@@ -18,23 +25,24 @@ code at runtime and does not require a JIT entitlement.
 
 This is not a source port and it is not a complete Xbox 360 emulator. It combines
 ahead-of-time translated game code with a compatibility runtime that recreates
-the Xbox services the title expects. The 0.2.0b iOS release is built from the
-M5 Lab build 41 foundation and retains the GTA IV
-native renderer developed in Theft4 Lab. It presents through Vulkan, MoltenVK
-and Metal. The official app and TestFlight build use `com.lukebrosious.theft4`.
+the Xbox services the title expects. The 0.2.1 iOS release promotes the latest
+native-renderer, launcher, save-transfer, and diagnostic work into the official
+app. It presents through Vulkan, MoltenVK and Metal. The official app and
+TestFlight build use `com.lukebrosious.theft4`.
 
 > [!WARNING]
-> Theft4 0.2.0b remains experimental. Dense scenes, extended play, physics,
+> Theft4 0.2.1 remains experimental. Dense scenes, extended play, physics,
 > heat and device compatibility still need testing. The GitHub IPA is an
 > unsigned sideload package; TestFlight uses a separately signed build.
 
-## What changed in 0.2.0b
+## What changed in 0.2.1
 
-The M5 Lab build 41 source is now the regular Theft4 codebase, with the first-launch
-setup flow and diagnostic export added. The official app uses
-`com.lukebrosious.theft4`; its data container is separate from the historical
-Lab app (`com.theft4.m5lab`). Do not delete the Lab app until your game data and
-saves have been copied or backed up.
+This important update adds safer device-specific graphics limits, save backup
+and restore, a redesigned launcher, and substantially better performance
+evidence collection. It also includes renderer work that reduces redundant CPU,
+GPU, pipeline, buffer, constant, and synchronization overhead without lowering
+the default image quality on newer devices. See the
+[complete 0.2.1 release notes](docs/RELEASE_0.2.1.md).
 
 | Area | Substantial change | Effect |
 | --- | --- | --- |
@@ -44,8 +52,11 @@ saves have been copied or backed up.
 | Textures | Separate texture content identity from sampling state; cache verified generations and limit A19 stage walks to shader-used slots | Reduce decode, hashing, upload planning and unused-stage traversal while still validating dirty resources. |
 | Pipelines and worker | Bound A19 prewarming, defer draws whose new pipeline is compiling, and record worker phases and queue pressure | Reduce avoidable stalls and make remaining hitches diagnosable. Newly visited areas still need visual checks. |
 | Frame lifetime | Two completion-owned native frame slots and bounded resource retirement | Preserve CPU/GPU overlap while protecting in-flight buffers and textures. |
-| Output and power controls | Independent 540p/720p/900p/1080p scene selection, FSR, graphics presets, a performance preset and a 1080p A19 output cap | Let testers reduce pixel work and tune quality against sustained speed and heat. |
-| Diagnosis | Frame-time graph, bounded 600-frame CPU/GPU capture, runtime logs and System-tab export to Files | Make TestFlight slow-frame reports actionable without a debugger. |
+| Device safety | iPhones and iPads with less than 7 GiB of usable memory are capped at 900p + FSR and conservative pressure-heavy settings; lower 540p/720p choices remain available | Reduce rendering and memory pressure on 6 GB and older devices while leaving newer devices unchanged. |
+| Graphics and launcher | Full-screen native device aspect by default with the original HUD geometry preserved, plus Native Pixels and 540p/720p/900p/1080p, independent FSR, and expanded quality controls | Fill iPhone and iPad displays without stretching the HUD while keeping quality/performance choices explicit. |
+| Saves | Validated export and import with an automatic pre-import backup | Move or protect saves without copying the whole app container. |
+| Output and power controls | Independent resolution/FSR choices, fixed output policy where appropriate, Game Mode declaration, and conservative defaults for limited-memory profiles | Let testers tune quality against sustained speed, heat, and memory pressure. |
+| Diagnosis | Frame-time graph, lightweight long trace, 120-sample detailed GPU/CPU capture spread across about 360 submitted frames, resource inventory checkpoints, and Files export | Produce more concrete pipeline, buffer, GPU-pass, CPU-stage, queue, memory, and thermal evidence with lower capture overhead. |
 
 One useful instrumented comparison is the M5 iPad build 32 to 33 command
 transfer change at 900p. Mean renderer interval fell from 40.57 to 37.84 ms,
@@ -64,24 +75,131 @@ Lower resolution reduces planned pixel work, while the CPU changes reduce
 measured command overhead. Same-route, same-settings play after warmup is needed
 to measure sustained frame times, comfort and battery use. See the
 [A19 capture review](docs/lab-experiments/build40-a19-air-two-capture-review.md)
-and [0.2.0b release notes](docs/RELEASE_0.2.0B.md).
+and [0.2.1 release notes](docs/RELEASE_0.2.1.md).
 
-### Capture and share a slow scene
+### Capture and submit a short performance log
 
-Before starting the game, open **System** and turn on **Detailed performance
-capture**. In the slow scene, double-tap the frame-time graph to start the
-600-frame capture. Wait for completion, then quit and reopen Theft4. Tap
-**Download Latest Log Capture**. The app saves
-a dated text bundle in **Files → On My iPhone/iPad → Theft4 → Diagnostics** and
-opens the share sheet. Send the file with the device model, scene/route,
-graphics settings and whether the device felt hot. Profiling adds overhead;
-repeat normal play with capture off when judging FPS.
+#### Which file do we need?
+
+Upload the **`Theft4-Performance-Capture-<date-and-time>.txt`** file created by
+**System → Download Latest Log Capture** after a short capture has finished.
+This is Theft4's own diagnostic export—not an Apple crash report, a save export,
+or just a screenshot of the graph. **The game does not need to crash.**
+
+The short capture records **120 detailed samples across roughly 360 submitted
+frames**, including renderer CPU/GPU timing and counters. Expensive resource and
+process-memory inventories are sampled at capture start and then periodically,
+not every frame. The exported text bundle includes available profile data,
+runtime/lifecycle logs, the aligned lightweight frame-stage trace, and app/device
+information. Upload the whole `.txt` file; you do not need to extract individual
+CSV or JSON sections.
+
+#### 1. Enable the graph, then reproduce the issue
+
+1. In the Theft4 launcher, open **Interface** and enable **Frame-Time Graph**.
+   Enable **Frame Counter** too, so screenshots include FPS.
+2. Note your graphics settings, then press **Play**. Reach the scene you want to
+   test before starting the capture: a busy intersection, city overview, driving,
+   turning a corner, stutter, or a visual problem. A smooth scene is also useful
+   as a baseline.
+3. **Double-tap the frame-time graph** to begin the short detailed capture.
+   On current builds, this gesture works directly; no System capture switch is
+   required. If an older build has a **Detailed performance capture** switch,
+   enable that before starting the game, then use the same double-tap gesture.
+4. Keep playing the same route or hold the same camera view while it records.
+   The graph shows **REC**, then **SAVED** when the profile finishes. At 30 FPS,
+   the capture usually takes roughly **12 seconds at 30 FPS**; allow more time
+   at lower FPS.
+   **Wait for SAVED before closing the app.** If it shows **ERR**, mention that
+   in your report; do not describe it as a completed capture.
+
+Capture **while the problem is happening**, not only after it has recovered.
+If the issue appears only after the device warms up, reproduce that and report
+how many minutes you had been playing. For streaming or first-visit stutters,
+start just before entering the affected area and say whether you had visited
+it earlier in the session. Avoid changing graphics settings during a comparison.
+
+> Profiling itself adds overhead. Describe how the game felt **before** recording
+> as well as during it. Repeat the same scene without recording when judging
+> normal performance; a captured FPS reading alone is not a clean benchmark.
+
+#### 2. Save the log to Files
+
+1. Once the graph says **SAVED**, take any useful screenshots. Save your game
+   normally if needed—the performance capture does **not** save game progress.
+2. Close Theft4 from the app switcher and reopen it to the launcher.
+3. Open **System → Download Latest Log Capture**. This packages the saved
+   diagnostics; it does not start a new recording.
+4. The dated `.txt` is saved automatically under
+   **Files → On My iPhone/iPad → Theft4 → Diagnostics**. The share sheet also
+   lets you choose **Save to Files** and copy it somewhere convenient, such as
+   iCloud Drive.
+5. Use the file with the export date/time for this test. Export **before starting
+   another game session**, so the runtime context still matches your capture.
+
+There is one short profile per app launch. To record a second test, export the
+first, relaunch, and repeat. A successful export alone does not prove that a
+new short profile was recorded: wait for **SAVED** during the run first.
+
+#### 3. Fill out the survey and attach the file
+
+1. Open the **[Theft4 Tester Log & Bug Submission survey](https://docs.google.com/forms/d/e/1FAIpQLScZNq2hjni8wgChCYl1oaRdJU0XPsVLFWwmVtqYxnIQ708t7A/viewform?usp=publish-editor)**.
+   Sign in to Google if prompted. The form states that your Google account's
+   name, email, and photo are recorded when you upload files and submit.
+2. In **App log → Add file**, select the exported
+   `Theft4-Performance-Capture-….txt` from Files. Wait for the upload to finish.
+   The current exporter is bounded to about 50 MB and the form allows up to
+   100 MB, so a normal export does not need splitting.
+3. Add your username if desired, choose **iPhone** or **iPad**, and press **Next**
+   to complete the remaining survey pages. Include the following details in the
+   relevant questions or description:
+
+   - Exact device model/chip, iOS/iPadOS version, and Theft4 version/build. Say
+     whether it is a TestFlight, sideloaded, or locally installed test build.
+   - Scene resolution, FSR and other graphics settings; attach screenshots of
+     the **Graphics** page so we can reproduce your configuration.
+   - Where you were, what you were doing, the camera direction, and steps to
+     reproduce it. Distinguish moving/driving from standing still.
+   - FPS/frame-time behavior before and during capture; whether the issue is
+     repeatable, improves after waiting, or happens only on a first visit.
+   - Time spent playing, whether the device felt hot, charging/battery status,
+     and whether Low Power Mode was enabled. Note the approximate point in the
+     capture when a noticeable hitch or visual problem occurred.
+
+4. Attach supporting screenshots wherever the survey requests them: the scene
+   **with the graph and FPS visible**, your graphics settings, and any visual
+   defect or error message. Screenshots supplement the `.txt`; they do not
+   replace it. If a screenshot or screen recording was taken during the
+   measured interval, mention that because it can affect performance.
+5. Review the answers and attachments, then press **Submit** and wait for the
+   confirmation. Keep a copy of the log until the report has been investigated.
+
+Do not upload your ISO, extracted game folder, title-update package, or save
+files. Review logs/screenshots for personal information before sharing; runtime
+logs can contain device details and file paths. If upload fails, keep the
+original `.txt` and report the exact error instead of substituting a screenshot
+of the log.
+
+<details>
+<summary>Screenshot guide: enable the graph and recognize a completed capture</summary>
+
+![Theft4 Interface page with Frame Counter and Frame-Time Graph enabled](docs/images/capture-interface.png)
+
+*Enable Frame-Time Graph under Interface before pressing Play. This is the real
+launcher UI in an isolated simulator preview; no game data is loaded.*
+
+![Theft4 gameplay screenshot with FPS and the green SAVED indicator on the frame-time graph](docs/images/capture-saved-gameplay.png)
+
+*Example gameplay capture: look for SAVED on the graph in the top-right before
+quitting to export. Double-tap that graph while the scene you want to diagnose
+is visible. This screenshot illustrates the controls; it is not a performance
+guarantee for your device or settings.*
+
+</details>
 
 ### Move or back up saves with Files
 
-This feature is in `main` after the 0.2.0b build 44 release; it requires a
-subsequent app build and is not present in the currently published IPA/TestFlight
-build 44.
+This feature is included in 0.2.1 build 52.
 
 Quit the game and reopen Theft4, then open **System → Export Saves to Files**.
 Theft4 copies the saved-game packages and GTA IV profile data into a dated
@@ -266,9 +384,10 @@ fidelity settings, and fallback behavior are documented in the
 [engineering changelog](CHANGELOG.md).
 
 GitHub's automatic source ZIP does not contain the contents of Git submodules.
-For a complete checkout, use the recursive clone command above. A signed IPA is
-not distributed: every developer must build and sign with their own Apple
-account, and the application never contains game files.
+For a complete checkout, use the recursive clone command above. The release IPA
+is deliberately unsigned and must be signed by the user's sideloading tool;
+TestFlight distributes a separately Apple-signed build. The application never
+contains game files.
 
 ## Origins and credits
 

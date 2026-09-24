@@ -79,6 +79,10 @@ struct NativePassKey {
   uint64_t vertex_shader_hash = 0;
   uint64_t pixel_shader_hash = 0;
   NativeDepthBlendClass depth_blend_class = NativeDepthBlendClass::kNoAttachments;
+  // Only populated for retail directional warp-shadow phase 21. A depth
+  // surface handle alone does not identify which atlas tile a pass writes.
+  std::array<uint32_t, 6> shadow_viewport_bits{};
+  std::array<int32_t, 4> shadow_scissor{};
 
   bool operator==(const NativePassKey&) const = default;
 };
@@ -102,6 +106,8 @@ struct NativePassKeyInput {
   bool depth_enabled = false;
   bool depth_write_enabled = false;
   bool blend_enabled = false;
+  std::array<uint32_t, 6> shadow_viewport_bits{};
+  std::array<int32_t, 4> shadow_scissor{};
 };
 
 NativeDepthBlendClass ClassifyNativeDepthBlend(const NativePassKeyInput& input);

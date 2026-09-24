@@ -59,6 +59,7 @@
 #endif
 #if REX_PLATFORM_IOS
 extern "C" void theft4_frame_counter_note_published(void);
+extern "C" void theft4_frame_stage_record(uint32_t, uint64_t, uint64_t, uint64_t);
 #endif
 
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
@@ -3090,6 +3091,9 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
           guest_output_properties.content_sequence,
           present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR)) {
     theft4_frame_counter_note_published();
+    // Stage 10: same successful distinct-content boundary, with guest identity.
+    theft4_frame_stage_record(10, guest_output_properties.provenance.submitted_frame,
+        guest_output_properties.content_sequence, uint64_t(present_result));
   }
   const bool theft4_present_milestone =
       theft4_present_count <= 8 || theft4_present_count == 16 ||

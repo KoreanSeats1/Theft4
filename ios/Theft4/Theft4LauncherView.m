@@ -235,7 +235,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _resolutionSummary = Copy(@"", 12, YES);
         _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
         [graphicsRows addObjectsFromArray:@[
-            [self choice:@"INTERNAL RESOLUTION" detail:@"All choices fill the device's native aspect ratio. Native uses the device's physical pixels without FSR and costs more GPU time than 1080p." control:_renderResolution],
+            [self choice:@"INTERNAL RESOLUTION" detail:@"All choices use the stable centered 16:9 presentation. Native uses the largest 16:9 physical-pixel target that fits the display and disables FSR." control:_renderResolution],
             [self setting:@"FSR UPSCALING" detail:
                 (strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 ||
                  strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "iphone-6gb") == 0 ||
@@ -626,8 +626,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         const BOOL fixed1080Output = strcmp(deviceProfile, "a19") == 0 ||
             strcmp(deviceProfile, "iphone-6gb") == 0 ||
             strcmp(deviceProfile, "legacy-ipad") == 0;
-        const uint32_t nativeWidth = (uint32_t)floor(self.bounds.size.width * screen.nativeScale);
-        const uint32_t nativeHeight = (uint32_t)floor(self.bounds.size.height * screen.nativeScale);
+        const uint32_t fullWidth = (uint32_t)floor(self.bounds.size.width * screen.nativeScale);
+        const uint32_t fullHeight = (uint32_t)floor(self.bounds.size.height * screen.nativeScale);
+        uint32_t units = MIN(fullWidth / 16, fullHeight / 9);
+        if (!units) units = 1;
+        const uint32_t nativeWidth = units * 16;
+        const uint32_t nativeHeight = units * 9;
         const theft4_output_policy output = fixed1080Output && !native
             ? theft4_output_policy_for_fixed_1080_lab_selected_aspect(
                 self.renderHeight, _fsrUpscaling.on, nativeWidth, nativeHeight)

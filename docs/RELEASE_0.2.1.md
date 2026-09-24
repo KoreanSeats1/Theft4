@@ -1,6 +1,6 @@
 # Theft4 0.2.1 — important iOS update
 
-Version 0.2.1 (build 52) is an important update for iPhone and iPad. It keeps
+Version 0.2.1 (build 53) is an important update for iPhone and iPad. It keeps
 the official `com.lukebrosious.theft4` app identity, so an in-place update
 preserves the existing app container, game installation, settings, caches, and
 saves. Do not delete the old app before updating.
@@ -10,20 +10,23 @@ sideloading tool. The TestFlight build is separately signed by Apple. Neither
 artifact contains copyrighted game files, title updates, user saves, signing
 identities, or provisioning profiles.
 
-Public sideload artifact: `Theft4-0.2.1-52-ios-arm64.ipa`  
-SHA-256: `d5650215f2869bc638e02857cdf0d7841f82557911477f9b4ae1421b1c6f4075`
+Public sideload artifact: `Theft4-0.2.1-53-ios-arm64.ipa`
+SHA-256: `3f278f0d3b07cfdda0e40a3672594d17bcd0499c01484d86b0a1845b7f571f9a`
 
 ## User-facing changes
 
 - New After Hours launcher presentation and updated Theft4 app icon.
-- Gameplay now fills the full native iPhone or iPad aspect ratio by default.
-  The 3D camera expands to the display while the HUD retains its authored 16:9
-  geometry, scale, and edge anchoring instead of being stretched.
+- Gameplay uses the proven centered 16:9 presentation on iPhone and iPad. The
+  initial build 52 device-aspect experiment was withdrawn after testing exposed
+  stretched world geometry, misaligned shadows, incomplete HUD correction, and
+  increased frame-time instability. It will return only after the world,
+  shadow, post-process and HUD projections are validated together.
 - New **Auto Optimize for This Device** and **Original Xbox 360 Settings**
   buttons. Both are explicit, reversible starting points; manual changes still
   persist.
-- Graphics choices now include Native Pixels, 540p, 720p, 900p, and 1080p scene
-  resolution, with FSR controlled independently where supported.
+- Graphics choices include Native Pixels, 540p, 720p, 900p, and 1080p scene
+  resolution, with FSR controlled independently where supported. Native Pixels
+  uses the largest centered 16:9 physical-pixel target that fits the display.
 - Expanded controls for shadows, draw distance, model detail, reflections,
   edge smoothing, anisotropic filtering, motion blur, and depth of field.
 - New save export/import in **System**. Import validates the selected export and

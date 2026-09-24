@@ -53,7 +53,7 @@ the default image quality on newer devices. See the
 | Pipelines and worker | Bound A19 prewarming, defer draws whose new pipeline is compiling, and record worker phases and queue pressure | Reduce avoidable stalls and make remaining hitches diagnosable. Newly visited areas still need visual checks. |
 | Frame lifetime | Two completion-owned native frame slots and bounded resource retirement | Preserve CPU/GPU overlap while protecting in-flight buffers and textures. |
 | Device safety | iPhones and iPads with less than 7 GiB of usable memory are capped at 900p + FSR and conservative pressure-heavy settings; lower 540p/720p choices remain available | Reduce rendering and memory pressure on 6 GB and older devices while leaving newer devices unchanged. |
-| Graphics and launcher | Full-screen native device aspect by default with the original HUD geometry preserved, plus Native Pixels and 540p/720p/900p/1080p, independent FSR, and expanded quality controls | Fill iPhone and iPad displays without stretching the HUD while keeping quality/performance choices explicit. |
+| Graphics and launcher | Stable centered 16:9 gameplay, plus Native Pixels and 540p/720p/900p/1080p, independent FSR, and expanded quality controls | Avoid the world, shadow and HUD distortion found in the withdrawn device-aspect experiment while keeping quality/performance choices explicit. |
 | Saves | Validated export and import with an automatic pre-import backup | Move or protect saves without copying the whole app container. |
 | Output and power controls | Independent resolution/FSR choices, fixed output policy where appropriate, Game Mode declaration, and conservative defaults for limited-memory profiles | Let testers tune quality against sustained speed, heat, and memory pressure. |
 | Diagnosis | Frame-time graph, lightweight long trace, 120-sample detailed GPU/CPU capture spread across about 360 submitted frames, resource inventory checkpoints, and Files export | Produce more concrete pipeline, buffer, GPU-pass, CPU-stage, queue, memory, and thermal evidence with lower capture overhead. |
@@ -199,7 +199,7 @@ guarantee for your device or settings.*
 
 ### Move or back up saves with Files
 
-This feature is included in 0.2.1 build 52.
+This feature is included in 0.2.1 build 53.
 
 Quit the game and reopen Theft4, then open **System → Export Saves to Files**.
 Theft4 copies the saved-game packages and GTA IV profile data into a dated

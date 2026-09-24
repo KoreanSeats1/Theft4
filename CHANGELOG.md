@@ -2,12 +2,17 @@
 
 ## 0.2.1 — important iPhone and iPad update — 2026-09-24
 
-- **Validated build and installation:** version 0.2.1 build 52 was compiled as
+- **Replacement release:** version 0.2.1 build 53 withdraws the native
+  device-aspect experiment after device testing found stretched world geometry,
+  misaligned shadows, incomplete HUD correction, and increased frame-time
+  instability. Gameplay is restored to the proven centered 16:9 presentation;
+  the aspect work remains a development task until every dependent projection
+  can be validated together.
+- **Validated build and installation:** version 0.2.1 build 53 was compiled as
   an optimized ARM64 Release app and installed in place on an iPhone Air and an
   M5 iPad Pro under the existing `com.lukebrosious.theft4` identity. Updating
   preserves the existing app container; users should not delete the old app.
-- Gameplay now uses the device's native iPhone or iPad aspect ratio by default.
-  The 3D camera fills the display while the original HUD proportions are kept.
+- Gameplay uses the stable centered 16:9 presentation on iPhone and iPad.
 - iPhones and iPads with less than 7 GiB of usable memory use a conservative
   profile: requests above 900p are capped at a 900p scene with FSR output, and
   pressure-heavy optional effects are constrained. Devices with 8 GiB or more

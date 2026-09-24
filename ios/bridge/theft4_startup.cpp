@@ -188,10 +188,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 depth of field: {} (native title multiplier)",
                     depth_of_field_value && std::string_view(depth_of_field_value) == "0" ? "off" : "on");
         const auto output = theft4_metal_get_output_policy();
-        // Theft4 is full-screen by default: the 3D camera follows the actual
-        // iPhone/iPad drawable. GTA IV's aspect hooks independently preserve
-        // the authored HUD geometry and safe layout.
-        REXCVAR_SET(gta4_aspect_ratio, std::string("auto"));
+        // Ship the proven projection path while full device-aspect world,
+        // shadow, post-process and HUD transforms remain under validation.
+        REXCVAR_SET(gta4_aspect_ratio, std::string("16:9"));
         // Use the policy's logical size, not the physical drawable: its FSR
         // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
@@ -201,8 +200,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(present_effect, output.fsr1 ? "fsr" : "bilinear");
         REXCVAR_SET(present_fsr_sharpness_reduction,
                     REXCVAR_GET(gta4_fsr1_sharpness_reduction));
-        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect=native-display "
-                    "hud=authored-16:9 upscaler={} quality=quality sharpness-reduction={} "
+        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect=16:9 "
+                    "upscaler={} quality=quality sharpness-reduction={} "
                     "fps-counter=content-sequence",
                     output.render_width, output.render_height,
                     output.output_width, output.output_height,

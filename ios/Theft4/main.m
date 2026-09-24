@@ -646,19 +646,25 @@ static void bootEvent(void *context, const char *event) {
                                                 forKey:@"Theft4ModelDetail"];
         [NSUserDefaults.standardUserDefaults setBool:YES forKey:lodTierMigration];
     }
-    // The 3D camera and render targets follow the full device aspect. Aspect
-    // hooks retain the authored 16:9 HUD projection without stretching it.
+    // Keep gameplay on the proven 16:9 presentation path. Native device-aspect
+    // expansion is withdrawn until world, shadow, post-process and HUD
+    // projections can be validated together on both iPhone and iPad.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
     _metalView.translatesAutoresizingMaskIntoConstraints = NO;
     _metalView.userInteractionEnabled = NO;
     [self.view addSubview:_metalView];
     [NSLayoutConstraint activateConstraints:@[
-        [_metalView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [_metalView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [_metalView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [_metalView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+        [_metalView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_metalView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [_metalView.widthAnchor constraintEqualToAnchor:_metalView.heightAnchor multiplier:(16.0 / 9.0)],
+        [_metalView.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor],
+        [_metalView.heightAnchor constraintLessThanOrEqualToAnchor:self.view.heightAnchor]
     ]];
+    NSLayoutConstraint *preferFullWidth =
+        [_metalView.widthAnchor constraintEqualToAnchor:self.view.widthAnchor];
+    preferFullWidth.priority = 999;
+    preferFullWidth.active = YES;
     theft4_metal_bind_layer((__bridge void *)_metalView.layer);
     _bringupOverlay = [Theft4LauncherView new];
     _bringupOverlay.translatesAutoresizingMaskIntoConstraints = NO;

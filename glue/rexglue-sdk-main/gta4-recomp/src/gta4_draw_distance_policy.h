@@ -10,7 +10,7 @@ namespace gta4::draw_distance {
 // world-distance scalar. Keep invalid host configuration out of guest state
 // and preserve the retail multiplier as the deterministic fallback.
 inline float ResolveEngineScale(double configured_scale) noexcept {
-  if (!std::isfinite(configured_scale) || configured_scale < 1.0 ||
+  if (!std::isfinite(configured_scale) || configured_scale < 0.70 ||
       configured_scale > static_cast<double>(std::numeric_limits<float>::max())) {
     return 1.0f;
   }

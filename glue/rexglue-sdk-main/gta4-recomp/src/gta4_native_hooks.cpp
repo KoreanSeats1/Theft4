@@ -68,6 +68,7 @@ REXCVAR_DECLARE(std::string, gta4_native_upscaler);
 REXCVAR_DECLARE(std::string, gta4_fsr1_quality);
 REXCVAR_DECLARE(std::string, gta4_aspect_ratio);
 REXCVAR_DECLARE(bool, gta4_force_highest_lod);
+REXCVAR_DECLARE(double, gta4_lod_selection_distance_scale);
 REXCVAR_DECLARE(double, gta4_draw_distance_scale);
 REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 REXCVAR_DEFINE_BOOL(gta4_native_pixel_snap_fonts, true, "GTA IV/Graphics/Text",
@@ -4750,7 +4751,7 @@ extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
     const uint32_t maximum_base_size =
         capabilities.max_image_dimension_2d / kPointShadowCacheBaseMultiplier;
     effective_base_size = std::min(effective_base_size, maximum_base_size);
-    effective_base_size = std::max(effective_base_size, kOriginalShadowMapBaseSize);
+    effective_base_size = std::max(effective_base_size, 128u);
   } else {
     effective_base_size = kOriginalShadowMapBaseSize;
     REXLOG_WARN(
@@ -4774,7 +4775,24 @@ extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
 }
 
 extern "C" void sub_824F3418(PPCContext& ctx, uint8_t* base) {
-  if (!IsNativeMode() || !REXCVAR_GET(gta4_force_highest_lod) || !ctx.r4.u32) {
+  if (!IsNativeMode() || !ctx.r4.u32) {
+    __imp__sub_824F3418(ctx, base);
+    return;
+  }
+
+  if (!REXCVAR_GET(gta4_force_highest_lod)) {
+    const double bias = REXCVAR_GET(gta4_lod_selection_distance_scale);
+    const double original = ctx.f1.f64;
+    if (bias > 1.0 && std::isfinite(original) && original >= 0.0) {
+      // The retail selector compares f1 against the drawable's own LOD
+      // thresholds and verifies the chosen resident mesh. Bias only that
+      // comparison input, then restore the guest register; leave all fallback
+      // and blend logic in the original selector untouched.
+      ctx.f1.f64 = double(float(original * bias));
+      __imp__sub_824F3418(ctx, base);
+      ctx.f1.f64 = original;
+      return;
+    }
     __imp__sub_824F3418(ctx, base);
     return;
   }
@@ -6140,6 +6158,25 @@ extern "C" void sub_822D1710(PPCContext& ctx, uint8_t* base) {
   const uint32_t postfx_device_link = postfx ? LoadU32(base, postfx + 108) : 0;
   const uint32_t device = postfx_device_link ? LoadU32(base, postfx_device_link + 24) : 0;
   const uint32_t caller = ctx.lr;
+
+  // The title multiplies its near/far DOF radii by this native scalar when
+  // preparing the stock composite. Keep the authored projection, bloom and
+  // tone-map path intact; only neutralize blur amplitude when opted out.
+  // Other platforms and absent settings retain the original game value.
+  static const bool disable_depth_of_field = [] {
+    const char* value = std::getenv("THEFT4_DEPTH_OF_FIELD");
+    return value && std::strcmp(value, "0") == 0;
+  }();
+  if (disable_depth_of_field) {
+    constexpr uint32_t kNativeDofBlurMultiplier = 0x82A2E900;
+    const float multiplier = LoadF32(base, kNativeDofBlurMultiplier);
+    if (std::isfinite(multiplier) && multiplier > 0.0f && multiplier <= 32.0f) {
+      StoreF32(base, kNativeDofBlurMultiplier, 0.0f);
+      static std::atomic<bool> reported{false};
+      if (!reported.exchange(true, std::memory_order_relaxed))
+        REXLOG_INFO("gta4-native-dof: disabled authored near/far blur multiplier={}", multiplier);
+    }
+  }
 
   SubmitEnvironmentalData(base, device, postfx);
   ScopedNativeLightingExecution lighting_scope(

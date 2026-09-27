@@ -178,6 +178,7 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_enhancedOutput;
     UISwitch *_fsrBoost;
     UISwitch *_motionBlur;
+    UISwitch *_depthOfField;
     UISegmentedControl *_shadowQuality;
     UISegmentedControl *_drawDistance;
     UISegmentedControl *_modelDetail;
@@ -188,6 +189,7 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
     BOOL _legacyIPadProfile;
+    BOOL _limitedMemoryProfile;
     NSURL *_gameURL;
     UIView *_installationOverlay;
     UILabel *_installationTitle;
@@ -221,7 +223,8 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
 - (void)downloadLatestLogCapture;
 - (void)updateFrameTimeHUD;
 - (void)applyLowPowerPreset;
-- (void)syncA19OutputChoice;
+- (void)applyLimitedMemoryCaps;
+- (void)applyOriginalGraphicsPreset;
 #ifdef THEFT4_INTRO_TEST_BUILD
 - (void)runIntroTestImportSmokeIfRequested;
 #endif
@@ -252,6 +255,32 @@ static BOOL configureDeviceProfile(void) {
     return strcmp(profile, "legacy-ipad") == 0;
 }
 
+typedef NS_ENUM(NSInteger, Theft4AutomaticGraphicsTier) {
+    Theft4AutomaticGraphicsTierOriginal,
+    Theft4AutomaticGraphicsTierLow,
+    Theft4AutomaticGraphicsTierIPhone17Pro,
+    Theft4AutomaticGraphicsTierM5IPad
+};
+
+static Theft4AutomaticGraphicsTier automaticGraphicsTier(void) {
+    const char *machine = getenv("THEFT4_DEVICE_MODEL");
+    struct utsname systemInfo = {};
+    if (!machine && uname(&systemInfo) == 0) machine = systemInfo.machine;
+    if (!machine) return Theft4AutomaticGraphicsTierOriginal;
+    unsigned major = 0, minor = 0;
+    if (sscanf(machine, "iPad%u,%u", &major, &minor) == 2)
+        return major == 17 && minor >= 1 && minor <= 4
+            ? Theft4AutomaticGraphicsTierM5IPad : Theft4AutomaticGraphicsTierOriginal;
+    if (sscanf(machine, "iPhone%u,%u", &major, &minor) != 2)
+        return Theft4AutomaticGraphicsTierOriginal;
+    if (major <= 16 || (major == 18 && minor == 4))
+        return Theft4AutomaticGraphicsTierLow;
+    if (major == 18 && (minor == 1 || minor == 2))
+        return Theft4AutomaticGraphicsTierIPhone17Pro;
+    // iPhone17,* is the 16 family; iPhone18,3/5 are the standard 17 family.
+    return Theft4AutomaticGraphicsTierOriginal;
+}
+
 #ifdef THEFT4_HAS_GAME_LOADER
 static void bootEvent(void *context, const char *event) {
     fprintf(stderr, "Theft4 loader: %s\n", event);
@@ -267,6 +296,8 @@ static void bootEvent(void *context, const char *event) {
     [super viewDidLoad];
     self.controllerUserInteractionEnabled = YES;
     _legacyIPadProfile = configureDeviceProfile();
+    const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
+    _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 || strcmp(deviceProfile, "legacy-ipad") == 0;
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowFrameTime": @NO,
@@ -275,13 +306,28 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
         @"Theft4MotionBlur": @NO,
-        @"Theft4ShadowQuality": @0,
-        @"Theft4DrawDistance": @0,
-        @"Theft4ModelDetail": @0,
+        @"Theft4DepthOfField": @YES,
+        @"Theft4ShadowQuality": @1,
+        @"Theft4DrawDistance": @1,
+        @"Theft4ModelDetail": @1,
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2,
         @"Theft4DetailedPerformanceCapture": @NO
     }];
+    // Build 65 uses build 44's indices. Migrate those persisted choices once,
+    // independently of the retired 0.2.1 migration markers. Never apply Auto here.
+    NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
+    if (![graphicsDefaults boolForKey:@"Theft4GraphicsIndicesMigrationBuild66"]) {
+        NSDictionary *stored = [graphicsDefaults persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
+        for (NSString *key in @[@"Theft4ShadowQuality", @"Theft4DrawDistance", @"Theft4ModelDetail"]) {
+            NSNumber *value = stored[key];
+            if (value) {
+                NSInteger maximum = [key isEqualToString:@"Theft4ModelDetail"] ? 1 : 2;
+                [graphicsDefaults setInteger:MAX(0, MIN(maximum, value.integerValue)) + 1 forKey:key];
+            }
+        }
+        [graphicsDefaults setBool:YES forKey:@"Theft4GraphicsIndicesMigrationBuild66"];
+    }
     // The native game image is 1280x720. Keep its layer itself at 16:9 so
     // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
@@ -325,6 +371,7 @@ static void bootEvent(void *context, const char *event) {
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
     _enhancedOutput = _bringupOverlay.enhancedOutput; _fsrBoost = _bringupOverlay.fsrBoost;
     _motionBlur = _bringupOverlay.motionBlur;
+    _depthOfField = _bringupOverlay.depthOfField;
     _shadowQuality = _bringupOverlay.shadowQuality;
     _drawDistance = _bringupOverlay.drawDistance;
     _modelDetail = _bringupOverlay.modelDetail;
@@ -335,15 +382,17 @@ static void bootEvent(void *context, const char *event) {
     [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
                  forControlEvents:UIControlEventTouchUpInside];
     NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
-                         _motionBlur,_performanceCapture];
+                         _motionBlur,_depthOfField,_performanceCapture];
     NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
-                      @"Theft4DetailedPerformanceCapture"];
+                      @"Theft4DepthOfField",@"Theft4DetailedPerformanceCapture"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
+    [_bringupOverlay.originalPresetButton addTarget:self action:@selector(applyOriginalGraphicsPreset)
+        forControlEvents:UIControlEventTouchUpInside];
     NSArray<UISegmentedControl *> *graphicsChoices = @[
         _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *graphicsKeys = @[
@@ -360,11 +409,12 @@ static void bootEvent(void *context, const char *event) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
         _bringupOverlay.renderResolution.selectedSegmentIndex =
-            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 : 1;
+            height == 540 ? 0 : height == 900 ? 2 : height == 1080 ? 3 :
+            height == THEFT4_LAB_NATIVE_16_9 ? 4 : 1;
         if (![defaults objectForKey:@"Theft4LabFSREnabled"])
             [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
         _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
-        [self syncA19OutputChoice];
+        [self applyLimitedMemoryCaps];
         [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
         [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
@@ -892,13 +942,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)displaySettingsChanged:(UIControl *)sender {
-    [self syncA19OutputChoice];
+    if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
+    if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4) _bringupOverlay.fsrUpscaling.on = NO;
+    [self applyLimitedMemoryCaps];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_performanceCapture.on
                                           forKey:@"Theft4DetailedPerformanceCapture"];
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
     [NSUserDefaults.standardUserDefaults setBool:_motionBlur.on forKey:@"Theft4MotionBlur"];
+    [NSUserDefaults.standardUserDefaults setBool:_depthOfField.on forKey:@"Theft4DepthOfField"];
     NSArray<UISegmentedControl *> *choices = @[_shadowQuality, _drawDistance, _modelDetail,
         _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *keys = @[@"Theft4ShadowQuality", @"Theft4DrawDistance",
@@ -924,23 +977,100 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _fpsLastTime = CACurrentMediaTime();
 }
 
-- (void)syncA19OutputChoice {
-    if (!_bringupOverlay.renderResolution ||
-        strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") != 0) return;
-    _bringupOverlay.fsrUpscaling.on = _bringupOverlay.renderHeight < 1080;
-    _bringupOverlay.fsrUpscaling.enabled = NO;
+- (void)applyOriginalGraphicsChoices {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    _bringupOverlay.renderResolution.selectedSegmentIndex = 1;
+    _bringupOverlay.fsrUpscaling.on = NO;
+    _shadowQuality.selectedSegmentIndex = 1;
+    _drawDistance.selectedSegmentIndex = 1;
+    _modelDetail.selectedSegmentIndex = 1;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
+    _anisotropicFiltering.on = NO;
+    _motionBlur.on = YES;
+    _depthOfField.on = YES;
+    _enhancedOutput.on = NO;
+    _fsrBoost.on = NO;
+}
+
+- (void)applyOriginalGraphicsPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    [self applyOriginalGraphicsChoices];
+    [self displaySettingsChanged:nil];
+    [NSUserDefaults.standardUserDefaults setObject:@"original" forKey:@"Theft4GraphicsPreset"];
 }
 
 - (void)applyLowPowerPreset {
     if (!_bringupOverlay.renderResolution || _executionAttempted) return;
-    _bringupOverlay.renderResolution.selectedSegmentIndex = 0;
+    [self applyOriginalGraphicsChoices];
+    switch (automaticGraphicsTier()) {
+        case Theft4AutomaticGraphicsTierLow:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 0;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 1; // Optimized requires shadow cache validation.
+            _drawDistance.selectedSegmentIndex = 0;
+            _motionBlur.on = NO;
+            _depthOfField.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierIPhone17Pro:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 2;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 2;
+            _antiAliasing.selectedSegmentIndex = 2;
+            _anisotropicFiltering.on = YES;
+            _motionBlur.on = NO;
+            _depthOfField.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierM5IPad:
+            _bringupOverlay.renderResolution.selectedSegmentIndex = 3;
+            _bringupOverlay.fsrUpscaling.on = YES;
+            _shadowQuality.selectedSegmentIndex = 2;
+            _modelDetail.selectedSegmentIndex = 2;
+            _antiAliasing.selectedSegmentIndex = 2;
+            _anisotropicFiltering.on = YES;
+            _motionBlur.on = NO;
+            break;
+        case Theft4AutomaticGraphicsTierOriginal:
+            break;
+    }
+    [self displaySettingsChanged:nil];
+    [NSUserDefaults.standardUserDefaults setObject:@"auto" forKey:@"Theft4GraphicsPreset"];
+}
+
+- (void)applyLimitedMemoryCaps {
+    if (!_limitedMemoryProfile || !_bringupOverlay.renderResolution || _executionAttempted) return;
+
+    // Devices with 6 GiB or less stay inside a 900p scene / 1080p presentation
+    // ceiling, with settings that add render targets, samples, or draws removed.
+    if (_bringupOverlay.renderResolution.selectedSegmentIndex > 2)
+        _bringupOverlay.renderResolution.selectedSegmentIndex = 2;
     _bringupOverlay.fsrUpscaling.on = YES;
-    for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
-                                          _reflectionQuality, _antiAliasing])
-        choice.selectedSegmentIndex = 0;
+    if (_shadowQuality.selectedSegmentIndex > 1) _shadowQuality.selectedSegmentIndex = 1;
+    _drawDistance.selectedSegmentIndex = 0;
+    if (_modelDetail.selectedSegmentIndex > 1) _modelDetail.selectedSegmentIndex = 1;
+    _reflectionQuality.selectedSegmentIndex = 0;
+    _antiAliasing.selectedSegmentIndex = 0;
     _anisotropicFiltering.on = NO;
     _motionBlur.on = NO;
-    [self displaySettingsChanged:_bringupOverlay.renderResolution];
+    _depthOfField.on = NO;
+    _fsrBoost.on = NO;
+    _enhancedOutput.on = YES;
+
+    [_bringupOverlay.renderResolution setEnabled:NO forSegmentAtIndex:3];
+    [_bringupOverlay.renderResolution setEnabled:NO forSegmentAtIndex:4];
+    for (NSInteger index = 2; index < _shadowQuality.numberOfSegments; ++index)
+        [_shadowQuality setEnabled:NO forSegmentAtIndex:index];
+    for (NSInteger index = 1; index < _drawDistance.numberOfSegments; ++index)
+        [_drawDistance setEnabled:NO forSegmentAtIndex:index];
+    if (_modelDetail.numberOfSegments > 2) [_modelDetail setEnabled:NO forSegmentAtIndex:2];
+    for (NSInteger index = 1; index < _reflectionQuality.numberOfSegments; ++index)
+        [_reflectionQuality setEnabled:NO forSegmentAtIndex:index];
+    for (NSInteger index = 1; index < _antiAliasing.numberOfSegments; ++index)
+        [_antiAliasing setEnabled:NO forSegmentAtIndex:index];
+    _anisotropicFiltering.enabled = NO;
+    _motionBlur.enabled = NO;
+    _depthOfField.enabled = NO;
+    _fsrBoost.enabled = NO;
 }
 
 - (void)record:(NSString *)event {
@@ -1288,13 +1418,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
-        const char *shadowPresets[] = {"original", "enhanced", "ultra"};
-        const char *distancePresets[] = {"1", "2", "3"};
+        setenv("THEFT4_DEPTH_OF_FIELD", _depthOfField.on ? "1" : "0", 1);
+        const char *shadowPresets[] = {"optimized", "original", "enhanced", "ultra"};
+        const char *distancePresets[] = {"0.70", "1", "2", "3"};
         const char *reflectionPresets[] = {"original", "1080p", "full"};
         const char *antiAliasingPresets[] = {"off", "fxaa", "smaa"};
         setenv("THEFT4_SHADOW_QUALITY", shadowPresets[_shadowQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_DRAW_DISTANCE", distancePresets[_drawDistance.selectedSegmentIndex], 1);
-        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex ? "1" : "0", 1);
+        setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex == 2 ? "1" : "0", 1);
+        setenv("THEFT4_LOD_SELECTION_BIAS", _modelDetail.selectedSegmentIndex == 0 ? "1.75" : "1", 1);
+        setenv("THEFT4_OPTIMIZED_LOCAL_LIGHTS", _drawDistance.selectedSegmentIndex == 0 ? "1" : "0", 1);
         setenv("THEFT4_REFLECTION_RESOLUTION",
             reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
@@ -1306,7 +1439,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (_bringupOverlay.renderResolution) {
             theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
                 _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
-                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0);
+                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 || _limitedMemoryProfile);
         } else {
             theft4_metal_set_output_mode(
                 _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
@@ -1322,6 +1455,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         _enhancedOutput.enabled = NO;
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
+        _depthOfField.enabled = NO;
         for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
                                               _reflectionQuality, _antiAliasing])
             choice.enabled = NO;

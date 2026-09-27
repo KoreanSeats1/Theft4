@@ -213,10 +213,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _enhancedOutput = [UISwitch new];
     _fsrBoost = [UISwitch new];
     _motionBlur = [UISwitch new];
+    _depthOfField = [UISwitch new];
     NSArray<UISwitch *> *switches = @[_showFrameTime, _showFPS, _showControls,
-        _anisotropicFiltering, _enhancedOutput, _fsrBoost, _motionBlur];
+        _anisotropicFiltering, _enhancedOutput, _fsrBoost, _motionBlur, _depthOfField];
     NSArray<NSString *> *identifiers = @[@"showFrameTime", @"showFPS", @"showTouchControls",
-        @"anisotropicFiltering", @"enhancedOutput1080p", @"fsrBoost", @"motionBlur"];
+        @"anisotropicFiltering", @"enhancedOutput1080p", @"fsrBoost", @"motionBlur",
+        @"depthOfField"];
     for (NSUInteger i = 0; i < switches.count; ++i) {
         switches[i].onTintColor = Ink(0xB6884D);
         switches[i].accessibilityIdentifier = [@"settings." stringByAppendingString:identifiers[i]];
@@ -224,7 +226,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
     NSMutableArray<UIView *> *graphicsRows = [NSMutableArray new];
     if (lab) {
-        _renderResolution = ChoiceControl(@[@"540p", @"720p", @"900p", @"1080p"], @"renderResolution",
+        _renderResolution = ChoiceControl(@[@"540p", @"720p", @"900p", @"1080p", @"Native"], @"renderResolution",
             @"Render resolution", @"The internal scene resolution. Applies at the next game launch.");
         _renderResolution.selectedSegmentIndex = 1;
         _fsrUpscaling = [UISwitch new];
@@ -233,28 +235,52 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _resolutionSummary = Copy(@"", 12, YES);
         _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
         [graphicsRows addObjectsFromArray:@[
-            [self choice:@"INTERNAL RESOLUTION" detail:@"540p = 960 × 540, 56% of 720p's pixels. 720p = 1280 × 720. 900p and 1080p cost more GPU time." control:_renderResolution],
+            [self choice:@"INTERNAL RESOLUTION" detail:@"All choices use the stable centered 16:9 presentation. Native uses the largest 16:9 physical-pixel target that fits the display and disables FSR." control:_renderResolution],
             [self setting:@"FSR UPSCALING" detail:
-                (strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0
-                    ? @"A19: 540p, 720p and 900p upscale to 1080p; 1080p renders natively."
-                    : @"Fit the selected internal resolution to the display with spatial upscaling.")
+                (strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 ||
+                 strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "iphone-6gb") == 0 ||
+                 strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "legacy-ipad") == 0
+                    ? @"This device uses a fixed 1080p output budget. Lower internal resolutions use FSR 1; changes apply on the next game launch."
+                    : @"Independent of internal resolution. Off bypasses FSR 1 while keeping the selected scene resolution.")
                 toggle:_fsrUpscaling],
             _resolutionSummary
         ]];
-        _lowPowerButton = Action(@"APPLY PERFORMANCE PRESET", NO);
-        _lowPowerButton.accessibilityIdentifier = @"settings.lowPowerPreset";
+        _lowPowerButton = Action(@"AUTO OPTIMIZE", NO);
+        _lowPowerButton.accessibilityIdentifier = @"settings.autoOptimize";
+        _lowPowerButton.accessibilityLabel = @"Auto Optimize for this device";
+        _originalPresetButton = Action(@"ORIGINAL · XBOX 360", NO);
+        _originalPresetButton.accessibilityIdentifier = @"settings.originalPreset";
+        _originalPresetButton.accessibilityLabel = @"Original Xbox 360 settings";
+        for (UIButton *button in @[_lowPowerButton, _originalPresetButton]) {
+            UIButtonConfiguration *config = button.configuration;
+            config.image = nil;
+            config.contentInsets = NSDirectionalEdgeInsetsMake(12, 6, 12, 6);
+            config.titleTextAttributesTransformer = ^NSDictionary *(NSDictionary *attributes) {
+                NSMutableDictionary *updated = [attributes mutableCopy];
+                updated[NSFontAttributeName] = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+                return updated;
+            };
+            button.configuration = config;
+            button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+        }
+        UIStackView *presetButtons = [[UIStackView alloc] initWithArrangedSubviews:
+            @[_lowPowerButton, _originalPresetButton]];
+        presetButtons.axis = UILayoutConstraintAxisHorizontal;
+        presetButtons.distribution = UIStackViewDistributionFillEqually;
+        presetButtons.spacing = 10;
         [graphicsRows addObjectsFromArray:@[
-            _lowPowerButton,
-            Copy(@"540p + FSR, original shadows/distance/reflections/model LOD, no edge filter, 1× texture filtering and no motion blur. You can adjust each setting afterward.", 12, NO)
+            presetButtons,
+            Copy(@"Auto Optimize selects a starting profile for this device. Original restores 720p, original shadow/distance/detail/reflections, and the title's blur. You can adjust each setting afterward.", 12, NO)
         ]];
     }
 
-    _shadowQuality = ChoiceControl(@[@"Original", @"Enhanced", @"Ultra"], @"shadowQuality",
-        @"Dynamic shadows", @"Select original, enhanced, or ultra shadow-map resolution and range.");
-    _drawDistance = ChoiceControl(@[@"Original", @"2×", @"3×"], @"drawDistance",
-        @"Draw distance", @"Extend GTA IV's built-in world-distance input.");
-    _modelDetail = ChoiceControl(@[@"Original", @"Highest LOD"], @"modelDetail",
-        @"Model detail", @"Prefer the highest resident model detail level.");
+    _shadowQuality = ChoiceControl(@[@"Optimized", @"Original", @"Enhanced", @"Ultra"], @"shadowQuality",
+        @"Dynamic shadows", @"Optimized is pending validation of distant shadow cache reuse.");
+    [_shadowQuality setEnabled:NO forSegmentAtIndex:0];
+    _drawDistance = ChoiceControl(@[@"Optimized", @"Original", @"2×", @"3×"], @"drawDistance",
+        @"Draw distance", @"Optimized reduces world distance and distant local illumination.");
+    _modelDetail = ChoiceControl(@[@"Lower", @"Original", @"Highest"], @"modelDetail",
+        @"Model detail", @"Lower selects simpler resident meshes sooner without changing draw distance.");
     _reflectionQuality = ChoiceControl(@[@"Original", @"1080p", @"Full"], @"reflectionQuality",
         @"Reflection resolution", @"Set the renderer's native reflection target preset.");
     _antiAliasing = ChoiceControl(@[@"Off", @"FXAA", @"SMAA"], @"antiAliasing",
@@ -276,13 +302,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     }
 
     [graphicsRows addObjectsFromArray:@[
-        [self choice:@"DYNAMIC SHADOWS" detail:@"Original: 256 base / 2048² point cache. Enhanced: 512 / 4096². Ultra: 1024 / 8192²; device limits may cap it." control:_shadowQuality metrics:_shadowMetrics],
-        [self choice:@"DRAW DISTANCE" detail:@"World-distance multiplier and drawable-reference capacity. Longer range adds CPU, streaming and draw work." control:_drawDistance metrics:_distanceMetrics],
-        [self choice:@"MODEL DETAIL" detail:@"Highest LOD selects the best resident model; it does not force missing models to load." control:_modelDetail metrics:_modelMetrics],
+        [self choice:@"DYNAMIC SHADOWS" detail:@"Optimized is locked until distant shadow cache reuse is verified. Original: 256 / 2048². Enhanced: 512 / 4096². Ultra: 1024 / up to 8192²." control:_shadowQuality metrics:_shadowMetrics],
+        [self choice:@"DRAW DISTANCE" detail:@"Optimized: 0.70× world distance and culls far local light volumes. Distant scenery and some night lighting may change." control:_drawDistance metrics:_distanceMetrics],
+        [self choice:@"MODEL DETAIL" detail:@"Lower selects simpler resident meshes sooner; Highest prefers the best resident mesh. Neither forces missing models to load. Lower may reduce geometry cost, but CPU gains depend on submesh and draw-call counts." control:_modelDetail metrics:_modelMetrics],
         [self choice:@"REFLECTION QUALITY" detail:@"Mirror and water targets / environment cubemap. Full is capped at 1440p in this build." control:_reflectionQuality metrics:_reflectionMetrics],
         [self choice:@"ANTI-ALIASING" detail:@"Edge smoothing after scene rendering; this does not change internal resolution." control:_antiAliasing metrics:_aaMetrics],
         [self setting:@"TEXTURE FILTERING · 4×" detail:@"Cleaner roads and surfaces at an angle." toggle:_anisotropicFiltering],
         [self setting:@"MOTION BLUR" detail:@"Original movement blur. Disable for a sharper image in motion." toggle:_motionBlur],
+        [self setting:@"DEPTH OF FIELD" detail:@"Distance-based focus blur. Off by default on iPhone Air; this may sharpen city views, but performance gains need testing." toggle:_depthOfField],
         Copy(@"Graphics changes apply on the next game launch. Extended distance and Ultra shadows can reduce frame rate in dense areas.", 12, NO)
     ]];
     if (!lab) {
@@ -295,7 +322,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
     _interfacePage = Column(@[
         [self setting:@"FRAME COUNTER" detail:@"Unique game frames in the top-right corner." toggle:_showFPS],
-        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap it to record a Lab capture." toggle:_showFrameTime],
+        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap it to record a short detailed profile." toggle:_showFrameTime],
         [self setting:@"TOUCH CONTROLS" detail:@"Physical controllers continue to work when the overlay is hidden." toggle:_showControls],
         Copy(@"A connected controller can move focus through this launcher. Use the D-pad or left stick to navigate and A to select.", 12, NO)
     ], 20);
@@ -540,15 +567,18 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
 - (uint32_t)renderHeight {
     NSInteger index = _renderResolution.selectedSegmentIndex;
-    return index == 0 ? 540 : index == 2 ? 900 : index == 3 ? 1080 : 720;
+    return index == 0 ? 540 : index == 2 ? 900 : index == 3 ? 1080 :
+        index == 4 ? THEFT4_LAB_NATIVE_16_9 : 720;
 }
 
 - (void)refreshConfigurationSummary {
     NSArray<NSString *> *shadowMetrics = @[
+        @"128 base · 1024 × 1024 cache · 0.75× range",
         @"256 base · 2048 × 2048 cache · 1× range",
         @"512 base · 4096 × 4096 cache · 1× range",
         @"1024 base · up to 8192 × 8192 cache · 1.5× range"];
     NSArray<NSString *> *distanceMetrics = @[
+        @"0.70× world distance · far local lights reduced",
         @"1× world distance · 13,000 drawable references",
         @"2× world distance · 17,000 drawable references",
         @"3× world distance · 20,000 drawable references"];
@@ -556,30 +586,45 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         @"320 × 180 mirror/water · 256² environment",
         @"1920 × 1080 mirror/water · 1024² environment",
         @"2560 × 1440 mirror/water · 2048² environment"];
-    _shadowMetrics.text = shadowMetrics[MAX(0, MIN(2, _shadowQuality.selectedSegmentIndex))];
-    _distanceMetrics.text = distanceMetrics[MAX(0, MIN(2, _drawDistance.selectedSegmentIndex))];
-    _modelMetrics.text = _modelDetail.selectedSegmentIndex == 1
-        ? @"Highest resident mesh at any distance" : @"Title-controlled model LOD";
+    _shadowMetrics.text = shadowMetrics[MAX(0, MIN(3, _shadowQuality.selectedSegmentIndex))];
+    _distanceMetrics.text = distanceMetrics[MAX(0, MIN(3, _drawDistance.selectedSegmentIndex))];
+    _modelMetrics.text = _modelDetail.selectedSegmentIndex == 0
+        ? @"Earlier transition to simpler resident meshes · 1.75× selector input"
+        : _modelDetail.selectedSegmentIndex == 2
+            ? @"Highest resident mesh at any distance" : @"Title-controlled model LOD";
     _reflectionMetrics.text = reflectionMetrics[MAX(0, MIN(2, _reflectionQuality.selectedSegmentIndex))];
     _aaMetrics.text = @[@"No edge filter", @"FXAA · single lightweight pass",
                         @"SMAA 1× · high preset"][MAX(0, MIN(2, _antiAliasing.selectedSegmentIndex))];
-    NSString *shadow = @[@"ORIGINAL SHADOWS", @"ENHANCED SHADOWS", @"ULTRA SHADOWS"]
+    NSString *shadow = @[@"OPTIMIZED SHADOWS", @"ORIGINAL SHADOWS", @"ENHANCED SHADOWS", @"ULTRA SHADOWS"]
         [MAX(0, _shadowQuality.selectedSegmentIndex)];
-    NSString *distance = @[@"ORIGINAL DISTANCE", @"2× DISTANCE", @"3× DISTANCE"]
+    NSString *distance = @[@"OPTIMIZED DISTANCE", @"ORIGINAL DISTANCE", @"2× DISTANCE", @"3× DISTANCE"]
         [MAX(0, _drawDistance.selectedSegmentIndex)];
     if (_renderResolution) {
+        const BOOL native = _renderResolution.selectedSegmentIndex == 4;
+        _fsrUpscaling.enabled = !native;
+        if (native) _fsrUpscaling.on = NO;
         UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
-        const BOOL a19 = strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0;
-        const theft4_output_policy output = a19
-            ? theft4_output_policy_for_a19_lab(self.renderHeight)
+        const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
+        const BOOL fixed1080Output = strcmp(deviceProfile, "a19") == 0 ||
+            strcmp(deviceProfile, "iphone-6gb") == 0 ||
+            strcmp(deviceProfile, "legacy-ipad") == 0;
+        const uint32_t fullWidth = (uint32_t)floor(self.bounds.size.width * screen.nativeScale);
+        const uint32_t fullHeight = (uint32_t)floor(self.bounds.size.height * screen.nativeScale);
+        uint32_t units = MIN(fullWidth / 16, fullHeight / 9);
+        if (!units) units = 1;
+        const uint32_t nativeWidth = units * 16;
+        const uint32_t nativeHeight = units * 9;
+        const theft4_output_policy output = fixed1080Output && !native
+            ? theft4_output_policy_for_fixed_1080_lab_selected_aspect(
+                self.renderHeight, _fsrUpscaling.on, nativeWidth, nativeHeight)
             : theft4_output_policy_for_lab(self.renderHeight, _fsrUpscaling.on,
-                (uint32_t)floor(self.bounds.size.width * screen.nativeScale),
-                (uint32_t)floor(self.bounds.size.height * screen.nativeScale));
+                nativeWidth, nativeHeight);
         _resolutionSummary.text = [NSString stringWithFormat:@"%u × %u  →  %u × %u\n%@ · NEXT GAME LAUNCH",
             output.render_width, output.render_height, output.output_width, output.output_height,
-            output.fsr1 ? @"FSR ON" : @"NATIVE"];
-        _configuration.text = [NSString stringWithFormat:@"%up / %@ / %@",
-            self.renderHeight, shadow, distance];
+            output.fsr1 ? @"FSR ON" : @"FSR OFF"];
+        _configuration.text = [NSString stringWithFormat:@"%@ / %@ / %@",
+            native ? @"NATIVE PIXELS" : [NSString stringWithFormat:@"%up", self.renderHeight],
+            shadow, distance];
         return;
     }
     _configuration.text = [NSString stringWithFormat:@"720p / %@ / %@", shadow, distance];

@@ -28010,6 +28010,48 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   const std::string ps9_stencil_probe = REXCVAR_GET(gta4_native_light_ps9_stencil_probe);
   const bool legacy_ps9_bypass = REXCVAR_GET(gta4_native_light_ps9_stencil_bypass);
   const std::string stencil_face_probe = REXCVAR_GET(gta4_native_light_stencil_face_probe);
+  // The title's light setup and accumulation draws share an occurrence ID.
+  // Decide from the accumulation packet before recording either draw so a
+  // culled volume cannot leave its stencil setup behind for the next light.
+  std::unordered_set<uint64_t> optimized_culled_local_lights;
+  const char* optimized_lights_setting = std::getenv("THEFT4_OPTIMIZED_LOCAL_LIGHTS");
+  if (optimized_lights_setting && std::strcmp(optimized_lights_setting, "1") == 0) {
+    for (const NativeCommand& candidate : current_frame_) {
+      if (candidate.lighting.role != LightPassRole::kLocalContribution ||
+          !candidate.lighting.occurrence_id || !candidate.pipeline_state ||
+          !candidate.pipeline_state->vertex_shader_resource || !candidate.shader_state ||
+          !candidate.shader_state->vertex_constants) continue;
+      const std::string& name = candidate.pipeline_state->vertex_shader_resource->filename;
+      // VS3/VS6 are the decoded local-light accumulation layouts. Unknown
+      // variants remain untouched rather than risk culling a different pass.
+      const bool vs3 = name.find("deferred_lighting_vs3.bin") != std::string::npos;
+      const bool vs6 = name.find("deferred_lighting_vs6.bin") != std::string::npos;
+      if (!vs3 && !vs6) continue;
+      const auto words = AuthoritativeConstantState::Materialize(
+          candidate.shader_state->vertex_constants);
+      const uint32_t base_register = vs6 ? 215 : 208;
+      if (!words || words->size() < size_t(base_register + 12) * 16 ||
+          words->size() < size_t(16) * 16) continue;
+      const auto scalar = [&words](uint32_t reg, uint32_t lane) {
+        return std::bit_cast<float>(LoadGuestWord(*words, size_t(reg) * 16 + lane * 4));
+      };
+      const float radius = scalar(base_register + 4, 0) * scalar(base_register + 6, 0);
+      if (!std::isfinite(radius) || radius <= 0.0f || radius > 256.0f) continue;
+      double distance_squared = 0.0;
+      bool valid = true;
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        const float position = scalar(base_register + 1, axis);
+        const float camera = scalar(15, axis);
+        if (!std::isfinite(position) || !std::isfinite(camera)) { valid = false; break; }
+        const double difference = double(position) - double(camera);
+        distance_squared += difference * difference;
+      }
+      if (!valid) continue;
+      const double outside_distance = std::sqrt(distance_squared) - radius;
+      if (outside_distance > (radius <= 8.0f ? 55.0 : 95.0))
+        optimized_culled_local_lights.insert(candidate.lighting.occurrence_id);
+    }
+  }
   for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
     const NativeCommand& queued_command = current_frame_[command_index];
     SetNativeWorkerDiagnosticFrameProgress(uint32_t(command_index), uint32_t(current_frame_.size()),
@@ -32231,6 +32273,10 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     };
 
     bool semantic_lineage_ready = true;
+    const bool optimized_light_culled =
+        (command.lighting.role == LightPassRole::kLocalStencilSetup ||
+         command.lighting.role == LightPassRole::kLocalContribution) &&
+        optimized_culled_local_lights.contains(command.lighting.occurrence_id);
     const bool stencil_contribution =
         command.lighting.role == LightPassRole::kLocalContribution &&
         command.lighting.stencil_setup_expected && command.fixed_function_state.stencil_enable;
@@ -32252,7 +32298,11 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     }
     const uint32_t fire_query = BeginFireQuery(command_buffer, command, translucent_query_index);
     bool command_recorded = false;
-    if (!semantic_lineage_ready) {
+    if (optimized_light_culled) {
+      // Both halves of this distant light are omitted. This is an intentional
+      // quality choice, not a failed native draw or a stale stencil fallback.
+      command_recorded = true;
+    } else if (!semantic_lineage_ready) {
       trace_deferred_light_draw(false);
       TraceNativeRendererEvent("draw-rejected", "reason=lighting-aspect-lineage");
       if (collect_frame_diagnostics) {

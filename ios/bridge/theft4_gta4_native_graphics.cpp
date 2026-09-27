@@ -50,11 +50,11 @@ REXCVAR_DEFINE_DOUBLE(gta4_native_auto_hdr_shoulder_power, 2.5,
     .range(1.0, 10.0);
 REXCVAR_DEFINE_UINT32(gta4_shadow_map_base_size, 256, "GTA IV/Graphics/Shadows",
                       "Base shadow-map size")
-    .range(256, 1024)
+    .range(128, 1024)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(gta4_shadow_distance_scale, 1.0, "GTA IV/Graphics/Shadows",
                       "Directional shadow range multiplier")
-    .range(1.0, 4.0)
+    .range(0.75, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(gta4_reflection_resolution, "original", "GTA IV/Graphics/Reflections",
                       "Reflection resolution")
@@ -108,9 +108,13 @@ REXCVAR_DEFINE_DOUBLE(gta4_fsr1_sharpness_reduction, 0.2, "GTA IV/Graphics/Upsca
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_force_highest_lod, false, "GTA IV/Graphics/LOD",
                     "Prefer the highest resident model LOD");
+REXCVAR_DEFINE_DOUBLE(gta4_lod_selection_distance_scale, 1.0, "GTA IV/Graphics/LOD",
+                      "Scale model-LOD selection distance")
+    .range(1.0, 2.5)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(gta4_draw_distance_scale, 1.0, "GTA IV/Graphics/LOD",
                       "World-distance multiplier")
-    .range(1.0, 4.0);
+    .range(0.70, 4.0);
 REXCVAR_DEFINE_UINT32(gta4_drawable_reference_limit, 13000, "GTA IV/Graphics/LOD",
                       "Drawable-reference capacity")
     .range(13000, 40000)

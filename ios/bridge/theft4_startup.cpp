@@ -53,8 +53,10 @@ REXCVAR_DECLARE(double, gta4_fsr1_sharpness_reduction);
 REXCVAR_DECLARE(uint32_t, gta4_shadow_map_base_size);
 REXCVAR_DECLARE(double, gta4_shadow_distance_scale);
 REXCVAR_DECLARE(std::string, gta4_reflection_resolution);
+REXCVAR_DECLARE(std::string, gta4_aspect_ratio);
 REXCVAR_DECLARE(std::string, gta4_native_anti_aliasing);
 REXCVAR_DECLARE(bool, gta4_force_highest_lod);
+REXCVAR_DECLARE(double, gta4_lod_selection_distance_scale);
 REXCVAR_DECLARE(double, gta4_draw_distance_scale);
 REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 #endif
@@ -176,7 +178,16 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             blur_trace && std::string_view(blur_trace) == "1");
         REXLOG_INFO("Theft4 motion blur: {} (stock composite-pass selection)",
                     motion_blur ? "on" : "off");
+        const char* depth_of_field_value = std::getenv("THEFT4_DEPTH_OF_FIELD");
+        if (depth_of_field_value && std::string_view(depth_of_field_value) != "0" &&
+            std::string_view(depth_of_field_value) != "1")
+            throw std::runtime_error("THEFT4_DEPTH_OF_FIELD must be 0 or 1");
+        REXLOG_INFO("Theft4 depth of field: {} (native title multiplier)",
+                    depth_of_field_value && std::string_view(depth_of_field_value) == "0" ? "off" : "on");
         const auto output = theft4_metal_get_output_policy();
+        // Ship the proven projection path while full device-aspect world,
+        // shadow, post-process and HUD transforms remain under validation.
+        REXCVAR_SET(gta4_aspect_ratio, std::string("16:9"));
         // Use the policy's logical size, not the physical drawable: its FSR
         // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
@@ -186,8 +197,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(present_effect, output.fsr1 ? "fsr" : "bilinear");
         REXCVAR_SET(present_fsr_sharpness_reduction,
                     REXCVAR_GET(gta4_fsr1_sharpness_reduction));
-        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} upscaler={} "
-                    "quality=quality sharpness-reduction={} fps-counter=content-sequence",
+        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect=16:9 "
+                    "upscaler={} quality=quality sharpness-reduction={} "
+                    "fps-counter=content-sequence",
                     output.render_width, output.render_height,
                     output.output_width, output.output_height,
                     output.fsr1 ? "fsr1" : "native",
@@ -217,7 +229,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         const std::string_view shadow = shadow_override ? shadow_override : "original";
         uint32_t shadow_map_size = 0;
         double shadow_distance = 0.0;
-        if (shadow == "original") {
+        if (shadow == "optimized") {
+            shadow_map_size = 128;
+            shadow_distance = 0.75;
+        } else if (shadow == "original") {
             shadow_map_size = 256;
             shadow_distance = 1.0;
         } else if (shadow == "enhanced") {
@@ -228,7 +243,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             shadow_distance = 1.5;
         } else {
             throw std::runtime_error(
-                "THEFT4_SHADOW_QUALITY must be original, enhanced, or ultra");
+                "THEFT4_SHADOW_QUALITY must be optimized, original, enhanced, or ultra");
         }
         REXCVAR_SET(gta4_shadow_map_base_size, shadow_map_size);
         REXCVAR_SET(gta4_shadow_distance_scale, shadow_distance);
@@ -238,7 +253,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             draw_distance_override ? draw_distance_override : "1";
         double draw_distance_scale = 0.0;
         uint32_t drawable_reference_limit = 0;
-        if (draw_distance == "1") {
+        if (draw_distance == "0.70") {
+            draw_distance_scale = 0.70;
+            drawable_reference_limit = 13000;
+        } else if (draw_distance == "1") {
             draw_distance_scale = 1.0;
             drawable_reference_limit = 13000;
         } else if (draw_distance == "2") {
@@ -250,7 +268,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             // the heavy-area producer workload beyond the proven capacity.
             drawable_reference_limit = 20000;
         } else {
-            throw std::runtime_error("THEFT4_DRAW_DISTANCE must be 1, 2, or 3");
+            throw std::runtime_error("THEFT4_DRAW_DISTANCE must be 0.70, 1, 2, or 3");
         }
         REXCVAR_SET(gta4_draw_distance_scale, draw_distance_scale);
         REXCVAR_SET(gta4_drawable_reference_limit, drawable_reference_limit);
@@ -262,6 +280,14 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             throw std::runtime_error("THEFT4_FORCE_HIGHEST_LOD must be 0 or 1");
         }
         REXCVAR_SET(gta4_force_highest_lod, highest_lod == "1");
+        const char* lod_distance_override = std::getenv("THEFT4_LOD_SELECTION_BIAS");
+        const std::string_view lod_distance =
+            lod_distance_override ? lod_distance_override : "1";
+        if (lod_distance != "1" && lod_distance != "1.75") {
+            throw std::runtime_error("THEFT4_LOD_SELECTION_BIAS must be 1 or 1.75");
+        }
+        REXCVAR_SET(gta4_lod_selection_distance_scale,
+                    lod_distance == "1.75" ? 1.75 : 1.0);
 
         const char* reflection_override = std::getenv("THEFT4_REFLECTION_RESOLUTION");
         const std::string_view reflection =
@@ -282,9 +308,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_anti_aliasing, std::string(anti_aliasing));
         REXLOG_INFO(
             "Theft4 graphics: shadows={} ({} map, {}x range) draw-distance={}x "
-            "drawable-limit={} highest-lod={} reflections={} anti-aliasing={}",
+            "drawable-limit={} highest-lod={} lod-selection-bias={} reflections={} anti-aliasing={}",
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
-            drawable_reference_limit, highest_lod == "1", reflection, anti_aliasing);
+            drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
 
         // Use both independently owned native frame slots so the CPU can record
         // frame n+1 while the GPU completes frame n.  The renderer keeps command

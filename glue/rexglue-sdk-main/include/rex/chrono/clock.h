@@ -28,6 +28,10 @@ REXCVAR_DECLARE(bool, clock_source_raw);
 
 namespace rex::chrono {
 
+struct ClockDiagnostics {
+  uint64_t stale_samples, prevented_host_ticks, largest_stale_ticks, last_stale_host_tick;
+};
+
 class Clock {
  public:
   // Host ticks-per-second. Generally QueryHostTickFrequency should be used.
@@ -71,6 +75,7 @@ class Clock {
   // Queries the current guest tick count, accounting for frequency adjustment
   // and scaling.
   static uint64_t QueryGuestTickCount();
+  static ClockDiagnostics QueryDiagnostics();
   // Queries the guest time, in FILETIME format, accounting for scaling.
   static uint64_t QueryGuestSystemTime();
   // Queries the milliseconds since the guest began, accounting for scaling.

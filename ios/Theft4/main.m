@@ -11,6 +11,7 @@
 #include "theft4_device_profile.h"
 #include "theft4_metal_presenter.h"
 #include "../../glue/rexglue-sdk-main/src/graphics/gta4_native/native_light_capture.h"
+#include "../../glue/rexglue-sdk-main/include/rex/fault_diagnostics.h"
 #include "theft4_lab_diagnostics.h"
 #import "Theft4FrameTimeView.h"
 extern int rex_gta4_native_profile_start(void);
@@ -507,6 +508,13 @@ static void bootEvent(void *context, const char *event) {
         _failure = error.localizedDescription ?: @"Application Support is unavailable";
     } else {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
+        NSURL *faultDirectory = [_supportURL URLByAppendingPathComponent:@"faults" isDirectory:YES];
+        if ([NSFileManager.defaultManager createDirectoryAtURL:faultDirectory withIntermediateDirectories:YES attributes:nil error:nil]) {
+            NSURL *faultURL = [faultDirectory URLByAppendingPathComponent:
+                [NSString stringWithFormat:@"fault-%@.bin", NSUUID.UUID.UUIDString]];
+            RexInitializeFaultDiagnostics(faultURL.fileSystemRepresentation);
+            RexSetFaultSnapshotWriter(rex_gta4_light_capture_write_fault_snapshot);
+        }
     }
     [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
@@ -1522,7 +1530,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = @"# build68: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
+    NSString *header = @"# build70: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _publicationCaptureURL = nil;
         [self record:@"capture.long_start_failed"];
@@ -1531,8 +1539,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _lightCaptureURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
     NSString *lightHeader = [NSString stringWithFormat:
-        @"# build68: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings\n",
-        (unsigned long long)rex_gta4_light_capture_frequency()];
+        @"# build70: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
         [self record:@"capture.timing_start_failed"];

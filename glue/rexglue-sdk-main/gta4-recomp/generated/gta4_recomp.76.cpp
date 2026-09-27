@@ -18506,6 +18506,7 @@ DEFINE_REX_FUNC(sub_829CA740) {
 	// lwzx r3,r11,r29
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + ctx.r29.u32);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r30)
@@ -20292,6 +20293,7 @@ loc_829CB390:
 	REX_STORE_U32(ctx.r26.u32 + 668, ctx.r27.u32);
 loc_829CB3A4:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// stw r23,0(r24)
 	REX_STORE_U32(ctx.r24.u32 + 0, ctx.r23.u32);
 	// addi r1,r1,160

@@ -63874,6 +63874,7 @@ DEFINE_REX_FUNC(sub_823B6018) {
 	// stw r11,232(r10)
 	REX_STORE_U32(ctx.r10.u32 + 232, ctx.r11.u32);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r29)
@@ -63945,6 +63946,7 @@ loc_823B60FC:
 	// stw r3,32(r30)
 	REX_STORE_U32(ctx.r30.u32 + 32, ctx.r3.u32);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r29)
@@ -64045,6 +64047,7 @@ loc_823B61A8:
 	REX_STORE_U32(ctx.r30.u32 + 32, ctx.r3.u32);
 loc_823B61B0:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r29)
@@ -64088,6 +64091,7 @@ DEFINE_REX_FUNC(sub_823B61C8) {
 	ctx.lr = 0x823B61F8;
 	sub_823B55D8(ctx, base);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r31)
@@ -64297,6 +64301,7 @@ loc_823B6328:
 	ctx.lr = 0x823B636C;
 	sub_823B55D8(ctx, base);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// stw r29,0(r30)
 	REX_STORE_U32(ctx.r30.u32 + 0, ctx.r29.u32);
 loc_823B6374:

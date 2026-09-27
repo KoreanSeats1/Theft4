@@ -9,6 +9,8 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/runtime_probe.h>
+
 #include <rex/filesystem/vfs.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/logging.h>
@@ -203,7 +205,11 @@ X_STATUS XFile::SnapshotReadScatter(uint32_t segments_guest_address, uint32_t le
 
 X_STATUS XFile::ReadTransfer(uint32_t buffer_guest_address, uint32_t buffer_length,
                              uint64_t byte_offset, uint32_t* out_bytes_read) {
+  namespace probe = rex::diagnostics::runtime_probe;
+  probe::Scope total(probe::Stage::ReadTransfer);
+  probe::Scope wait(probe::Stage::ReadLock);
   std::lock_guard<std::mutex> lock(file_lock_);
+  wait.Finish();
   return ReadInternalLocked(buffer_guest_address, buffer_length, byte_offset, out_bytes_read);
 }
 
@@ -228,7 +234,11 @@ X_STATUS XFile::ReadInternalLocked(uint32_t buffer_guest_address, uint32_t buffe
   // Zero length means success for a valid file object according to Windows
   // tests.
   if (buffer_length) {
-    if (!ValidateGuestRange(buffer_guest_address, buffer_length, true)) {
+    namespace probe = rex::diagnostics::runtime_probe;
+    probe::Scope validation(probe::Stage::ReadValidate);
+    const bool valid_destination = ValidateGuestRange(buffer_guest_address, buffer_length, true);
+    validation.Finish();
+    if (!valid_destination) {
       result = X_STATUS_ACCESS_VIOLATION;
     } else {
       // Games often read directly to texture/vertex buffer memory - in this
@@ -246,6 +256,7 @@ X_STATUS XFile::ReadInternalLocked(uint32_t buffer_guest_address, uint32_t buffe
           buffer_start_heap->heap_type() == memory::HeapType::kGuestPhysical
               ? static_cast<rex::memory::PhysicalHeap*>(buffer_start_heap)
               : nullptr;
+      probe::Scope transfer(probe::Stage::ReadHost);
       result = file_->ReadSync(
           std::span<uint8_t>(
               buffer_physical_heap
@@ -254,8 +265,10 @@ X_STATUS XFile::ReadInternalLocked(uint32_t buffer_guest_address, uint32_t buffe
                   : memory()->TranslateVirtual(buffer_guest_address),
               buffer_length),
           static_cast<size_t>(effective_offset), &bytes_read);
+      transfer.Finish();
       if (XSUCCEEDED(result)) {
         if (buffer_physical_heap) {
+          probe::Scope invalidation(probe::Stage::ReadInvalidate);
           buffer_physical_heap->TriggerCallbacks(
               rex::thread::global_critical_region::AcquireDirect(), buffer_guest_address,
               buffer_length, true, true);
@@ -263,6 +276,8 @@ X_STATUS XFile::ReadInternalLocked(uint32_t buffer_guest_address, uint32_t buffe
       }
     }
   }
+
+  rex::diagnostics::runtime_probe::ReadResult(handle(), effective_offset, buffer_length, bytes_read, result);
 
   // Synchronous file objects follow every successful transfer's effective
   // offset, including explicit offset zero. Asynchronous explicit-offset reads
@@ -313,7 +328,11 @@ X_STATUS XFile::ReadScatterTransfer(std::span<const uint32_t> segments, uint32_t
     return X_STATUS_INVALID_PARAMETER;
   }
 
+  namespace probe = rex::diagnostics::runtime_probe;
+  probe::Scope total(probe::Stage::ReadScatter);
+  probe::Scope wait(probe::Stage::ReadLock);
   std::lock_guard<std::mutex> lock(file_lock_);
+  wait.Finish();
   X_STATUS result = X_STATUS_SUCCESS;
   uint32_t read_total = 0;
   uint32_t remaining = length;

@@ -63,6 +63,7 @@ REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 
 extern const rex::PPCImageInfo PPCImageConfig;
 extern "C" void gta4_transition_hooks_link_anchor();
+extern "C" void gta4_fault_probe_hooks_link_anchor();
 extern "C" void theft4_ios_audio_hotpaths_link_anchor();
 
 namespace {
@@ -89,6 +90,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // engine. They are observational and still invoke the original AOT
         // functions through their generated __imp__ entry points.
         gta4_transition_hooks_link_anchor();
+        gta4_fault_probe_hooks_link_anchor();
         theft4_ios_audio_hotpaths_link_anchor();
         std::string reason;
         if (!gta4::install::IsInstallReady(game_directory, &reason)) {

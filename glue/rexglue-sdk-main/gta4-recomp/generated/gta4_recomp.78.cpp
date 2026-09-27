@@ -25439,6 +25439,7 @@ DEFINE_REX_FUNC(sub_829FF610) {
 	// stw r10,-9752(r11)
 	REX_STORE_U32(ctx.r11.u32 + -9752, ctx.r10.u32);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// cntlzw r11,r10
 	ctx.r11.u64 = ctx.r10.u32 == 0 ? 32 : __builtin_clz(ctx.r10.u32);
 	// rlwinm r8,r10,16,16,31

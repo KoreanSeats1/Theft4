@@ -3426,6 +3426,7 @@ loc_821D5FD0:
 	if (ctx.cr6.eq) goto loc_821D5F9C;
 loc_821D5FE8:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
 	// b 0x829ff81c
@@ -6710,6 +6711,7 @@ DEFINE_REX_FUNC(sub_821D75B8) {
 	// beq cr6,0x821d7644
 	if (ctx.cr6.eq) goto loc_821D7644;
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// lis r11,-32073
 	ctx.r11.s64 = -2101936128;
 	// addi r30,r31,8
@@ -7127,6 +7129,7 @@ DEFINE_REX_FUNC(sub_821D7850) {
 	REX_STORE_U32(ctx.r7.u32 + ctx.r8.u32, ctx.r31.u32);
 loc_821D78DC:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// stw r11,0(r30)
@@ -8864,6 +8867,7 @@ loc_821D84A4:
 	goto loc_821D86A8;
 loc_821D84C8:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// addi r26,r27,8
 	ctx.r26.s64 = ctx.r27.s64 + 8;
 loc_821D84D0:
@@ -9109,6 +9113,7 @@ loc_821D8660:
 	// bne cr6,0x821d8698
 	if (!ctx.cr6.eq) goto loc_821D8698;
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// stw r26,17220(r14)
 	REX_STORE_U32(ctx.r14.u32 + 17220, ctx.r26.u32);
 loc_821D8698:
@@ -9237,6 +9242,7 @@ loc_821D873C:
 	// bne cr6,0x821d8788
 	if (!ctx.cr6.eq) goto loc_821D8788;
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// stw r27,17220(r14)
 	REX_STORE_U32(ctx.r14.u32 + 17220, ctx.r27.u32);
 loc_821D8788:
@@ -9313,6 +9319,7 @@ loc_821D87A0:
 	// bne cr6,0x821d8818
 	if (!ctx.cr6.eq) goto loc_821D8818;
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// stw r27,17220(r14)
 	REX_STORE_U32(ctx.r14.u32 + 17220, ctx.r27.u32);
 loc_821D8818:
@@ -9324,6 +9331,7 @@ loc_821D8818:
 	if (!ctx.cr6.eq) goto loc_821D87A0;
 loc_821D8824:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// lis r11,-32073
 	ctx.r11.s64 = -2101936128;
 	// stw r27,17212(r11)

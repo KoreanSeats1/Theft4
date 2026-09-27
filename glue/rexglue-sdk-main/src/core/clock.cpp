@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <mutex>
 
@@ -41,6 +42,15 @@ uint64_t last_guest_tick_count_ = 0;
 uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
 // Mutex to ensure last_host_tick_count_ and last_guest_tick_count_ are in sync
 std::mutex tick_mutex_;
+std::atomic<uint64_t> stale_samples_{0}, prevented_host_ticks_{0},
+    largest_stale_ticks_{0}, last_stale_host_tick_{0};
+
+ClockDiagnostics Clock::QueryDiagnostics() {
+  return {stale_samples_.load(std::memory_order_relaxed),
+          prevented_host_ticks_.load(std::memory_order_relaxed),
+          largest_stale_ticks_.load(std::memory_order_relaxed),
+          last_stale_host_tick_.load(std::memory_order_relaxed)};
+}
 
 void RecomputeGuestTickScalar() {
   // Create a rational number with numerator (first) and denominator (second)
@@ -76,7 +86,18 @@ uint64_t UpdateGuestClock() {
     // Translate host tick count to guest tick count.
     uint64_t host_tick_delta =
         host_tick_count > last_host_tick_count_ ? host_tick_count - last_host_tick_count_ : 0;
-    last_host_tick_count_ = host_tick_count;
+    // A thread may sample the host before another thread, then acquire this
+    // mutex later. Never rewind the baseline and count that interval twice.
+    if (host_tick_count < last_host_tick_count_) {
+      const uint64_t stale = last_host_tick_count_ - host_tick_count;
+      stale_samples_.fetch_add(1, std::memory_order_relaxed);
+      prevented_host_ticks_.fetch_add(stale, std::memory_order_relaxed);
+      largest_stale_ticks_.store(std::max(largest_stale_ticks_.load(std::memory_order_relaxed), stale),
+                                std::memory_order_relaxed);
+      last_stale_host_tick_.store(last_host_tick_count_, std::memory_order_relaxed);
+    } else {
+      last_host_tick_count_ = host_tick_count;
+    }
     uint64_t guest_tick_delta =
         host_tick_delta * guest_tick_ratio_.first / guest_tick_ratio_.second;
     last_guest_tick_count_ += guest_tick_delta;

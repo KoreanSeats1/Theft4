@@ -9,6 +9,8 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/runtime_probe.h>
+
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -1229,7 +1231,10 @@ void KernelState::CompleteOverlappedDeferredEx(
           }
           REXSYS_DEBUG("Deferred overlapped {:08X}: sleeping {}ms", overlapped_ptr,
                        kDeferredOverlappedDelayMillis);
-          rex::thread::Sleep(std::chrono::milliseconds(kDeferredOverlappedDelayMillis));
+          {
+            rex::diagnostics::runtime_probe::Scope delay(rex::diagnostics::runtime_probe::Stage::DeferredDelay);
+            rex::thread::Sleep(std::chrono::milliseconds(kDeferredOverlappedDelayMillis));
+          }
           uint32_t extended_error, length;
           REXSYS_DEBUG("Deferred overlapped {:08X}: running completion", overlapped_ptr);
           auto result = completion_callback(extended_error, length);
@@ -1286,6 +1291,7 @@ void KernelState::StartHostTaskWorker() {
       // A thrown task would otherwise strand its IOSB and every waiter. Keep
       // this fail-fast, as with the previous deferred-overlapped worker.
       try {
+        rex::diagnostics::runtime_probe::Scope service(rex::diagnostics::runtime_probe::Stage::HostTask);
         task();
       } catch (const std::exception& e) {
         REX_FATAL("Host task worker threw '{}'", e.what());

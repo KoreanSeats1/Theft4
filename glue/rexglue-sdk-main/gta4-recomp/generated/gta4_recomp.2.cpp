@@ -49345,6 +49345,7 @@ loc_82193B10:
 	// stwbrx r11,0,r10
 	REX_MM_STORE_U32(ctx.r10.u32, __builtin_bswap32(ctx.r11.u32));
 	// eieio 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 loc_82193B78:
 	// lwz r11,0(r26)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r26.u32 + 0);
@@ -49620,6 +49621,7 @@ loc_82193D30:
 	// stwbrx r5,0,r11
 	REX_MM_STORE_U32(ctx.r11.u32, __builtin_bswap32(ctx.r5.u32));
 	// eieio 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	// lwz r11,0(r8)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r8.u32 + 0);
 	// addi r9,r9,1
@@ -49715,11 +49717,13 @@ loc_82193DDC:
 	// stwx r31,0,r10
 	REX_MM_STORE_U32(ctx.r10.u32, ctx.r31.u32);
 	// eieio 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	// lis r10,768
 	ctx.r10.s64 = 50331648;
 	// stwx r10,0,r11
 	REX_MM_STORE_U32(ctx.r11.u32, ctx.r10.u32);
 	// eieio 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82193e48
@@ -50089,6 +50093,7 @@ loc_82194068:
 	// stwbrx r5,0,r11
 	REX_MM_STORE_U32(ctx.r11.u32, __builtin_bswap32(ctx.r5.u32));
 	// eieio 
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	// lwz r11,0(r7)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r7.u32 + 0);
 	// addi r9,r9,1
@@ -51212,6 +51217,7 @@ loc_821947E0:
 	ctx.lr = 0x82194800;
 	rexcrt_memcpy(ctx, base);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// addi r1,r1,96
 	ctx.r1.s64 = ctx.r1.s64 + 96;
 	// lwz r12,-8(r1)

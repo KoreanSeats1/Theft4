@@ -289,7 +289,8 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         # same platform-neutral world-transition diagnostics used by the
         # desktop host. Apple codegen emits weak public entry points and
         # separate __imp__ originals specifically for these strong wrappers.
-        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp")
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp"
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fault_probe_hooks.cpp")
     target_sources(theft4_core_bridge PRIVATE
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/flags.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/renderdoc_api.cpp"

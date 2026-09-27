@@ -20,7 +20,9 @@
 #if REX_PLATFORM_LINUX || REX_PLATFORM_DARWIN
 
 #include <signal.h>
+#include <unistd.h>
 
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 
@@ -30,6 +32,255 @@
 #include <rex/platform.h>
 
 #include <ucontext.h>
+
+#if REX_PLATFORM_DARWIN
+#include <rex/fault_diagnostics.h>
+
+#include <atomic>
+#include <fcntl.h>
+#include <mach/mach_time.h>
+#include <mach-o/dyld.h>
+#include <pthread.h>
+#include <unistd.h>
+
+namespace {
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
+static_assert(std::atomic<uintptr_t>::is_always_lock_free);
+static_assert(std::atomic<uint32_t>::is_always_lock_free);
+static_assert(std::atomic<int>::is_always_lock_free);
+static_assert(sizeof(RexGuestFaultContext) == 32);
+static_assert(sizeof(RexUnhandledFaultRecord) == 400);
+
+static_assert(std::atomic<RexFaultSnapshotWriter>::is_always_lock_free);
+std::atomic<RexFaultSnapshotWriter> fault_snapshot_writer{nullptr};
+std::atomic<int> fault_record_fd{-1};
+std::atomic<uint32_t> fault_timebase_numer{0}, fault_timebase_denom{0};
+std::atomic<uint64_t> fault_image_slide{0};
+std::atomic<uint64_t> handled_av_count{0}, unhandled_av_count{0};
+std::atomic<uint32_t> unhandled_record_claimed{0};
+
+struct FaultSite {
+  std::atomic<uint64_t> sequence{0}, pc{0}, address{0}, ticks{0};
+};
+FaultSite first_av, latest_av;
+
+// Writers never wait: contention may omit a metadata update, but not a count.
+// Sequence protection prevents a reader from combining two different faults.
+void StoreFaultSite(FaultSite& site, uint64_t pc, uint64_t address,
+                    uint64_t ticks, bool first_only) {
+  uint64_t sequence = site.sequence.load(std::memory_order_relaxed);
+  if ((sequence & 1) || (first_only && sequence != 0) ||
+      !site.sequence.compare_exchange_strong(sequence, sequence + 1,
+                                            std::memory_order_acquire)) {
+    return;
+  }
+  site.pc.store(pc, std::memory_order_relaxed);
+  site.address.store(address, std::memory_order_relaxed);
+  site.ticks.store(ticks, std::memory_order_relaxed);
+  site.sequence.store(sequence + 2, std::memory_order_release);
+}
+
+bool ReadFaultSite(const FaultSite& site, uint64_t& pc, uint64_t& address,
+                   uint64_t& ticks) {
+  const uint64_t before = site.sequence.load(std::memory_order_acquire);
+  if (before == 0 || (before & 1)) return false;
+  const uint64_t candidate_pc = site.pc.load(std::memory_order_relaxed);
+  const uint64_t candidate_address = site.address.load(std::memory_order_relaxed);
+  const uint64_t candidate_ticks = site.ticks.load(std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (before != site.sequence.load(std::memory_order_relaxed)) return false;
+  pc = candidate_pc;
+  address = candidate_address;
+  ticks = candidate_ticks;
+  return true;
+}
+
+struct GuestFaultSlot {
+  std::atomic<uintptr_t> owner{0};
+  std::atomic<uint64_t> sequence{0};
+  std::atomic<uint32_t> valid{0};
+  std::atomic<uint32_t> context_tag{0}, r3{0}, r29{0}, r30{0}, r31{0}, lr{0};
+  std::atomic<uint64_t> memory_base{0};
+};
+GuestFaultSlot guest_fault_slots[128];
+// This TLS variable is accessed only from normal execution, never from signals.
+thread_local GuestFaultSlot* current_guest_fault_slot = nullptr;
+
+GuestFaultSlot* FindGuestFaultSlot(bool allocate) {
+  const uintptr_t owner = reinterpret_cast<uintptr_t>(pthread_self());
+  for (auto& slot : guest_fault_slots) {
+    uintptr_t observed = slot.owner.load(std::memory_order_acquire);
+    if (observed == owner) return &slot;
+    if (allocate && observed == 0 &&
+        slot.owner.compare_exchange_strong(observed, owner,
+                                           std::memory_order_acq_rel)) {
+      return &slot;
+    }
+  }
+  return nullptr;
+}
+
+bool ReadGuestFaultSlot(const GuestFaultSlot* slot, RexGuestFaultContext* out) {
+  if (!slot) return false;
+  const uint64_t before = slot->sequence.load(std::memory_order_acquire);
+  if ((before & 1) || !slot->valid.load(std::memory_order_relaxed)) return false;
+  RexGuestFaultContext candidate;
+  candidate.context_tag = slot->context_tag.load(std::memory_order_relaxed);
+  candidate.r3 = slot->r3.load(std::memory_order_relaxed);
+  candidate.r29 = slot->r29.load(std::memory_order_relaxed);
+  candidate.r30 = slot->r30.load(std::memory_order_relaxed);
+  candidate.r31 = slot->r31.load(std::memory_order_relaxed);
+  candidate.lr = slot->lr.load(std::memory_order_relaxed);
+  candidate.memory_base = slot->memory_base.load(std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (before != slot->sequence.load(std::memory_order_relaxed)) return false;
+  *out = candidate;
+  return true;
+}
+
+void RecordFirstUnhandledFault(int signal_number, const siginfo_t* info,
+                               mcontext_t mcontext, uint32_t access_kind) {
+  uint32_t expected = 0;
+  if (!unhandled_record_claimed.compare_exchange_strong(
+          expected, 1, std::memory_order_relaxed)) return;
+  const int fd = fault_record_fd.load(std::memory_order_acquire);
+  if (fd < 0) return;
+
+  RexUnhandledFaultRecord record{};
+  record.magic = UINT64_C(0x313030544c465852);  // RXFLT001
+  record.version = 1;
+  record.record_size = sizeof(record);
+  record.signal_number = signal_number;
+  record.signal_code = info ? info->si_code : 0;
+  record.access_kind = access_kind;
+  record.host_ticks = mach_absolute_time();
+  record.fault_address = info ? reinterpret_cast<uintptr_t>(info->si_addr) : 0;
+  record.timebase_numer = fault_timebase_numer.load(std::memory_order_relaxed);
+  record.timebase_denom = fault_timebase_denom.load(std::memory_order_relaxed);
+  record.image_slide = fault_image_slide.load(std::memory_order_relaxed);
+#if REX_ARCH_ARM64
+  record.host_arch = 1;
+  for (size_t i = 0; i < 29; ++i) record.x[i] = mcontext->__ss.__x[i];
+#if __DARWIN_OPAQUE_ARM_THREAD_STATE64
+  record.x[29] = reinterpret_cast<uintptr_t>(mcontext->__ss.__opaque_fp);
+  record.x[30] = reinterpret_cast<uintptr_t>(mcontext->__ss.__opaque_lr);
+  record.sp = reinterpret_cast<uintptr_t>(mcontext->__ss.__opaque_sp);
+  record.pc = reinterpret_cast<uintptr_t>(mcontext->__ss.__opaque_pc);
+#else
+  record.x[29] = mcontext->__ss.__fp;
+  record.x[30] = mcontext->__ss.__lr;
+  record.sp = mcontext->__ss.__sp;
+  record.pc = mcontext->__ss.__pc;
+#endif
+  record.esr = mcontext->__es.__esr;
+  record.far = mcontext->__es.__far;
+  record.pstate = mcontext->__ss.__cpsr;
+  record.fpsr = mcontext->__ns.__fpsr;
+  record.fpcr = mcontext->__ns.__fpcr;
+#elif REX_ARCH_AMD64
+  record.host_arch = 2;
+  record.pc = mcontext->__ss.__rip;
+  record.sp = mcontext->__ss.__rsp;
+  record.pstate = mcontext->__ss.__rflags;
+  record.esr = mcontext->__es.__err;
+  record.far = record.fault_address;
+#endif
+  record.guest_context_valid = ReadGuestFaultSlot(FindGuestFaultSlot(false), &record.guest);
+
+  // write(2) is async-signal-safe. Bound retries, including EINTR; never fsync,
+  // format text, allocate, lock, or inspect pointed-to guest memory here.
+  const char* bytes = reinterpret_cast<const char*>(&record);
+  size_t remaining = sizeof(record);
+  for (unsigned attempt = 0; attempt < 4 && remaining; ++attempt) {
+    const ssize_t count = write(fd, bytes, remaining);
+    if (count > 0) {
+      bytes += count;
+      remaining -= static_cast<size_t>(count);
+    } else if (count == 0 || errno != EINTR) {
+      break;
+    }
+  }
+  if (remaining == 0) {
+    const RexFaultSnapshotWriter writer = fault_snapshot_writer.load(std::memory_order_acquire);
+    if (writer) writer(fd);
+  }
+}
+}  // namespace
+
+extern "C" void RexSetFaultSnapshotWriter(RexFaultSnapshotWriter writer) {
+  fault_snapshot_writer.store(writer, std::memory_order_release);
+}
+
+extern "C" int RexSetFaultDiagnosticFileDescriptor(int fd) {
+  if (fd < 0) { errno = EINVAL; return -1; }
+  mach_timebase_info_data_t timebase{};
+  if (mach_timebase_info(&timebase) != KERN_SUCCESS || !timebase.denom) {
+    errno = EINVAL;
+    return -1;
+  }
+  fault_image_slide.store(static_cast<uint64_t>(_dyld_get_image_vmaddr_slide(0)),
+                          std::memory_order_relaxed);
+  fault_timebase_numer.store(timebase.numer, std::memory_order_relaxed);
+  fault_timebase_denom.store(timebase.denom, std::memory_order_relaxed);
+  int expected = -1;
+  if (!fault_record_fd.compare_exchange_strong(expected, fd, std::memory_order_release)) {
+    errno = EALREADY;
+    return -1;
+  }
+  return 0;
+}
+
+extern "C" int RexInitializeFaultDiagnostics(const char* path) {
+  if (!path || !*path) { errno = EINVAL; return -1; }
+  const int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (fd < 0) return -1;
+  if (RexSetFaultDiagnosticFileDescriptor(fd) == 0) return 0;
+  const int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  return -1;
+}
+
+extern "C" void RexReadFaultDiagnostics(RexFaultDiagnosticsSnapshot* out) {
+  if (!out) return;
+  *out = {};
+  out->handled_av_count = handled_av_count.load(std::memory_order_relaxed);
+  out->unhandled_av_count = unhandled_av_count.load(std::memory_order_relaxed);
+  out->first_av_valid = ReadFaultSite(first_av, out->first_av_pc,
+      out->first_av_address, out->first_av_host_ticks);
+  out->latest_av_valid = ReadFaultSite(latest_av, out->latest_av_pc,
+      out->latest_av_address, out->latest_av_host_ticks);
+  out->recorder_ready = fault_record_fd.load(std::memory_order_acquire) >= 0;
+  out->unhandled_record_claimed = unhandled_record_claimed.load(std::memory_order_relaxed);
+}
+
+extern "C" int RexReadCurrentGuestFaultContext(RexGuestFaultContext* out) {
+  return out && ReadGuestFaultSlot(current_guest_fault_slot, out);
+}
+
+extern "C" void RexSetGuestFaultContext(const RexGuestFaultContext* values) {
+  if (!values) { RexClearGuestFaultContext(); return; }
+  if (!current_guest_fault_slot) current_guest_fault_slot = FindGuestFaultSlot(true);
+  GuestFaultSlot* slot = current_guest_fault_slot;
+  if (!slot) return;
+  const uint64_t sequence = slot->sequence.fetch_add(1, std::memory_order_acq_rel);
+  slot->context_tag.store(values->context_tag, std::memory_order_relaxed);
+  slot->r3.store(values->r3, std::memory_order_relaxed);
+  slot->r29.store(values->r29, std::memory_order_relaxed);
+  slot->r30.store(values->r30, std::memory_order_relaxed);
+  slot->r31.store(values->r31, std::memory_order_relaxed);
+  slot->lr.store(values->lr, std::memory_order_relaxed);
+  slot->memory_base.store(values->memory_base, std::memory_order_relaxed);
+  slot->valid.store(1, std::memory_order_relaxed);
+  slot->sequence.store(sequence + 2, std::memory_order_release);
+}
+
+extern "C" void RexClearGuestFaultContext(void) {
+  if (current_guest_fault_slot) {
+    current_guest_fault_slot->valid.store(0, std::memory_order_release);
+  }
+}
+#endif  // REX_PLATFORM_DARWIN
 
 namespace rex::arch {
 
@@ -50,7 +301,64 @@ constexpr size_t kMaxHandlerCount = 8;
 std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
 
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                     void* signal_context);
+
+static void PropagateUnhandledSignal(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
+  const struct sigaction* previous = &original_sigill_handler_;
+  if (signal_number == SIGSEGV) previous = &original_sigsegv_handler_;
+#if REX_PLATFORM_DARWIN
+  if (signal_number == SIGBUS) previous = &original_sigbus_handler_;
+#endif
+  const struct sigaction saved = *previous;
+  const bool synchronous = signal_info && signal_info->si_code > 0;
+  const bool custom = saved.sa_handler != SIG_DFL && saved.sa_handler != SIG_IGN &&
+      saved.sa_handler != nullptr &&
+      (!(saved.sa_flags & SA_SIGINFO) || saved.sa_sigaction != ExceptionHandlerCallback);
+
+  if (!synchronous && saved.sa_handler == SIG_IGN) return;
+  struct sigaction default_action {};
+  default_action.sa_handler = SIG_DFL;
+  sigemptyset(&default_action.sa_mask);
+  // An unhandled hardware fault must never return to the unchanged instruction.
+  // Reset first so a fault inside a saved handler cannot recurse into this one.
+  if (synchronous || !custom || (saved.sa_flags & SA_RESETHAND)) {
+    sigaction(signal_number, &default_action, nullptr);
+  }
+  if (custom) {
+    // Apply the saved handler's mask and SA_NODEFER semantics. A saved handler
+    // may exit or recover via a nonlocal transfer. Merely returning from a
+    // synchronous fault is deliberately fatal, even if it changes the context.
+    sigset_t mask = saved.sa_mask;
+    if (!(saved.sa_flags & SA_NODEFER)) sigaddset(&mask, signal_number);
+    sigprocmask(SIG_BLOCK, &mask, nullptr);
+    const sigset_t& interrupted_mask = static_cast<ucontext_t*>(signal_context)->uc_sigmask;
+    if ((saved.sa_flags & SA_NODEFER) &&
+        sigismember(&saved.sa_mask, signal_number) != 1 &&
+        sigismember(&interrupted_mask, signal_number) != 1) {
+      sigset_t unblock;
+      sigemptyset(&unblock);
+      sigaddset(&unblock, signal_number);
+      sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+    }
+    if (saved.sa_flags & SA_SIGINFO) saved.sa_sigaction(signal_number, signal_info, signal_context);
+    else saved.sa_handler(signal_number);
+    if (!synchronous) return;
+  }
+  // SIG_IGN cannot recover an invalid synchronous access. Re-raise with default
+  // disposition on this thread; _exit is a final fallback if delivery fails.
+  sigaction(signal_number, &default_action, nullptr);
+  sigset_t unblock;
+  sigemptyset(&unblock);
+  sigaddset(&unblock, signal_number);
+  sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+  raise(signal_number);
+  _exit(128 + signal_number);
+}
+
+static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                     void* signal_context) {
+  const int saved_errno = errno;
   mcontext_t mcontext = reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
 
   HostThreadContext thread_context;
@@ -199,19 +507,9 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                            ? Exception::AccessViolationOperation::kWrite
                                            : Exception::AccessViolationOperation::kRead;
         } else {
-          bool instruction_is_store;
-          if (IsArm64LoadPrefetchStore(*reinterpret_cast<const uint32_t*>(thread_context.pc),
-                                       instruction_is_store)) {
-            access_violation_operation = instruction_is_store
-                                             ? Exception::AccessViolationOperation::kWrite
-                                             : Exception::AccessViolationOperation::kRead;
-          } else {
-            assert_always(
-                "No ESR in the exception thread context, or it's not a Data "
-                "Abort, and the faulting instruction is not a known load, "
-                "prefetch or store instruction");
-            access_violation_operation = Exception::AccessViolationOperation::kUnknown;
-          }
+          // A non-data-abort may be an instruction fetch from an invalid PC.
+          // Do not dereference that PC or assert/log from inside the handler.
+          access_violation_operation = Exception::AccessViolationOperation::kUnknown;
         }
       }
 #else
@@ -254,9 +552,21 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       assert_unhandled_case(signal_number);
   }
 
+#if REX_PLATFORM_DARWIN
+  const bool is_access_violation = ex.code() == Exception::Code::kAccessViolation;
+  if (is_access_violation) {
+    const uint64_t ticks = mach_absolute_time();
+    StoreFaultSite(first_av, ex.pc(), ex.fault_address(), ticks, true);
+    StoreFaultSite(latest_av, ex.pc(), ex.fault_address(), ticks, false);
+  }
+#endif
+
   for (size_t i = 0; i < rex::countof(handlers_) && handlers_[i].first; ++i) {
     if (handlers_[i].first(&ex, handlers_[i].second)) {
       // Exception handled.
+#if REX_PLATFORM_DARWIN
+      if (is_access_violation) handled_av_count.fetch_add(1, std::memory_order_relaxed);
+#endif
 #if REX_ARCH_AMD64
 #if REX_PLATFORM_DARWIN
       mcontext->__ss.__rip = thread_context.rip;
@@ -408,9 +718,19 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       }
 #endif  // REX_PLATFORM_DARWIN
 #endif  // REX_ARCH
+      errno = saved_errno;
       return;
     }
   }
+#if REX_PLATFORM_DARWIN
+  if (is_access_violation) unhandled_av_count.fetch_add(1, std::memory_order_relaxed);
+  if (signal_info && signal_info->si_code > 0) {
+    RecordFirstUnhandledFault(signal_number, signal_info, mcontext,
+        static_cast<uint32_t>(ex.access_violation_operation()));
+  }
+#endif
+  PropagateUnhandledSignal(signal_number, signal_info, signal_context);
+  errno = saved_errno;  // A user-generated signal may legitimately be ignored.
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {

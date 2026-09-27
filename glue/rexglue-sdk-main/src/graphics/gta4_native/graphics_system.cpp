@@ -1,5 +1,11 @@
 #include "graphics_system.h"
 #include "native_light_capture.h"
+#include <rex/diagnostics/runtime_probe.h>
+#include <rex/fault_diagnostics.h>
+#if defined(__APPLE__)
+#include <unistd.h>
+#include <cerrno>
+#endif
 #include "native_cpu_profile_scope.h"
 #include "native_profile_shader_category.h"
 #include "modern_shader_options.h"
@@ -347,14 +353,25 @@ struct Slot {
 };
 static std::array<Slot, kCapacity> slots;
 static std::atomic<bool> enabled{false};
-static std::atomic<uint64_t> epoch{0}, published{0}, memory_warnings{0};
+static std::atomic<uint64_t> epoch{0}, published{0}, memory_warnings{0}, capture_frequency{0};
 static uint64_t writer_sequence = 0;
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
 enum Field { Frame, Begin, End, Commands, Completion, FenceWait, Preparation,
              Recording, Finalization, QueueLock, DriverSubmit, Submission,
              SlotIndex, Result, CpuPublishNs, CpuIntervalNs, CpuIntervalTicks, CpuValid, FootprintBytes, ResidentBytes, CompressedBytes, TextureImages, MemoryWarnings };
+constexpr size_t TaskFaults = 95;
+constexpr size_t TaskPageins = 96;
+constexpr size_t TaskCowFaults = 97;
+constexpr size_t TaskContextSwitches = 98;
+constexpr size_t CpuPublishUserNs = 99;
+constexpr size_t CpuPublishSystemNs = 100;
+constexpr size_t CpuIntervalUserNs = 101;
+constexpr size_t CpuIntervalSystemNs = 102;
+constexpr size_t RendererFpcr = 103;
+static_assert(RendererFpcr + 1 == REX_LIGHT_FIELDS);
+constexpr size_t ProbeBase = 23;
 static uint64_t Tick() { return rex::chrono::Clock::QueryHostTickCount(); }
-struct CpuSnapshot { uint64_t ns = 0, tick = 0; bool valid = false; };
+struct CpuSnapshot { uint64_t ns = 0, tick = 0, user_ns = 0, system_ns = 0; bool valid = false; };
 static CpuSnapshot Cpu() {
   CpuSnapshot out;
 #if defined(__APPLE__) && defined(__MACH__)
@@ -369,6 +386,8 @@ static CpuSnapshot Cpu() {
                   &count) == KERN_SUCCESS) {
     out.ns = (uint64_t(info.user_time.seconds) + uint64_t(info.system_time.seconds)) * 1000000000ull
              + (uint64_t(info.user_time.microseconds) + uint64_t(info.system_time.microseconds)) * 1000ull;
+    out.user_ns = uint64_t(info.user_time.seconds)*1000000000ull + uint64_t(info.user_time.microseconds)*1000ull;
+    out.system_ns = uint64_t(info.system_time.seconds)*1000000000ull + uint64_t(info.system_time.microseconds)*1000ull;
     out.valid = true;
   }
 #endif
@@ -409,13 +428,57 @@ struct FrameScope {
         sample.value[CompressedBytes] = vm.compressed;
         sample.value[CpuValid] |= 4;
       }
+      task_events_info_data_t events{};
+      mach_msg_type_number_t event_count = TASK_EVENTS_INFO_COUNT;
+      if (task_info(mach_task_self(), TASK_EVENTS_INFO, reinterpret_cast<task_info_t>(&events), &event_count) == KERN_SUCCESS) {
+        sample.value[TaskFaults] = events.faults;
+        sample.value[TaskPageins] = events.pageins;
+        sample.value[TaskCowFaults] = events.cow_faults;
+        sample.value[TaskContextSwitches] = events.csw;
+        sample.value[CpuValid] |= 16;
+      }
     }
 #endif
     cpu_sample = (count % 15) == 0;
     if (cpu_sample) {
+      namespace probe = rex::diagnostics::runtime_probe;
+      size_t field = ProbeBase;
+      for (const auto& c : probe::counters) {
+        sample.value[field++] = c.count.load(std::memory_order_relaxed);
+        sample.value[field++] = c.ticks.load(std::memory_order_relaxed);
+        sample.value[field++] = c.maximum.load(std::memory_order_relaxed);
+        sample.value[field++] = c.active.load(std::memory_order_relaxed);
+      }
+      for (const auto* v : {&probe::read_errors, &probe::read_shorts, &probe::read_bytes,
+                           &probe::last_error_handle, &probe::last_error_offset, &probe::last_error_length,
+                           &probe::last_error_status, &probe::last_error_tick, &probe::native_error})
+        sample.value[field++] = v->load(std::memory_order_relaxed);
+      const auto clock = rex::chrono::Clock::QueryDiagnostics();
+      sample.value[field++] = clock.stale_samples;
+      sample.value[field++] = clock.prevented_host_ticks;
+      sample.value[field++] = clock.largest_stale_ticks;
+      sample.value[field++] = clock.last_stale_host_tick;
+      RexFaultDiagnosticsSnapshot faults{};
+#if defined(__APPLE__)
+      RexReadFaultDiagnostics(&faults);
+#endif
+      sample.value[field++] = faults.handled_av_count;
+      sample.value[field++] = faults.unhandled_av_count;
+      sample.value[field++] = faults.first_av_pc;
+      sample.value[field++] = faults.first_av_address;
+      sample.value[field++] = faults.latest_av_pc;
+      sample.value[field++] = faults.latest_av_address;
+      sample.value[field++] = faults.latest_av_host_ticks;
+#if defined(__aarch64__)
+      uint64_t fpcr; __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+      sample.value[RendererFpcr] = fpcr;
+#endif
+      sample.value[CpuValid] |= 8;
       cpu_begin = Cpu();
       if (cpu_begin.valid && last.valid && cpu_begin.ns >= last.ns && cpu_begin.tick >= last.tick) {
         sample.value[CpuIntervalNs] = cpu_begin.ns - last.ns;
+        sample.value[CpuIntervalUserNs] = cpu_begin.user_ns - last.user_ns;
+        sample.value[CpuIntervalSystemNs] = cpu_begin.system_ns - last.system_ns;
         sample.value[CpuIntervalTicks] = cpu_begin.tick - last.tick;
         sample.value[CpuValid] |= 2;
       }
@@ -429,6 +492,8 @@ struct FrameScope {
       const auto cpu_end = Cpu();
       if (cpu_end.valid && cpu_end.ns >= cpu_begin.ns) {
         sample.value[CpuPublishNs] = cpu_end.ns - cpu_begin.ns;
+        sample.value[CpuPublishUserNs] = cpu_end.user_ns - cpu_begin.user_ns;
+        sample.value[CpuPublishSystemNs] = cpu_end.system_ns - cpu_begin.system_ns;
         sample.value[CpuValid] |= 1;
       }
     }
@@ -452,15 +517,54 @@ struct Stage {
 };
 static void Set(Field field, uint64_t value) { if (current) current->sample.value[field] = value; }
 } // namespace light
+extern "C" const char* rex_gta4_light_capture_extra_columns() {
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr";
+}
 extern "C" uint64_t rex_gta4_light_capture_start() {
+  light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
+  rex::diagnostics::runtime_probe::enabled.store(true, std::memory_order_release);
   light::epoch.fetch_add(1, std::memory_order_acq_rel);
   const auto cursor = light::published.load(std::memory_order_acquire);
   light::enabled.store(true, std::memory_order_release);
   return cursor;
 }
 extern "C" void rex_gta4_light_memory_warning() { light::memory_warnings.fetch_add(1, std::memory_order_relaxed); }
-extern "C" void rex_gta4_light_capture_stop() { light::enabled.store(false, std::memory_order_release); }
+extern "C" void rex_gta4_light_capture_stop() {
+  light::enabled.store(false, std::memory_order_release);
+  rex::diagnostics::runtime_probe::enabled.store(false, std::memory_order_release);
+}
 extern "C" uint64_t rex_gta4_light_capture_frequency() { return rex::chrono::Clock::QueryHostTickFrequency(); }
+extern "C" void rex_gta4_light_capture_write_fault_snapshot(int fd) {
+#if defined(__APPLE__)
+  static std::atomic_flag writing = ATOMIC_FLAG_INIT;
+  if (fd < 0 || writing.test_and_set(std::memory_order_relaxed)) return;
+  const bool was_enabled = light::enabled.exchange(false, std::memory_order_relaxed);
+  const uint64_t end = light::published.load(std::memory_order_acquire);
+  uint64_t cursor = end > light::kCapacity ? end - light::kCapacity : 0;
+  const uint64_t header[] = {0x3150474e49523454ull, 1, REX_LIGHT_FIELDS,
+    light::capture_frequency.load(std::memory_order_relaxed), end-cursor,
+    was_enabled ? 1ull : 0ull};
+  auto write_all = [fd](const void* bytes, size_t size) {
+    const auto* p = static_cast<const uint8_t*>(bytes);
+    for (unsigned attempt=0; size && attempt<64; ++attempt) {
+      const ssize_t n = write(fd, p, size);
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) return false;
+      p += n; size -= size_t(n);
+    }
+    return size == 0;
+  };
+  if (!write_all(header, sizeof(header))) return;
+  static rex_light_sample rows[16];
+  for (size_t batch=0; batch<light::kCapacity/16+1 && cursor<end; ++batch) {
+    uint64_t lost=0;
+    const uint32_t count=rex_gta4_light_capture_read(&cursor, rows, uint32_t(std::min<uint64_t>(16, end-cursor)), &lost);
+    if (!count || !write_all(rows, size_t(count)*sizeof(rows[0]))) break;
+  }
+#else
+  (void)fd;
+#endif
+}
 extern "C" uint32_t rex_gta4_light_capture_read(uint64_t* cursor, rex_light_sample* out,
                                                uint32_t capacity, uint64_t* lost) {
   if (!cursor || !out || !lost || !capacity) return 0;

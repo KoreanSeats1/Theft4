@@ -5,8 +5,10 @@ extern "C" {
 #endif
 // All times are host monotonic ticks except the two renderer CPU fields (ns).
 // Exactly one renderer writes; UI reads only on explicit save/background.
-enum { REX_LIGHT_FIELDS = 23 };
+enum { REX_LIGHT_FIELDS = 104 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
+const char* rex_gta4_light_capture_extra_columns(void);
+void rex_gta4_light_capture_write_fault_snapshot(int fd);
 uint64_t rex_gta4_light_capture_start(void);
 void rex_gta4_light_capture_stop(void);
 void rex_gta4_light_memory_warning(void);

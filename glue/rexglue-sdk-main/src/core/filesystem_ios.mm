@@ -30,6 +30,8 @@
 
 #include <rex/assert.h>
 #include <rex/filesystem.h>
+#include <rex/diagnostics/runtime_probe.h>
+#include <cerrno>
 #include <rex/logging.h>
 #include <rex/string.h>
 
@@ -178,6 +180,9 @@ class IosFileHandle : public FileHandle {
   bool Read(size_t file_offset, void* buffer, size_t buffer_length,
             size_t* out_bytes_read) override {
     ssize_t out = pread(handle_, buffer, buffer_length, file_offset);
+    const int read_errno = out < 0 ? errno : 0;
+    if (read_errno && rex::diagnostics::runtime_probe::enabled.load(std::memory_order_relaxed))
+      rex::diagnostics::runtime_probe::native_error.store(read_errno, std::memory_order_relaxed);
     *out_bytes_read = out < 0 ? 0 : static_cast<size_t>(out);
     return out >= 0;
   }

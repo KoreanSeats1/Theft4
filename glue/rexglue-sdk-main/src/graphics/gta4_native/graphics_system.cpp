@@ -4706,6 +4706,9 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     std::lock_guard lock(texture_resource_mutex_);
     const VirtualResourceRegistrationResult result =
         virtual_resource_registry_.Register(registration);
+    if (result != VirtualResourceRegistrationResult::kUnchanged) {
+      virtual_surface_registry_revision_.fetch_add(1, std::memory_order_release);
+    }
     const NativeVirtualResourceRecord* record =
         virtual_resource_registry_.Find(registration.resource);
     if (result == VirtualResourceRegistrationResult::kReplaced) {
@@ -4756,6 +4759,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
           InvalidateCapturedTextureResourceLocked(companion);
           dirty_texture_handles_.erase(companion);
         }
+        virtual_surface_registry_revision_.fetch_add(1, std::memory_order_release);
       }
     }
     if (decision == ResourceUnlockDecision::kDirtyGuestResource) {
@@ -4799,7 +4803,9 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       erased_texture = texture_resources_.erase(release.resource) != 0;
       dirty_texture_handles_.erase(release.resource);
       vector_font_ids_.erase(release.resource);
-      virtual_resource_registry_.Erase(release.resource);
+      if (virtual_resource_registry_.Erase(release.resource)) {
+        virtual_surface_registry_revision_.fetch_add(1, std::memory_order_release);
+      }
       remaining_textures = texture_resources_.size();
     }
     {
@@ -6662,6 +6668,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           texture_resources_.clear();
           dirty_texture_handles_.clear();
           virtual_resource_registry_.Clear();
+          virtual_surface_registry_revision_.fetch_add(1, std::memory_order_release);
         }
         reflection_resources_.clear();
         break;
@@ -7854,6 +7861,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     resource->module_code_hashes[0] = XXH3_64bits(stock_early_spirv.data(), stock_early_spirv_size);
     resource->module_code_hashes[1] = stock_late_spirv.empty()
         ? 0 : XXH3_64bits(stock_late_spirv.data(), stock_late_spirv_size);
+    resource->constant_usage = ReflectNativeConstantUsage(stock_early_spirv);
+    if (!stock_late_spirv.empty())
+      resource->constant_usage.Merge(ReflectNativeConstantUsage(stock_late_spirv));
     resource->filename.assign(cache_entry->filename,
                               ::strnlen(cache_entry->filename, sizeof(cache_entry->filename)));
 
@@ -8001,6 +8011,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
               XXH3_64bits(override_early_spirv.data(), effective_early_size);
           resource->module_code_hashes[3] = override_late_spirv.empty()
               ? 0 : XXH3_64bits(override_late_spirv.data(), effective_late_size);
+          resource->constant_usage.Merge(ReflectNativeConstantUsage(override_early_spirv));
+          if (!override_late_spirv.empty())
+            resource->constant_usage.Merge(ReflectNativeConstantUsage(override_late_spirv));
           REXLOG_INFO(
               "gta4-native-shader-overrides: candidate stage={} hash={:016X} activation={} "
               "pair={} counterparts={} support={:08X} samples={:08X} file={}",
@@ -8415,8 +8428,10 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
     NativeUploadKind upload_kind, NativeUploadAllocation& allocation) {
   const profile::CpuScope profile_scope(profile::CpuOp::kPersistentBuffer);
 
-  if (!REXCVAR_GET(gta4_native_persistent_buffers) || !command_buffer || !owner || !source ||
-      !size) {
+  // A vertex-only lookup may precede CPU conversion. Index callers must keep
+  // their host bytes because restart handling reads them after this returns.
+  if (!REXCVAR_GET(gta4_native_persistent_buffers) || !command_buffer || !owner || !size ||
+      (!source && key.kind != NativePersistentBufferKind::kVertex)) {
     return false;
   }
   const uint64_t predicted_submission =
@@ -8454,6 +8469,12 @@ bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
     AddNativeGpuProfileCounter(performance::Counter::kPersistentBufferOwnerMemoHits,
                                owner_memo_hit);
     return true;
+  }
+
+  // A lookup-only miss must not reserve or upload anything. The caller will
+  // materialize the exact converted bytes and return through this path.
+  if (!source) {
+    return false;
   }
 
   if (!persistent_buffer_arena_) {
@@ -8876,6 +8897,11 @@ bool Gta4NativeGraphicsSystem::ResetFrameConstantArena(uint32_t slot, uint64_t c
     return false;
   }
   arena.has_last_shared_key = false;
+  for (auto& bank : arena.projected_bindings)
+    for (auto& entry : bank) entry = {};
+  arena.projection_reuses = 0;
+  arena.projection_changed_version_reuses = 0;
+  arena.projection_fallbacks = 0;
   arena.last_shared_identity = 0;
   arena.has_last_shared_allocation = false;
   arena.next_shared_identity = 1;
@@ -20783,6 +20809,17 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
   if (!stream_state.stride || stream_state.offset >= resource->payload.size()) {
     return false;
   }
+  // The immutable GPU generation can outlive its CPU conversion-cache entry.
+  // Probe it before conversion: a mesh used by several shader layouts must not
+  // rebuild identical vertices whenever the bounded CPU variant cache evicts
+  // a layout that is already resident. Vertex draws consume only buffer/offset.
+  if (GetOrCreatePersistentBuffer(command_buffer, resource, persistent_key, nullptr,
+                                  VkDeviceSize(resource->payload.size()),
+                                  NativeUploadKind::kVertex, allocation)) {
+    if (!uploads.Insert(persistent_key, allocation)) return false;
+    return true;
+  }
+
   const NativeBufferResource::ConvertedVertexPayload* converted_payload = nullptr;
   for (const auto& candidate : resource->converted_vertex_payloads) {
     if (candidate.declaration_hash == declaration.content_hash &&
@@ -20927,12 +20964,52 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
   const std::vector<uint8_t>* vertex_constants = nullptr;
   const std::vector<uint8_t>* pixel_constants = nullptr;
   if (active_frame_slot_ >= frame_constant_arenas_.size()) return false;
+  static const bool projection_enabled = [] {
+    const char* value = std::getenv("THEFT4_CONSTANT_REUSE");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  const NativeShader* projection_vs = command.pipeline_state->vertex_shader_resource;
+  const NativeShader* projection_ps = command.pipeline_state->pixel_shader_resource;
+  NativeConstantUsage projection_usage;
+  if (projection_enabled && projection_vs && projection_ps) {
+    projection_usage = projection_vs->constant_usage;
+    projection_usage.Merge(projection_ps->constant_usage);
+  }
   const auto bind_guest_constants = [&](NativeConstantBufferKind kind, const auto& version,
                                          NativeUploadAllocation& allocation,
                                          const std::vector<uint8_t>*& bytes) {
     const size_t required_size = kind == NativeConstantBufferKind::kVertex ? kVertexConstantsSize : kPixelConstantsSize;
     if (!version || version->byte_size != required_size) return false;
-    auto& bindings = frame_constant_arenas_[active_frame_slot_].immutable_bindings;
+    auto& arena = frame_constant_arenas_[active_frame_slot_];
+    auto& bindings = arena.immutable_bindings;
+    const size_t bank = kind == NativeConstantBufferKind::kVertex ? 0 : 1;
+    const size_t memo_index = ((uintptr_t(projection_vs) >> 4) ^ (uintptr_t(projection_ps) >> 7)) % 64;
+    auto& memo = arena.projected_bindings[bank][memo_index];
+    if (projection_usage.known && memo.vertex == projection_vs && memo.pixel == projection_ps &&
+        memo.mask == projection_usage.banks[bank] &&
+        CanReuseConstantProjection(memo.version.get(), version.get(), projection_usage.banks[bank])) {
+      bool valid = true;
+      if (REXCVAR_GET(gta4_validate_native_hot_caches)) {
+        const auto* source = AuthoritativeConstantState::MaterializeView(version);
+        std::vector<uint8_t> expected(source ? source->size() : 0);
+        if (source) CopyGuestWordsToHost(expected.data(), source->data(), source->size());
+        valid = source && memo.allocation.mapping;
+        for (size_t reg = 0; valid && reg < required_size / 16; ++reg)
+          if (projection_usage.banks[bank][reg / 64] & (uint64_t(1) << (reg % 64)))
+            valid = std::memcmp(expected.data() + reg * 16, memo.allocation.mapping + reg * 16, 16) == 0;
+      }
+      if (valid) {
+        ++arena.projection_reuses;
+        if (memo.version.get() != version.get()) ++arena.projection_changed_version_reuses;
+        allocation = memo.allocation;
+        bytes = nullptr;
+        memo.version = version;
+        return true;
+      }
+      // Validation failure recovers with the exact baseline allocation.
+      memo = {};
+    }
+    if (projection_enabled) ++arena.projection_fallbacks;
     const auto result = bindings.BindWithDelta(kind, version, allocation, bytes,
         [](const auto& v) {
           return profile::CpuCall(profile::CpuOp::kConstantMaterialize,
@@ -20963,6 +21040,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
         return false;
       }
     }
+    if (result != Binding::Result::kFailure && projection_usage.known)
+      memo = {projection_vs, projection_ps, version, allocation, projection_usage.banks[bank]};
     return result != Binding::Result::kFailure;
   };
   if (!bind_guest_constants(NativeConstantBufferKind::kVertex, command.shader_state->vertex_constants,
@@ -27109,14 +27188,17 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
            left.uses_presenter == right.uses_presenter;
   };
 #ifdef THEFT4_LAB_BUILD
-  // Consecutive draw commands usually retain the exact attachment state.  The
-  // generic resolver still walks the surface cache and recomputes the target
-  // for every one, even though none of those inputs changed.  Keep this cache
-  // deliberately frame-local and invalidate it for every non-render command:
-  // resource updates and releases must always force a fresh resolution.
+  // Mesh/shader changes produce different pipeline snapshots while retaining
+  // the same attachments. Key this frame-local memo by the actual resolver
+  // inputs, including inactive descriptors that provide attachmentless extent.
+  // Non-render commands invalidate worker-side reflection/resource changes;
+  // the atomic revision also catches producer-side virtual-surface changes.
   struct LabResolvedTargetCache {
-    const NativePipelineState* pipeline_state = nullptr;
+    std::array<SurfaceDescriptor, kRenderTargetCount> render_targets{};
+    SurfaceDescriptor depth_stencil{};
     NativeAttachmentUsage usage{};
+    uint64_t virtual_surface_revision = 0;
+    VkSampleCountFlagBits scene_sample_override = VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM;
     VkImageView presenter_view = VK_NULL_HANDLE;
     uint32_t presenter_width = 0;
     uint32_t presenter_height = 0;
@@ -27124,6 +27206,14 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     bool valid = false;
   };
   LabResolvedTargetCache lab_resolved_target_cache{};
+  const auto lab_surface_descriptor_equal = [](const SurfaceDescriptor& left,
+                                                const SurfaceDescriptor& right) {
+    return left.handle == right.handle && left.flags == right.flags &&
+           left.base == right.base && left.address == right.address &&
+           left.packed_dimensions == right.packed_dimensions && left.format == right.format &&
+           left.width == right.width && left.height == right.height &&
+           left.sample_type == right.sample_type;
+  };
   const auto lab_attachment_usage_equal = [](const NativeAttachmentUsage& left,
                                              const NativeAttachmentUsage& right) {
     return left.color_attachment_mask == right.color_attachment_mask &&
@@ -30197,13 +30287,23 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         lab_target_cache_command && !NativeRendererEventTraceEnabled();
     const NativeAttachmentUsage lab_target_usage =
         lab_target_cache_enabled ? GetRenderingTargetUsage(command) : NativeAttachmentUsage{};
+    const uint64_t lab_virtual_surface_revision = lab_target_cache_enabled
+        ? virtual_surface_registry_revision_.load(std::memory_order_acquire) : 0;
+    const VkSampleCountFlagBits lab_scene_sample_override = lab_target_cache_enabled
+        ? GetNativeSceneSampleOverride() : VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM;
     const bool lab_target_cache_hit =
         lab_target_cache_enabled && lab_resolved_target_cache.valid &&
-        lab_resolved_target_cache.pipeline_state == command.pipeline_state.get() &&
+        lab_resolved_target_cache.virtual_surface_revision == lab_virtual_surface_revision &&
+        lab_resolved_target_cache.scene_sample_override == lab_scene_sample_override &&
         lab_attachment_usage_equal(lab_resolved_target_cache.usage, lab_target_usage) &&
         lab_resolved_target_cache.presenter_view == presenter_view &&
         lab_resolved_target_cache.presenter_width == width &&
-        lab_resolved_target_cache.presenter_height == height;
+        lab_resolved_target_cache.presenter_height == height &&
+        std::equal(lab_resolved_target_cache.render_targets.begin(),
+                   lab_resolved_target_cache.render_targets.end(),
+                   command.pipeline_state->render_targets.begin(), lab_surface_descriptor_equal) &&
+        lab_surface_descriptor_equal(lab_resolved_target_cache.depth_stencil,
+                                      command.pipeline_state->depth_stencil);
     if (lab_target_cache_hit) {
       target = lab_resolved_target_cache.target;
       mark_cached_target_used(target);
@@ -30255,13 +30355,21 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
     }
 #ifdef THEFT4_LAB_BUILD
     if (lab_target_cache_enabled && !lab_target_cache_hit) {
-      lab_resolved_target_cache.pipeline_state = command.pipeline_state.get();
+      lab_resolved_target_cache.render_targets = command.pipeline_state->render_targets;
+      lab_resolved_target_cache.depth_stencil = command.pipeline_state->depth_stencil;
       lab_resolved_target_cache.usage = lab_target_usage;
+      lab_resolved_target_cache.virtual_surface_revision = lab_virtual_surface_revision;
+      lab_resolved_target_cache.scene_sample_override = lab_scene_sample_override;
       lab_resolved_target_cache.presenter_view = presenter_view;
       lab_resolved_target_cache.presenter_width = width;
       lab_resolved_target_cache.presenter_height = height;
       lab_resolved_target_cache.target = target;
-      lab_resolved_target_cache.valid = true;
+      // A producer may register or release virtual resources during resolution.
+      // Do not publish a memo assembled across different registry revisions.
+      lab_resolved_target_cache.valid =
+          virtual_surface_registry_revision_.load(std::memory_order_acquire) ==
+              lab_virtual_surface_revision &&
+          GetNativeSceneSampleOverride() == lab_scene_sample_override;
     }
 #endif
     if (collect_frame_diagnostics) {

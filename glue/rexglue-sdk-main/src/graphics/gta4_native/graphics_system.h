@@ -40,6 +40,7 @@
 #include "frame_constant_arena.h"
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
+#include "native_constant_projection.h"
 #include "native_texture_protection.h"
 #include "native_command_packet.h"
 #ifdef THEFT4_LAB_BUILD
@@ -156,6 +157,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     VkShaderModule early_module = VK_NULL_HANDLE;
     VkShaderModule late_module = VK_NULL_HANDLE;
     std::array<uint64_t, 4> module_code_hashes{};
+    NativeConstantUsage constant_usage; // Union of stock and accepted overrides.
     std::string filename;
     std::vector<NativeVertexInput> vertex_inputs;
 
@@ -1162,6 +1164,15 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   };
 
   struct NativeFrameConstantArena {
+    struct ProjectedBinding {
+      const NativeShader* vertex = nullptr;
+      const NativeShader* pixel = nullptr;
+      std::shared_ptr<const ConstantStateVersion> version;
+      NativeUploadAllocation allocation{};
+      NativeConstantMask mask{};
+    };
+    // Bounded direct-mapped memo, independent of the full-bank cache.
+    std::array<std::array<ProjectedBinding, 64>, 2> projected_bindings{};
     NativeUploadBuffer storage;
     FrameConstantArenaIndex index;
     FrameGenerationMap<NativeSharedConstantSemanticKey, uint64_t,
@@ -1177,6 +1188,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     bool has_last_shared_allocation = false;
     NativeImmutableBindings<NativeUploadAllocation> immutable_bindings;
     uint64_t next_shared_identity = 1;
+    uint64_t projection_reuses = 0;
+    uint64_t projection_changed_version_reuses = 0;
+    uint64_t projection_fallbacks = 0;
   };
 
   enum class NativeUploadKind : uint8_t {
@@ -1718,6 +1732,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::unordered_set<uint32_t> dirty_texture_handles_;
   std::unordered_map<uint32_t, uint32_t> vector_font_ids_;
   NativeVirtualResourceRegistry virtual_resource_registry_;
+  // Published under texture_resource_mutex_; attachment memos read without
+  // taking that producer lock on every draw. Host-write ownership changes do
+  // not affect surface dimensions or target realization.
+  std::atomic<uint64_t> virtual_surface_registry_revision_{0};
   uint64_t next_texture_generation_ = 1;
   std::mutex command_capture_mutex_;
   std::mutex device_snapshot_mutex_;

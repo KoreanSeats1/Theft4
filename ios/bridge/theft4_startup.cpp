@@ -160,14 +160,24 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
         REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
-        REXCVAR_SET(gta4_native_sparse_texture_walks, a19_profile);
+        // Both paths capture the same shader-required slots. Keep an explicit
+        // launch rollback to the full 16-slot walks for device comparisons.
+        const char* sparse_walks_value = std::getenv("THEFT4_SPARSE_TEXTURE_WALKS");
+        const bool sparse_texture_walks =
+            !sparse_walks_value || std::string_view(sparse_walks_value) != "0";
+        REXCVAR_SET(gta4_native_sparse_texture_walks, sparse_texture_walks);
+        // Restore the released shader-specific constant reuse default. Explicit
+        // THEFT4_CONSTANT_REUSE=0 retains the complete immutable-bank path.
+        setenv("THEFT4_CONSTANT_REUSE", "1", 0);
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
         REXCVAR_SET(gta4_profile_native_autostart, false);
         REXLOG_INFO(
             "Theft4 device profile: {} pipeline-prewarm={} sparse-texture-walks={} detailed-profile=false "
             "profile-autostart=false",
-            device_profile, !a19_profile, a19_profile);
+            device_profile, !a19_profile, sparse_texture_walks);
+        REXLOG_INFO("Theft4 shader constant projection reuse: {}",
+                    std::string_view(std::getenv("THEFT4_CONSTANT_REUSE")) == "1");
 
         // The launch policy independently selects scene and drawable sizes.
         // Native hooks derive scene = logical video / 1.5 for FSR Quality.

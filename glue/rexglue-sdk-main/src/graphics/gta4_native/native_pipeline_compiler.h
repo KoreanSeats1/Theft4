@@ -98,6 +98,17 @@ class NativePipelineCompiler {
     return completed;
   }
 
+  struct Snapshot {
+    size_t outstanding = 0;
+    size_t queued = 0;
+    bool active = false;
+  };
+  // One bounded snapshot at the light-capture cadence; no per-draw polling.
+  Snapshot GetSnapshot() const {
+    std::lock_guard lock(mutex_);
+    return {jobs_.size(), queue_.size(), active_};
+  }
+
   bool Contains(const Key& key) const {
     std::lock_guard lock(mutex_);
     return jobs_.contains(key);

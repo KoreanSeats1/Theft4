@@ -1,9 +1,12 @@
 #include "smaa_pipeline.h"
+#include "native_light_capture.h"
 #include "smaa_source_sync.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+
+#include <rex/chrono/clock.h>
 
 #include <rex/ui/vulkan/device.h>
 #include <rex/ui/vulkan/instance.h>
@@ -167,8 +170,12 @@ VkPipeline CreateFullscreenPipeline(const ui::vulkan::VulkanDevice* device,
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = layout;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  const uint64_t compile_begin = rex::chrono::Clock::QueryHostTickCount();
   const VkResult result = dfn.vkCreateGraphicsPipelines(
       vk_device, pipeline_cache, 1, &pipeline_info, nullptr, &pipeline);
+  rex_gta4_light_record_pipeline_work(
+      rex::chrono::Clock::QueryHostTickCount() - compile_begin, 0,
+      result == VK_SUCCESS ? 1 : 0);
   dfn.vkDestroyShaderModule(vk_device, fragment, nullptr);
   dfn.vkDestroyShaderModule(vk_device, vertex, nullptr);
   return result == VK_SUCCESS ? pipeline : VK_NULL_HANDLE;

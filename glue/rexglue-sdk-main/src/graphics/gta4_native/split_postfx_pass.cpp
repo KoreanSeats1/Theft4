@@ -1,6 +1,9 @@
 #include "split_postfx_pass.h"
+#include "native_light_capture.h"
 
 #include <cstring>
+
+#include <rex/chrono/clock.h>
 
 #include <rex/ui/vulkan/device.h>
 #include <rex/ui/vulkan/util.h>
@@ -168,8 +171,12 @@ VkPipeline SplitPostFxPass::GetOrCreatePipeline(const ui::vulkan::VulkanDevice* 
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = pipeline_layout_;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  const uint64_t compile_begin = rex::chrono::Clock::QueryHostTickCount();
   const VkResult result = dfn.vkCreateGraphicsPipelines(vk_device, pipeline_cache, 1,
                                                         &pipeline_info, nullptr, &pipeline);
+  rex_gta4_light_record_pipeline_work(
+      rex::chrono::Clock::QueryHostTickCount() - compile_begin, 0,
+      result == VK_SUCCESS ? 1 : 0);
   dfn.vkDestroyShaderModule(vk_device, pixel_shader, nullptr);
   dfn.vkDestroyShaderModule(vk_device, vertex_shader, nullptr);
   if (result != VK_SUCCESS) {

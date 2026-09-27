@@ -475,7 +475,9 @@ X_STATUS XThread::Create() {
     set_name(fmt::format("XThread{:04X}", thread_->system_id()));
   }
 
-  if (creation_params_.creation_flags & 0x60) {
+  // Honor the same policy as SetPriority. On Darwin a legacy host priority
+  // change can also opt this thread out of QoS before Execute configures it.
+  if ((creation_params_.creation_flags & 0x60) && !REXCVAR_GET(ignore_thread_priorities)) {
     thread_->set_priority(creation_params_.creation_flags & 0x20 ? 1 : 0);
   }
 

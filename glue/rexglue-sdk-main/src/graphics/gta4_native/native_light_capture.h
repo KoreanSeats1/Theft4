@@ -5,8 +5,15 @@ extern "C" {
 #endif
 // All times are host monotonic ticks except the two renderer CPU fields (ns).
 // Exactly one renderer writes; UI reads only on explicit save/background.
-enum { REX_LIGHT_FIELDS = 104 };
+// Fields104-106 are per-present pipeline work, valid on every row. Fields107-115
+// are compiler/cache snapshots sampled with sample_valid bit8. Pipeline ticks
+// reflect driver-call durations (including background work), not GPU time.
+enum { REX_LIGHT_FIELDS = 116 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
+// Renderer-thread only; actual driver calls/publication, never pipeline hits.
+// Work outside a title frame is retained until the next recorded title frame.
+void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks, uint64_t wait_ticks,
+                                         uint32_t creates);
 const char* rex_gta4_light_capture_extra_columns(void);
 void rex_gta4_light_capture_write_fault_snapshot(int fd);
 uint64_t rex_gta4_light_capture_start(void);

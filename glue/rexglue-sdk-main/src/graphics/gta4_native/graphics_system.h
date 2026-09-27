@@ -1274,6 +1274,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkPipeline PublishNativePipeline(const NativePipelineKey& key, VkPipeline pipeline,
                                     uint64_t compile_ticks);
   void RecordNativePipelineTiming(uint64_t compile_ticks, uint64_t wait_ticks = 0);
+  void RecordNativePipelineCreated();
   bool CreateNativeUploadBuffer(VkDeviceSize capacity, NativeUploadBuffer& upload_buffer);
   void DestroyNativeUploadBuffer(NativeUploadBuffer& upload_buffer);
   void RetireNativeBuffer(NativeRetiredBuffer buffer);

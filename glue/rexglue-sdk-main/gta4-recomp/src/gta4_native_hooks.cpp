@@ -21,6 +21,13 @@
 #include <utility>
 #include <vector>
 
+#include <rex/platform.h>
+
+#if defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS
+#include <mach/kern_return.h>
+#include <mach/mach_time.h>
+#endif
+
 #include <fmt/format.h>
 #include <xxhash.h>
 
@@ -354,7 +361,47 @@ std::mutex g_native_frame_limiter_mutex;
 gta4::frame_limiter::State g_native_frame_limiter_state;
 uint64_t g_native_frame_limiter_present_count = 0;
 
-#ifdef THEFT4_LAB_BUILD
+#if defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS
+void WaitForNativePacingDeadline(std::chrono::steady_clock::time_point deadline) {
+  using Clock = std::chrono::steady_clock;
+  // Convert only the remaining duration: steady_clock and Mach need not share
+  // an absolute epoch. Cache the public Mach timebase outside the paced wait.
+  static const mach_timebase_info_data_t timebase = [] {
+    mach_timebase_info_data_t value{};
+    if (mach_timebase_info(&value) != KERN_SUCCESS) return mach_timebase_info_data_t{};
+    return value;
+  }();
+  const auto now = Clock::now();
+  if (now >= deadline) return;
+  if (!timebase.numer || !timebase.denom) {
+    std::this_thread::sleep_until(deadline);
+    return;
+  }
+  const auto remaining_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now).count();
+  // Round upward and widen the multiplication so conversion cannot overflow
+  // or shorten the requested wait on a different device timebase.
+  const unsigned __int128 remaining_ticks =
+      (static_cast<unsigned __int128>(remaining_ns) * timebase.denom + timebase.numer - 1) /
+      timebase.numer;
+  const uint64_t mach_now = mach_absolute_time();
+  if (remaining_ticks > std::numeric_limits<uint64_t>::max() - mach_now) {
+    std::this_thread::sleep_until(deadline);
+    return;
+  }
+  const uint64_t mach_deadline = mach_now + static_cast<uint64_t>(remaining_ticks);
+  while (true) {
+    const kern_return_t result = mach_wait_until(mach_deadline);
+    if (result == KERN_SUCCESS || Clock::now() >= deadline) return;
+    if (result != KERN_ABORTED) {
+      std::this_thread::sleep_until(deadline);
+      return;
+    }
+    // A signal may interrupt the blocking wait. Retry the same deadline;
+    // every iteration blocks in the kernel rather than actively polling.
+  }
+}
+#elif defined(THEFT4_LAB_BUILD)
 // iOS may resume a short sleep several milliseconds after its requested
 // deadline. Keep the established fixed limiter phase, but leave a bounded
 // final interval for an active wait so an otherwise-ready frame does not miss
@@ -435,7 +482,11 @@ void PaceNativePresent(uint32_t submitted_frame) {
           std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
     }
 #endif
-#ifdef THEFT4_LAB_BUILD
+#if defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS
+    // Keep the limiter state and present order, but give unused time back to
+    // the scheduler instead of occupying a core for the final two milliseconds.
+    WaitForNativePacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#elif defined(THEFT4_LAB_BUILD)
     WaitForLabPacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
 #else
     std::this_thread::sleep_until(Clock::time_point(Nanoseconds(decision.wait_until_ns)));

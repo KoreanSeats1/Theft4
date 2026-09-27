@@ -368,7 +368,21 @@ constexpr size_t CpuPublishSystemNs = 100;
 constexpr size_t CpuIntervalUserNs = 101;
 constexpr size_t CpuIntervalSystemNs = 102;
 constexpr size_t RendererFpcr = 103;
-static_assert(RendererFpcr + 1 == REX_LIGHT_FIELDS);
+constexpr size_t PipelineCreates = 104;
+constexpr size_t PipelineCompileTicks = 105;
+constexpr size_t PipelineWaitTicks = 106;
+constexpr size_t PipelineJobsOutstanding = 107;
+constexpr size_t PipelineJobsQueued = 108;
+constexpr size_t PipelineJobActive = 109;
+constexpr size_t PipelineReplayPending = 110;
+constexpr size_t PipelineCacheGeneration = 111;
+constexpr size_t CacheSaveCount = 112;
+constexpr size_t CacheSaveTotalTicks = 113;
+constexpr size_t CacheSaveActive = 114;
+constexpr size_t CacheSaveBytes = 115;
+static_assert(CacheSaveBytes + 1 == REX_LIGHT_FIELDS);
+static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
+    cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
 static uint64_t Tick() { return rex::chrono::Clock::QueryHostTickCount(); }
 struct CpuSnapshot { uint64_t ns = 0, tick = 0, user_ns = 0, system_ns = 0; bool valid = false; };
@@ -396,6 +410,10 @@ static CpuSnapshot Cpu() {
 }
 struct FrameScope;
 static thread_local FrameScope* current = nullptr;
+struct PendingPipelineWork {
+  uint64_t epoch = 0, creates = 0, compile_ticks = 0, wait_ticks = 0;
+};
+static thread_local PendingPipelineWork pending_pipeline;
 struct FrameScope {
   rex_light_sample sample{};
   uint64_t capture_epoch = 0;
@@ -406,6 +424,14 @@ struct FrameScope {
     active = title && enabled.load(std::memory_order_relaxed);
     if (!active) return;
     capture_epoch = epoch.load(std::memory_order_acquire);
+    // Internal flushes have no light row. Retain their pipeline work until
+    // the next title present, independently of detailed-profiler resets.
+    if (pending_pipeline.epoch == capture_epoch) {
+      sample.value[PipelineCreates] = pending_pipeline.creates;
+      sample.value[PipelineCompileTicks] = pending_pipeline.compile_ticks;
+      sample.value[PipelineWaitTicks] = pending_pipeline.wait_ticks;
+    }
+    pending_pipeline = {capture_epoch, 0, 0, 0};
     sample.value[Frame] = frame; sample.value[Begin] = Tick();
     sample.value[Commands] = commands;
     sample.value[TextureImages] = images;
@@ -517,8 +543,24 @@ struct Stage {
 };
 static void Set(Field field, uint64_t value) { if (current) current->sample.value[field] = value; }
 } // namespace light
+extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
+                                                      uint64_t wait_ticks,
+                                                      uint32_t creates) {
+  if (light::current) {
+    light::current->sample.value[light::PipelineCreates] += creates;
+    light::current->sample.value[light::PipelineCompileTicks] += compile_ticks;
+    light::current->sample.value[light::PipelineWaitTicks] += wait_ticks;
+  } else if (light::enabled.load(std::memory_order_relaxed)) {
+    const uint64_t capture_epoch = light::epoch.load(std::memory_order_acquire);
+    auto& pending = light::pending_pipeline;
+    if (pending.epoch != capture_epoch) pending = {capture_epoch, 0, 0, 0};
+    pending.creates += creates;
+    pending.compile_ticks += compile_ticks;
+    pending.wait_ticks += wait_ticks;
+  }
+}
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -15846,6 +15888,14 @@ void Gta4NativeGraphicsSystem::SaveNativePipelineCache() try {
     return;
   }
   const auto& dfn = vulkan_device->functions();
+  const uint64_t checkpoint_begin = rex::chrono::Clock::QueryHostTickCount();
+  light::cache_save_active.fetch_add(1, std::memory_order_relaxed);
+  const auto checkpoint_finished = MakeScopeExit([checkpoint_begin] {
+    light::cache_save_total_ticks.fetch_add(
+        rex::chrono::Clock::QueryHostTickCount() - checkpoint_begin, std::memory_order_relaxed);
+    light::cache_save_count.fetch_add(1, std::memory_order_relaxed);
+    light::cache_save_active.fetch_sub(1, std::memory_order_relaxed);
+  });
   constexpr size_t kMaximumCheckpointBytes = 67108864;
   std::vector<uint8_t> data;
   bool complete = false;
@@ -15870,6 +15920,7 @@ void Gta4NativeGraphicsSystem::SaveNativePipelineCache() try {
   if (!complete || !WriteNativeCacheAtomically(native_pipeline_cache_path_, data)) {
     return;
   }
+  light::cache_save_bytes.fetch_add(data.size(), std::memory_order_relaxed);
   // A concurrent compiler may have added a newer generation during the copy.
   // A checkpoint only acknowledges the generation it started with.
   if (native_pipeline_compiler_) {
@@ -15896,6 +15947,7 @@ void Gta4NativeGraphicsSystem::SaveNativePipelineCache() try {
     if (!WriteNativeCacheAtomically(path, bytes)) {
       return;
     }
+    light::cache_save_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
   }
   native_pipeline_cache_saved_generation_ = generation;
 } catch (const std::exception& error) {
@@ -15903,6 +15955,14 @@ void Gta4NativeGraphicsSystem::SaveNativePipelineCache() try {
 }
 
 void Gta4NativeGraphicsSystem::ScheduleNativePipelineCheckpoint() {
+#if REX_PLATFORM_IOS
+  // vkGetPipelineCacheData serializes the driver's shared shader cache. A
+  // background writer still contends with active rendering/compilation and
+  // may allocate/copy the entire cache. Keep loaded cache data and prewarming,
+  // but checkpoint only after StopNativePipelineCompiler has joined both
+  // workers during orderly teardown. A UI pause is not a renderer idle barrier.
+  return;
+#endif
   if (!native_pipeline_compiler_ || !native_pipeline_compiler_->writer) {
     return;
   }
@@ -16081,18 +16141,24 @@ VkPipeline Gta4NativeGraphicsSystem::PublishNativePipeline(
                               memory::LifecycleReason::kCacheMiss, NativePipelineKeyHash{}(key), 0,
                               0, sizeof(NativePipeline), sizeof(NativePipeline), 0,
                               diagnostic_submitted_frame_);
-  if (IsNativeGpuProfileFrameActive()) {
-    AddNativeGpuProfileCounter(performance::Counter::kPipelineCreates);
-  } else {
-    ++native_pipeline_unreported_creates_;
-  }
+  RecordNativePipelineCreated();
   REXLOG_DEBUG("gta4-native-pipeline: exact recipe published vs={:016X} ps={:016X} compile-ticks={}",
                key.vertex_shader_hash, key.pixel_shader_hash, compile_ticks);
   return pipeline;
 }
 
+void Gta4NativeGraphicsSystem::RecordNativePipelineCreated() {
+  rex_gta4_light_record_pipeline_work(0, 0, 1);
+  if (IsNativeGpuProfileFrameActive()) {
+    AddNativeGpuProfileCounter(performance::Counter::kPipelineCreates);
+  } else {
+    ++native_pipeline_unreported_creates_;
+  }
+}
+
 void Gta4NativeGraphicsSystem::RecordNativePipelineTiming(uint64_t compile_ticks,
                                                           uint64_t wait_ticks) {
+  rex_gta4_light_record_pipeline_work(compile_ticks, wait_ticks, 0);
   if (IsNativeGpuProfileFrameActive()) {
     auto& builder = native_gpu_profile_state_.frames[active_frame_slot_].sample_builder;
     builder.AddCpuRange(performance::CpuRange::kPipelineCompileJobs, compile_ticks);
@@ -22708,13 +22774,16 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateFullscreenPipeline(
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = resolve_conversion_pipeline_layout_;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  const uint64_t compile_begin = rex::chrono::Clock::QueryHostTickCount();
   const VkResult result = profile::CpuCall(profile::CpuOp::kDriverPipeline, [&] { return dfn.vkCreateGraphicsPipelines(device, native_pipeline_cache_, 1,
                                                         &pipeline_info, nullptr, &pipeline); });
+  RecordNativePipelineTiming(rex::chrono::Clock::QueryHostTickCount() - compile_begin);
   profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, pixel_shader, nullptr); });
   profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, vertex_shader, nullptr); });
   if (result != VK_SUCCESS) {
     return VK_NULL_HANDLE;
   }
+  RecordNativePipelineCreated();
   resolve_conversion_pipelines_.push_back(
       {destination_format, kind, destination_samples, pipeline});
   native_pipeline_cache_generation_.fetch_add(1, std::memory_order_release);
@@ -22827,13 +22896,16 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateHDRPresentPipeline() {
   pipeline_info.pColorBlendState = &color_blend;
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = resolve_conversion_pipeline_layout_;
+  const uint64_t compile_begin = rex::chrono::Clock::QueryHostTickCount();
   const VkResult result = profile::CpuCall(profile::CpuOp::kDriverPipeline, [&] { return dfn.vkCreateGraphicsPipelines(
       device, native_pipeline_cache_, 1, &pipeline_info, nullptr, &hdr_present_pipeline_); });
+  RecordNativePipelineTiming(rex::chrono::Clock::QueryHostTickCount() - compile_begin);
   profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, pixel_shader, nullptr); });
   profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, vertex_shader, nullptr); });
   if (result != VK_SUCCESS) {
     hdr_present_pipeline_ = VK_NULL_HANDLE;
   } else {
+    RecordNativePipelineCreated();
     native_pipeline_cache_generation_.fetch_add(1, std::memory_order_release);
   }
   return hdr_present_pipeline_;
@@ -33410,6 +33482,23 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
   light::FrameScope light_frame(present.device != 0, present.submitted_frame, current_frame_.size(), native_texture_images_.size());
+  if (light_frame.active) {
+    if (light_frame.cpu_sample) {
+      if (native_pipeline_compiler_) {
+        const auto jobs = native_pipeline_compiler_->compiler->GetSnapshot();
+        light_frame.sample.value[light::PipelineJobsOutstanding] = jobs.outstanding;
+        light_frame.sample.value[light::PipelineJobsQueued] = jobs.queued;
+        light_frame.sample.value[light::PipelineJobActive] = jobs.active;
+        light_frame.sample.value[light::PipelineReplayPending] = native_pipeline_compiler_->replay.size();
+      }
+      light_frame.sample.value[light::PipelineCacheGeneration] =
+          native_pipeline_cache_generation_.load(std::memory_order_relaxed);
+      light_frame.sample.value[light::CacheSaveCount] = light::cache_save_count.load(std::memory_order_relaxed);
+      light_frame.sample.value[light::CacheSaveTotalTicks] = light::cache_save_total_ticks.load(std::memory_order_relaxed);
+      light_frame.sample.value[light::CacheSaveActive] = light::cache_save_active.load(std::memory_order_relaxed);
+      light_frame.sample.value[light::CacheSaveBytes] = light::cache_save_bytes.load(std::memory_order_relaxed);
+    }
+  }
   SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPublishSetup);
   const bool detail_requested = rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProfiler) &&
       !native_gpu_profile_state_.capture_complete && !native_gpu_profile_state_.export_started &&

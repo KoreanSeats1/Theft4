@@ -58,6 +58,17 @@ uint64_t theft4_metal_renderer_completed_frames(void);
 void theft4_frame_counter_note_published(void);
 uint64_t theft4_frame_counter_published_frames(void);
 
+// Publication-time trace. It does not measure physical display scanout or
+// GPU work. Drain on a background queue and checkpoint to disk periodically.
+typedef struct theft4_publication_sample {
+  uint64_t frame;
+  uint64_t monotonic_ns;
+} theft4_publication_sample;
+uint64_t theft4_publication_capture_start(void);
+void theft4_publication_capture_stop(void);
+uint32_t theft4_publication_capture_read(uint64_t* cursor,
+    theft4_publication_sample* samples, uint32_t capacity, uint64_t* lost);
+
 // Rolling publication intervals, not physical display scanout times. UI control
 // and snapshots are main-thread only; the presenter is the sole sample writer.
 #define THEFT4_FRAME_TIME_SAMPLES 180

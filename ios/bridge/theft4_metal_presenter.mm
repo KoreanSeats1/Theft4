@@ -5,6 +5,7 @@
 #import <os/lock.h>
 #include <atomic>
 #include "theft4_frame_time_history.h"
+#include "theft4_publication_trace.h"
 
 namespace {
 
@@ -20,6 +21,7 @@ std::atomic<uint64_t> submitted_frames{0};
 std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
 theft4::FrameTimeHistory<> frame_time_history;
+theft4::PublicationTrace<> publication_trace;
 
 // Protected by presenter_lock. Latched before the game renderer is created.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
@@ -179,9 +181,22 @@ bool theft4_metal_present_clear(double red, double green, double blue,
 }
 
 void theft4_frame_counter_note_published(void) {
-  published_game_frames.fetch_add(1, std::memory_order_relaxed);
-  if (frame_time_history.Enabled())
-    frame_time_history.Record(uint64_t(CACurrentMediaTime() * 1e9));
+  const uint64_t frame = published_game_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (frame_time_history.Enabled() || publication_trace.Enabled()) {
+    const uint64_t now_ns = uint64_t(CACurrentMediaTime() * 1e9);
+    if (frame_time_history.Enabled()) frame_time_history.Record(now_ns);
+    publication_trace.Record(frame, now_ns);
+  }
+}
+uint64_t theft4_publication_capture_start(void) { return publication_trace.Start(); }
+void theft4_publication_capture_stop(void) { publication_trace.Stop(); }
+uint32_t theft4_publication_capture_read(uint64_t* cursor,
+    theft4_publication_sample* samples, uint32_t capacity, uint64_t* lost) {
+  if (!cursor || !samples || !lost || !capacity) return 0;
+  theft4::PublicationSample batch[256];
+  const auto count = publication_trace.CopyAfter(*cursor, batch, std::min(capacity, 256u), *lost);
+  for (size_t i = 0; i < count; ++i) samples[i] = {batch[i].frame, batch[i].monotonic_ns};
+  return uint32_t(count);
 }
 
 void theft4_frame_time_set_enabled(bool enabled) {

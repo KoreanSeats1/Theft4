@@ -322,7 +322,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
     _interfacePage = Column(@[
         [self setting:@"FRAME COUNTER" detail:@"Unique game frames in the top-right corner." toggle:_showFPS],
-        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap it to record a short detailed profile." toggle:_showFrameTime],
+        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap for a short detailed profile. Hold to mark a lag spike or stop and save a long capture." toggle:_showFrameTime],
         [self setting:@"TOUCH CONTROLS" detail:@"Physical controllers continue to work when the overlay is hidden." toggle:_showControls],
         Copy(@"A connected controller can move focus through this launcher. Use the D-pad or left stick to navigate and A to select.", 12, NO)
     ], 20);
@@ -341,7 +341,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
-        [self setting:@"DETAILED PERFORMANCE CAPTURE" detail:@"Capture up to 600 detailed frames on the next game launch. Reproduce the slow scene, quit, reopen Theft4, then export the latest capture." toggle:_performanceCapture],
+        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play to record this session for up to 30 minutes. Hold the frame-time graph to stop and save. Detailed profiling remains a separate double-tap." toggle:_performanceCapture],
         _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)

@@ -106,6 +106,7 @@ static BOOL Theft4WriteString(NSOutputStream *stream, NSString *value, NSUIntege
 static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSString *label,
                                        NSUInteger *budget, NSMutableArray<NSString *> *included,
                                        NSMutableArray<NSString *> *skipped) {
+    if ([included containsObject:label]) return YES;
     BOOL directory = NO;
     if (!url || ![NSFileManager.defaultManager fileExistsAtPath:url.path isDirectory:&directory] ||
         directory) return YES;
@@ -185,6 +186,14 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISegmentedControl *_reflectionQuality;
     UISegmentedControl *_antiAliasing;
     UISwitch *_performanceCapture;
+    BOOL _publicationCaptureActive;
+    BOOL _publicationCaptureWriteFailed;
+    NSURL *_publicationCaptureURL;
+    dispatch_queue_t _publicationCaptureQueue;
+    uint64_t _publicationCaptureCursor;
+    CFTimeInterval _publicationCaptureLastDrainTime;
+    CFTimeInterval _publicationCaptureStartTime;
+    NSUInteger _publicationCaptureBytes; // export queue only
     UIButton *_downloadLogButton;
     Theft4TouchControls *_touchControls;
     BOOL _gamePresentation;
@@ -222,6 +231,11 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
 - (void)chooseTitleUpdate;
 - (void)downloadLatestLogCapture;
 - (void)updateFrameTimeHUD;
+- (BOOL)beginPublicationCapture;
+- (void)drainPublicationCapture;
+- (void)appendPublicationCaptureText:(NSString *)text;
+- (void)stopPublicationCapture;
+- (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture;
 - (void)applyLowPowerPreset;
 - (void)applyLimitedMemoryCaps;
 - (void)applyOriginalGraphicsPreset;
@@ -393,6 +407,8 @@ static void bootEvent(void *context, const char *event) {
     }
     [_bringupOverlay.originalPresetButton addTarget:self action:@selector(applyOriginalGraphicsPreset)
         forControlEvents:UIControlEventTouchUpInside];
+    _performanceCapture.on = NO;
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4DetailedPerformanceCapture"];
     NSArray<UISegmentedControl *> *graphicsChoices = @[
         _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *graphicsKeys = @[
@@ -465,6 +481,9 @@ static void bootEvent(void *context, const char *event) {
         initWithTarget:self action:@selector(requestNativeProfile)];
     capture.numberOfTapsRequired = 2;
     [_frameTimeView addGestureRecognizer:capture];
+    UILongPressGestureRecognizer *marker = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:self action:@selector(markPerformanceScene:)];
+    [_frameTimeView addGestureRecognizer:marker];
     [self.view addSubview:_frameTimeView];
     _frameTimeTop = [_frameTimeView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52];
     [NSLayoutConstraint activateConstraints:@[_frameTimeTop,
@@ -476,6 +495,7 @@ static void bootEvent(void *context, const char *event) {
                                               selector:@selector(refreshFrameRate)
                                               userInfo:nil
                                                repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:_fpsTimer forMode:NSRunLoopCommonModes];
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -1189,6 +1209,29 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         NSURL *nativeDiagnosticsURL = [[applicationSupport
             URLByAppendingPathComponent:@"LibertyRecomp" isDirectory:YES]
             URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        // Preserve the newest lightweight/stage capture before older deep
+        // profiles consume the bounded export budget. The normal enumeration
+        // below skips this already-included file, without deleting anything.
+        NSURL *frameDirectory = [startupURL URLByAppendingPathComponent:@"frame-captures" isDirectory:YES];
+        NSURL *latestFrameCapture = nil;
+        NSDate *latestFrameDate = NSDate.distantPast;
+        for (NSURL *candidate in [fm contentsOfDirectoryAtURL:frameDirectory
+            includingPropertiesForKeys:@[NSURLContentModificationDateKey, NSURLIsRegularFileKey]
+            options:NSDirectoryEnumerationSkipsHiddenFiles error:nil]) {
+            if (![candidate.lastPathComponent hasPrefix:@"publication-trace-"] ||
+                ![candidate.pathExtension isEqualToString:@"csv"]) continue;
+            NSNumber *regular = nil;
+            NSDate *modified = nil;
+            [candidate getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+            [candidate getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+            if (regular.boolValue && modified && [modified compare:latestFrameDate] == NSOrderedDescending) {
+                latestFrameCapture = candidate;
+                latestFrameDate = modified;
+            }
+        }
+        if (latestFrameCapture) success = success && Theft4AppendDiagnosticFile(stream,
+            latestFrameCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:
+                latestFrameCapture.lastPathComponent], &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
             @"Theft4/lifecycle.jsonl", &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream,
@@ -1366,7 +1409,130 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }
 }
 
+- (void)appendPublicationCaptureText:(NSString *)text {
+    if (!_publicationCaptureURL || !text.length) return;
+    NSData *encoded = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (_publicationCaptureBytes + encoded.length > 20 * 1024 * 1024) {
+        theft4_publication_capture_stop();
+        dispatch_async(dispatch_get_main_queue(), ^{ self->_publicationCaptureActive = NO; });
+        return;
+    }
+    _publicationCaptureBytes += encoded.length;
+    NSError *error = nil;
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingToURL:_publicationCaptureURL
+                                                          error:&error];
+    if (file) {
+        [file seekToEndOfFile];
+        if (![file writeData:[text dataUsingEncoding:NSUTF8StringEncoding] error:&error]) {
+            [file closeFile];
+        } else {
+            [file closeFile];
+            return;
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self->_publicationCaptureActive = NO;
+        self->_publicationCaptureWriteFailed = YES;
+        theft4_publication_capture_stop();
+        [self record:[NSString stringWithFormat:@"capture.lightweight_write_failed: %@",
+            error.localizedDescription ?: @"unknown error"]];
+    });
+}
+
+- (void)drainPublicationCapture {
+    if (!_publicationCaptureActive || !_publicationCaptureQueue) return;
+    dispatch_async(_publicationCaptureQueue, ^{
+        theft4_publication_sample samples[256];
+        NSMutableString *text = [NSMutableString new];
+        uint64_t lost = 0;
+        uint64_t lostTotal = 0;
+        for (unsigned batch = 0; batch < 64; ++batch) {
+            const uint32_t count = theft4_publication_capture_read(
+                &self->_publicationCaptureCursor, samples, 256, &lost);
+            lostTotal += lost;
+            for (uint32_t i = 0; i < count; ++i)
+                [text appendFormat:@"frame,%llu,%llu,,\n",
+                    (unsigned long long)samples[i].frame,
+                    (unsigned long long)samples[i].monotonic_ns];
+            if (count < 256) break;
+        }
+        if (lostTotal) [text appendFormat:@"lost,,,%llu,\n", (unsigned long long)lostTotal];
+        const theft4_output_policy output = theft4_metal_get_output_policy();
+        [text appendFormat:@"context,,%llu,,thermal=%ld render=%ux%u output=%ux%u\n",
+            (unsigned long long)(CACurrentMediaTime() * 1e9),
+            (long)NSProcessInfo.processInfo.thermalState,
+            output.render_width, output.render_height, output.output_width, output.output_height];
+        [self appendPublicationCaptureText:text];
+    });
+}
+
+- (BOOL)beginPublicationCapture {
+    if (_publicationCaptureActive) return YES;
+    if (!_supportURL || _publicationCaptureWriteFailed || _publicationCaptureURL) return NO;
+    NSURL *directory = [[_supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES]
+        URLByAppendingPathComponent:@"frame-captures" isDirectory:YES];
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:directory
+        withIntermediateDirectories:YES attributes:nil error:&error]) return NO;
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd-HH-mm-ss";
+    _publicationCaptureURL = [directory URLByAppendingPathComponent:
+        [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
+            [NSUUID.UUID.UUIDString substringToIndex:8]]];
+    NSString *header = @"# build67: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
+    if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        _publicationCaptureURL = nil;
+        [self record:@"capture.long_start_failed"];
+        return NO;
+    }
+    _publicationCaptureQueue = dispatch_queue_create("theft4.publication-capture", DISPATCH_QUEUE_SERIAL);
+    _publicationCaptureCursor = theft4_publication_capture_start();
+    _publicationCaptureStartTime = _publicationCaptureLastDrainTime = CACurrentMediaTime();
+    _publicationCaptureActive = YES;
+    [self record:@"capture.long_started"];
+    return YES;
+}
+
+- (void)stopPublicationCapture {
+    if (!_publicationCaptureActive) return;
+    theft4_publication_capture_stop();
+    [self drainPublicationCapture];
+    _publicationCaptureActive = NO;
+    dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:@"status,,,,saved\n"]; });
+    [self record:@"capture.long_stopped"];
+}
+
+- (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"LONG CAPTURE"
+        message:_publicationCaptureActive ? @"Recording. Choose an action." : @"Enable Long Performance Capture before Play to record the next run."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    if (_publicationCaptureActive) {
+        [menu addAction:[UIAlertAction actionWithTitle:@"Mark lag spike" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                const uint64_t frame = theft4_frame_counter_published_frames();
+                const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+                dispatch_async(self->_publicationCaptureQueue, ^{
+                    [self appendPublicationCaptureText:[NSString stringWithFormat:@"marker,%llu,%llu,,user-lag-spike\n",
+                        (unsigned long long)frame, (unsigned long long)now]];
+                });
+            }]];
+        [menu addAction:[UIAlertAction actionWithTitle:@"Stop and save capture" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [self stopPublicationCapture]; }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = _frameTimeView;
+    menu.popoverPresentationController.sourceRect = _frameTimeView.bounds;
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
 - (void)refreshFrameRate {
+    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureLastDrainTime >= 1.0) {
+        _publicationCaptureLastDrainTime = CACurrentMediaTime();
+        [self drainPublicationCapture];
+        if (CACurrentMediaTime() - _publicationCaptureStartTime >= 1800) [self stopPublicationCapture];
+    }
     if (_fpsLabel.hidden) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
     const CFTimeInterval now = CACurrentMediaTime();
@@ -1408,12 +1574,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // The native profiler is armed before the one-shot runtime is created.
     // Its bounded files survive process termination and are exported from the
     // System tab on the next launch.
-    setenv("THEFT4_PERFORMANCE_CAPTURE", _performanceCapture.on ? "1" : "0", 1);
+    setenv("THEFT4_PERFORMANCE_CAPTURE", "0", 1);
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
     }
     if (execute) {
+        if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
@@ -1512,6 +1679,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)activate {
+    if (_publicationCaptureActive) {
+        const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+        dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:
+            [NSString stringWithFormat:@"marker,,%llu,,app-active\n", (unsigned long long)now]]; });
+    }
     [_bringupOverlay setActive:!_executionAttempted];
     _sceneActive = YES;
     [self updateFrameTimeHUD];
@@ -1547,6 +1719,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)pause {
+    [self drainPublicationCapture];
+    if (_publicationCaptureActive) {
+        const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+        dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:
+            [NSString stringWithFormat:@"marker,,%llu,,app-inactive\n", (unsigned long long)now]]; });
+    }
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];
@@ -1555,6 +1733,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)shutdown {
+    [self stopPublicationCapture];
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];

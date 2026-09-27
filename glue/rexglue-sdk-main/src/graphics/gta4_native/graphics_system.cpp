@@ -2824,6 +2824,8 @@ VkFormat ConvertTextureFormat(xenos::TextureFormat format) {
       return VK_FORMAT_R16G16_SFLOAT;
     case xenos::TextureFormat::k_32_FLOAT:
       return VK_FORMAT_R32_SFLOAT;
+    case xenos::TextureFormat::k_32_32_FLOAT:
+      return VK_FORMAT_R32G32_SFLOAT;
     case xenos::TextureFormat::k_24_8:
       return VK_FORMAT_D24_UNORM_S8_UINT;
     case xenos::TextureFormat::k_24_8_FLOAT:
@@ -16471,7 +16473,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
 
   auto reject = [&texture](const char* reason) -> NativeTextureImage* {
     static std::atomic<uint64_t> rejection_count{0};
-    const uint64_t count = NextNativeTraceDiagnosticCount(rejection_count);
+    const uint64_t count = rejection_count.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 64 || !(count % 4096)) {
       REXLOG_WARN(
           "gta4-native-diag: texture image reject #{} reason={} handle={:08X} generation={} "
@@ -16852,6 +16854,14 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   if (!AllocateNativeTextureDescriptor(*image)) {
     DestroyNativeTextureImage(*image);
     return reject("descriptor-allocation");
+  }
+  if (texture->info.format == xenos::TextureFormat::k_32_32_FLOAT) {
+    static std::atomic<uint64_t> float_pair_image_count{0};
+    const uint64_t count = float_pair_image_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 8) REXLOG_INFO(
+        "gta4-native-format37: image-ready handle={:08X} generation={} host-format={} size={}x{} mips={} gpu-produced={}",
+        texture->handle, texture->generation, uint32_t(image->format), image->width, image->height,
+        image->mip_levels, texture->gpu_produced);
   }
   NativeTextureImage* result = image.get();
   result->created_frame = active_texture_frame_;
@@ -17859,14 +17869,19 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       }
       if (NativeBindingFailed(realization)) {
         command.failed_texture_mask |= stage_bit;
+        static std::atomic<uint64_t> required_binding_failure_count{0};
+        const uint64_t failure_count = required_binding_failure_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (failure_count <= 32 || !(failure_count % 4096)) {
         REXLOG_ERROR(
             "gta4-native-cause: point=required-binding-failed frame={} cmd={} stage={} "
             "status={} handle={:08X} generation={} requested-mask={:08X} "
-            "image-mask={:08X} sampler-mask={:08X}",
+            "image-mask={:08X} sampler-mask={:08X} failure-count={} format={}",
             submitted_frame, command_index, stage, NativeBindingRealizationName(realization),
             command.pipeline_state ? command.pipeline_state->textures[stage] : 0,
             command.textures[stage] ? command.textures[stage]->generation : 0,
-            command.used_texture_mask, command.realized_image_mask, command.realized_sampler_mask);
+            command.used_texture_mask, command.realized_image_mask, command.realized_sampler_mask,
+            failure_count, command.textures[stage] ? uint32_t(command.textures[stage]->info.format) : UINT32_MAX);
+        }
         continue;
       }
       if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && !native_descriptor_paging_) {

@@ -1137,7 +1137,6 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* mapping = nullptr;
-    VkDeviceAddress device_address = 0;
     VkDeviceSize capacity = 0;
     VkDeviceSize allocation_size = 0;
     uint32_t memory_type = UINT32_MAX;
@@ -1217,6 +1216,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     }
   };
 
+  void InvalidateCapturedTextureResourceLocked(uint32_t handle);
   bool ValidateAndCopyCommand(const void* command, size_t command_size,
                               NativeCommand& native_command);
   void TraceNativeRendererEvent(std::string_view point, std::string_view details = {});

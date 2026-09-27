@@ -58,7 +58,7 @@ struct FPSCRPlatform {
   static constexpr size_t RoundMaskVal = 3 << RoundShift;
   // FZ and FZ16
   static constexpr size_t FlushMask = (1 << 19) | (1 << 24);
-  // Nearest, Zero, -Infinity, -Infinity
+  // Nearest, toward zero, +infinity, -infinity.
   static constexpr size_t GuestToHost[] = {0 << RoundShift, 3 << RoundShift, 1 << RoundShift,
                                            2 << RoundShift};
   // Exception enable bits (0 = exception disabled, ARM defaults to 0)
@@ -75,7 +75,10 @@ struct FPSCRPlatform {
     return csr;
   }
 
-  static inline void setcsr(u32 csr) noexcept { __asm__ __volatile__("msr fpcr, %0" : : "r"(csr)); }
+  static inline void setcsr(u32 csr) noexcept {
+    const u64 host_csr = csr;
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(host_csr));
+  }
 
   static inline void InitHostExceptions(u32& csr) noexcept {
     csr &= ~ExceptionMask;  // Clear enable bits to disable exceptions

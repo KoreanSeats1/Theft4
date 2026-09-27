@@ -4526,6 +4526,20 @@ NativeFixedFunctionState Gta4NativeGraphicsSystem::DecodeFixedFunctionState(
   return state;
 }
 
+void Gta4NativeGraphicsSystem::InvalidateCapturedTextureResourceLocked(uint32_t handle) {
+  // texture_resource_mutex_ is held by the caller. Losing the capture-map
+  // entry must not lose the only route to retire its native image. The worker
+  // checks queued/current references and submission completion before release.
+  const auto captured = texture_resources_.find(handle);
+  if (captured == texture_resources_.end()) {
+    return;
+  }
+  if (captured->second && captured->second->generation) {
+    superseded_texture_release_generations_.insert(captured->second->generation);
+  }
+  texture_resources_.erase(captured);
+}
+
 bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_t command_size,
                                                       NativeCommand& native_command) {
   const bool profile_transport =
@@ -4695,7 +4709,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     const NativeVirtualResourceRecord* record =
         virtual_resource_registry_.Find(registration.resource);
     if (result == VirtualResourceRegistrationResult::kReplaced) {
-      texture_resources_.erase(registration.resource);
+      InvalidateCapturedTextureResourceLocked(registration.resource);
       dirty_texture_handles_.erase(registration.resource);
     }
     if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
@@ -4736,10 +4750,10 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
         dirty_texture_handles_.insert(unlock.resource);
       } else if (decision == ResourceUnlockDecision::kInvalidateVirtualHostOwnership) {
         virtual_resource_registry_.MarkGuestWrite(unlock.resource);
-        texture_resources_.erase(unlock.resource);
+        InvalidateCapturedTextureResourceLocked(unlock.resource);
         dirty_texture_handles_.erase(unlock.resource);
         if (companion && virtual_resource_registry_.MarkGuestWrite(companion)) {
-          texture_resources_.erase(companion);
+          InvalidateCapturedTextureResourceLocked(companion);
           dirty_texture_handles_.erase(companion);
         }
       }
@@ -8292,9 +8306,12 @@ bool Gta4NativeGraphicsSystem::CreateNativePersistentBufferBlock(uint64_t block_
   VkBufferCreateInfo buffer_info{};
   buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   buffer_info.size = capacity;
+  // Mesh generations are bound through vertex/index buffer commands; shaders
+  // never dereference their device addresses. Marking them addressable makes
+  // MoltenVK declare every live mesh block resident on each Metal encoder that
+  // uses an addressable constant buffer, even when that mesh is not drawn.
   buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreateBuffer(device, &buffer_info, nullptr, &block.buffer); }) != VK_SUCCESS) {
     return false;
@@ -8319,10 +8336,6 @@ bool Gta4NativeGraphicsSystem::CreateNativePersistentBufferBlock(uint64_t block_
   allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   allocate_info.allocationSize = requirements.size;
   allocate_info.memoryTypeIndex = block.memory_type;
-  VkMemoryAllocateFlagsInfo allocate_flags{};
-  allocate_flags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-  allocate_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-  allocate_info.pNext = &allocate_flags;
   if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkAllocateMemory(device, &allocate_info, nullptr, &block.memory); }) != VK_SUCCESS ||
       dfn.vkBindBufferMemory(device, block.buffer, block.memory, 0) != VK_SUCCESS) {
     if (block.memory) {
@@ -8332,15 +8345,6 @@ bool Gta4NativeGraphicsSystem::CreateNativePersistentBufferBlock(uint64_t block_
     return false;
   }
   block.allocation_size = requirements.size;
-  VkBufferDeviceAddressInfo address_info{};
-  address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-  address_info.buffer = block.buffer;
-  block.device_address = dfn.vkGetBufferDeviceAddress(device, &address_info);
-  if (!block.device_address) {
-    profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkFreeMemory(device, block.memory, nullptr); });
-    profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyBuffer(device, block.buffer, nullptr); });
-    return false;
-  }
   if (memory_types.host_visible & (uint32_t(1) << block.memory_type)) {
     if (profile::CpuCall(profile::CpuOp::kDriverMemory, [&] { return dfn.vkMapMemory(device, block.memory, 0, VK_WHOLE_SIZE, 0,
                         reinterpret_cast<void**>(&block.mapping)); }) != VK_SUCCESS) {
@@ -8368,7 +8372,6 @@ void Gta4NativeGraphicsSystem::DestroyNativePersistentBufferBlock(uint64_t block
   storage.buffer = block.buffer;
   storage.memory = block.memory;
   storage.mapping = block.mapping;
-  storage.device_address = block.device_address;
   storage.capacity = block.capacity;
   storage.allocation_size = block.allocation_size;
   storage.memory_type = block.memory_type;

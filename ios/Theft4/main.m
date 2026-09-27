@@ -10,6 +10,7 @@
 #include "theft4_core.h"
 #include "theft4_device_profile.h"
 #include "theft4_metal_presenter.h"
+#include "../../glue/rexglue-sdk-main/src/graphics/gta4_native/native_light_capture.h"
 #include "theft4_lab_diagnostics.h"
 #import "Theft4FrameTimeView.h"
 extern int rex_gta4_native_profile_start(void);
@@ -189,9 +190,10 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     BOOL _publicationCaptureActive;
     BOOL _publicationCaptureWriteFailed;
     NSURL *_publicationCaptureURL;
+    NSURL *_lightCaptureURL;
+    uint64_t _lightCaptureCursor;
     dispatch_queue_t _publicationCaptureQueue;
     uint64_t _publicationCaptureCursor;
-    CFTimeInterval _publicationCaptureLastDrainTime;
     CFTimeInterval _publicationCaptureStartTime;
     NSUInteger _publicationCaptureBytes; // export queue only
     UIButton *_downloadLogButton;
@@ -1229,9 +1231,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 latestFrameDate = modified;
             }
         }
-        if (latestFrameCapture) success = success && Theft4AppendDiagnosticFile(stream,
-            latestFrameCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:
-                latestFrameCapture.lastPathComponent], &budget, included, skipped);
+        if (latestFrameCapture) {
+            success = success && Theft4AppendDiagnosticFile(stream, latestFrameCapture,
+                [@"Theft4/startup/frame-captures/" stringByAppendingString:latestFrameCapture.lastPathComponent],
+                &budget, included, skipped);
+            NSURL *timingCapture = [frameDirectory URLByAppendingPathComponent:
+                [latestFrameCapture.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
+            if ([fm fileExistsAtPath:timingCapture.path]) success = success && Theft4AppendDiagnosticFile(stream,
+                timingCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:timingCapture.lastPathComponent],
+                &budget, included, skipped);
+        }
         success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
             @"Theft4/lifecycle.jsonl", &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream,
@@ -1463,6 +1472,39 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             (long)NSProcessInfo.processInfo.thermalState,
             output.render_width, output.render_height, output.output_width, output.output_height];
         [self appendPublicationCaptureText:text];
+        NSMutableString *timings = [NSMutableString new];
+        rex_light_sample timingSamples[256];
+        uint64_t timingLost = 0;
+        for (unsigned batch = 0; batch < 64; ++batch) {
+            uint64_t lost = 0;
+            const uint32_t count = rex_gta4_light_capture_read(&self->_lightCaptureCursor, timingSamples, 256, &lost);
+            timingLost += lost;
+            for (uint32_t row = 0; row < count; ++row) {
+                for (unsigned field = 0; field < REX_LIGHT_FIELDS; ++field)
+                    [timings appendFormat:field ? @",%llu" : @"%llu", (unsigned long long)timingSamples[row].value[field]];
+                [timings appendString:@"\n"];
+            }
+            if (count < 256) break;
+        }
+        if (timingLost) [timings appendFormat:@"# lost_records=%llu\n", (unsigned long long)timingLost];
+        NSFileHandle *timingFile = [NSFileHandle fileHandleForWritingToURL:self->_lightCaptureURL error:nil];
+        @try {
+            if (!timingFile) @throw [NSException exceptionWithName:@"TimingExport" reason:@"Unable to open timing file" userInfo:nil];
+            [timingFile seekToEndOfFile];
+            [timingFile writeData:[timings dataUsingEncoding:NSUTF8StringEncoding]];
+            [timingFile closeFile];
+        } @catch (NSException *exception) {
+            [timingFile closeFile];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_publicationCaptureWriteFailed = YES;
+                [self record:@"capture.timing_export_failed"];
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CAPTURE SAVE FAILED"
+                    message:@"Renderer timings could not be saved. Please export logs before closing."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+        }
     });
 }
 
@@ -1480,15 +1522,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = @"# build67: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
+    NSString *header = @"# build68: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _publicationCaptureURL = nil;
         [self record:@"capture.long_start_failed"];
         return NO;
     }
+    _lightCaptureURL = [directory URLByAppendingPathComponent:
+        [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
+    NSString *lightHeader = [NSString stringWithFormat:
+        @"# build68: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings\n",
+        (unsigned long long)rex_gta4_light_capture_frequency()];
+    if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        _lightCaptureURL = nil;
+        [self record:@"capture.timing_start_failed"];
+        return NO;
+    }
+    _lightCaptureCursor = rex_gta4_light_capture_start();
     _publicationCaptureQueue = dispatch_queue_create("theft4.publication-capture", DISPATCH_QUEUE_SERIAL);
     _publicationCaptureCursor = theft4_publication_capture_start();
-    _publicationCaptureStartTime = _publicationCaptureLastDrainTime = CACurrentMediaTime();
+    _publicationCaptureStartTime = CACurrentMediaTime();
     _publicationCaptureActive = YES;
     [self record:@"capture.long_started"];
     return YES;
@@ -1497,6 +1550,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)stopPublicationCapture {
     if (!_publicationCaptureActive) return;
     theft4_publication_capture_stop();
+    rex_gta4_light_capture_stop();
     [self drainPublicationCapture];
     _publicationCaptureActive = NO;
     dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:@"status,,,,saved\n"]; });
@@ -1528,11 +1582,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)refreshFrameRate {
-    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureLastDrainTime >= 1.0) {
-        _publicationCaptureLastDrainTime = CACurrentMediaTime();
-        [self drainPublicationCapture];
-        if (CACurrentMediaTime() - _publicationCaptureStartTime >= 1800) [self stopPublicationCapture];
-    }
+    // Capture stays in preallocated rings during play; save on explicit stop or
+    // background only. Five minutes fits16384 records at the30FPS game cap.
+    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureStartTime >= 300)
+        [self stopPublicationCapture];
     if (_fpsLabel.hidden) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
     const CFTimeInterval now = CACurrentMediaTime();
@@ -1753,6 +1806,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
+    rex_gta4_light_memory_warning();
     if (_core) [self accept:theft4_core_memory_warning(_core) operation:@"memory_warning"];
     [self refresh];
 }

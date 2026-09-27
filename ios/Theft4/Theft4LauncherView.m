@@ -341,7 +341,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
-        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play to record this session for up to 30 minutes. Hold the frame-time graph to stop and save. Detailed profiling remains a separate double-tap." toggle:_performanceCapture],
+        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)

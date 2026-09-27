@@ -1,4 +1,5 @@
 #include "graphics_system.h"
+#include "native_light_capture.h"
 #include "native_cpu_profile_scope.h"
 #include "native_profile_shader_category.h"
 #include "modern_shader_options.h"
@@ -335,6 +336,153 @@ REXCVAR_DEFINE_UINT32(
     "Optional native texture heap budget cap in MiB (0 uses the Vulkan driver budget)");
 
 namespace rex::graphics::gta4_native {
+
+// Independent of the detailed/GPU profiler: fixed storage, one record per
+// title present, no per-draw probes, GPU queries, locks, or disk writes.
+namespace light {
+constexpr size_t kCapacity = 16384;
+struct Slot {
+  std::atomic<uint64_t> sequence{0};
+  std::array<std::atomic<uint64_t>, REX_LIGHT_FIELDS> fields{};
+};
+static std::array<Slot, kCapacity> slots;
+static std::atomic<bool> enabled{false};
+static std::atomic<uint64_t> epoch{0}, published{0}, memory_warnings{0};
+static uint64_t writer_sequence = 0;
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
+enum Field { Frame, Begin, End, Commands, Completion, FenceWait, Preparation,
+             Recording, Finalization, QueueLock, DriverSubmit, Submission,
+             SlotIndex, Result, CpuPublishNs, CpuIntervalNs, CpuIntervalTicks, CpuValid, FootprintBytes, ResidentBytes, CompressedBytes, TextureImages, MemoryWarnings };
+static uint64_t Tick() { return rex::chrono::Clock::QueryHostTickCount(); }
+struct CpuSnapshot { uint64_t ns = 0, tick = 0; bool valid = false; };
+static CpuSnapshot Cpu() {
+  CpuSnapshot out;
+#if defined(__APPLE__) && defined(__MACH__)
+  struct ThreadPort {
+    mach_port_t port = mach_thread_self();
+    ~ThreadPort() { mach_port_deallocate(mach_task_self(), port); }
+  };
+  static thread_local ThreadPort thread;
+  thread_basic_info_data_t info{};
+  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+  if (thread_info(thread.port, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info),
+                  &count) == KERN_SUCCESS) {
+    out.ns = (uint64_t(info.user_time.seconds) + uint64_t(info.system_time.seconds)) * 1000000000ull
+             + (uint64_t(info.user_time.microseconds) + uint64_t(info.system_time.microseconds)) * 1000ull;
+    out.valid = true;
+  }
+#endif
+  out.tick = Tick();
+  return out;
+}
+struct FrameScope;
+static thread_local FrameScope* current = nullptr;
+struct FrameScope {
+  rex_light_sample sample{};
+  uint64_t capture_epoch = 0;
+  bool active = false, cpu_sample = false;
+  CpuSnapshot cpu_begin;
+  FrameScope* prior = nullptr;
+  FrameScope(bool title, uint64_t frame, uint64_t commands, uint64_t images) {
+    active = title && enabled.load(std::memory_order_relaxed);
+    if (!active) return;
+    capture_epoch = epoch.load(std::memory_order_acquire);
+    sample.value[Frame] = frame; sample.value[Begin] = Tick();
+    sample.value[Commands] = commands;
+    sample.value[TextureImages] = images;
+    sample.value[MemoryWarnings] = memory_warnings.load(std::memory_order_relaxed);
+    prior = current; current = this;
+    // Only two kernel accounting calls per 15 title presents (~4 calls/s at30FPS).
+    static thread_local uint64_t count = 0, last_epoch = 0;
+    static thread_local CpuSnapshot last;
+    if (last_epoch != capture_epoch) { count = 0; last = {}; last_epoch = capture_epoch; }
+    ++count;
+#if defined(__APPLE__) && defined(__MACH__)
+    // One task memory accounting call per60 presents; no VM walk or heap scan.
+    if (count == 1 || count % 60 == 0) {
+      task_vm_info_data_t vm{};
+      mach_msg_type_number_t vm_count = TASK_VM_INFO_COUNT;
+      if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm),
+                    &vm_count) == KERN_SUCCESS && vm_count >= TASK_VM_INFO_REV1_COUNT) {
+        sample.value[FootprintBytes] = vm.phys_footprint;
+        sample.value[ResidentBytes] = vm.resident_size;
+        sample.value[CompressedBytes] = vm.compressed;
+        sample.value[CpuValid] |= 4;
+      }
+    }
+#endif
+    cpu_sample = (count % 15) == 0;
+    if (cpu_sample) {
+      cpu_begin = Cpu();
+      if (cpu_begin.valid && last.valid && cpu_begin.ns >= last.ns && cpu_begin.tick >= last.tick) {
+        sample.value[CpuIntervalNs] = cpu_begin.ns - last.ns;
+        sample.value[CpuIntervalTicks] = cpu_begin.tick - last.tick;
+        sample.value[CpuValid] |= 2;
+      }
+      last = cpu_begin;
+    }
+  }
+  ~FrameScope() {
+    if (!active) return;
+    sample.value[End] = Tick();
+    if (cpu_sample && cpu_begin.valid) {
+      const auto cpu_end = Cpu();
+      if (cpu_end.valid && cpu_end.ns >= cpu_begin.ns) {
+        sample.value[CpuPublishNs] = cpu_end.ns - cpu_begin.ns;
+        sample.value[CpuValid] |= 1;
+      }
+    }
+    current = prior;
+    if (epoch.load(std::memory_order_acquire) != capture_epoch) return;
+    const auto sequence = ++writer_sequence;
+    auto& slot = slots[sequence % kCapacity];
+    slot.sequence.store(sequence * 2 + 1, std::memory_order_seq_cst);
+    for (size_t i = 0; i < REX_LIGHT_FIELDS; ++i)
+      slot.fields[i].store(sample.value[i], std::memory_order_seq_cst);
+    slot.sequence.store(sequence * 2, std::memory_order_seq_cst);
+    published.store(sequence, std::memory_order_release);
+  }
+};
+struct Stage {
+  FrameScope* frame = current;
+  Field field;
+  uint64_t begin = 0;
+  explicit Stage(Field f) : field(f) { if (frame) begin = Tick(); }
+  ~Stage() { if (frame) frame->sample.value[field] += Tick() - begin; }
+};
+static void Set(Field field, uint64_t value) { if (current) current->sample.value[field] = value; }
+} // namespace light
+extern "C" uint64_t rex_gta4_light_capture_start() {
+  light::epoch.fetch_add(1, std::memory_order_acq_rel);
+  const auto cursor = light::published.load(std::memory_order_acquire);
+  light::enabled.store(true, std::memory_order_release);
+  return cursor;
+}
+extern "C" void rex_gta4_light_memory_warning() { light::memory_warnings.fetch_add(1, std::memory_order_relaxed); }
+extern "C" void rex_gta4_light_capture_stop() { light::enabled.store(false, std::memory_order_release); }
+extern "C" uint64_t rex_gta4_light_capture_frequency() { return rex::chrono::Clock::QueryHostTickFrequency(); }
+extern "C" uint32_t rex_gta4_light_capture_read(uint64_t* cursor, rex_light_sample* out,
+                                               uint32_t capacity, uint64_t* lost) {
+  if (!cursor || !out || !lost || !capacity) return 0;
+  *lost = 0;
+  const auto end = light::published.load(std::memory_order_acquire);
+  const auto first = end >= light::kCapacity ? end - light::kCapacity + 1 : 1;
+  if (*cursor + 1 < first) { *lost = first - *cursor - 1; *cursor = first - 1; }
+  uint32_t count = 0;
+  const auto limit = std::min<uint64_t>(end, *cursor + capacity);
+  for (auto sequence = *cursor + 1; sequence <= limit; ++sequence) {
+    const auto& slot = light::slots[sequence % light::kCapacity];
+    const auto before = slot.sequence.load(std::memory_order_seq_cst);
+    rex_light_sample sample;
+    for (size_t i = 0; i < REX_LIGHT_FIELDS; ++i)
+      sample.value[i] = slot.fields[i].load(std::memory_order_seq_cst);
+    const auto after = slot.sequence.load(std::memory_order_seq_cst);
+    if (before == sequence * 2 && after == before) out[count++] = sample;
+    else ++*lost;
+    *cursor = sequence;
+  }
+  return count;
+}
 
 static std::atomic<bool> g_native_profile_capture_requested{false};
 static std::atomic<bool> g_native_profile_transport_active{false};
@@ -8635,6 +8783,7 @@ bool Gta4NativeGraphicsSystem::CompleteNativeFrameSlot(uint32_t slot, uint64_t s
   gpu_flight::Record("native.slot-wait-begin", slot, submission, active_texture_frame_);
   const uint64_t wait_begin = actual_wait_ticks ? rex::chrono::Clock::QueryHostTickCount() : 0;
   const bool completed = profile::CpuCall(profile::CpuOp::kFenceWait, [&] {
+    const light::Stage light_wait(light::FenceWait);
     return submission_tracker_->AwaitSubmissionCompletion(
         submission, kNativeFenceWaitNanoseconds);
   });
@@ -33156,6 +33305,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
+  light::FrameScope light_frame(present.device != 0, present.submitted_frame, current_frame_.size(), native_texture_images_.size());
   SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPublishSetup);
   const bool detail_requested = rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProfiler) &&
       !native_gpu_profile_state_.capture_complete && !native_gpu_profile_state_.export_started &&
@@ -33377,6 +33527,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
       "run={} batch-frame={} internal={} result={} active-texture-frame={} completed-submission={}",
       tv_lifecycle_trace_->run, present.submitted_frame, present.device == 0,
       result, active_texture_frame_, completed_command_buffer_submission_));
+  light::Set(light::Result, result);
   return result;
 }
 
@@ -33525,6 +33676,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               trace_sequence, submitted_frame, active_frame_slot_, command_buffer_submission_,
               effective_frame_slots);
         }
+        const uint64_t light_completion_begin = light::current ? light::Tick() : 0;
         if (!CompleteActiveNativeFrameSlot(&native_profile_completion_processing_ticks,
                                            &native_profile_wait_ticks) ||
             (effective_frame_slots == 1 &&
@@ -33532,6 +33684,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
                                                 &native_profile_wait_ticks))) {
           return false;
         }
+        if (light::current) light::Set(light::Completion, light::Tick() - light_completion_begin);
         DiscardStagedNativeFlightResources();
         if (native_profiler_enabled) {
           const uint64_t completion_elapsed =
@@ -33788,7 +33941,9 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFramePlanning);
         bool presenter_transfer_written = false;
         bool presenter_written = false;
+        if (light::current) light::Set(light::Preparation, light::Tick() - light_completion_begin - light::current->sample.value[light::Completion]);
         detail_callback_phase.Set(profile::CpuPhase::kRecording);
+        const uint64_t light_record_begin = light::current ? light::Tick() : 0;
         const uint64_t native_profile_record_begin =
             native_profile_frame_started ? rex::chrono::Clock::QueryHostTickCount() : 0;
         SwitchNativeGpuProfileRange(command_buffer_, performance::GpuRange::kUnattributed);
@@ -33797,6 +33952,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
             submitted_frame, present_source, environmental_data, vulkan_context.hdr_output(),
             vulkan_context.hdr_headroom(), presenter_transfer_written, presenter_written,
             trace_stages, trace_sequence, present.diagnostic_force_content_probe != 0);
+        if (light::current) light::Set(light::Recording, light::Tick() - light_record_begin);
         if (present.diagnostic_trace) {
           REXLOG_INFO(
               "gta4-tv-native-record: session={} present={} frame={} origin={} "
@@ -33819,6 +33975,7 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
               presenter_written);
         }
 
+        const uint64_t light_finalize_begin = light::current ? light::Tick() : 0;
         SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFinalization);
         detail_callback_phase.Set(profile::CpuPhase::kFinalize);
         const uint64_t native_profile_finalize_begin =
@@ -33878,7 +34035,10 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer_;
+        if (light::current) light::Set(light::Finalization, light::Tick() - light_finalize_begin);
         const uint64_t submission = submission_tracker_->GetCurrentSubmission();
+        light::Set(light::Submission, submission);
+        light::Set(light::SlotIndex, active_frame_slot_);
         ui::vulkan::VulkanSubmissionTracker::FenceAcquisition fence_acquisition(
             submission_tracker_->AcquireFenceToAdvanceSubmission());
         if (!fence_acquisition.fence()) {
@@ -33937,12 +34097,12 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
         }
         {
           auto queue =
-              profile::CpuCall(profile::CpuOp::kQueueLock, [&] { return vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0); });
+              profile::CpuCall(profile::CpuOp::kQueueLock, [&] { const light::Stage stage(light::QueueLock); return vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0); });
           gpu_flight::Record("native.queue-submit-begin", NativeVulkanHandleIdentity(command_buffer_),
                              submission, submitted_frame, active_frame_slot_,
                              NativeVulkanHandleIdentity(fence_acquisition.fence()));
           submit_result =
-              profile::CpuCall(profile::CpuOp::kDriverSubmit, [&] { return dfn.vkQueueSubmit(queue.queue(), 1, &submit_info, fence_acquisition.fence()); });
+              profile::CpuCall(profile::CpuOp::kDriverSubmit, [&] { const light::Stage stage(light::DriverSubmit); return dfn.vkQueueSubmit(queue.queue(), 1, &submit_info, fence_acquisition.fence()); });
         }
         gpu_flight::Record("native.queue-submit-end", NativeVulkanHandleIdentity(command_buffer_),
                            submission, submitted_frame, active_frame_slot_, 0,

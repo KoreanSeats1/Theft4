@@ -1659,7 +1659,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // the queue and batch. The worker still moves retained draws into its frame.
   using NativeQueuedCommand = NativeCommandPacket<NativeCommand>;
   NativeCommandRecycler<NativeCommand, 128, 2048> command_recycler_;
-  NativeCommandRecycler<NativeStatePacket, 128, 8192> state_command_recycler_;
+  NativeCommandRecycler<NativeStatePacket, 128, 1024> state_command_recycler_;
   NativeProducerBindingCache producer_binding_cache_;
   uint64_t producer_binding_skips_pending_ = 0;
   DirtyStateDelta producer_dirty_delta_;
@@ -1667,7 +1667,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
 #else
   using NativeQueuedCommand = NativeCommand;
 #endif
+#ifdef THEFT4_LAB_BUILD
+  NativeCommandQueue<NativeCommand> render_queue_;
+#else
   std::deque<NativeQueuedCommand> render_queue_;
+#endif
   NativeTextureProtectionIndex queued_texture_protection_; // render_mutex_ owns this.
   // Render-worker-owned staging. Moving a bounded batch out of render_queue_
   // amortizes the queue mutex without changing command order. Texture

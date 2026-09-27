@@ -390,7 +390,7 @@ struct CommandTransport {
            backpressure_ticks = 0, validation_ticks = 0, state_capture_ticks = 0,
            geometry_capture_ticks = 0, texture_capture_ticks = 0,
            allocation_ticks = 0, producer_binding_skips = 0;
-  bool reused_storage = false, compact_state = false;
+  bool reused_storage = false, compact_state = false, state_batch_append = false;
 };
 struct TransportSummary {
   uint64_t commands = 0, measured_commands = 0, capture_ticks = 0, capture_lock_ticks = 0,
@@ -401,6 +401,7 @@ struct TransportSummary {
            internal_flushes = 0;
   uint64_t allocation_ticks = 0, storage_reuses = 0, worker_recycle_ticks = 0,
            unchanged_vertex_declarations = 0, producer_binding_skips = 0, compact_state_commands = 0;
+  uint64_t state_batch_packets = 0, state_batch_appends = 0;
   uint64_t worker_constant_ticks = 0, worker_snapshot_ticks = 0,
            worker_frame_insert_ticks = 0;
   uint64_t worker_draw_commands = 0, worker_state_commands = 0,
@@ -456,6 +457,8 @@ struct TransportSummary {
     allocation_ticks = AddSaturated(allocation_ticks, p.allocation_ticks);
     storage_reuses += p.reused_storage;
     compact_state_commands += p.compact_state;
+    state_batch_packets += p.compact_state && !p.state_batch_append;
+    state_batch_appends += p.compact_state && p.state_batch_append;
     producer_binding_skips = AddSaturated(producer_binding_skips, p.producer_binding_skips);
     backpressure_ticks = AddSaturated(backpressure_ticks, p.backpressure_ticks);
     if (dequeued >= p.enqueued) {

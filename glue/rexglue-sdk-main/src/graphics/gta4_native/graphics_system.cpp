@@ -4108,17 +4108,18 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     return true;
   }
   if (binding_cache_allowed && IsCompactNativeStateCommand(title_command, title_command_size)) {
-    const uint64_t acquire_begin = profile_transport ? profile::CpuTick() : 0;
-    bool reused = false;
-    auto state = state_command_recycler_.Acquire(&reused);
-    const uint64_t acquire_end = profile_transport ? profile::CpuTick() : 0;
+    static const bool state_batching_enabled = [] {
+      const char* value = std::getenv("THEFT4_STATE_BATCHING");
+      return !value || std::strcmp(value, "0") != 0;
+    }();
+    NativeStateCommand state;
     CommandHeader header{};
     std::memcpy(&header, title_command, sizeof(header));
-    state->type = header.type;
-    state->size = title_command_size;
-    std::memcpy(state->bytes.data(), title_command, title_command_size);
-    // Preserve the only producer-side effect of these non-font state commands.
-    // Draw capture uses this map to capture the right texture/constant state.
+    state.type = header.type;
+    state.size = title_command_size;
+    std::memcpy(state.bytes.data(), title_command, title_command_size);
+    // Preserve producer shader state immediately, before any following draw
+    // captures texture/constant data. Each worker setter remains in FIFO order.
     if (header.type == CommandType::kSetPixelShader ||
         header.type == CommandType::kSetVertexShader) {
       SetShaderCommand shader{};
@@ -4134,8 +4135,8 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       std::unique_lock lock(render_mutex_);
       const uint64_t queue_acquired = profile_transport ? profile::CpuTick() : 0;
       const auto can_submit = [this] {
-        return !render_worker_running_ ||
-            (render_queue_.size() < kMaximumQueuedCommands && queued_title_presents_ < 2);
+        return !render_worker_running_ || render_queue_.CanAccept(
+            true, kMaximumQueuedCommands, queued_title_presents_);
       };
       producer_waiting_ = !can_submit();
       uint32_t timeouts = 0;
@@ -4146,26 +4147,47 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
                       render_queue_.size(), queued_title_presents_, timeouts);
         }
       }
-      const uint64_t queued = profile_transport ? profile::CpuTick() : 0;
+      const uint64_t ready = profile_transport ? profile::CpuTick() : 0;
       producer_waiting_ = false;
       if (!render_worker_running_) { producer_binding_cache_.Reset(); return false; }
-      state->sequence = ++diagnostic_submit_sequence_;
-      state->epoch = diagnostic_producer_epoch_;
+      state.sequence = ++diagnostic_submit_sequence_;
+      state.epoch = diagnostic_producer_epoch_;
       if (profile_transport) {
-        auto& p = state->transport;
-        p.enqueued = queued;
-        p.capture_ticks = queued - capture_begin;
+        auto& p = state.transport;
+        p.enqueued = ready;
+        p.capture_ticks = ready - capture_begin;
         p.capture_lock_ticks = capture_acquired - capture_begin;
         p.validation_ticks = validated - capture_acquired;
-        p.allocation_ticks = acquire_end - acquire_begin;
-        p.reused_storage = reused;
         p.compact_state = true;
         p.queue_lock_ticks = queue_acquired - queue_begin;
-        p.backpressure_ticks = queued - queue_acquired;
+        p.backpressure_ticks = ready - queue_acquired;
         p.producer_binding_skips = std::exchange(producer_binding_skips_pending_, 0);
+        p.state_batch_append = true;
+        p.reused_storage = true;
       }
+      // Only the still-queued tail can be extended. Any full command naturally
+      // closes this run; transferred packets are exclusively worker-owned.
       notify_worker = render_queue_.empty();
-      render_queue_.push_back(NativeQueuedCommand(std::move(state)));
+      if (!state_batching_enabled || !render_queue_.TryAppendState(state)) {
+        bool reused = false;
+        const uint64_t acquire_begin = profile_transport ? profile::CpuTick() : 0;
+        // Recycler exchange never holds its mutex while acquiring render_mutex_.
+        // Allocate only when a new packet is needed, not for successful appends.
+        auto packet = state_command_recycler_.Acquire(&reused);
+        if (profile_transport) {
+          const uint64_t enqueued = profile::CpuTick();
+          auto& p = state.transport;
+          p.enqueued = enqueued;
+          p.capture_ticks = enqueued - capture_begin;
+          p.allocation_ticks = enqueued - acquire_begin;
+          p.reused_storage = reused;
+          p.state_batch_append = false;
+        }
+        const bool appended = packet->TryAppend(state);
+        assert(appended);
+        (void)appended;
+        render_queue_.push_back(NativeQueuedCommand(std::move(packet)));
+      }
       producer_binding_cache_.RememberQueued(title_command, title_command_size);
     }
     if (notify_worker) render_condition_.notify_one();
@@ -6239,9 +6261,12 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
   }
 #ifdef THEFT4_LAB_BUILD
   REXLOG_INFO("gta4-native-lab: command-transport=compact-state command-bytes={} "
-              "queue-entry-bytes={} worker-batch={} state-packet-bytes={} dirty-scratch=reused",
+              "queue-entry-bytes={} worker-batch={} state-packet-bytes={} state-capacity={} "
+              "state-batching={} dirty-scratch=reused",
               sizeof(NativeCommand), sizeof(NativeQueuedCommand), kRenderWorkerBatchCommands,
-              sizeof(NativeStatePacket));
+              sizeof(NativeStatePacket), NativeStatePacket::kCapacity,
+              !std::getenv("THEFT4_STATE_BATCHING") ||
+                  std::strcmp(std::getenv("THEFT4_STATE_BATCHING"), "0") != 0);
 #endif
   {
     std::lock_guard lock(deferred_diagnostic_mutex_);
@@ -6347,6 +6372,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   uint64_t startup_texture_lock_count = 0;
   bool startup_present_follows_texture_lock_flush = false;
   size_t queued_after_batch_transfer = 0;
+#ifdef THEFT4_LAB_BUILD
+  size_t worker_batch_logical_commands = 0;
+#endif
   auto log_frame_batch = [this](std::string_view boundary, const NativeCommand& boundary_command,
                                 uint32_t submitted_frame, size_t queued_after_boundary) {
     if (!rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
@@ -6459,12 +6487,16 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         }
         continue;
       }
+#ifdef THEFT4_LAB_BUILD
+      assert(worker_batch_logical_commands == 0);
+      worker_batch_logical_commands =
+          render_queue_.TransferTo(worker_batch_, kRenderWorkerBatchCommands);
+#else
       const size_t transfer_count =
           std::min(kRenderWorkerBatchCommands, render_queue_.size());
       for (size_t index = 0; index < transfer_count; ++index) {
         worker_batch_.push_back(std::move(render_queue_.front()));
         render_queue_.pop_front();
-#ifndef THEFT4_LAB_BUILD
         const NativeCommand& staged = worker_batch_.back();
         VisitProtectedTextureGenerations(staged, [&](uint64_t generation) {
           const bool released = queued_texture_protection_.Release(generation);
@@ -6476,8 +6508,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
                 generation, released, retained);
           }
         });
-#endif
       }
+#endif
       queued_after_batch_transfer = render_queue_.size();
       wake_producer = producer_waiting_ && queued_title_presents_ < 2;
 #ifdef THEFT4_LAB_BUILD
@@ -6512,21 +6544,29 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     }
 #endif
 #ifdef THEFT4_LAB_BUILD
-    if (auto* state = worker_batch_.front().State()) {
+    if (auto* packet = worker_batch_.front().State()) {
       if (wake_producer) render_condition_.notify_all();
-      SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch, state->type,
-                                     state->sequence);
-      const uint64_t dequeued = (profile_transport || state->transport.enqueued) ? profile::CpuTick() : 0;
-      if (profile_transport || state->transport.enqueued) {
-        native_profile_transport_.Observe(state->transport, dequeued,
-            queued_after_batch_transfer + worker_batch_.size(), state->sequence);
-        ++native_profile_transport_.worker_state_commands;
-        if (idle_begin) native_profile_transport_.ObserveWorker(
-            dequeued - idle_begin, worker_mutex_ticks, worker_condition_ticks,
-            worker_transfer_ticks, worker_protection_ticks, worker_refilled_batch, worker_waited);
-      }
+      // One dispatch/assembly scope per packet; per-entry transport records and
+      // sequences remain separate, so command counts and dwell stay logical.
+      const bool measured_packet = profile_transport || packet->HasMeasuredEntries();
+      const uint64_t dequeued = measured_packet ? profile::CpuTick() : 0;
+      if (measured_packet && idle_begin) native_profile_transport_.ObserveWorker(
+          dequeued - idle_begin, worker_mutex_ticks, worker_condition_ticks,
+          worker_transfer_ticks, worker_protection_ticks, worker_refilled_batch, worker_waited);
       const uint64_t assembly_begin = profile_transport ? profile::CpuTick() : 0;
-      ApplyStateCommand(state->type, state->bytes.data());
+      for (size_t index = 0; index < packet->size(); ++index) {
+        const auto& state = (*packet)[index];
+        SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch, state.type,
+                                       state.sequence);
+        if (profile_transport || state.transport.enqueued) {
+          native_profile_transport_.Observe(state.transport, dequeued,
+              queued_after_batch_transfer + worker_batch_logical_commands, state.sequence);
+          ++native_profile_transport_.worker_state_commands;
+        }
+        ApplyStateCommand(state.type, state.bytes.data());
+        assert(worker_batch_logical_commands);
+        --worker_batch_logical_commands;
+      }
       if (assembly_begin)
         native_profile_transport_.worker_assembly_ticks += profile::CpuTick() - assembly_begin;
       const uint64_t recycle_begin = profile_transport ? profile::CpuTick() : 0;
@@ -6543,6 +6583,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     NativeCommand& command = NativeQueueCommand(worker_batch_.front());
     const auto pop_processed_command = MakeScopeExit([&] {
 #ifdef THEFT4_LAB_BUILD
+      assert(worker_batch_logical_commands);
+      --worker_batch_logical_commands;
       auto processed = worker_batch_.take_front();
       const uint64_t recycle_begin = profile_transport ? profile::CpuTick() : 0;
       command_recycler_.Recycle(processed.TakeFull());
@@ -6558,7 +6600,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
             "gta4-native-protection: batch release invariant failed generation={}", generation);
       }
     });
+#ifdef THEFT4_LAB_BUILD
+    queued_after_pop = queued_after_batch_transfer + worker_batch_logical_commands - 1;
+#else
     queued_after_pop = queued_after_batch_transfer + worker_batch_.size() - 1;
+#endif
     active_worker_command_ = &command;
     const auto clear_active_command = MakeScopeExit([&] { active_worker_command_ = nullptr; });
     SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kDispatch, command.type,
@@ -11392,7 +11438,7 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
 #ifdef THEFT4_LAB_BUILD
       if (queued_command.State()) {
         command_transport_bytes += sizeof(NativeStatePacket);
-        command_transport_logical += sizeof(NativeStatePacket);
+        command_transport_logical += queued_command.State()->size() * sizeof(NativeStateCommand);
         continue;
       }
 #endif
@@ -11405,7 +11451,8 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
 #ifdef THEFT4_LAB_BUILD
   // The exchange pool owns at most 2048 command-sized slots. Producer and
   // worker local caches hold at most another 128 each. Compact state storage
-  // has its own 8192-slot cap and contains no retained draw resources.
+  // has 1024 eight-command slots (the previous 8192-command bound), with no
+  // retained draw resources.
   command_transport_bytes += command_recycler_.SharedSize() * sizeof(NativeCommand);
   command_transport_bytes += state_command_recycler_.SharedSize() * sizeof(NativeStatePacket);
 #endif

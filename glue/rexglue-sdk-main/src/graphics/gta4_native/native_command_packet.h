@@ -2,8 +2,11 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <rex/graphics/gta4_native/title_commands.h>
 #include "native_cpu_profile.h"
@@ -12,7 +15,7 @@ namespace rex::graphics::gta4_native {
 
 // State notifications have no owned draw resources. Keep them out of the large
 // NativeCommand constructor/destructor path without changing FIFO semantics.
-struct NativeStatePacket {
+struct NativeStateCommand {
   CommandType type = CommandType::kPresent;
   std::array<unsigned char, 64> bytes;
   size_t size = 0;
@@ -27,7 +30,7 @@ inline bool IsCompactNativeStateCommand(const void* data, size_t size) {
   std::memcpy(&header, data, sizeof(header));
   if (header.size != size) return false;
   const auto read = [&]<typename T>(T& value) {
-    static_assert(sizeof(T) <= sizeof(NativeStatePacket::bytes));
+    static_assert(sizeof(T) <= sizeof(NativeStateCommand::bytes));
     if (size != sizeof(T)) return false;
     std::memcpy(&value, data, size);
     return value.device != 0;
@@ -53,6 +56,29 @@ inline bool IsCompactNativeStateCommand(const void* data, size_t size) {
   }
 }
 
+// A packet owns a bounded FIFO run, never resources. Optional slots avoid
+// clearing unused command payloads when the recycler constructs a new packet.
+class NativeStatePacket {
+ public:
+  static constexpr size_t kCapacity = 8;
+  NativeStatePacket() {} // Do not value-initialize the unused payload storage.
+  size_t size() const { return size_; }
+  bool HasMeasuredEntries() const { return measured_entries_; }
+  bool TryAppend(const NativeStateCommand& command) {
+    if (size_ == kCapacity || (size_ && entries_[0]->epoch != command.epoch)) return false;
+    entries_[size_++].emplace(command);
+    measured_entries_ |= command.transport.enqueued != 0;
+    return true;
+  }
+  const NativeStateCommand& operator[](size_t index) const {
+    assert(index < size_); return *entries_[index];
+  }
+ private:
+  std::array<std::optional<NativeStateCommand>, kCapacity> entries_;
+  size_t size_ = 0;
+  bool measured_entries_ = false;
+};
+
 // Both payloads have stable addresses and unique ownership across queue/batch
 // transfer. Only full packets participate in texture generation protection.
 template <typename Full>
@@ -60,6 +86,7 @@ class NativeCommandPacket {
  public:
   NativeCommandPacket(std::unique_ptr<Full> full) : full_(std::move(full)) { assert(full_); }
   NativeCommandPacket(std::unique_ptr<NativeStatePacket> state) : state_(std::move(state)) { assert(state_); }
+  size_t LogicalSize() const { return state_ ? state_->size() : 1; }
   Full* FullCommand() const { return full_.get(); }
   NativeStatePacket* State() const { return state_.get(); }
   std::unique_ptr<Full> TakeFull() { assert(full_); return std::move(full_); }
@@ -67,6 +94,62 @@ class NativeCommandPacket {
  private:
   std::unique_ptr<Full> full_;
   std::unique_ptr<NativeStatePacket> state_;
+};
+
+// render_mutex_ protects every operation. size() is deliberately the logical
+// command count: batching must not enlarge producer backpressure limits.
+// take_front transfers exclusive ownership before another producer may append.
+template <typename Full>
+class NativeCommandQueue {
+ public:
+  using Packet = NativeCommandPacket<Full>;
+  bool empty() const { return packets_.empty(); }
+  size_t size() const { return logical_size_; }
+  size_t packet_count() const { return packets_.size(); }
+  const Packet& front() const { return packets_.front(); }
+  bool CanAccept(bool running, size_t maximum_commands, uint32_t queued_presents) const {
+    return running && logical_size_ < maximum_commands && queued_presents < 2;
+  }
+  bool TryAppendState(const NativeStateCommand& command) {
+    if (packets_.empty()) return false;
+    auto* tail = packets_.back().State();
+    if (!tail || !tail->TryAppend(command)) return false;
+    ++logical_size_;
+    return true;
+  }
+  void push_back(Packet&& packet) {
+    const size_t count = packet.LogicalSize();
+    assert(count);
+    packets_.push_back(std::move(packet));
+    logical_size_ += count;
+  }
+  Packet take_front() {
+    assert(!empty());
+    const size_t count = packets_.front().LogicalSize();
+    Packet packet = std::move(packets_.front());
+    packets_.pop_front();
+    assert(logical_size_ >= count);
+    logical_size_ -= count;
+    return packet;
+  }
+  template <typename Batch>
+  size_t TransferTo(Batch& batch, size_t maximum_logical_commands) {
+    assert(batch.empty());
+    assert(maximum_logical_commands >= NativeStatePacket::kCapacity);
+    assert(maximum_logical_commands <= batch.capacity());
+    size_t transferred = 0;
+    while (!empty() && transferred + front().LogicalSize() <= maximum_logical_commands) {
+      transferred += front().LogicalSize();
+      batch.push_back(take_front());
+    }
+    return transferred;
+  }
+  void clear() { packets_.clear(); logical_size_ = 0; }
+  auto begin() const { return packets_.begin(); }
+  auto end() const { return packets_.end(); }
+ private:
+  std::deque<Packet> packets_;
+  size_t logical_size_ = 0;
 };
 
 template <typename Full>

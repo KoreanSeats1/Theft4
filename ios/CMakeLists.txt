@@ -179,6 +179,8 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_aspect_hooks.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_font_selection_trace.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_native_hooks.cpp"
+            # Strong stage wrappers must be in this force-loaded archive.
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_physics_hooks.cpp"
             bridge/theft4_motion_blur.cpp
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
             "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}/smolv.cpp")
@@ -207,6 +209,9 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         endif()
         target_compile_options(theft4_gta4_native_compile PRIVATE
             -Wno-unused-variable)
+        set_source_files_properties(
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_physics_hooks.cpp"
+            PROPERTIES COMPILE_OPTIONS "-ffp-model=strict")
         set_source_files_properties(
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
             PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")

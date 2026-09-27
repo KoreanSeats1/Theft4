@@ -8572,6 +8572,45 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
   }
 
   const VkDeviceSize maximum_capacity = vulkan_device->properties().maxStorageBufferRange;
+  NativeFrameConstantArena& arena = frame_constant_arenas_[active_frame_slot_];
+  if (arena.index.in_flight_submission() || arena.index.reservation_count() ||
+      arena.index.bytes_used() || arena.shared_versions.size()) {
+    REXLOG_ERROR("gta4-native-constants: slot {} arena was not reset before recording",
+                 active_frame_slot_);
+    return false;
+  }
+
+  // A slot that already fits the *worst case* needs no per-frame unique-version
+  // sets. Every accepted draw can allocate at most one vertex, pixel, and
+  // shared block; alignment is charged to each block here. Keep the exact
+  // sizing path below for growth and for a one-line runtime rollback.
+  static const bool fast_existing_capacity = [] {
+    const char* value = std::getenv("THEFT4_FAST_CONSTANT_CAPACITY");
+    return !value || std::strcmp(value, "0") != 0;
+  }();
+  if (fast_existing_capacity && arena.storage.capacity <= maximum_capacity &&
+      arena.storage.capacity <= std::numeric_limits<size_t>::max()) {
+    constexpr VkDeviceSize alignment = kNativeConstantArenaAlignment;
+    constexpr auto aligned = [](VkDeviceSize bytes) {
+      return (bytes + alignment - 1) & ~(alignment - 1);
+    };
+    constexpr VkDeviceSize worst_case_draw = aligned(kVertexConstantsSize) +
+        aligned(kPixelConstantsSize) + aligned(sizeof(NativeSharedConstants));
+    VkDeviceSize draw_count = 0;
+    for (const NativeCommand& command : current_frame_) {
+      const bool is_draw = command.type == CommandType::kDrawPrimitive ||
+                           command.type == CommandType::kDrawPrimitiveUp ||
+                           command.type == CommandType::kDrawIndexedPrimitive;
+      draw_count += is_draw && command.shader_state &&
+                    command.shader_state->vertex_constants &&
+                    command.shader_state->pixel_constants;
+    }
+    if (draw_count <= arena.storage.capacity / worst_case_draw) {
+      arena.storage.write_offset = 0;
+      return arena.index.SetByteCapacity(size_t(arena.storage.capacity));
+    }
+  }
+
   VkDeviceSize required_capacity = 0;
   bool overflow = false;
   const auto add_allocation = [&](VkDeviceSize byte_size) {
@@ -8592,6 +8631,15 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
     required_capacity = aligned_offset + byte_size;
   };
 
+  // Generation-stamped POD buckets retain their allocation across frames and
+  // never retain ownership of a constant version. The old sets remain available
+  // under THEFT4_FAST_CONSTANT_CAPACITY=0 for a direct runtime A/B rollback.
+  thread_local FrameGenerationMap<const ConstantStateVersion*, uint8_t> vertex_version_cache;
+  thread_local FrameGenerationMap<const ConstantStateVersion*, uint8_t> pixel_version_cache;
+  if (fast_existing_capacity &&
+      (!vertex_version_cache.ResetGeneration() || !pixel_version_cache.ResetGeneration())) {
+    return false;
+  }
   std::unordered_set<const ConstantStateVersion*> vertex_versions;
   std::unordered_set<const ConstantStateVersion*> pixel_versions;
   size_t draw_count = 0;
@@ -8604,10 +8652,24 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
       continue;
     }
     ++draw_count;
-    if (vertex_versions.insert(command.shader_state->vertex_constants.get()).second) {
+    bool new_vertex = false;
+    bool new_pixel = false;
+    if (fast_existing_capacity) {
+      const auto vertex = vertex_version_cache.Insert(
+          command.shader_state->vertex_constants.get(), uint8_t{1});
+      const auto pixel = pixel_version_cache.Insert(
+          command.shader_state->pixel_constants.get(), uint8_t{1});
+      if (!vertex || !pixel) return false;
+      new_vertex = vertex.inserted;
+      new_pixel = pixel.inserted;
+    } else {
+      new_vertex = vertex_versions.insert(command.shader_state->vertex_constants.get()).second;
+      new_pixel = pixel_versions.insert(command.shader_state->pixel_constants.get()).second;
+    }
+    if (new_vertex) {
       add_allocation(kVertexConstantsSize);
     }
-    if (pixel_versions.insert(command.shader_state->pixel_constants.get()).second) {
+    if (new_pixel) {
       add_allocation(kPixelConstantsSize);
     }
     // Descriptor pages, target dimensions, fixed state, and environment are
@@ -8619,18 +8681,12 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
     REXLOG_ERROR(
         "gta4-native-constants: slot arena exceeds maxStorageBufferRange={} slot={} "
         "draws={} vertex-versions={} pixel-versions={}",
-        maximum_capacity, active_frame_slot_, draw_count, vertex_versions.size(),
-        pixel_versions.size());
+        maximum_capacity, active_frame_slot_, draw_count,
+        fast_existing_capacity ? vertex_version_cache.size() : vertex_versions.size(),
+        fast_existing_capacity ? pixel_version_cache.size() : pixel_versions.size());
     return false;
   }
 
-  NativeFrameConstantArena& arena = frame_constant_arenas_[active_frame_slot_];
-  if (arena.index.in_flight_submission() || arena.index.reservation_count() ||
-      arena.index.bytes_used() || arena.shared_versions.size()) {
-    REXLOG_ERROR("gta4-native-constants: slot {} arena was not reset before recording",
-                 active_frame_slot_);
-    return false;
-  }
   if (!required_capacity) {
     if (arena.storage.capacity > std::numeric_limits<size_t>::max()) {
       return false;
@@ -8818,6 +8874,7 @@ bool Gta4NativeGraphicsSystem::ResetFrameConstantArena(uint32_t slot, uint64_t c
   }
   arena.has_last_shared_key = false;
   arena.last_shared_identity = 0;
+  arena.has_last_shared_allocation = false;
   arena.next_shared_identity = 1;
   arena.storage.write_offset = 0;
   return true;
@@ -21092,10 +21149,13 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
     constant_arena.last_shared_key = shared_key;
     constant_arena.last_shared_identity = *shared_identity;
     constant_arena.has_last_shared_key = true;
+    constant_arena.has_last_shared_allocation = false;
     shared_identity = &constant_arena.last_shared_identity;
   }
-  if (!FindFrameConstantBuffer(NativeConstantBufferKind::kShared, *shared_identity,
-                               shared_constants_allocation)) {
+  if (constant_arena.has_last_shared_allocation) {
+    shared_constants_allocation = constant_arena.last_shared_allocation;
+  } else if (!FindFrameConstantBuffer(NativeConstantBufferKind::kShared, *shared_identity,
+                                      shared_constants_allocation)) {
     NativeSharedConstants shared_constants{};
     for (uint32_t i = 0; i < kNativeColorOutputTargetCount; ++i) {
       shared_constants.color_output[i] = NativeColorOutput(
@@ -21149,6 +21209,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
       return false;
     }
   }
+  constant_arena.last_shared_allocation = shared_constants_allocation;
+  constant_arena.has_last_shared_allocation = true;
 
   static const bool trace_glass_output = [] {
     const char* value = std::getenv("REX_GTA4_GLASS_OUTPUT_TRACE");
@@ -21217,41 +21279,70 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                                 draw_pipeline_layout, 0, kDescriptorSetCount,
                                 draw_descriptor_sets.data(), 0, nullptr); });
   }
-  const float viewport_scale_x = logical_width ? float(width) / float(logical_width) : 1.0f;
-  const float viewport_scale_y = logical_height ? float(height) / float(logical_height) : 1.0f;
-  const NativeViewportSelection viewport_selection = SelectNativeViewport(
-      {requested_viewport_x, requested_viewport_y, requested_viewport_width,
-       requested_viewport_height, requested_min_depth, requested_max_depth},
-      viewport_scale_x, viewport_scale_y, width, height,
-      vulkan_provider->vulkan_device()->properties());
-  const VkViewport& viewport = viewport_selection.viewport;
+  auto& dynamic_derivation = native_dynamic_draw_derivation_cache_;
+  const bool dynamic_derivation_hit = dynamic_derivation.valid &&
+      dynamic_derivation.fixed == fixed && dynamic_derivation.width == width &&
+      dynamic_derivation.height == height && dynamic_derivation.logical_width == logical_width &&
+      dynamic_derivation.logical_height == logical_height &&
+      dynamic_derivation.color_write_mask == target.color_write_mask &&
+      dynamic_derivation.color_formats == target.color_formats;
+  if (!dynamic_derivation_hit) {
+    dynamic_derivation = {};
+    dynamic_derivation.valid = true;
+    dynamic_derivation.fixed = fixed;
+    dynamic_derivation.width = width;
+    dynamic_derivation.height = height;
+    dynamic_derivation.logical_width = logical_width;
+    dynamic_derivation.logical_height = logical_height;
+    dynamic_derivation.color_write_mask = target.color_write_mask;
+    dynamic_derivation.color_formats = target.color_formats;
+    const float viewport_scale_x =
+        logical_width ? float(width) / float(logical_width) : 1.0f;
+    const float viewport_scale_y =
+        logical_height ? float(height) / float(logical_height) : 1.0f;
+    const NativeViewportSelection viewport_selection = SelectNativeViewport(
+        {requested_viewport_x, requested_viewport_y, requested_viewport_width,
+         requested_viewport_height, requested_min_depth, requested_max_depth},
+        viewport_scale_x, viewport_scale_y, width, height,
+        vulkan_provider->vulkan_device()->properties());
+    dynamic_derivation.viewport = viewport_selection.viewport;
+    dynamic_derivation.viewport_empty = viewport_selection.empty;
+
+    // GTA IV's XDK setters already intersect the D3D scissor and viewport and
+    // write the final PA_SC_WINDOW_SCISSOR rectangle. Replay that authoritative
+    // hardware result instead of rebuilding the intersection from API shadows.
+    const int32_t logical_left =
+        std::clamp(fixed.scissor[0], int32_t(0), int32_t(logical_width));
+    const int32_t logical_top =
+        std::clamp(fixed.scissor[1], int32_t(0), int32_t(logical_height));
+    const int32_t logical_right =
+        std::clamp(fixed.scissor[2], logical_left, int32_t(logical_width));
+    const int32_t logical_bottom =
+        std::clamp(fixed.scissor[3], logical_top, int32_t(logical_height));
+    const int32_t left = ScaleCoordinateFloor(logical_left, logical_width, width);
+    const int32_t top = ScaleCoordinateFloor(logical_top, logical_height, height);
+    const int32_t right = ScaleCoordinateCeil(logical_right, logical_width, width);
+    const int32_t bottom = ScaleCoordinateCeil(logical_bottom, logical_height, height);
+    dynamic_derivation.scissor.offset = {left, top};
+    dynamic_derivation.scissor.extent = {uint32_t(right - left), uint32_t(bottom - top)};
+    if (dynamic_derivation.viewport_empty) {
+      dynamic_derivation.scissor = {};
+    }
+    dynamic_derivation.depth_bias_constant =
+        std::bit_cast<float>(fixed.depth_bias_bits) * draw_util::kD3D10PolygonOffsetFactorFloat24;
+    dynamic_derivation.depth_bias_slope =
+        std::bit_cast<float>(fixed.slope_scaled_depth_bias_bits) *
+        xenos::kPolygonOffsetScaleSubpixelUnit *
+        NativeResolutionDepthBiasScale(viewport_scale_x, viewport_scale_y);
+  }
+  const VkViewport& viewport = dynamic_derivation.viewport;
   if (native_draw_state_cache_.UpdateViewport(
           {std::bit_cast<uint32_t>(viewport.x), std::bit_cast<uint32_t>(viewport.y),
            std::bit_cast<uint32_t>(viewport.width), std::bit_cast<uint32_t>(viewport.height),
            std::bit_cast<uint32_t>(viewport.minDepth), std::bit_cast<uint32_t>(viewport.maxDepth)})) {
     profile::CpuCall(profile::CpuOp::kDriverDynamic, [&] { return dfn.vkCmdSetViewport(command_buffer, 0, 1, &viewport); });
   }
-  VkRect2D scissor{};
-  // GTA IV's XDK setters already intersect the D3D scissor and viewport and
-  // write the final PA_SC_WINDOW_SCISSOR rectangle. Replay that authoritative
-  // hardware result instead of rebuilding the intersection from API shadows.
-  const int32_t logical_left =
-      std::clamp(fixed.scissor[0], int32_t(0), int32_t(logical_width));
-  const int32_t logical_top =
-      std::clamp(fixed.scissor[1], int32_t(0), int32_t(logical_height));
-  const int32_t logical_right =
-      std::clamp(fixed.scissor[2], logical_left, int32_t(logical_width));
-  const int32_t logical_bottom =
-      std::clamp(fixed.scissor[3], logical_top, int32_t(logical_height));
-  const int32_t left = ScaleCoordinateFloor(logical_left, logical_width, width);
-  const int32_t top = ScaleCoordinateFloor(logical_top, logical_height, height);
-  const int32_t right = ScaleCoordinateCeil(logical_right, logical_width, width);
-  const int32_t bottom = ScaleCoordinateCeil(logical_bottom, logical_height, height);
-  scissor.offset = {left, top};
-  scissor.extent = {uint32_t(right - left), uint32_t(bottom - top)};
-  if (viewport_selection.empty) {
-    scissor = {};
-  }
+  const VkRect2D& scissor = dynamic_derivation.scissor;
   if (native_draw_state_cache_.UpdateScissor(
           {scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height})) {
     profile::CpuCall(profile::CpuOp::kDriverDynamic, [&] { return dfn.vkCmdSetScissor(command_buffer, 0, 1, &scissor); });
@@ -21287,11 +21378,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
       }
     }
   }
-  const float depth_bias_constant =
-      std::bit_cast<float>(fixed.depth_bias_bits) * draw_util::kD3D10PolygonOffsetFactorFloat24;
-  const float depth_bias_slope = std::bit_cast<float>(fixed.slope_scaled_depth_bias_bits) *
-                                 xenos::kPolygonOffsetScaleSubpixelUnit *
-                                 NativeResolutionDepthBiasScale(viewport_scale_x, viewport_scale_y);
+  const float depth_bias_constant = dynamic_derivation.depth_bias_constant;
+  const float depth_bias_slope = dynamic_derivation.depth_bias_slope;
   if (native_draw_state_cache_.UpdateDepthBias(
           {std::bit_cast<uint32_t>(depth_bias_constant), std::bit_cast<uint32_t>(0.0f),
            std::bit_cast<uint32_t>(depth_bias_slope)})) {

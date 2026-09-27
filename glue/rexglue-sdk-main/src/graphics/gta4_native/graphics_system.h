@@ -1174,6 +1174,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeSharedConstantSemanticKey last_shared_key{};
     uint64_t last_shared_identity = 0;
     bool has_last_shared_key = false;
+    NativeUploadAllocation last_shared_allocation{};
+    bool has_last_shared_allocation = false;
     NativeImmutableBindings<NativeUploadAllocation> immutable_bindings;
     uint64_t next_shared_identity = 1;
   };
@@ -2000,6 +2002,21 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
   NativeDrawStateCache<6, kVertexStreamCount> native_draw_state_cache_;
+  struct NativeDynamicDrawDerivationCache {
+    bool valid = false;
+    NativeFixedFunctionState fixed{};
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t logical_width = 0;
+    uint32_t logical_height = 0;
+    uint32_t color_write_mask = 0;
+    std::array<VkFormat, kRenderTargetCount> color_formats{};
+    VkViewport viewport{0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+    bool viewport_empty = true;
+    VkRect2D scissor{};
+    float depth_bias_constant = 0.0f;
+    float depth_bias_slope = 0.0f;
+  } native_dynamic_draw_derivation_cache_;
   NativeDescriptorSlotHandle native_null_image_descriptor_{};
   NativeDescriptorSlotHandle native_null_sampler_descriptor_{};
   uint32_t active_descriptor_copy_ = 0;

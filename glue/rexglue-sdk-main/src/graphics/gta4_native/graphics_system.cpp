@@ -3493,9 +3493,15 @@ struct Gta4NativeGraphicsSystem::NativePipelineCompilerState {
 
 size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
     const NativePipelineKey& key) const noexcept {
-  uint64_t hash = 0;
-  auto add = [&hash](const auto& value) {
-    hash = XXH3_64bits_withSeed(&value, sizeof(value), hash);
+  // Pack the same member values without struct padding, then hash once. This
+  // lookup runs for thousands of draws; chaining one XXH3 call per member
+  // repeatedly paid the short-input setup cost on the render worker.
+  // Equality remains memberwise and still resolves all hash collisions.
+  std::array<uint8_t, sizeof(NativePipelineKey)> bytes;
+  size_t byte_count = 0;
+  auto add = [&bytes, &byte_count](const auto& value) {
+    std::memcpy(bytes.data() + byte_count, &value, sizeof(value));
+    byte_count += sizeof(value);
   };
   add(key.vertex_shader_hash);
   add(key.pixel_shader_hash);
@@ -3542,7 +3548,7 @@ size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
   add(key.sample_mask);
   add(key.depth_bias_enable);
   add(key.primitive_restart_enable);
-  return size_t(hash);
+  return size_t(XXH3_64bits(bytes.data(), byte_count));
 }
 
 size_t Gta4NativeGraphicsSystem::NativePersistentBufferKeyHash::operator()(

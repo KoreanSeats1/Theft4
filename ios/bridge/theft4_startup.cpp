@@ -35,6 +35,7 @@ REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
 REXCVAR_DECLARE(bool, vulkan_moltenvk_synchronous_queue_submits);
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+REXCVAR_DECLARE(uint32_t, gta4_native_cpu_present_admission);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
@@ -340,6 +341,21 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             "drawable-limit={} highest-lod={} lod-selection-bias={} reflections={} anti-aliasing={}",
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
             drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
+
+        // Admit the next native command stream only after the previous CPU
+        // publication returns. Guest threads may continue other work, and the
+        // two independently owned GPU slots below still overlap CPU/GPU work.
+        // A fresh launch with 2 restores build 79's CPU admission behavior.
+        const char* cpu_admission_override = std::getenv("THEFT4_CPU_PRESENT_ADMISSION");
+        const std::string_view cpu_admission =
+            cpu_admission_override ? cpu_admission_override : "1";
+        if (cpu_admission != "1" && cpu_admission != "2") {
+            throw std::runtime_error("THEFT4_CPU_PRESENT_ADMISSION must be 1 or 2");
+        }
+        const uint32_t cpu_present_limit = cpu_admission == "1" ? 1u : 2u;
+        REXCVAR_SET(gta4_native_cpu_present_admission, cpu_present_limit);
+        REXLOG_INFO("Theft4 native CPU present admission set to {} ({})",
+                    cpu_present_limit, cpu_admission_override ? "launch override" : "iOS default");
 
         // Use both independently owned native frame slots so the CPU can record
         // frame n+1 while the GPU completes frame n.  The renderer keeps command

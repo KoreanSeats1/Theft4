@@ -1699,6 +1699,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // the batch completes, then subtracts them once under render_mutex_.
   NativeTextureProtectionIndex worker_batch_deferred_queue_protection_;
 #endif
+  // Frozen before worker creation. Pending Presents include the active CPU
+  // PublishFrame until it returns; GPU frame-resource ownership is independent.
+  const uint32_t cpu_present_admission_limit_;
   uint32_t queued_title_presents_ = 0;
   bool producer_waiting_ = false;
   uint64_t diagnostic_submit_sequence_ = 0;

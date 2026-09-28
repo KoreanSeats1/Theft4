@@ -107,8 +107,9 @@ class NativeCommandQueue {
   size_t size() const { return logical_size_; }
   size_t packet_count() const { return packets_.size(); }
   const Packet& front() const { return packets_.front(); }
-  bool CanAccept(bool running, size_t maximum_commands, uint32_t queued_presents) const {
-    return running && logical_size_ < maximum_commands && queued_presents < 2;
+  bool CanAccept(bool running, size_t maximum_commands, uint32_t queued_presents,
+                 uint32_t maximum_presents = 2) const {
+    return running && logical_size_ < maximum_commands && queued_presents < maximum_presents;
   }
   bool TryAppendState(const NativeStateCommand& command) {
     if (packets_.empty()) return false;

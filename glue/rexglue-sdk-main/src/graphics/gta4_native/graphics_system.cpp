@@ -259,6 +259,10 @@ REXCVAR_DEFINE_BOOL(
     gta4_native_persistent_buffers, true, "GTA IV/Graphics/Native Renderer",
     "Keep immutable converted vertex and index generations in reusable GPU buffer blocks")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_UINT32(gta4_native_cpu_present_admission, 2, "GTA IV/Graphics/Native Renderer",
+                      "Pending CPU Presents, including the active publication; independent of GPU slots")
+    .range(1, 2)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_UINT32(gta4_native_frames_in_flight, 2, "GTA IV/Graphics/Native Renderer",
                       "Native renderer frame-resource slots")
     .range(1, 2)
@@ -3676,7 +3680,9 @@ size_t Gta4NativeGraphicsSystem::NativeSharedConstantSemanticKeyHash::operator()
   return size_t(XXH3_64bits(words.data(), sizeof(words)));
 }
 
-Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem() = default;
+Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem()
+    : cpu_present_admission_limit_(
+          std::clamp(REXCVAR_GET(gta4_native_cpu_present_admission), 1u, 2u)) {}
 
 Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem(
     std::unique_ptr<ui::GraphicsProvider> provider,
@@ -3684,7 +3690,9 @@ Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem(
     std::unique_ptr<ui::Surface> external_surface)
     : external_surface_(std::move(external_surface)),
       provider_(std::move(provider)),
-      presenter_(std::move(presenter)) {}
+      presenter_(std::move(presenter)),
+      cpu_present_admission_limit_(
+          std::clamp(REXCVAR_GET(gta4_native_cpu_present_admission), 1u, 2u)) {}
 
 Gta4NativeGraphicsSystem::~Gta4NativeGraphicsSystem() {
   Shutdown();
@@ -4293,7 +4301,7 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       const uint64_t queue_acquired = profile_transport ? profile::CpuTick() : 0;
       const auto can_submit = [this] {
         return !render_worker_running_ || render_queue_.CanAccept(
-            true, kMaximumQueuedCommands, queued_title_presents_);
+            true, kMaximumQueuedCommands, queued_title_presents_, cpu_present_admission_limit_);
       };
       producer_waiting_ = !can_submit();
       uint32_t timeouts = 0;
@@ -4392,7 +4400,8 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     const uint64_t queue_lock_end = profile_transport ? profile::CpuTick() : 0;
     const auto producer_can_submit = [this]() {
       return !render_worker_running_ ||
-             (render_queue_.size() < kMaximumQueuedCommands && queued_title_presents_ < 2);
+             (render_queue_.size() < kMaximumQueuedCommands &&
+              queued_title_presents_ < cpu_present_admission_limit_);
     };
     producer_waiting_ = !producer_can_submit();
     if (producer_waiting_) {
@@ -4555,10 +4564,12 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
   const auto synchronous = native_command.synchronous;
   {
     std::unique_lock lock(render_mutex_);
-    producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands || queued_title_presents_ >= 2;
+    producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands ||
+                        queued_title_presents_ >= cpu_present_admission_limit_;
     render_condition_.wait(lock, [this]() {
       return !render_worker_running_ ||
-             (render_queue_.size() < kMaximumQueuedCommands && queued_title_presents_ < 2);
+             (render_queue_.size() < kMaximumQueuedCommands &&
+              queued_title_presents_ < cpu_present_admission_limit_);
     });
     producer_waiting_ = false;
     if (!render_worker_running_) {
@@ -6508,6 +6519,9 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
   if (render_worker_running_.exchange(true)) {
     return;
   }
+  REXLOG_INFO("gta4-native-frame-admission: cpu-present-limit={} gpu-resource-slots={} "
+              "pending-includes-active-publish=true",
+              cpu_present_admission_limit_, REXCVAR_GET(gta4_native_frames_in_flight));
   if (current_frame_.capacity() < kInitialFrameCommandCapacity) {
     current_frame_.reserve(kInitialFrameCommandCapacity);
   }
@@ -6766,7 +6780,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       }
 #endif
       queued_after_batch_transfer = render_queue_.size();
-      wake_producer = producer_waiting_ && queued_title_presents_ < 2;
+      wake_producer = producer_waiting_ && queued_title_presents_ < cpu_present_admission_limit_;
 #ifdef THEFT4_LAB_BUILD
       worker_refilled_batch = true;
       if (profile_transport) {

@@ -74,6 +74,20 @@ class NativePipelineLookupMemo {
     pipeline_ = pipeline;
   }
 
+  // Explicit transfer only after the caller proves every pipeline-dependent
+  // resource input equivalent. Ordinary snapshot copies still fail owner checks.
+  // Keep the complete context/fixed state: Find remains the authoritative check.
+  bool InheritCompatible(const NativePipelineLookupMemo& source, const void* source_owner,
+                         const void* owner, uint64_t lifetime) {
+    if (!owner || !source_owner || source.owner_ != source_owner || !source.pipeline_ ||
+        !lifetime || source.context_.lifetime != lifetime) {
+      return false;
+    }
+    *this = source;
+    owner_ = owner;
+    return true;
+  }
+
  private:
   const void* owner_ = nullptr;
   FixedState fixed_{};

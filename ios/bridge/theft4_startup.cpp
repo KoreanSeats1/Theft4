@@ -40,6 +40,8 @@ REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
 REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(bool, gta4_native_pipeline_snapshot_reuse);
+REXCVAR_DECLARE(bool, gta4_native_component_scope_reuse);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
@@ -161,6 +163,20 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
         REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
+        // Independent restart-only controls retain build 77's exact paths.
+        const auto draw_reuse_option = [](const char* name) {
+            const char* raw = std::getenv(name);
+            const std::string_view value = raw ? raw : "1";
+            if (value != "0" && value != "1")
+                throw std::runtime_error(std::string(name) + " must be 0 or 1");
+            return value == "1";
+        };
+        const bool pipeline_snapshot_reuse = draw_reuse_option("THEFT4_PIPELINE_SNAPSHOT_REUSE");
+        const bool component_scope_reuse = draw_reuse_option("THEFT4_COMPONENT_SCOPE_REUSE");
+        REXCVAR_SET(gta4_native_pipeline_snapshot_reuse, pipeline_snapshot_reuse);
+        REXCVAR_SET(gta4_native_component_scope_reuse, component_scope_reuse);
+        REXLOG_INFO("Theft4 draw reuse: pipeline-snapshots={} component-scopes={}",
+                    pipeline_snapshot_reuse, component_scope_reuse);
         // Both paths capture the same shader-required slots. Keep an explicit
         // launch rollback to the full 16-slot walks for device comparisons.
         const char* sparse_walks_value = std::getenv("THEFT4_SPARSE_TEXTURE_WALKS");

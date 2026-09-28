@@ -182,6 +182,12 @@ REXCVAR_DEFINE_STRING(
 REXCVAR_DEFINE_BOOL(
     gta4_native_pipeline_prewarm, true, "GTA IV/Graphics/Native Renderer",
     "Compile draw pipelines on the render worker as draw commands arrive, before frame recording");
+REXCVAR_DEFINE_BOOL(
+    gta4_native_pipeline_snapshot_reuse, false, "GTA IV/Graphics/Native Renderer",
+    "Retain validated pipeline setup across snapshots with identical shader and vertex layout inputs");
+REXCVAR_DEFINE_BOOL(
+    gta4_native_component_scope_reuse, false, "GTA IV/Graphics/Native Renderer",
+    "Keep compatible single-sample draw scopes across component write-mask changes");
 REXCVAR_DEFINE_STRING(
     gta4_native_light_overrides, "pair", "GTA IV/Graphics/Native Renderer",
     "Shader override selection: stock modules, legacy stage selection, or approved pipeline pairs")
@@ -7308,6 +7314,34 @@ Gta4NativeGraphicsSystem::SnapshotPipeline(const NativeCommand& command, bool dr
   // A new immutable snapshot may have a different shader or declaration.
   // Do not inherit vertex requirements from its mutable source state.
   snapshot->required_vertex_streams.reset();
+  snapshot->pipeline_lookup_inherited = false;
+  if (REXCVAR_GET(gta4_native_pipeline_snapshot_reuse) && last_pipeline_snapshot_) {
+    const NativePipelineState& previous = *last_pipeline_snapshot_;
+    const bool same_vertex_interface =
+        previous.vertex_shader == snapshot->vertex_shader &&
+        previous.vertex_shader_resource == snapshot->vertex_shader_resource &&
+        previous.vertex_declaration == snapshot->vertex_declaration &&
+        previous.vertex_declaration_resource == snapshot->vertex_declaration_resource;
+    if (same_vertex_interface) {
+      snapshot->required_vertex_streams = previous.required_vertex_streams;
+      // GetOrCreatePipeline reads resource identities and vertex strides. Mesh
+      // addresses/offsets and texture bindings are validated/bound separately.
+      // All fixed state and resolved target/device inputs still pass Find.
+      const bool same_pipeline_inputs =
+          previous.pixel_shader == snapshot->pixel_shader &&
+          previous.pixel_shader_resource == snapshot->pixel_shader_resource &&
+          std::equal(previous.vertex_streams.begin(), previous.vertex_streams.end(),
+                     snapshot->vertex_streams.begin(), [](const auto& a, const auto& b) {
+                       return a.stride == b.stride;
+                     });
+      if (same_pipeline_inputs && snapshot->pipeline_lookup_memo.InheritCompatible(
+              previous.pipeline_lookup_memo, &previous, snapshot.get(),
+              native_pipeline_lookup_lifetime_.epoch())) {
+        snapshot->pipeline_lookup_inherited = true;
+        ++native_pipeline_memo_inheritances_;
+      }
+    }
+  }
   snapshot->render_targets = colors;
   snapshot->depth_stencil = depth;
   last_pipeline_snapshot_ = std::move(snapshot);
@@ -20048,6 +20082,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
     if (VkPipeline pipeline =
             state.pipeline_lookup_memo.Find(&state, command.fixed_function_state, context)) {
       AddNativeGpuProfileCounter(performance::Counter::kPipelineRequestReuses);
+      if (state.pipeline_lookup_inherited) ++native_pipeline_inherited_hits_;
       return pipeline;
     }
   }
@@ -20055,6 +20090,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
                                               target, user_pointer_stride,
                                               primitive_restart_enable, prewarm);
   state.pipeline_lookup_memo.Store(&state, command.fixed_function_state, context, pipeline);
+  if (pipeline) state.pipeline_lookup_inherited = false;
   return pipeline;
 }
 
@@ -27316,6 +27352,8 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   bool recorded_draw = false;
   bool rendering = false;
   NativeRenderingTarget active_target;
+  const NativeCommand* active_scope_command = nullptr;
+  uint64_t active_scope_virtual_revision = 0;
   if (!recording_resources_.Reset()) return false;
   NativeFrameResources& resources = recording_resources_;
   const auto reset_recording_resources = MakeScopeExit([&] {
@@ -31926,7 +31964,65 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       end_rendering();
       rendering = false;
     }
-    if (!rendering || !targets_equal(active_target, target)) {
+    bool reuse_component_scope = false;
+    if (rendering && active_scope_command && draw_command &&
+        active_target.color_write_mask != target.color_write_mask &&
+        REXCVAR_GET(gta4_native_component_scope_reuse)) {
+      ++native_component_scope_candidates_;
+      // RGB/alpha masks are pipeline state, not rendering attachment state.
+      // Restrict this path to the same single-sample title view and phase.
+      // Multisample producer resolves and every explicit scope break retain
+      // their existing order; probes retain their original observation scopes.
+      NativeRenderingTarget same_mask_target = target;
+      same_mask_target.color_write_mask = active_target.color_write_mask;
+      const auto& previous = *active_scope_command;
+      const bool previous_draw = previous.type == CommandType::kDrawPrimitive ||
+                                 previous.type == CommandType::kDrawPrimitiveUp ||
+                                 previous.type == CommandType::kDrawIndexedPrimitive;
+      reuse_component_scope =
+          previous_draw && !target.uses_presenter && !target.is_reflection &&
+          target.samples == VK_SAMPLE_COUNT_1_BIT &&
+          target.guest_samples == active_target.guest_samples &&
+          target.logical_width == active_target.logical_width &&
+          target.logical_height == active_target.logical_height &&
+          targets_equal(active_target, same_mask_target) &&
+          previous.render_phase == command.render_phase &&
+          previous.render_phase_object == command.render_phase_object &&
+          !diagnostic_frame && !collect_frame_diagnostics && !force_content_probe &&
+          !diagnostic_variants_enabled && !fire_images_ && !bulb_trace_frame_ &&
+          !PhoneTraceConfig().readbacks && !NativeRendererEventTraceEnabled() &&
+          !ShouldCaptureArtificialLightFrame(submitted_frame) &&
+          !rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProbes) &&
+          active_scope_virtual_revision ==
+              virtual_surface_registry_revision_.load(std::memory_order_acquire) &&
+          NativeSurfaceStateEqual(previous.pipeline_state->depth_stencil,
+                                  command.pipeline_state->depth_stencil) &&
+          std::equal(previous.pipeline_state->render_targets.begin(),
+                     previous.pipeline_state->render_targets.end(),
+                     command.pipeline_state->render_targets.begin(),
+                     [](const auto& a, const auto& b) { return NativeSurfaceStateEqual(a, b); });
+      // A matching VkImageView is insufficient if its guest placement was
+      // invalidated or aliased. Materialization must still go through the old
+      // end/prepare/barrier/begin path whenever ownership cannot be proved.
+      for (uint32_t index = 0; reuse_component_scope && index < kRenderTargetCount; ++index) {
+        if ((target.color_attachment_mask & (1u << index)) != 0) {
+          reuse_component_scope = target.color_surfaces[index] &&
+              target.color_surfaces[index]->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+              HasCurrentPlacementContent(*target.color_surfaces[index],
+                  command.pipeline_state->render_targets[index], false, submitted_frame);
+        }
+      }
+      if (reuse_component_scope && target.depth_stencil_attachment_active) {
+        reuse_component_scope = target.depth_surface &&
+            target.depth_surface->layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
+            HasCurrentPlacementContent(*target.depth_surface,
+                command.pipeline_state->depth_stencil, true, submitted_frame);
+      }
+      reuse_component_scope &= active_scope_virtual_revision ==
+          virtual_surface_registry_revision_.load(std::memory_order_acquire);
+      if (reuse_component_scope) ++native_component_scope_reuses_;
+    }
+    if (!rendering || (!targets_equal(active_target, target) && !reuse_component_scope)) {
       if (rendering) {
         end_rendering();
       }
@@ -32223,7 +32319,14 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         presenter_written = true;
       }
       active_target = target;
+      active_scope_virtual_revision =
+          virtual_surface_registry_revision_.load(std::memory_order_acquire);
+    } else if (reuse_component_scope) {
+      // Only pipeline write components changed. The pipeline and ownership
+      // claims below always use this draw's mask; all attachments stay live.
+      active_target.color_write_mask = target.color_write_mask;
     }
+    active_scope_command = &command;
 
     uint32_t translucent_query_index = UINT32_MAX;
     auto begin_translucent_query = [&](const NativeCommand& query_command,
@@ -33887,6 +33990,12 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
   light::FrameScope light_frame(present.device != 0, present.submitted_frame, current_frame_.size(), native_texture_images_.size());
   if (light_frame.active && (present.submitted_frame % 120) == 0) {
+    REXLOG_INFO("gta4-draw-reuse: frame={} pipeline-on={} scope-on={} "
+                "pipeline-inherited={} inherited-hits={} scope-candidates={} scope-reuses={}",
+                present.submitted_frame, REXCVAR_GET(gta4_native_pipeline_snapshot_reuse),
+                REXCVAR_GET(gta4_native_component_scope_reuse), native_pipeline_memo_inheritances_,
+                native_pipeline_inherited_hits_, native_component_scope_candidates_,
+                native_component_scope_reuses_);
     REXLOG_INFO("gta4-buffer-health: frame={} lifetime-on={} unlock-on={} aliases-on={} lifetimes={} evictions={} unlock-prepares={} alias-marks={} alias-fallbacks={} clean-reuses={} mismatches={} disabled={} full-checks={} full-bytes={} sampled-checks={} sampled-bytes={} sampled-ticks={} tick-hz={}",
         present.submitted_frame, NativeBufferLifetimeTrackingEnabled(), NativeBufferUnlockOrderingEnabled(), NativeBufferAliasInvalidationEnabled(),
         buffer_lifetime_notifications_.load(std::memory_order_relaxed), buffer_lifetime_evictions_.load(std::memory_order_relaxed),

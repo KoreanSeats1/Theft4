@@ -215,6 +215,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     mutable std::optional<std::array<bool, kVertexStreamCount>> required_vertex_streams;
     mutable NativePipelineLookupMemo<NativeFixedFunctionState, kRenderTargetCount, VkPipeline>
         pipeline_lookup_memo;
+    mutable bool pipeline_lookup_inherited = false;
   };
 
   struct NativePersistentBufferEntry;
@@ -2109,6 +2110,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkPipelineLayout cached_pipeline_layout_ = VK_NULL_HANDLE;
   std::unordered_map<NativePipelineKey, NativePipeline, NativePipelineKeyHash> native_pipelines_;
   NativePipelineLookupLifetime native_pipeline_lookup_lifetime_;
+  // Render-worker-owned cumulative counters; sampled only by the existing log.
+  uint64_t native_pipeline_memo_inheritances_ = 0;
+  uint64_t native_pipeline_inherited_hits_ = 0;
+  uint64_t native_component_scope_candidates_ = 0;
+  uint64_t native_component_scope_reuses_ = 0;
   std::vector<NativeResolveConversionPipeline> resolve_conversion_pipelines_;
   VkPipeline hdr_present_pipeline_ = VK_NULL_HANDLE;
   std::array<NativeTextureImage, NativeFrameContextRing::kSlotCount> hdr_present_mirrors_{};

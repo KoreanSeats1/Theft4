@@ -8,7 +8,9 @@ extern "C" {
 // Fields104-106 are per-present pipeline work, valid on every row. Fields107-115
 // are compiler/cache snapshots sampled with sample_valid bit8. Pipeline ticks
 // reflect driver-call durations (including background work), not GPU time.
-enum { REX_LIGHT_FIELDS = 116 };
+// Fields116 onward are bounded command/phase/boundary and activity metadata.
+// Phase IDs follow RenderPhase; counts describe commands visited in recording.
+enum { REX_LIGHT_FIELDS = 164 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

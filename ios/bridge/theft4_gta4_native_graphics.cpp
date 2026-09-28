@@ -6,6 +6,7 @@
 #include <pthread.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <rex/cvar.h>
@@ -151,6 +152,10 @@ class Theft4NativeMetalLayerSurface final : public rex::ui::Surface {
   void* layer_ = nullptr;
 };
 
+std::mutex native_lifecycle_mutex;
+rex::graphics::gta4_native::Gta4NativeGraphicsSystem* native_lifecycle_renderer = nullptr;
+bool native_lifecycle_active = true;
+
 struct AttachContext {
   rex::ui::vulkan::VulkanPresenter* presenter;
   rex::ui::Surface* surface;
@@ -162,6 +167,17 @@ void AttachNativePresenter(void* opaque) {
 }
 
 }  // namespace
+
+extern "C" bool theft4_native_set_active(bool active) {
+  std::lock_guard lock(native_lifecycle_mutex);
+  native_lifecycle_active = active;
+  return !native_lifecycle_renderer || native_lifecycle_renderer->SetHostActive(active);
+}
+
+extern "C" void theft4_native_unregister_renderer(void* renderer) {
+  std::lock_guard lock(native_lifecycle_mutex);
+  if (native_lifecycle_renderer == renderer) native_lifecycle_renderer = nullptr;
+}
 
 std::unique_ptr<rex::system::IGraphicsSystem>
 theft4_create_gta4_native_graphics() {
@@ -203,7 +219,15 @@ theft4_create_gta4_native_graphics() {
 
   REXLOG_INFO("Theft4 selected gta4-native on '{}'",
               provider->vulkan_device()->properties().deviceName);
-  return std::make_unique<
+  REXLOG_INFO("Theft4 build79: command-attribution=enabled-in-long-capture "
+              "lifecycle=worker-pause-gpu-drain pause-wait-ms=750");
+  auto graphics = std::make_unique<
       rex::graphics::gta4_native::Gta4NativeGraphicsSystem>(
       std::move(provider), std::move(presenter), std::move(surface));
+  {
+    std::lock_guard lock(native_lifecycle_mutex);
+    graphics->SetHostActive(native_lifecycle_active);
+    native_lifecycle_renderer = graphics.get();
+  }
+  return graphics;
 }

@@ -251,7 +251,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
                 "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/stb")
             target_link_libraries(theft4_core_bridge PRIVATE
                 theft4_gta4_native_compile libzstd_static)
-            target_compile_definitions(theft4_core_bridge PRIVATE
+            target_compile_definitions(theft4_core_bridge PUBLIC
                 THEFT4_HAS_GTA4_NATIVE_BACKEND=1)
             # The native hook wrappers intentionally interpose weak generated
             # AOT entry points, so every archive object must be retained.

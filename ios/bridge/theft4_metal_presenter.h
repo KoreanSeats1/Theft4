@@ -52,6 +52,10 @@ bool theft4_metal_renderer_end_frame(uint32_t frontbuffer_ptr,
 uint64_t theft4_metal_renderer_submitted_frames(void);
 uint64_t theft4_metal_renderer_completed_frames(void);
 
+// Main-thread lifecycle control for the native backend. False means its
+// bounded pause handshake timed out or draining the GPU failed.
+bool theft4_native_set_active(bool active);
+
 // Counts distinct content publications successfully handed to the iOS Vulkan/Metal
 // swapchain. UIKit samples this monotonically increasing value for the small
 // on-screen FPS indicator; no logging or GPU readback is involved.

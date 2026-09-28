@@ -84,6 +84,10 @@
 #include <rex/ui/vulkan/util.h>
 #include <rex/ui/windowed_app_context.h>
 
+#if REX_PLATFORM_IOS
+extern "C" void theft4_native_unregister_renderer(void* renderer);
+#endif
+
 #include <shader/shader_cache.h>
 #include <shader_overrides/shader_override_cache.h>
 
@@ -386,7 +390,55 @@ constexpr size_t CacheSaveCount = 112;
 constexpr size_t CacheSaveTotalTicks = 113;
 constexpr size_t CacheSaveActive = 114;
 constexpr size_t CacheSaveBytes = 115;
-static_assert(CacheSaveBytes + 1 == REX_LIGHT_FIELDS);
+constexpr size_t DrawPrimitiveCount = 116;
+constexpr size_t DrawUpCount = 117;
+constexpr size_t DrawIndexedCount = 118;
+constexpr size_t ResolveCount = 119;
+constexpr size_t ClearCount = 120;
+constexpr size_t HandoffCount = 121;
+constexpr size_t ReleaseCount = 122;
+constexpr size_t MarkerCount = 123;
+constexpr size_t OtherCount = 124;
+constexpr size_t PhaseDraw0 = 125;
+constexpr size_t PhaseDraw1 = 126;
+constexpr size_t PhaseDraw2 = 127;
+constexpr size_t PhaseDraw3 = 128;
+constexpr size_t PhaseDraw4 = 129;
+constexpr size_t PhaseDraw5 = 130;
+constexpr size_t PhaseDraw6 = 131;
+constexpr size_t PhaseBegin0 = 132;
+constexpr size_t PhaseBegin1 = 133;
+constexpr size_t PhaseBegin2 = 134;
+constexpr size_t PhaseBegin3 = 135;
+constexpr size_t PhaseBegin4 = 136;
+constexpr size_t PhaseBegin5 = 137;
+constexpr size_t PhaseBegin6 = 138;
+constexpr size_t InvalidPhase = 139;
+constexpr size_t FirstSequence = 140;
+constexpr size_t LastSequence = 141;
+constexpr size_t FirstEpoch = 142;
+constexpr size_t LastEpoch = 143;
+constexpr size_t EpochMismatches = 144;
+constexpr size_t SequenceRegressions = 145;
+constexpr size_t BoundaryEpoch = 146;
+constexpr size_t BoundarySequence = 147;
+constexpr size_t QueuedPresents = 148;
+constexpr size_t QueuedCommands = 149;
+constexpr size_t InternalFlushes = 150;
+constexpr size_t PhaseStackDepth = 151;
+constexpr size_t PhaseMismatches = 152;
+constexpr size_t PresenterDrawTargets = 153;
+constexpr size_t OffscreenDrawTargets = 154;
+constexpr size_t ReflectionDrawTargets = 155;
+constexpr size_t SmallDrawTargets = 156;
+constexpr size_t DepthOnlyDrawTargets = 157;
+constexpr size_t DrawStructureSignature = 158;
+constexpr size_t HostActivityEpoch = 159;
+constexpr size_t HostPauseCount = 160;
+constexpr size_t HostPauseDrainTicks = 161;
+constexpr size_t HostPauseDrainSucceeded = 162;
+constexpr size_t ObservedCommands = 163;
+static_assert(ObservedCommands + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -426,7 +478,8 @@ struct FrameScope {
   bool active = false, cpu_sample = false;
   CpuSnapshot cpu_begin;
   FrameScope* prior = nullptr;
-  FrameScope(bool title, uint64_t frame, uint64_t commands, uint64_t images) {
+  FrameScope(bool title, uint64_t frame, uint64_t commands, uint64_t images,
+             uint64_t activity_epoch) {
     active = title && enabled.load(std::memory_order_relaxed);
     if (!active) return;
     capture_epoch = epoch.load(std::memory_order_acquire);
@@ -442,11 +495,15 @@ struct FrameScope {
     sample.value[Commands] = commands;
     sample.value[TextureImages] = images;
     sample.value[MemoryWarnings] = memory_warnings.load(std::memory_order_relaxed);
+    sample.value[HostActivityEpoch] = activity_epoch;
     prior = current; current = this;
     // Only two kernel accounting calls per 15 title presents (~4 calls/s at30FPS).
-    static thread_local uint64_t count = 0, last_epoch = 0;
+    static thread_local uint64_t count = 0, last_epoch = 0, last_activity_epoch = 0;
     static thread_local CpuSnapshot last;
-    if (last_epoch != capture_epoch) { count = 0; last = {}; last_epoch = capture_epoch; }
+    if (last_epoch != capture_epoch || last_activity_epoch != activity_epoch) {
+      count = 0; last = {}; last_epoch = capture_epoch;
+      last_activity_epoch = activity_epoch;
+    }
     ++count;
 #if defined(__APPLE__) && defined(__MACH__)
     // One task memory accounting call per60 presents; no VM walk or heap scan.
@@ -566,7 +623,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -6406,6 +6463,47 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   return resource;
 }
 
+bool Gta4NativeGraphicsSystem::SetHostActive(bool active) {
+  std::unique_lock lock(render_mutex_);
+  if (host_active_.exchange(active, std::memory_order_acq_rel) != active) {
+    host_activity_epoch_.fetch_add(1, std::memory_order_relaxed);
+  }
+  render_condition_.notify_all();
+  if (active || !render_worker_running_.load(std::memory_order_relaxed)) return true;
+  const bool acknowledged = render_condition_.wait_for(lock, std::chrono::milliseconds(750), [this] {
+    return host_pause_acknowledged_ || !render_worker_running_.load(std::memory_order_relaxed);
+  });
+  return acknowledged && host_pause_drain_succeeded_;
+}
+
+void Gta4NativeGraphicsSystem::WaitForHostActivity() {
+  if (host_active_.load(std::memory_order_acquire) ||
+      !render_worker_running_.load(std::memory_order_relaxed)) return;
+  // This renderer and its windowless iOS presenter submit on this worker.
+  // Drain outside render_mutex_: producers and the UI must remain able to wait.
+  const uint64_t begin = rex::chrono::Clock::QueryHostTickCount();
+  VkResult result = VK_SUCCESS;
+  if (provider_) {
+    const auto* device = static_cast<ui::vulkan::VulkanProvider*>(provider_.get())->vulkan_device();
+    result = device->functions().vkDeviceWaitIdle(device->device());
+  }
+  const uint64_t duration = rex::chrono::Clock::QueryHostTickCount() - begin;
+  std::unique_lock lock(render_mutex_);
+  ++host_pause_count_;
+  host_pause_drain_ticks_ = duration;
+  host_pause_drain_succeeded_ = result == VK_SUCCESS;
+  host_pause_acknowledged_ = true;
+  REXLOG_INFO("gta4-host-pause: epoch={} pause={} drain-ticks={} result={} retained-commands={}",
+      host_activity_epoch_.load(std::memory_order_relaxed), host_pause_count_, duration,
+      int32_t(result), current_frame_.size());
+  render_condition_.notify_all();
+  render_condition_.wait(lock, [this] {
+    return host_active_.load(std::memory_order_acquire) ||
+           !render_worker_running_.load(std::memory_order_relaxed);
+  });
+  host_pause_acknowledged_ = false;
+}
+
 void Gta4NativeGraphicsSystem::StartRenderWorker() {
   if (render_worker_running_.exchange(true)) {
     return;
@@ -6608,6 +6706,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     bool worker_refilled_batch = false, worker_waited = false;
 #endif
     if (worker_batch_.empty()) {
+      WaitForHostActivity();
       std::unique_lock lock(render_mutex_);
 #ifdef THEFT4_LAB_BUILD
       const uint64_t lock_acquired = profile_transport ? profile::CpuTick() : 0;
@@ -6615,7 +6714,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       worker_waited = profile_transport && render_worker_running_ && render_queue_.empty();
 #endif
       render_condition_.wait(
-          lock, [this]() { return !render_worker_running_ || !render_queue_.empty(); });
+          lock, [this]() { return !render_worker_running_ || !render_queue_.empty() ||
+              !host_active_.load(std::memory_order_acquire); });
+      if (render_worker_running_ && !host_active_.load(std::memory_order_acquire)) continue;
 #ifdef THEFT4_LAB_BUILD
       const uint64_t transfer_begin = profile_transport ? profile::CpuTick() : 0;
       // Predicate wait includes reacquiring the queue mutex after notification.
@@ -7011,6 +7112,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         break;
       }
       case CommandType::kTextureLock: {
+        WaitForHostActivity();
         if (command.phone_trace) TracePhoneNativeCommand("worker-sync", command);
         TextureLockCommand lock_command;
         std::memcpy(&lock_command, command.bytes.data(), sizeof(lock_command));
@@ -7083,6 +7185,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           render_phase_stack.pop_back();
         } else {
           matched = false;
+          ++light_phase_mismatches_;
           render_phase_stack.clear();
         }
         const bool artificial_light_marker =
@@ -7117,6 +7220,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         break;
       }
       case CommandType::kPresent: {
+        WaitForHostActivity();
         PresentCommand present;
         std::memcpy(&present, command.bytes.data(), sizeof(present));
         if (present.diagnostic_trace && current_frame_.empty()) {
@@ -7145,6 +7249,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
               present.submitted_frame, current_frame_.size(), present.frontbuffer_texture,
               command.present_source ? command.present_source->generation : 0);
         }
+        light_phase_stack_depth_ = render_phase_stack.size();
         log_frame_batch("present", command, present.submitted_frame, queued_after_pop);
         SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPublishSetup);
         const bool published =
@@ -28818,6 +28923,59 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   }
   for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
     const NativeCommand& queued_command = current_frame_[command_index];
+    if (light::current) {
+      auto& values = light::current->sample.value;
+      ++values[light::ObservedCommands];
+      const uint64_t sequence = queued_command.diagnostic_submit_sequence;
+      const uint32_t epoch = queued_command.diagnostic_producer_epoch;
+      if (!values[light::FirstSequence]) {
+        values[light::FirstSequence] = sequence;
+        values[light::FirstEpoch] = epoch;
+      } else if (sequence <= values[light::LastSequence]) {
+        ++values[light::SequenceRegressions];
+      }
+      values[light::LastSequence] = sequence;
+      values[light::LastEpoch] = epoch;
+      values[light::EpochMismatches] += epoch != values[light::BoundaryEpoch];
+      bool draw = false;
+      switch (queued_command.type) {
+        case CommandType::kDrawPrimitive: ++values[light::DrawPrimitiveCount]; draw = true; break;
+        case CommandType::kDrawPrimitiveUp: ++values[light::DrawUpCount]; draw = true; break;
+        case CommandType::kDrawIndexedPrimitive: ++values[light::DrawIndexedCount]; draw = true; break;
+        case CommandType::kResolve: ++values[light::ResolveCount]; break;
+        case CommandType::kClear: ++values[light::ClearCount]; break;
+        case CommandType::kDepthSurfaceHandoff: ++values[light::HandoffCount]; break;
+        case CommandType::kReleaseResource: ++values[light::ReleaseCount]; break;
+        case CommandType::kRenderPhaseMarker: {
+          ++values[light::MarkerCount];
+          RenderPhaseMarkerCommand marker{};
+          std::memcpy(&marker, queued_command.bytes.data(), sizeof(marker));
+          const uint32_t phase = uint32_t(marker.phase);
+          if (phase < 7) {
+            if (marker.event == RenderPhaseEvent::kBegin) ++values[light::PhaseBegin0 + phase];
+          } else { ++values[light::InvalidPhase]; }
+          break;
+        }
+        default: ++values[light::OtherCount]; break;
+      }
+      if (draw) {
+        const uint32_t phase = uint32_t(queued_command.render_phase);
+        if (phase < 7) ++values[light::PhaseDraw0 + phase];
+        else ++values[light::InvalidPhase];
+        // Mix already-cached identities only: no payload hashing, heap lookup,
+        // timing call or GPU query. This is not an instruction/work equivalence proof.
+        uint64_t& signature = values[light::DrawStructureSignature];
+        if (!signature) signature = 14695981039346656037ull;
+        const auto mix = [&](uint64_t value) { signature = (signature ^ value) * 1099511628211ull; };
+        mix(uint32_t(queued_command.type)); mix(phase);
+        if (const auto* state = queued_command.pipeline_state.get()) {
+          mix(state->vertex_shader_resource ? state->vertex_shader_resource->hash : 0);
+          mix(state->pixel_shader_resource ? state->pixel_shader_resource->hash : 0);
+        }
+        const auto& color = queued_command.snapshot_render_targets[0];
+        mix(color.handle); mix((uint64_t(color.width) << 32) | color.height);
+      }
+    }
     SetNativeWorkerDiagnosticFrameProgress(uint32_t(command_index), uint32_t(current_frame_.size()),
                                            queued_command.type);
     const auto* profile_state = queued_command.pipeline_state.get();
@@ -30609,6 +30767,15 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
           GetNativeSceneSampleOverride() == lab_scene_sample_override;
     }
 #endif
+    if (light::current && (command.type == CommandType::kDrawPrimitive ||
+                           command.type == CommandType::kDrawPrimitiveUp ||
+                           command.type == CommandType::kDrawIndexedPrimitive)) {
+      auto& values = light::current->sample.value;
+      ++values[target.uses_presenter ? light::PresenterDrawTargets : light::OffscreenDrawTargets];
+      values[light::ReflectionDrawTargets] += target.is_reflection;
+      values[light::SmallDrawTargets] += target.logical_width == 64 && target.logical_height == 64;
+      values[light::DepthOnlyDrawTargets] += !target.color_attachment_mask && target.depth_stencil_attachment_active;
+    }
     if (collect_frame_diagnostics) {
       if (target.uses_presenter) {
         ++presenter_target_commands;
@@ -33988,7 +34155,28 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
-  light::FrameScope light_frame(present.device != 0, present.submitted_frame, current_frame_.size(), native_texture_images_.size());
+  if (!present.device) ++light_internal_flushes_;
+  light::FrameScope light_frame(present.device != 0, present.submitted_frame,
+      current_frame_.size(), native_texture_images_.size(),
+      host_activity_epoch_.load(std::memory_order_relaxed));
+  if (light_frame.active) {
+    auto& values = light_frame.sample.value;
+    if (active_worker_command_ && active_worker_command_->type == CommandType::kPresent) {
+      values[light::BoundaryEpoch] = active_worker_command_->diagnostic_producer_epoch;
+      values[light::BoundarySequence] = active_worker_command_->diagnostic_submit_sequence;
+    }
+    {
+      std::lock_guard lock(render_mutex_);
+      values[light::QueuedPresents] = queued_title_presents_;
+      values[light::QueuedCommands] = render_queue_.size();
+    }
+    values[light::InternalFlushes] = light_internal_flushes_;
+    values[light::PhaseStackDepth] = light_phase_stack_depth_;
+    values[light::PhaseMismatches] = light_phase_mismatches_;
+    values[light::HostPauseCount] = host_pause_count_;
+    values[light::HostPauseDrainTicks] = host_pause_drain_ticks_;
+    values[light::HostPauseDrainSucceeded] = host_pause_drain_succeeded_;
+  }
   if (light_frame.active && (present.submitted_frame % 120) == 0) {
     REXLOG_INFO("gta4-draw-reuse: frame={} pipeline-on={} scope-on={} "
                 "pipeline-inherited={} inherited-hits={} scope-candidates={} scope-reuses={}",
@@ -35361,6 +35549,9 @@ void Gta4NativeGraphicsSystem::DestroyVulkanWorkerObjects() {
 }
 
 void Gta4NativeGraphicsSystem::Shutdown() {
+#if REX_PLATFORM_IOS
+  theft4_native_unregister_renderer(this);
+#endif
   if (render_worker_running_.exchange(false)) {
     render_condition_.notify_all();
 #if defined(__APPLE__) && defined(__MACH__)

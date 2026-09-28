@@ -133,8 +133,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
                                bool blocking) override;
 
   void Shutdown() override;
+  // iOS shell lifecycle, before UIKit permits background GPU suspension.
+  // No guest/cache reset. Main-thread wait is bounded; failure is reported.
+  bool SetHostActive(bool active);
 
  private:
+  void WaitForHostActivity();
   enum class NativeVertexNumericType : uint8_t {
     kFloat,
     kSignedInteger,
@@ -1700,6 +1704,13 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t diagnostic_submit_sequence_ = 0;
   uint32_t diagnostic_producer_epoch_ = 1;
   std::atomic<bool> render_worker_running_{false};
+  std::atomic<bool> host_active_{true};
+  std::atomic<uint64_t> host_activity_epoch_{0};
+  bool host_pause_acknowledged_ = false; // render_mutex_
+  bool host_pause_drain_succeeded_ = true; // worker writes before acknowledgement
+  uint64_t host_pause_count_ = 0, host_pause_drain_ticks_ = 0; // worker-owned
+  uint64_t light_internal_flushes_ = 0, light_phase_mismatches_ = 0;
+  uint64_t light_phase_stack_depth_ = 0;
 #if defined(__APPLE__) && defined(__MACH__)
   pthread_t render_worker_{};
   bool render_worker_joinable_ = false;

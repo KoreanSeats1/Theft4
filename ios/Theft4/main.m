@@ -1481,18 +1481,18 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             output.render_width, output.render_height, output.output_width, output.output_height];
         [self appendPublicationCaptureText:text];
         NSMutableString *timings = [NSMutableString new];
-        rex_light_sample timingSamples[256];
+        rex_light_sample timingSamples[128];
         uint64_t timingLost = 0;
-        for (unsigned batch = 0; batch < 64; ++batch) {
+        for (unsigned batch = 0; batch < 128; ++batch) {
             uint64_t lost = 0;
-            const uint32_t count = rex_gta4_light_capture_read(&self->_lightCaptureCursor, timingSamples, 256, &lost);
+            const uint32_t count = rex_gta4_light_capture_read(&self->_lightCaptureCursor, timingSamples, 128, &lost);
             timingLost += lost;
             for (uint32_t row = 0; row < count; ++row) {
                 for (unsigned field = 0; field < REX_LIGHT_FIELDS; ++field)
                     [timings appendFormat:field ? @",%llu" : @"%llu", (unsigned long long)timingSamples[row].value[field]];
                 [timings appendString:@"\n"];
             }
-            if (count < 256) break;
+            if (count < 128) break;
         }
         if (timingLost) [timings appendFormat:@"# lost_records=%llu\n", (unsigned long long)timingLost];
         NSFileHandle *timingFile = [NSFileHandle fileHandleForWritingToURL:self->_lightCaptureURL error:nil];
@@ -1530,7 +1530,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = @"# build78: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
+    NSString *header = @"# build79: publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n";
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _publicationCaptureURL = nil;
         [self record:@"capture.long_start_failed"];
@@ -1539,7 +1539,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _lightCaptureURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
     NSString *lightHeader = [NSString stringWithFormat:
-        @"# build78: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        @"# build79: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
         (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
@@ -1751,6 +1751,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _touchControls.active = _gamePresentation && _showControls.on;
     [self createCore];
     if (_core) [self accept:theft4_core_activate(_core) operation:@"activate"];
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    theft4_native_set_active(true);
+#endif
     [self record:@"scene.active"];
 #ifdef THEFT4_HAS_GAME_STARTUP
     if (!_bootRan && [NSProcessInfo.processInfo.arguments containsObject:@"--theft4-start-game"]) {
@@ -1786,6 +1789,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:
             [NSString stringWithFormat:@"marker,,%llu,,app-inactive\n", (unsigned long long)now]]; });
     }
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    const BOOL quiesced = theft4_native_set_active(false);
+    [self record:quiesced ? @"renderer.quiesced" : @"renderer.pause_failed"];
+    [self drainPublicationCapture];
+#endif
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];

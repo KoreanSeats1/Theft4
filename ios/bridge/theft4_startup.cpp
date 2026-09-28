@@ -33,6 +33,7 @@ REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(bool, vulkan_tight_render_area);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+REXCVAR_DECLARE(bool, vulkan_moltenvk_synchronous_queue_submits);
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
@@ -342,6 +343,22 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_frames_in_flight, native_frame_slots);
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
+        // Encode and commit Metal work on the submitting thread. GPU execution
+        // still overlaps the CPU using the existing frame slots. A fresh launch
+        // with 0 restores build 76's separate driver dispatch queue.
+        const char* synchronous_submit_override =
+            std::getenv("THEFT4_MOLTENVK_SYNCHRONOUS_SUBMITS");
+        const std::string_view synchronous_submits =
+            synchronous_submit_override ? synchronous_submit_override : "1";
+        if (synchronous_submits != "0" && synchronous_submits != "1") {
+            throw std::runtime_error(
+                "THEFT4_MOLTENVK_SYNCHRONOUS_SUBMITS must be 0 or 1");
+        }
+        REXCVAR_SET(vulkan_moltenvk_synchronous_queue_submits,
+                    synchronous_submits == "1");
+        REXLOG_INFO("Theft4 MoltenVK synchronous submissions: {} ({})",
+                    synchronous_submits == "1",
+                    synchronous_submit_override ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
         // Keep CPU/transport detail for attribution, but use only the coarse
         // GPU envelope. Per-pass Metal timestamp blits measurably perturb the

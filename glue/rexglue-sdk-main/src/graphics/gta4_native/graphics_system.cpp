@@ -2248,6 +2248,44 @@ VectorFontSet SelectVectorFontSet(size_t atlas_index, uint64_t stock_identity_ha
   return VectorFontSet::kGta4;
 }
 
+bool NativeBufferLifetimeTrackingEnabled() {
+  static const bool enabled = [] { const char* v = std::getenv("THEFT4_BUFFER_LIFETIME"); return !v || std::strcmp(v, "0") != 0; }();
+  return enabled;
+}
+bool NativeBufferUnlockOrderingEnabled() {
+  static const bool enabled = [] { const char* v = std::getenv("THEFT4_BUFFER_UNLOCK_ORDERING"); return !v || std::strcmp(v, "0") != 0; }();
+  return enabled;
+}
+bool NativeBufferAliasInvalidationEnabled() {
+  static const bool enabled = [] { const char* v = std::getenv("THEFT4_BUFFER_ALIAS_INVALIDATION"); return !v || std::strcmp(v, "0") != 0; }();
+  return enabled;
+}
+
+// Follow the actual xmemory guest views, including the XEX 9->8 alias and
+// the 7F GPU writeback view. PhysicalHeap accounts for E's extra 0x1000.
+std::optional<uint64_t> NativeBufferBackingKey(rex::memory::Memory* memory,
+                                              uint32_t address, uint32_t size) {
+  const uint64_t end = uint64_t(address) + size;
+  if (!memory || !size || address >= 0xFFD00000 || end > uint64_t(UINT32_MAX) + 1) return std::nullopt;
+  constexpr uint32_t boundaries[] = {0x7F000000, 0x80000000, 0x90000000,
+      0xA0000000, 0xC0000000, 0xE0000000, 0xFFD00000};
+  for (uint32_t boundary : boundaries) {
+    if (address < boundary && end > boundary) return std::nullopt;
+  }
+  if (address >= 0x7F000000 && address < 0x80000000)
+    return NativeBufferAliasIndex::kPhysicalDomain | (address - 0x7F000000);
+  if (address >= 0x90000000 && address < 0xA0000000)
+    return uint64_t(address - 0x10000000);
+  const uint32_t first_physical = memory->GetPhysicalAddress(address);
+  const uint32_t last_physical = memory->GetPhysicalAddress(uint32_t(end - 1));
+  if (first_physical == UINT32_MAX && last_physical == UINT32_MAX) return uint64_t(address);
+  if (first_physical != UINT32_MAX && last_physical != UINT32_MAX &&
+      uint64_t(first_physical) + size - 1 == last_physical) {
+    return NativeBufferAliasIndex::kPhysicalDomain | first_physical;
+  }
+  return std::nullopt;  // A discontinuous mapping uses conservative invalidation.
+}
+
 const char* CommandTypeName(CommandType type) {
   switch (type) {
     case CommandType::kDeviceCreated:
@@ -2306,6 +2344,10 @@ const char* CommandTypeName(CommandType type) {
       return "depth-surface-handoff";
     case CommandType::kRegisterVirtualResource:
       return "register-virtual-resource";
+    case CommandType::kInvalidateBufferLifetime:
+      return "invalidate-buffer-lifetime";
+    case CommandType::kPrepareBufferUnlock:
+      return "prepare-buffer-unlock";
   }
   return "unknown";
 }
@@ -3272,6 +3314,9 @@ uint32_t GetNativeColorFormatComponentMask(VkFormat format) {
 
 size_t CommandSize(CommandType type) {
   switch (type) {
+    case CommandType::kInvalidateBufferLifetime:
+    case CommandType::kPrepareBufferUnlock:
+      return 0;  // Synchronous producer-only transactions.
     case CommandType::kDeviceCreated:
     case CommandType::kDeviceDestroyed:
       return sizeof(DeviceCommand);
@@ -3332,6 +3377,9 @@ size_t CommandSize(CommandType type) {
 
 uint32_t CommandDevice(CommandType type, const void* command) {
   switch (type) {
+    case CommandType::kInvalidateBufferLifetime:
+    case CommandType::kPrepareBufferUnlock:
+      return 0;  // Synchronous producer-only transactions.
     case CommandType::kDeviceCreated:
     case CommandType::kDeviceDestroyed:
       return static_cast<const DeviceCommand*>(command)->device;
@@ -4098,6 +4146,52 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
   const uint64_t capture_begin = profile_transport ? profile::CpuTick() : 0;
   std::unique_lock capture_lock(command_capture_mutex_);
   const uint64_t capture_acquired = profile_transport ? profile::CpuTick() : 0;
+  // These synchronous producer transactions must precede any later draw
+  // capture. No worker command is needed: queued draws retain their snapshots.
+  if (title_command_size >= sizeof(CommandHeader)) {
+    CommandHeader header{};
+    std::memcpy(&header, title_command, sizeof(header));
+    if (header.type == CommandType::kInvalidateBufferLifetime) {
+      if (title_command_size != sizeof(InvalidateBufferLifetimeCommand) || header.size != title_command_size) return false;
+      InvalidateBufferLifetimeCommand lifetime{};
+      std::memcpy(&lifetime, title_command, sizeof(lifetime));
+      if (!lifetime.owner || uint64_t(lifetime.owner) + 32 != lifetime.resource ||
+          lifetime.reason < 1 || lifetime.reason > 4) return false;
+      if (!NativeBufferLifetimeTrackingEnabled()) return true;
+      uint64_t generation = 0;
+      {
+        std::lock_guard lock(buffer_resource_mutex_);
+        auto old = buffer_resources_.find(lifetime.resource);
+        if (old != buffer_resources_.end() && old->second) generation = old->second->generation;
+        buffer_resources_.erase(lifetime.resource);
+        buffer_alias_index_.Erase(lifetime.resource);
+        unindexed_buffer_handles_.erase(lifetime.resource);
+        dirty_buffer_handles_.erase(lifetime.resource);
+      }
+#ifdef THEFT4_LAB_BUILD
+      producer_binding_cache_.Reset();
+#endif
+      const uint64_t count = buffer_lifetime_notifications_.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (generation) buffer_lifetime_evictions_.fetch_add(1, std::memory_order_relaxed);
+      if (count <= 16 || !(count % 4096)) {
+        REXLOG_INFO("gta4-buffer-lifetime: event={} reason={} owner={:08X} handle={:08X} old-generation={}",
+                    count, lifetime.reason, lifetime.owner, lifetime.resource, generation);
+      }
+      return true;
+    }
+    if (header.type == CommandType::kPrepareBufferUnlock) {
+      if (title_command_size != sizeof(PrepareBufferUnlockCommand) || header.size != title_command_size) return false;
+      PrepareBufferUnlockCommand unlock{};
+      std::memcpy(&unlock, title_command, sizeof(unlock));
+      if (!unlock.resource || (unlock.resource & 3) ||
+          uint64_t(unlock.resource) + 32 > uint64_t(UINT32_MAX) + 1) return false;
+      if (!NativeBufferUnlockOrderingEnabled()) return true;
+      std::lock_guard lock(buffer_resource_mutex_);
+      MarkBufferWriteLocked(unlock.resource);
+      buffer_unlock_preparations_.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+  }
 #ifdef THEFT4_LAB_BUILD
   const bool binding_cache_allowed = !fire_envelope && !tv_envelope && !phone_envelope;
   if (!profile_transport) producer_binding_skips_pending_ = 0;
@@ -4786,7 +4880,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     }
     if (decision == ResourceUnlockDecision::kDirtyGuestResource) {
       std::lock_guard buffer_lock(buffer_resource_mutex_);
-      dirty_buffer_handles_.insert(unlock.resource);
+      MarkBufferWriteLocked(unlock.resource);
     }
     if (rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
       REXLOG_INFO(
@@ -4839,6 +4933,8 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
         released_buffer_retained_bytes = buffer->second->payload.capacity();
       }
       erased_buffer = buffer_resources_.erase(release.resource) != 0;
+      buffer_alias_index_.Erase(release.resource);
+      unindexed_buffer_handles_.erase(release.resource);
       dirty_buffer_handles_.erase(release.resource);
       remaining_buffers = buffer_resources_.size();
     }
@@ -5428,6 +5524,35 @@ Gta4NativeGraphicsSystem::CreateResolvedTextureResource(const ResolveCommand& co
   return resource;
 }
 
+void Gta4NativeGraphicsSystem::MarkBufferWriteLocked(uint32_t handle) {
+  if (!handle || (handle & 3) || uint64_t(handle) + 32 > uint64_t(UINT32_MAX) + 1) return;
+  dirty_buffer_handles_.insert(handle);
+  if (!NativeBufferAliasInvalidationEnabled()) return;
+  const uint8_t* object = memory_->TranslateVirtual<const uint8_t*>(handle);
+  if (!object) return;
+  uint32_t flags, address, size;
+  std::memcpy(&flags, object, 4);
+  std::memcpy(&address, object + kResourceDataOffset, 4);
+  std::memcpy(&size, object + kResourceSizeOffset, 4);
+  const auto metadata = DecodeNativeBufferMetadata(__builtin_bswap32(flags),
+      __builtin_bswap32(address), __builtin_bswap32(size));
+  if (!metadata || !metadata->HasValidPayload(kMaximumResourcePayloadSize)) return;
+  const auto key = NativeBufferBackingKey(memory_, metadata->guest_address, metadata->guest_size);
+  uint64_t aliases = 0;
+  const auto mark = [&](uint32_t alias) {
+    dirty_buffer_handles_.insert(alias);
+    if (alias != handle) ++aliases;
+  };
+  if (!key || !buffer_alias_index_.ForEachOverlap(*key, metadata->guest_size, mark)) {
+    // Rare mapping-boundary case: correctness takes precedence over narrowing.
+    for (const auto& entry : buffer_resources_) mark(entry.first);
+    buffer_alias_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    for (uint32_t alias : unindexed_buffer_handles_) mark(alias);
+  }
+  buffer_alias_invalidations_.fetch_add(aliases, std::memory_order_relaxed);
+}
+
 std::shared_ptr<const Gta4NativeGraphicsSystem::NativeBufferResource>
 Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
   auto reject = [handle](const char* reason, uint32_t flags, uint32_t data_address,
@@ -5492,12 +5617,26 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
   // full validation. Compare against the immutable capture before allocating a
   // temporary payload and hashing it; unchanged bytes need neither operation.
   // Keep this separate from the sampled clean path and its mismatch safeguard.
-  if (!can_reuse_clean_capture && matching_cache_entry &&
-      NativeBufferShadowPayloadMatches(data, matching_cache_entry->payload.data(), data_size)) {
+  bool full_payload_matches = false;
+  if (!can_reuse_clean_capture && matching_cache_entry) {
+    const uint64_t count = buffer_full_validation_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+    buffer_full_validation_bytes_.fetch_add(data_size, std::memory_order_relaxed);
+    // At most one timed comparison in 256, only during the long capture.
+    // Sample totals are raw, not extrapolated estimates of all validation time.
+    const bool timed = !(count % 256) && light::enabled.load(std::memory_order_relaxed);
+    const uint64_t begin = timed ? light::Tick() : 0;
+    full_payload_matches = NativeBufferShadowPayloadMatches(data, matching_cache_entry->payload.data(), data_size);
+    if (timed) {
+      buffer_validation_sample_ticks_.fetch_add(light::Tick() - begin, std::memory_order_relaxed);
+      buffer_validation_sample_bytes_.fetch_add(data_size, std::memory_order_relaxed);
+      buffer_validation_sample_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  if (full_payload_matches) {
     std::lock_guard lock(buffer_resource_mutex_);
     const auto existing = buffer_resources_.find(handle);
     if (existing != buffer_resources_.end() && existing->second == matching_cache_entry) {
-      dirty_buffer_handles_.erase(handle);
+      if (!NativeBufferUnlockOrderingEnabled() || !metadata->guest_locked) dirty_buffer_handles_.erase(handle);
       matching_cache_entry->last_used_frame.store(
           g_native_memory_profile_event_frame.load(std::memory_order_relaxed),
           std::memory_order_relaxed);
@@ -5545,7 +5684,7 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
     if (resource && resource->flags == flags && resource->guest_address == data_address &&
         resource->guest_size == data_size && resource->content_hash == content_hash &&
         resource->payload == payload) {
-      dirty_buffer_handles_.erase(handle);
+      if (!NativeBufferUnlockOrderingEnabled() || !metadata->guest_locked) dirty_buffer_handles_.erase(handle);
       resource->last_used_frame.store(
           g_native_memory_profile_event_frame.load(std::memory_order_relaxed),
           std::memory_order_relaxed);
@@ -5565,7 +5704,16 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
   resource->payload = std::move(payload);
   const bool replacing = existing != buffer_resources_.end() && existing->second;
   buffer_resources_[handle] = resource;
-  dirty_buffer_handles_.erase(handle);
+  if (NativeBufferAliasInvalidationEnabled()) {
+    const auto key = NativeBufferBackingKey(memory_, data_address, data_size);
+    if (key && buffer_alias_index_.Insert(handle, *key, data_size)) {
+      unindexed_buffer_handles_.erase(handle);
+    } else {
+      buffer_alias_index_.Erase(handle);
+      unindexed_buffer_handles_.insert(handle);
+    }
+  }
+  if (!NativeBufferUnlockOrderingEnabled() || !metadata->guest_locked) dirty_buffer_handles_.erase(handle);
   RecordNativeMemoryLifecycle(
       memory::ResourceKind::kBuffer,
       replacing ? memory::LifecycleAction::kReplace : memory::LifecycleAction::kCreate,
@@ -6704,6 +6852,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         {
           std::lock_guard lock(buffer_resource_mutex_);
           buffer_resources_.clear();
+          buffer_alias_index_.Clear();
+          unindexed_buffer_handles_.clear();
           dirty_buffer_handles_.clear();
           buffer_cache_poll_schedule_.Reset();
           buffer_cache_reclamation_pending_ = false;
@@ -19020,6 +19170,8 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
         cache_bytes > candidate.retained_bytes ? cache_bytes - candidate.retained_bytes : 0;
     reclaimed_bytes += candidate.retained_bytes;
     ++reclaimed_resources;
+    buffer_alias_index_.Erase(candidate.handle);
+    unindexed_buffer_handles_.erase(candidate.handle);
     buffer_resources_.erase(entry);
   }
 
@@ -33734,6 +33886,17 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
   light::FrameScope light_frame(present.device != 0, present.submitted_frame, current_frame_.size(), native_texture_images_.size());
+  if (light_frame.active && (present.submitted_frame % 120) == 0) {
+    REXLOG_INFO("gta4-buffer-health: frame={} lifetime-on={} unlock-on={} aliases-on={} lifetimes={} evictions={} unlock-prepares={} alias-marks={} alias-fallbacks={} clean-reuses={} mismatches={} disabled={} full-checks={} full-bytes={} sampled-checks={} sampled-bytes={} sampled-ticks={} tick-hz={}",
+        present.submitted_frame, NativeBufferLifetimeTrackingEnabled(), NativeBufferUnlockOrderingEnabled(), NativeBufferAliasInvalidationEnabled(),
+        buffer_lifetime_notifications_.load(std::memory_order_relaxed), buffer_lifetime_evictions_.load(std::memory_order_relaxed),
+        buffer_unlock_preparations_.load(std::memory_order_relaxed), buffer_alias_invalidations_.load(std::memory_order_relaxed),
+        buffer_alias_fallbacks_.load(std::memory_order_relaxed), buffer_capture_reuse_count_.load(std::memory_order_relaxed),
+        buffer_shadow_mismatch_count_.load(std::memory_order_relaxed), buffer_fast_path_disabled_.load(std::memory_order_relaxed),
+        buffer_full_validation_count_.load(std::memory_order_relaxed), buffer_full_validation_bytes_.load(std::memory_order_relaxed),
+        buffer_validation_sample_count_.load(std::memory_order_relaxed), buffer_validation_sample_bytes_.load(std::memory_order_relaxed),
+        buffer_validation_sample_ticks_.load(std::memory_order_relaxed), rex::chrono::Clock::QueryHostTickFrequency());
+  }
   if (light_frame.active) {
     if (light_frame.cpu_sample) {
       if (native_pipeline_compiler_) {

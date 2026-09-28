@@ -55,6 +55,7 @@
 #include <memory_resource>
 #include "stateful_constant_state.h"
 #include "native_buffer_arena.h"
+#include "native_buffer_alias_index.h"
 #include "native_bulb_appearance.h"
 #include "native_aspect_content.h"
 #include <rex/graphics/gta4_native/phone_trace.h>
@@ -1248,6 +1249,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::shared_ptr<const NativeTextureResource> CreateResolvedTextureResource(
       const ResolveCommand& command);
   std::shared_ptr<const NativeBufferResource> CaptureBufferResource(uint32_t handle);
+  // Caller holds buffer_resource_mutex_; producer calls also hold capture mutex.
+  void MarkBufferWriteLocked(uint32_t handle);
   SurfaceDescriptor CaptureSurfaceDescriptor(uint32_t handle) const;
   std::shared_ptr<const NativeTextureResource> CaptureTextureResource(
       uint32_t handle, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t stage);
@@ -1730,6 +1733,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::mutex buffer_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeBufferResource>> buffer_resources_;
   std::unordered_set<uint32_t> dirty_buffer_handles_;
+  NativeBufferAliasIndex buffer_alias_index_;
+  std::unordered_set<uint32_t> unindexed_buffer_handles_;
   uint64_t next_buffer_generation_ = 1;
   std::mutex texture_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeTextureResource>> texture_resources_;
@@ -2146,6 +2151,16 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::atomic<uint64_t> buffer_fast_path_disable_count_{0};
   std::atomic<uint64_t> buffer_fast_path_request_count_{0};
   std::atomic<bool> buffer_fast_path_disabled_{false};
+  std::atomic<uint64_t> buffer_lifetime_notifications_{0};
+  std::atomic<uint64_t> buffer_lifetime_evictions_{0};
+  std::atomic<uint64_t> buffer_unlock_preparations_{0};
+  std::atomic<uint64_t> buffer_alias_invalidations_{0};
+  std::atomic<uint64_t> buffer_alias_fallbacks_{0};
+  std::atomic<uint64_t> buffer_full_validation_count_{0};
+  std::atomic<uint64_t> buffer_full_validation_bytes_{0};
+  std::atomic<uint64_t> buffer_validation_sample_count_{0};
+  std::atomic<uint64_t> buffer_validation_sample_bytes_{0};
+  std::atomic<uint64_t> buffer_validation_sample_ticks_{0};
   NativePeriodicWorkSchedule buffer_cache_poll_schedule_{kNativeBufferCachePollPhaseFrames};
   bool buffer_cache_reclamation_pending_ = false;
   uint64_t texture_image_eviction_count_ = 0;

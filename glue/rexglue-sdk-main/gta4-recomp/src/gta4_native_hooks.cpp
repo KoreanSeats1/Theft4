@@ -3293,6 +3293,8 @@ bool IsCachedListCommandType(CommandType type) {
     case CommandType::kQueryDeviceCapabilities:
     case CommandType::kRegisterReflectionTarget:
     case CommandType::kReleaseResource:
+    case CommandType::kInvalidateBufferLifetime:
+    case CommandType::kPrepareBufferUnlock:
     case CommandType::kUpdateEnvironmentalData:
     case CommandType::kDepthSurfaceHandoff:
     case CommandType::kRegisterVirtualResource:
@@ -3741,6 +3743,57 @@ NativeResourceLockState ConsumeNativeResourceLock(uint32_t resource, bool outerm
     g_native_resource_locks.erase(existing);
   }
   return state;
+}
+
+// sub_828ECF40's allocator-backed branch embeds a private vertex header at
+// owner+32. Its destructor frees that storage without D3DResource_Release.
+// External/shared headers and ordinary refcounted D3D buffers are not this
+// lifetime: require the complete inline shape before invalidating a capture.
+uint32_t GetNativeInlineVertexBuffer(uint8_t* base, uint32_t owner) {
+  if (!base || !owner || (owner & 3u) || owner > UINT32_MAX - 63u ||
+      LoadU32(base, owner + 28) != owner + 32) {
+    return 0;
+  }
+  const uint32_t resource = owner + 32;
+  const uint32_t flags = LoadU32(base, resource);
+  const uint32_t backing = LoadU32(base, owner + 24);
+  const uint32_t address_word = LoadU32(base, resource + 24);
+  const uint32_t size_word = LoadU32(base, resource + 28);
+  const uint64_t size = uint64_t(LoadU16(base, owner + 4)) * LoadU32(base, owner + 12);
+  if ((flags & ~0xF00u) != 0x00200001u || !backing || (backing & 3u) ||
+      address_word != (backing | 3u) || !size || size > 0x03FFFFFCu || (size & 3u) ||
+      size_word != (uint32_t(size) | 0x10000002u)) {
+    return 0;
+  }
+  return resource;
+}
+
+enum class NativeInlineBufferLifetimeReason : uint32_t {
+  kCreate = 1,
+  kDestroy = 2,
+  kDetach = 3,
+  kRelocate = 4,
+};
+
+void ClearNativeResourceLockState(uint32_t resource) {
+  if (resource) {
+    std::lock_guard lock(g_native_resource_lock_mutex);
+    g_native_resource_locks.erase(resource);
+  }
+}
+
+void NotifyNativeInlineBufferLifetime(uint32_t resource, uint32_t owner,
+                                     NativeInlineBufferLifetimeReason reason) {
+  if (!resource) {
+    return;
+  }
+  InvalidateBufferLifetimeCommand command{};
+  command.resource = resource;
+  command.owner = owner;
+  command.reason = uint32_t(reason);
+  // This command is producer-only and is explicitly excluded from cached
+  // display lists: allocation lifetime must be observed at the actual call.
+  SubmitNativeCommand(command);
 }
 
 void RegisterNativeShader(PPCContext& ctx, uint8_t* base, GuestFunction implementation,
@@ -5329,6 +5382,59 @@ extern "C" void sub_82A441F8(PPCContext& ctx, uint8_t* base) {
   __imp__sub_82A441F8(ctx, base);
 }
 
+extern "C" void sub_828ECF40(PPCContext& ctx, uint8_t* base) {
+  const bool native_mode = IsNativeMode();
+  const uint32_t owner = ctx.r3.u32;
+  REX_ORIGINAL_FUNC(sub_828ECF40)(ctx, base);
+  if (native_mode) {
+    // Inspect only the completed object; constructor input may be uninitialized.
+    const uint32_t resource = GetNativeInlineVertexBuffer(base, owner);
+    ClearNativeResourceLockState(resource);
+    NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kCreate);
+  }
+}
+
+extern "C" void sub_828ED118(PPCContext& ctx, uint8_t* base) {
+  const uint32_t owner = ctx.r3.u32;
+  const uint32_t resource = IsNativeMode() ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  // Retire the old lookup before the original frees backing. Queued immutable
+  // snapshots retain ownership. Keep lock bookkeeping for its automatic unlock.
+  NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kDestroy);
+  REX_ORIGINAL_FUNC(sub_828ED118)(ctx, base);
+  ClearNativeResourceLockState(resource);
+}
+
+extern "C" void sub_828ECD88(PPCContext& ctx, uint8_t* base) {
+  const uint32_t owner = ctx.r3.u32;
+  const uint32_t resource = IsNativeMode() ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  // Every original branch clears owner+28; retire only its verified inline
+  // header, never a shared external header abandoned by this owner.
+  NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kDetach);
+  REX_ORIGINAL_FUNC(sub_828ECD88)(ctx, base);
+  ClearNativeResourceLockState(resource);
+}
+
+extern "C" void sub_828ED078(PPCContext& ctx, uint8_t* base) {
+  const bool native_mode = IsNativeMode();
+  const uint32_t owner = ctx.r3.u32;
+  // Serialized pointers need not be dereferenceable. The validator only reads
+  // an embedded header after owner+28 already equals this owner's inline slot.
+  const uint32_t previous_resource =
+      native_mode ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  NotifyNativeInlineBufferLifetime(previous_resource, owner,
+                                  NativeInlineBufferLifetimeReason::kRelocate);
+  ClearNativeResourceLockState(previous_resource);
+  REX_ORIGINAL_FUNC(sub_828ED078)(ctx, base);
+  if (native_mode) {
+    const uint32_t resource = GetNativeInlineVertexBuffer(base, owner);
+    ClearNativeResourceLockState(resource);
+    // Always retire the completed identity too: the original may have changed
+    // its backing, and a captured lookup must not survive a reconstruction.
+    NotifyNativeInlineBufferLifetime(resource, owner,
+                                    NativeInlineBufferLifetimeReason::kRelocate);
+  }
+}
+
 extern "C" void D3DResource_Release(PPCContext& ctx, uint8_t* base) {
   const bool native_mode = IsNativeMode();
   const uint32_t resource = ctx.r3.u32;
@@ -5392,6 +5498,15 @@ extern "C" void sub_82A4A600(PPCContext& ctx, uint8_t* base) {
   const uint32_t resource = ctx.r3.u32;
   if (!resource) {
     return;
+  }
+  // Publish dirty intent while the guest header still reports the lock.
+  // A draw producer must not observe an unlocked clean capture while the
+  // outermost ResourceUnlock notification is waiting for the capture mutex.
+  const uint32_t resource_kind = LoadU32(base, resource) & 0xFu;
+  if (resource_kind == 1u || resource_kind == 2u) {
+    PrepareBufferUnlockCommand command{};
+    command.resource = resource;
+    SubmitNativeCommand(command);
   }
   const uint32_t previous = UpdateResourceLockCount(base, resource, -256);
   const bool outermost = (previous & 0xF00) == 0x100;

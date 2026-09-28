@@ -11,7 +11,7 @@
 namespace rex::graphics::gta4_native {
 
 inline constexpr uint32_t kTitleId = 0x545407F2;
-inline constexpr uint32_t kTitleCommandAbi = 31;
+inline constexpr uint32_t kTitleCommandAbi = 32;
 inline constexpr uint32_t kGuestDeviceSize = 0x5780;
 inline constexpr uint32_t kTextureStageCount = 26;
 inline constexpr uint32_t kRenderTargetCount = 4;
@@ -47,6 +47,8 @@ enum class CommandType : uint32_t {
   kUpdateEnvironmentalData,
   kDepthSurfaceHandoff,
   kRegisterVirtualResource,
+  kInvalidateBufferLifetime,
+  kPrepareBufferUnlock,
 };
 
 enum class ReflectionFamily : uint32_t {
@@ -200,6 +202,20 @@ struct RegisterVirtualResourceCommand {
   // Explicit sampled-texture alias produced by sub_828D9768. The source is
   // the resolved texture, not its live depth/stencil surface companion.
   uint32_t packed_depth_source = 0;
+};
+
+// Producer-only notifications. They never split a render pass or release GPU
+// storage still retained by an immutable queued draw.
+struct InvalidateBufferLifetimeCommand {
+  CommandHeader header{sizeof(InvalidateBufferLifetimeCommand), CommandType::kInvalidateBufferLifetime};
+  uint32_t resource = 0;
+  uint32_t owner = 0;
+  uint32_t reason = 0;  // 1=create, 2=destroy, 3=detach, 4=relocate.
+};
+
+struct PrepareBufferUnlockCommand {
+  CommandHeader header{sizeof(PrepareBufferUnlockCommand), CommandType::kPrepareBufferUnlock};
+  uint32_t resource = 0;
 };
 
 struct ReleaseResourceCommand {
@@ -504,6 +520,8 @@ static_assert(std::is_trivially_copyable<SetTextureCommand>::value);
 static_assert(std::is_trivially_copyable<ResourceUnlockCommand>::value);
 static_assert(std::is_trivially_copyable<RegisterVirtualResourceCommand>::value);
 static_assert(std::is_trivially_copyable<ReleaseResourceCommand>::value);
+static_assert(std::is_trivially_copyable<InvalidateBufferLifetimeCommand>::value);
+static_assert(std::is_trivially_copyable<PrepareBufferUnlockCommand>::value);
 static_assert(std::is_trivially_copyable<RegisterReflectionTargetCommand>::value);
 static_assert(std::is_trivially_copyable<SurfaceDescriptor>::value);
 static_assert(std::is_trivially_copyable<SetDepthStencilCommand>::value);

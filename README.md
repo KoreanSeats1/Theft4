@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL"><img src="https://img.shields.io/badge/Support%20Theft4-Donate-0070ba?logo=paypal&logoColor=white" alt="Support Theft4 via PayPal"></a>
+</p>
+
+> **[Support Theft4 via PayPal](https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL)** — donations help fund continued development and testing.
+
 > **Thank you to everyone behind the unprecedented work on
 > [LibertyRecomp](https://github.com/OZORDI/LibertyRecomp) and the
 > [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).** Without their

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include <rex/diagnostics/frame_scheduling.h>
 #include <rex/audio/xma/context.h>
 #include <rex/audio/handoff_trace.h>
 #include <rex/audio/xma/decoder.h>
@@ -101,6 +102,8 @@ int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
 }
 
 bool XmaContext::Work() {
+  rex::diagnostics::frame_schedule::CpuScope cpu_scope(
+      rex::diagnostics::frame_schedule::XmaWork, id_);
   handoff::Span handoff_work("xma-work", id_, guest_ptr_);
   if (!is_allocated() || !is_enabled()) {
     return false;
@@ -544,6 +547,8 @@ void XmaContext::PreparePacket(uint32_t frame_size, uint32_t frame_padding) {
 
 bool XmaContext::DecodePacket(AVCodecContext* av_context, const AVPacket* av_packet,
                               AVFrame* av_frame) {
+  rex::diagnostics::frame_schedule::CpuScope cpu_scope(
+      rex::diagnostics::frame_schedule::XmaDecode, id_);
   auto ret = avcodec_send_packet(av_context, av_packet);
   if (ret < 0) {
     char errbuf[AV_ERROR_MAX_STRING_SIZE];

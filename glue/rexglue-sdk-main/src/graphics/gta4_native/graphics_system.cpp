@@ -1,5 +1,6 @@
 #include "graphics_system.h"
 #include "native_light_capture.h"
+#include <rex/diagnostics/frame_scheduling.h>
 #include <rex/diagnostics/runtime_probe.h>
 #include <rex/fault_diagnostics.h>
 #if defined(__APPLE__)
@@ -6490,6 +6491,7 @@ bool Gta4NativeGraphicsSystem::SetHostActive(bool active) {
 void Gta4NativeGraphicsSystem::WaitForHostActivity() {
   if (host_active_.load(std::memory_order_acquire) ||
       !render_worker_running_.load(std::memory_order_relaxed)) return;
+  rex::diagnostics::frame_schedule::SuspendCurrent();
   // This renderer and its windowless iOS presenter submit on this worker.
   // Drain outside render_mutex_: producers and the UI must remain able to wait.
   const uint64_t begin = rex::chrono::Clock::QueryHostTickCount();
@@ -7237,6 +7239,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         WaitForHostActivity();
         PresentCommand present;
         std::memcpy(&present, command.bytes.data(), sizeof(present));
+        rex::diagnostics::frame_schedule::FrameBoundary(
+            rex::diagnostics::frame_schedule::NativeRenderer,
+            present.submitted_frame, present.diagnostic_guest_caller);
         if (present.diagnostic_trace && current_frame_.empty()) {
           present.diagnostic_force_content_probe = 1;
           REXLOG_INFO(

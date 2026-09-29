@@ -332,6 +332,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+    _frameScheduling = [UISwitch new];
+    _frameScheduling.onTintColor = Ink(0xB6884D);
+    _frameScheduling.accessibilityIdentifier = @"settings.frameScheduling";
     _directGuestClock = [UISwitch new];
     _directGuestClock.onTintColor = Ink(0xB6884D);
     _directGuestClock.accessibilityIdentifier = @"settings.directGuestClock";
@@ -349,6 +352,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
+        [self setting:@"FRAME SCHEDULING" detail:@"Prioritize frame production. Hold the frame-time graph during play to switch between this and original scheduling without restarting." toggle:_frameScheduling],
         [self setting:@"DIRECT GUEST CLOCK" detail:@"Build 82 comparison. On enables the revised game clock; Off restores the previous clock. Fully close and reopen Theft4 after changing." toggle:_directGuestClock],
         [self setting:@"RUNTIME WAIT IMPROVEMENTS" detail:@"Build 81 comparison. On enables the new thread-wait behavior; Off restores build 80 behavior. After changing, fully close and reopen Theft4 before Play." toggle:_runtimeWaitImprovements],
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],

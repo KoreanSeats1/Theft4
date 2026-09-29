@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/frame_scheduling.h>
 #include <rex/diagnostics/runtime_callers.h>
 #include <algorithm>
 #include <atomic>
@@ -596,6 +597,9 @@ void XThread::Execute() {
                 query_result, set_result);
   }
 #endif
+
+  rex::diagnostics::frame_schedule::RegisterGuest(
+      thread_id(), creation_params_.start_address, active_cpu(), priority(), main_thread_);
 
   // Let the kernel know we are starting.
   kernel_state_->OnThreadExecute(this);

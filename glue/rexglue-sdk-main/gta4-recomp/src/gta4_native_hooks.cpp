@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include <rex/diagnostics/frame_scheduling.h>
 #include <rex/platform.h>
 
 #include <fmt/format.h>
@@ -7498,12 +7499,18 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
   }
   if (submitted) {
     PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
+    rex::diagnostics::frame_schedule::FrameBoundary(
+        rex::diagnostics::frame_schedule::FrameProducer, submitted_frame,
+        command.diagnostic_guest_caller);
   } else if (observe_pacing) {
     pacing::capture.Record(pacing_sample);
   }
 #else
   if (SubmitNativeCommand(command)) {
     PaceNativePresent(submitted_frame);
+    rex::diagnostics::frame_schedule::FrameBoundary(
+        rex::diagnostics::frame_schedule::FrameProducer, submitted_frame,
+        command.diagnostic_guest_caller);
   }
 #endif
   ctx.r3.u32 = device;

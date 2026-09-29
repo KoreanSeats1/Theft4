@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/runtime_callers.h>
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -1055,6 +1056,9 @@ uint32_t XThread::SelfSuspend() {
 #endif
 
 X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
+  rex::diagnostics::callers::Span sample(interval ? rex::diagnostics::callers::DelayNonzero
+      : rex::diagnostics::callers::DelayZero,
+      rex::diagnostics::callers::Enabled() && thread_state_ ? uint32_t(thread_state_->context()->lr) : 0);
   if (rex::thread::RuntimeWaitFixesEnabled()) {
     using SteadyClock = std::chrono::steady_clock;
     using Micros = std::chrono::microseconds;

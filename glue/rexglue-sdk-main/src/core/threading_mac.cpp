@@ -6,6 +6,7 @@
  * @license     BSD 3-Clause License
  */
 
+#include <rex/diagnostics/runtime_callers.h>
 #include <rex/platform.h>
 #include <rex/thread.h>
 #include <rex/thread/runtime_wait_policy.h>
@@ -164,7 +165,11 @@ uint32_t current_thread_system_id() {
   return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
 void MaybeYield() {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::HostYield, REX_CALLER_NATIVE_PC);
   sched_yield();
   __sync_synchronize();
 }

@@ -19,6 +19,7 @@
 
 REXCVAR_DECLARE(bool, clock_no_scaling);
 REXCVAR_DECLARE(bool, clock_source_raw);
+REXCVAR_DECLARE(bool, clock_direct_reads);
 
 #if REX_ARCH_AMD64
 // Raw clock source requires platform-specific implementation
@@ -76,6 +77,10 @@ class Clock {
   // and scaling.
   static uint64_t QueryGuestTickCount();
   static ClockDiagnostics QueryDiagnostics();
+  // Called during runtime setup before guest workers start. Policy is frozen
+  // for this process; subsequent rate changes rebase the read-only epoch.
+  static bool ConfigureDirectReads(bool enabled);
+  static bool DirectReadsEnabled();
   // Queries the guest time, in FILETIME format, accounting for scaling.
   static uint64_t QueryGuestSystemTime();
   // Queries the milliseconds since the guest began, accounting for scaling.

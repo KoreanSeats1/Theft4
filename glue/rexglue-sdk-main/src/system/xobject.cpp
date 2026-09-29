@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/runtime_callers.h>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -34,6 +35,14 @@
 REXCVAR_DECLARE(bool, clock_no_scaling);
 
 namespace rex::system {
+namespace {
+uint64_t RuntimeWaitCaller() {
+  if (!rex::diagnostics::callers::Enabled()) return 0;
+  const auto thread = XThread::GetCurrentThread();
+  return thread && thread->thread_state() ? uint32_t(thread->thread_state()->context()->lr) : 0;
+}
+}  // namespace
+
 
 XObject::XObject(Type type) : kernel_state_(nullptr), pointer_ref_count_(1), type_(type) {
   handles_.reserve(10);
@@ -227,6 +236,7 @@ uint32_t XObject::TimeoutTicksToMs(int64_t timeout_ticks) {
 
 X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                        uint64_t* opt_timeout) {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::WaitSingle, RuntimeWaitCaller());
   auto wait_handle = GetWaitHandle();
   if (!wait_handle) {
     // Object doesn't support waiting.
@@ -262,6 +272,7 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
 X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, uint32_t wait_reason,
                                 uint32_t processor_mode, uint32_t alertable,
                                 uint64_t* opt_timeout) {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::SignalAndWait, RuntimeWaitCaller());
   auto timeout_ms = opt_timeout
       ? std::chrono::milliseconds(rex::thread::RuntimeWaitFixesEnabled()
             ? TimeoutTicksToMs(*opt_timeout)
@@ -291,6 +302,7 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
 X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_type,
                                uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                                uint64_t* opt_timeout) {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::WaitMultiple, RuntimeWaitCaller());
   std::vector<rex::thread::WaitHandle*> wait_handles(count);
   for (size_t i = 0; i < count; ++i) {
     wait_handles[i] = objects[i]->GetWaitHandle();

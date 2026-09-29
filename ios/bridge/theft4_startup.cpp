@@ -16,6 +16,7 @@
 #include <rex/system/xex_module.h>
 #include <rex/system/xthread.h>
 #include <rex/thread/runtime_wait_policy.h>
+#include <rex/chrono/clock.h>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -343,6 +344,13 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
             drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
 
+        const char* clock_override = std::getenv("THEFT4_DIRECT_GUEST_CLOCK");
+        const std::string_view clock_policy = clock_override ? clock_override : "1";
+        if (clock_policy != "0" && clock_policy != "1")
+            throw std::runtime_error("THEFT4_DIRECT_GUEST_CLOCK must be 0 or 1");
+        REXCVAR_SET(clock_direct_reads, clock_policy == "1");
+        REXLOG_INFO("Theft4 build82 clock requested: direct={} (applied before guest workers)", clock_policy == "1");
+
         const char* wait_override = std::getenv("THEFT4_RUNTIME_WAIT_FIXES");
         const std::string_view wait_policy = wait_override ? wait_override : "1";
         if (wait_policy != "0" && wait_policy != "1") {
@@ -351,7 +359,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         if (!rex::thread::ConfigureRuntimeWaitFixes(wait_policy == "1")) {
             throw std::runtime_error("Runtime wait mode changed; fully close and reopen Theft4");
         }
-        REXLOG_INFO("Theft4 build81 runtime waits: fixes={} (frozen until app restart); "
+        REXLOG_INFO("Theft4 build82 runtime waits: fixes={} (frozen until app restart); "
                     "multiwait={} guest-delay={} guest-priority={}",
                     rex::thread::RuntimeWaitFixesEnabled(),
                     wait_policy == "1" ? "object-notification" : "build80-polling",

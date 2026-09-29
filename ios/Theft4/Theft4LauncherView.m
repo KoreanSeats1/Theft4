@@ -206,6 +206,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _playSaveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
     _play = Column(@[_playHeadline, _playIntro, _startButton, _playSaveNote], 22);
 
+    _showCPUUsage = [UISwitch new];
     _showFrameTime = [UISwitch new];
     _showFPS = [UISwitch new];
     _showControls = [UISwitch new];
@@ -214,9 +215,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _fsrBoost = [UISwitch new];
     _motionBlur = [UISwitch new];
     _depthOfField = [UISwitch new];
-    NSArray<UISwitch *> *switches = @[_showFrameTime, _showFPS, _showControls,
+    NSArray<UISwitch *> *switches = @[_showCPUUsage, _showFrameTime, _showFPS, _showControls,
         _anisotropicFiltering, _enhancedOutput, _fsrBoost, _motionBlur, _depthOfField];
-    NSArray<NSString *> *identifiers = @[@"showFrameTime", @"showFPS", @"showTouchControls",
+    NSArray<NSString *> *identifiers = @[@"showCPUUsage", @"showFrameTime", @"showFPS", @"showTouchControls",
         @"anisotropicFiltering", @"enhancedOutput1080p", @"fsrBoost", @"motionBlur",
         @"depthOfField"];
     for (NSUInteger i = 0; i < switches.count; ++i) {
@@ -321,6 +322,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _graphics = Column(graphicsRows, 20);
 
     _interfacePage = Column(@[
+        [self setting:@"CPU / THREAD GRAPH" detail:@"Compact device-core and game-thread activity. Updates once per second; included in long captures while enabled." toggle:_showCPUUsage],
         [self setting:@"FRAME COUNTER" detail:@"Unique game frames in the top-right corner." toggle:_showFPS],
         [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap for a short detailed profile. Hold to mark a lag spike or stop and save a long capture." toggle:_showFrameTime],
         [self setting:@"TOUCH CONTROLS" detail:@"Physical controllers continue to work when the overlay is hidden." toggle:_showControls],

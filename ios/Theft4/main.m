@@ -14,6 +14,7 @@
 #include "../../glue/rexglue-sdk-main/include/rex/fault_diagnostics.h"
 #include "theft4_lab_diagnostics.h"
 #import "Theft4FrameTimeView.h"
+#import "Theft4CPUUsageView.h"
 extern int rex_gta4_native_profile_start(void);
 extern int rex_gta4_native_profile_status(void);
 #import "Theft4TouchControls.h"
@@ -168,6 +169,8 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     NSTimer *_fpsTimer;
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
+    UISwitch *_showCPUUsage;
+    Theft4CPUUsageView *_cpuUsageView;
     UISwitch *_showFPS;
     UISwitch *_showFrameTime;
     Theft4FrameTimeView *_frameTimeView;
@@ -317,6 +320,7 @@ static void bootEvent(void *context, const char *event) {
     const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
     _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 || strcmp(deviceProfile, "legacy-ipad") == 0;
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
+        @"Theft4ShowCPUUsage": @YES,
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowFrameTime": @NO,
         @"Theft4ShowTouchControls": @NO,
@@ -385,6 +389,7 @@ static void bootEvent(void *context, const char *event) {
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
+    _showCPUUsage = _bringupOverlay.showCPUUsage;
     _showFrameTime = _bringupOverlay.showFrameTime;
     _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
@@ -404,9 +409,9 @@ static void bootEvent(void *context, const char *event) {
     _downloadLogButton = _bringupOverlay.downloadLogButton;
     [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
                  forControlEvents:UIControlEventTouchUpInside];
-    NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
+    NSArray *toggles = @[_showCPUUsage,_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
                          _motionBlur,_depthOfField,_performanceCapture];
-    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+    NSArray *keys = @[@"Theft4ShowCPUUsage",@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
                       @"Theft4DepthOfField",@"Theft4DetailedPerformanceCapture"];
     for (NSUInteger i=0;i<toggles.count;++i) {
@@ -483,6 +488,23 @@ static void bootEvent(void *context, const char *event) {
         [_fpsLabel.widthAnchor constraintEqualToConstant:92],
         [_fpsLabel.heightAnchor constraintEqualToConstant:32]
     ]];
+    _cpuUsageView = [Theft4CPUUsageView new];
+    _cpuUsageView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_cpuUsageView];
+    [NSLayoutConstraint activateConstraints:@[
+        [_cpuUsageView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:10],
+        [_cpuUsageView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
+        [_cpuUsageView.widthAnchor constraintEqualToConstant:236],
+        [_cpuUsageView.heightAnchor constraintEqualToConstant:194]]];
+    __weak Theft4ViewController *cpuController = self;
+    _cpuUsageView.sampleLogHandler = ^(NSString *rows) {
+        Theft4ViewController *controller = cpuController;
+        if (!controller || !controller->_publicationCaptureActive ||
+            !controller->_publicationCaptureQueue) return;
+        dispatch_async(controller->_publicationCaptureQueue, ^{
+            [controller appendPublicationCaptureText:rows];
+        });
+    };
     _frameTimeView = [Theft4FrameTimeView new];
     _frameTimeView.translatesAutoresizingMaskIntoConstraints = NO;
     _frameTimeView.hidden = YES;
@@ -1003,6 +1025,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
     }
     [_bringupOverlay refreshConfigurationSummary];
+    [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
     [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
@@ -1397,6 +1420,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)updateFrameTimeHUD {
+    [_cpuUsageView setMonitoringActive:(_gamePresentation && _sceneActive && _showCPUUsage.on)];
     BOOL visible = _gamePresentation && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
     _frameTimeTop.constant = _showFPS.on ? 52 : 10;

@@ -7,6 +7,7 @@
 @property(nonatomic, readonly) UIButton *startButton;
 @property(nonatomic, readonly) UIButton *prepareButton;
 @property(nonatomic, readonly) UIButton *restartButton;
+@property(nonatomic, readonly) UISwitch *showCPUUsage;
 @property(nonatomic, readonly) UISwitch *showFPS;
 @property(nonatomic, readonly) UISwitch *showFrameTime;
 @property(nonatomic, readonly) UISwitch *showControls;

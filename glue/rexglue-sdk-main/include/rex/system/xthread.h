@@ -352,7 +352,7 @@ class XThread : public XObject {
   void UnlockApc(bool queue_delivery);
   void EnqueueApc(uint32_t normal_routine, uint32_t normal_context, uint32_t arg1, uint32_t arg2);
 
-  int32_t priority() const { return priority_; }
+  int32_t priority() const { return priority_.load(std::memory_order_relaxed); }
   int32_t QueryPriority();
   void SetPriority(int32_t increment);
 
@@ -424,7 +424,7 @@ class XThread : public XObject {
   std::string thread_name_;
   std::unique_ptr<runtime::ThreadState> thread_state_;
 
-  int32_t priority_ = 0;
+  std::atomic<int32_t> priority_{0};
 
 #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
   std::mutex suspend_mutex_;

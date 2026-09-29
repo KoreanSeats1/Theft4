@@ -15,6 +15,7 @@
 #include <rex/system/user_module.h>
 #include <rex/system/xex_module.h>
 #include <rex/system/xthread.h>
+#include <rex/thread/runtime_wait_policy.h>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -341,6 +342,21 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             "drawable-limit={} highest-lod={} lod-selection-bias={} reflections={} anti-aliasing={}",
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
             drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
+
+        const char* wait_override = std::getenv("THEFT4_RUNTIME_WAIT_FIXES");
+        const std::string_view wait_policy = wait_override ? wait_override : "1";
+        if (wait_policy != "0" && wait_policy != "1") {
+            throw std::runtime_error("THEFT4_RUNTIME_WAIT_FIXES must be 0 or 1");
+        }
+        if (!rex::thread::ConfigureRuntimeWaitFixes(wait_policy == "1")) {
+            throw std::runtime_error("Runtime wait mode changed; fully close and reopen Theft4");
+        }
+        REXLOG_INFO("Theft4 build81 runtime waits: fixes={} (frozen until app restart); "
+                    "multiwait={} guest-delay={} guest-priority={}",
+                    rex::thread::RuntimeWaitFixesEnabled(),
+                    wait_policy == "1" ? "object-notification" : "build80-polling",
+                    wait_policy == "1" ? "microsecond-deadline" : "build80-millisecond",
+                    wait_policy == "1" ? "guest-increment" : "build80-host-query");
 
         // Admit the next native command stream only after the previous CPU
         // publication returns. Guest threads may continue other work, and the

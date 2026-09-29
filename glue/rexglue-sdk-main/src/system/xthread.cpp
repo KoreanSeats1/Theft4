@@ -40,10 +40,14 @@
 #include <rex/system/xmutant.h>
 #include <rex/system/xthread.h>
 #include <rex/thread.h>
+#include <rex/thread/runtime_wait_policy.h>
+#include <cmath>
 #include <rex/vec128.h>
 
 REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
                     "Ignores game-specified thread priorities");
+
+REXCVAR_DECLARE(bool, clock_no_scaling);
 
 REXCVAR_DEFINE_BOOL(ignore_thread_affinities, true, "Kernel",
                     "Ignores game-specified thread affinities");
@@ -851,11 +855,13 @@ void XThread::RundownAPCs() {
 }
 
 int32_t XThread::QueryPriority() {
-  return thread_->priority();
+  // KeQuery/KeSetBasePriorityThread exchange guest increments, not Darwin's
+  // scheduler priority numbers. Keep the old query for the comparison mode.
+  return rex::thread::RuntimeWaitFixesEnabled() ? priority() : thread_->priority();
 }
 
 void XThread::SetPriority(int32_t increment) {
-  priority_ = increment;
+  priority_.store(increment, std::memory_order_relaxed);
 
   // Write priority to guest X_KTHREAD struct.
   auto kthread = guest_object<X_KTHREAD>();
@@ -1049,6 +1055,64 @@ uint32_t XThread::SelfSuspend() {
 #endif
 
 X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
+  if (rex::thread::RuntimeWaitFixesEnabled()) {
+    using SteadyClock = std::chrono::steady_clock;
+    using Micros = std::chrono::microseconds;
+    const int64_t ticks = static_cast<int64_t>(interval);
+    CheckTitleTermination();
+    if (!ticks) {
+      if (alertable) {
+        auto result = rex::thread::AlertableSleep(Micros::zero());
+        CheckTitleTermination();
+        return result == rex::thread::SleepResult::kAlerted ? X_STATUS_USER_APC : X_STATUS_SUCCESS;
+      }
+      // Guest below-normal is a negative increment, independent of host enums.
+      if (priority() < 0) rex::thread::Sleep(Micros(100));
+      else rex::thread::MaybeYield();
+      CheckTitleTermination();
+      return X_STATUS_SUCCESS;
+    }
+    const auto to_host_micros = [](uint64_t guest_ticks) {
+      const double scalar = REXCVAR_GET(clock_no_scaling) ? 1.0 : chrono::Clock::guest_time_scalar();
+      const double speed = std::isfinite(scalar) && scalar > 0.0 ? scalar : 1.0;
+      // The guest clock advances at speed times host time. Convert positive
+      // magnitudes, then round up so a nonzero 100ns request stays a delay.
+      const double us = std::ceil(static_cast<double>(guest_ticks) / (10.0 * speed));
+      const int64_t limit = std::chrono::duration_cast<Micros>(SteadyClock::duration::max()).count() / 2;
+      return Micros(us >= static_cast<double>(limit) ? limit : static_cast<int64_t>(us));
+    };
+    // Avoid negating INT64_MIN. A relative deadline is monotonic; absolute
+    // FILETIME waits recheck guest system time between bounded sleep slices.
+    const uint64_t magnitude = ticks < 0 ? uint64_t(-(ticks + 1)) + 1 : 0;
+    const auto relative_deadline = SteadyClock::now() + to_host_micros(magnitude);
+    while (true) {
+      Micros remaining;
+      if (ticks > 0) {
+        const uint64_t now = chrono::Clock::QueryGuestSystemTime();
+        remaining = uint64_t(ticks) > now ? to_host_micros(uint64_t(ticks) - now) : Micros::zero();
+      } else {
+        remaining = std::chrono::ceil<Micros>(relative_deadline - SteadyClock::now());
+      }
+      if (remaining <= Micros::zero()) {
+        if (alertable && rex::thread::AlertableSleep(Micros::zero()) == rex::thread::SleepResult::kAlerted) {
+          CheckTitleTermination();
+          return X_STATUS_USER_APC;
+        }
+        CheckTitleTermination();
+        return X_STATUS_SUCCESS;
+      }
+      const auto slice = std::min(remaining, Micros(1000000));
+      if (alertable) {
+        const auto result = rex::thread::AlertableSleep(slice);
+        CheckTitleTermination();
+        if (result == rex::thread::SleepResult::kAlerted) return X_STATUS_USER_APC;
+      } else {
+        rex::thread::Sleep(slice);
+        CheckTitleTermination();
+      }
+    }
+  }
+
   int64_t timeout_ticks = interval;
   uint32_t timeout_ms;
   if (timeout_ticks > 0) {

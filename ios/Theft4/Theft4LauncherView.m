@@ -330,6 +330,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+    _runtimeWaitImprovements = [UISwitch new];
+    _runtimeWaitImprovements.onTintColor = Ink(0xB6884D);
+    _runtimeWaitImprovements.accessibilityIdentifier = @"settings.runtimeWaitImprovements";
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xB6884D);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
@@ -341,6 +344,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
+        [self setting:@"RUNTIME WAIT IMPROVEMENTS" detail:@"Build 81 comparison. On enables the new thread-wait behavior; Off restores build 80 behavior. After changing, fully close and reopen Theft4 before Play." toggle:_runtimeWaitImprovements],
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,

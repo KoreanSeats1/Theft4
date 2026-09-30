@@ -1330,6 +1330,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool InitializeNativeRendererObjects();
   bool InitializeNativePipelineCache();
   void SaveNativePipelineCache();
+  void SaveNativePipelineRecipes();
   void ScheduleNativePipelineCheckpoint();
   void DrainNativePipelineCompiles();
   void StopNativePipelineCompiler();

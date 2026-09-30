@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,9 +22,13 @@ template <typename Key, typename Result, typename Hash>
 class NativePipelineCompiler {
  public:
   using Compile = std::function<Result()>;
-  explicit NativePipelineCompiler(size_t capacity, std::function<void()> idle = {})
+  explicit NativePipelineCompiler(size_t capacity, std::function<void()> idle = {},
+                                  std::function<void()> initialize = {})
       : capacity_(std::max<size_t>(capacity, 1)), idle_(std::move(idle)),
-        thread_([this] { Run(); }) {}
+        thread_([this, initialize = std::move(initialize)] {
+          if (initialize) initialize();
+          Run();
+        }) {}
   ~NativePipelineCompiler() { Stop(); }
   NativePipelineCompiler(const NativePipelineCompiler&) = delete;
   NativePipelineCompiler& operator=(const NativePipelineCompiler&) = delete;
@@ -33,25 +38,28 @@ class NativePipelineCompiler {
     if (stopping_) {
       return false;
     }
-    if (jobs_.contains(key)) {
+    if (const auto existing = jobs_.find(key); existing != jobs_.end()) {
+      if (demanded) PromoteLocked(key, *existing->second);
       return true;
     }
     if (jobs_.size() >= capacity_) {
       if (!demanded || queue_.empty()) {
         return false;
       }
-      // Drop only an unstarted speculative recipe to admit an exact first use.
-      jobs_.erase(queue_.back());
-      queue_.pop_back();
+      // Never evict work already demanded by a draw. The old tail removal
+      // could discard demanded jobs once the speculative queue was exhausted.
+      const auto candidate = std::find_if(queue_.rbegin(), queue_.rend(), [this](const Key& k) {
+        return !jobs_.at(k)->demanded;
+      });
+      if (candidate == queue_.rend()) return false;
+      jobs_.erase(*candidate);
+      queue_.erase(std::next(candidate).base());
     }
     auto job = std::make_shared<Job>();
     job->compile = std::move(compile);
     jobs_.emplace(key, job);
-    if (demanded) {
-      queue_.push_front(key);
-    } else {
-      queue_.push_back(key);
-    }
+    queue_.push_back(key);
+    if (demanded) PromoteLocked(key, *job);
     changed_.notify_all();
     return true;
   }
@@ -66,12 +74,9 @@ class NativePipelineCompiler {
     }
     const auto job = found->second;
     if (!job->result) {
-      const auto queued = std::find(queue_.begin(), queue_.end(), key);
-      if (queued != queue_.end() && queued != queue_.begin()) {
-        queue_.erase(queued);
-        queue_.push_front(key);
-      }
-      changed_.notify_all();
+      PromoteLocked(key, *job);
+      // Enqueue already wakes the worker. Polling a pending draw need not
+      // notify every waiter again; only completion/stop changes their result.
       if (wait) {
         changed_.wait(lock, [&] { return job->result.has_value() || stopping_; });
       }
@@ -133,7 +138,21 @@ class NativePipelineCompiler {
   struct Job {
     Compile compile;
     std::optional<Result> result;
+    bool demanded = false;
   };
+  void PromoteLocked(const Key& key, Job& job) {
+    if (job.demanded) return;
+    job.demanded = true;
+    const auto queued = std::find(queue_.begin(), queue_.end(), key);
+    if (queued == queue_.end()) return;  // Already active or completed.
+    queue_.erase(queued);
+    // FIFO within demanded work, ahead of speculative prewarming. A draw's
+    // polling in later frames cannot reorder/starve earlier visible work.
+    const auto first_speculative = std::find_if(queue_.begin(), queue_.end(), [this](const Key& k) {
+      return !jobs_.at(k)->demanded;
+    });
+    queue_.insert(first_speculative, key);
+  }
   void Run() {
     std::unique_lock lock(mutex_);
     for (;;) {

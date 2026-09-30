@@ -14,8 +14,10 @@ namespace rex::graphics::gta4_native {
 // Complete effective state of the native draw pipeline. No guest memory,
 // surface object, vector storage or borrowed pNext chain reaches the compiler.
 // The fixed limits are checked at capture; larger future interfaces use the
-// original synchronous creation path. Disk snapshots are tied to the executable
-// build, Vulkan cache identity, schema, and exact SPIR-V content fingerprints.
+// original synchronous creation path. Disk snapshots are tied to an explicit
+// semantic/ABI revision, Vulkan cache identity and exact SPIR-V fingerprints.
+// Bump RecipeCompatibilityIdentity's semantic revision when this wire layout
+// or reconstruction semantics change; compatible executable rebuilds reuse it.
 class NativePipelineRecipe {
  public:
   struct ShaderIdentity {

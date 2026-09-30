@@ -2261,17 +2261,12 @@ bool WriteNativeCacheAtomically(const std::filesystem::path& path, std::span<con
 }
 
 struct NativePipelineRecipeFileHeader {
-  uint64_t schema = 1;
-  uint64_t build = 0;
+  uint64_t schema = 2;
+  uint64_t compatibility = 0;
   uint64_t record_size = 0;
   uint64_t count = 0;
   uint64_t checksum = 0;
 };
-
-uint64_t NativePipelineRecipeBuildIdentity() {
-  constexpr char build[] = "native-draw-recipes-v1:" __DATE__ ":" __TIME__;
-  return XXH3_64bits(build, sizeof(build));
-}
 
 std::filesystem::path FindVectorFontAsset(const char* filename) {
   std::error_code error;
@@ -3643,7 +3638,31 @@ struct Gta4NativeGraphicsSystem::NativePipelineCompilerState {
   std::unordered_map<NativePipelineKey, NativePipelineRecipe::Snapshot, NativePipelineKeyHash> records;
   std::deque<Record> replay;
   std::atomic<uint64_t> checkpoint_tick{0};
+  std::atomic<uint64_t> recipe_generation{0};
+  std::atomic<uint64_t> saved_recipe_generation{0};
   static constexpr size_t kMaximumRecipes = 4096;
+
+  static uint64_t RecipeCompatibilityIdentity() {
+    // Explicit wire/semantic revision, NOT a compiler timestamp. Bump this
+    // whenever key/snapshot member meaning/order, entry points, descriptor
+    // layouts, or pipeline reconstruction semantics change. Layout guards
+    // additionally reject a different ABI. Device/driver identity is in the
+    // filename, and replay still validates the exact shader code fingerprints.
+    constexpr uint64_t kRecipeSemanticRevision = 2;
+    const uint64_t abi[] = {
+        kRecipeSemanticRevision, sizeof(Record), alignof(Record),
+        sizeof(NativePipelineKey), alignof(NativePipelineKey),
+        sizeof(NativePipelineRecipe::Snapshot), alignof(NativePipelineRecipe::Snapshot),
+        sizeof(void*), offsetof(Record, recipe),
+        offsetof(NativePipelineKey, vertex_strides), offsetof(NativePipelineKey, blend_controls),
+        offsetof(NativePipelineKey, primitive_restart_enable),
+        offsetof(NativePipelineRecipe::Snapshot, rasterization),
+        offsetof(NativePipelineRecipe::Snapshot, depth_stencil),
+        offsetof(NativePipelineRecipe::Snapshot, indexed_descriptors),
+        XXH3_64bits(NativePipelineRecipe::DynamicStates().data(),
+                   sizeof(NativePipelineRecipe::DynamicStates()))};
+    return XXH3_64bits(abi, sizeof(abi));
+  }
 };
 
 size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
@@ -16310,7 +16329,13 @@ bool Gta4NativeGraphicsSystem::InitializeNativeRendererObjects() {
     return false;
   }
   native_pipeline_compiler_ = std::make_unique<NativePipelineCompilerState>();
-  native_pipeline_compiler_->writer = std::make_unique<NativePipelineCompilerState::Writer>(1);
+  native_pipeline_compiler_->writer = std::make_unique<NativePipelineCompilerState::Writer>(
+      1, std::function<void()>{}, [] {
+#if REX_PLATFORM_IOS
+        pthread_setname_np("Theft4 recipe cache");
+        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#endif
+      });
   native_pipeline_compiler_->checkpoint_tick.store(rex::chrono::Clock::QueryHostTickCount());
   native_pipeline_compiler_->compiler = std::make_unique<NativePipelineCompilerState::Compiler>(
       64, [this] { ScheduleNativePipelineCheckpoint(); });
@@ -16426,61 +16451,80 @@ void Gta4NativeGraphicsSystem::SaveNativePipelineCache() try {
   light::cache_save_bytes.fetch_add(data.size(), std::memory_order_relaxed);
   // A concurrent compiler may have added a newer generation during the copy.
   // A checkpoint only acknowledges the generation it started with.
-  if (native_pipeline_compiler_) {
-    std::vector<NativePipelineCompilerState::Record> records;
-    {
-      std::lock_guard lock(native_pipeline_compiler_->records_mutex);
-      records.reserve(native_pipeline_compiler_->records.size());
-      for (const auto& [key, recipe] : native_pipeline_compiler_->records) {
-        records.push_back({key, recipe});
-      }
-    }
-    NativePipelineRecipeFileHeader header{};
-    header.build = NativePipelineRecipeBuildIdentity();
-    header.record_size = sizeof(NativePipelineCompilerState::Record);
-    header.count = records.size();
-    header.checksum = XXH3_64bits(records.data(), records.size() * sizeof(records.front()));
-    std::vector<uint8_t> bytes(sizeof(header) + records.size() * sizeof(records.front()));
-    std::memcpy(bytes.data(), &header, sizeof(header));
-    if (!records.empty()) {
-      std::memcpy(bytes.data() + sizeof(header), records.data(), bytes.size() - sizeof(header));
-    }
-    auto path = native_pipeline_cache_path_;
-    path += ".recipes";
-    if (!WriteNativeCacheAtomically(path, bytes)) {
-      return;
-    }
-    light::cache_save_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
-  }
   native_pipeline_cache_saved_generation_ = generation;
 } catch (const std::exception& error) {
   REXLOG_WARN("gta4-native: pipeline checkpoint failed: {}", error.what());
 }
 
+void Gta4NativeGraphicsSystem::SaveNativePipelineRecipes() try {
+  if (!native_pipeline_compiler_ || native_pipeline_cache_path_.empty()) return;
+  auto& state = *native_pipeline_compiler_;
+  if (state.recipe_generation.load(std::memory_order_acquire) ==
+      state.saved_recipe_generation.load(std::memory_order_acquire)) return;
+  // Allocate before locking. The compiler/writer never touches guest memory or
+  // Vulkan objects here; only bounded immutable CPU recipe records are copied.
+  std::vector<NativePipelineCompilerState::Record> records;
+  records.reserve(NativePipelineCompilerState::kMaximumRecipes);
+  uint64_t generation;
+  {
+    std::lock_guard lock(state.records_mutex);
+    generation = state.recipe_generation.load(std::memory_order_relaxed);
+    for (const auto& [key, recipe] : state.records) records.push_back({key, recipe});
+  }
+  NativePipelineRecipeFileHeader header{};
+  header.compatibility = NativePipelineCompilerState::RecipeCompatibilityIdentity();
+  header.record_size = sizeof(NativePipelineCompilerState::Record);
+  header.count = records.size();
+  const size_t payload_size = records.size() * sizeof(NativePipelineCompilerState::Record);
+  header.checksum = XXH3_64bits(records.data(), payload_size);
+  std::vector<uint8_t> bytes(sizeof(header) + payload_size);
+  std::memcpy(bytes.data(), &header, sizeof(header));
+  if (payload_size) std::memcpy(bytes.data() + sizeof(header), records.data(), payload_size);
+  auto path = native_pipeline_cache_path_;
+  path += ".recipes-v2";  // Preserve the legacy file for a build-86 rollback.
+  if (!WriteNativeCacheAtomically(path, bytes)) {
+    REXLOG_WARN("gta4-native: recipe checkpoint failed; retaining previous file");
+    return;
+  }
+  state.saved_recipe_generation.store(generation, std::memory_order_release);
+  REXLOG_INFO("gta4-native: recipe checkpoint schema=2 recipes={} bytes={} generation={}",
+              records.size(), bytes.size(), generation);
+} catch (const std::exception& error) {
+  REXLOG_WARN("gta4-native: recipe checkpoint failed: {}", error.what());
+}
+
 void Gta4NativeGraphicsSystem::ScheduleNativePipelineCheckpoint() {
+  if (!native_pipeline_compiler_ || !native_pipeline_compiler_->writer ||
+      native_pipeline_cache_path_.empty()) return;
+  auto& state = *native_pipeline_compiler_;
 #if REX_PLATFORM_IOS
-  // vkGetPipelineCacheData serializes the driver's shared shader cache. A
-  // background writer still contends with active rendering/compilation and
-  // may allocate/copy the entire cache. Keep loaded cache data and prewarming,
-  // but checkpoint only after StopNativePipelineCompiler has joined both
-  // workers during orderly teardown. A UI pause is not a renderer idle barrier.
-  return;
+  if (state.recipe_generation.load(std::memory_order_acquire) ==
+      state.saved_recipe_generation.load(std::memory_order_acquire)) return;
 #endif
-  if (!native_pipeline_compiler_ || !native_pipeline_compiler_->writer) {
-    return;
-  }
   const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
-  const uint64_t previous = native_pipeline_compiler_->checkpoint_tick.load();
-  if (now < previous || (now - previous) / rex::chrono::Clock::QueryHostTickFrequency() < 30) {
-    return;
-  }
-  native_pipeline_compiler_->writer->TakeCompleted();
-  if (native_pipeline_compiler_->writer->Enqueue(0, [this] {
-        SaveNativePipelineCache();
-        return true;
-      })) {
-    native_pipeline_compiler_->checkpoint_tick.store(now);
-  }
+  uint64_t previous = state.checkpoint_tick.load(std::memory_order_relaxed);
+#if REX_PLATFORM_IOS
+  constexpr uint64_t interval_seconds = 5;
+#else
+  constexpr uint64_t interval_seconds = 30;
+#endif
+  // At most one bounded recipe write per five seconds on iOS, only while dirty.
+  // Preserve the desktop driver-cache interval. Publication and compiler-idle
+  // callbacks may race; claim the interval atomically.
+  if (now < previous ||
+      (now - previous) / rex::chrono::Clock::QueryHostTickFrequency() < interval_seconds ||
+      !state.checkpoint_tick.compare_exchange_strong(previous, now)) return;
+  state.writer->TakeCompleted();
+  state.writer->Enqueue(0, [this] {
+    SaveNativePipelineRecipes();
+#if !REX_PLATFORM_IOS
+    SaveNativePipelineCache();
+#endif
+    // On iOS never call vkGetPipelineCacheData during active play: that
+    // serializes the driver's cache and can contend with rendering. Recipe
+    // persistence is independent, including while compilation is backlogged.
+    return true;
+  });
 }
 
 void Gta4NativeGraphicsSystem::LoadNativePipelineRecipes() {
@@ -16488,7 +16532,7 @@ void Gta4NativeGraphicsSystem::LoadNativePipelineRecipes() {
     return;
   }
   auto path = native_pipeline_cache_path_;
-  path += ".recipes";
+  path += ".recipes-v2";
   const auto bytes = ReadBinaryFile(path);
   if (!bytes || bytes->size() < sizeof(NativePipelineRecipeFileHeader) || bytes->size() > 16777216) {
     return;
@@ -16496,11 +16540,15 @@ void Gta4NativeGraphicsSystem::LoadNativePipelineRecipes() {
   NativePipelineRecipeFileHeader header{};
   std::memcpy(&header, bytes->data(), sizeof(header));
   const size_t payload_size = bytes->size() - sizeof(header);
-  if (header.schema != 1 || header.build != NativePipelineRecipeBuildIdentity() ||
+  if (header.schema != 2 ||
+      header.compatibility != NativePipelineCompilerState::RecipeCompatibilityIdentity() ||
       header.record_size != sizeof(NativePipelineCompilerState::Record) ||
       header.count > NativePipelineCompilerState::kMaximumRecipes ||
       payload_size != header.count * sizeof(NativePipelineCompilerState::Record) ||
       header.checksum != XXH3_64bits(bytes->data() + sizeof(header), payload_size)) {
+    REXLOG_WARN("gta4-native: recipe cache rejected schema={} compatibility={} expected={}",
+                header.schema, header.compatibility,
+                NativePipelineCompilerState::RecipeCompatibilityIdentity());
     return;
   }
   for (size_t offset = sizeof(header); offset < bytes->size();
@@ -16519,6 +16567,8 @@ void Gta4NativeGraphicsSystem::LoadNativePipelineRecipes() {
       }
     }
   }
+  REXLOG_INFO("gta4-native: recipe cache loaded schema=2 accepted={} stored={} compatibility={}",
+              native_pipeline_compiler_->records.size(), header.count, header.compatibility);
 }
 
 void Gta4NativeGraphicsSystem::ReplayNativePipelineRecipes() {
@@ -16528,17 +16578,21 @@ void Gta4NativeGraphicsSystem::ReplayNativePipelineRecipes() {
   DrainNativePipelineCompiles();
   auto& state = *native_pipeline_compiler_;
   const auto* device = static_cast<ui::vulkan::VulkanProvider*>(provider_.get())->vulkan_device();
-  for (auto it = state.replay.begin(); it != state.replay.end();) {
-    if (it->key.indexed_descriptors && !native_descriptor_layouts_update_after_bind_) {
-      ++it;
+  // Persisted recipes may reference shaders registered much later. Inspect a
+  // bounded round-robin slice, so restoring a large cache cannot turn every
+  // publication into a full scan of thousands of unavailable recipes.
+  for (size_t remaining = std::min<size_t>(state.replay.size(), 64); remaining; --remaining) {
+    const auto record = state.replay.front();
+    state.replay.pop_front();
+    if (record.key.indexed_descriptors && !native_descriptor_layouts_update_after_bind_) {
+      state.replay.push_back(record);
       continue;
     }
-    if (native_pipelines_.contains(it->key) || state.compiler->Contains(it->key)) {
-      it = state.replay.erase(it);
+    if (native_pipelines_.contains(record.key) || state.compiler->Contains(record.key)) {
       continue;
     }
     NativePipelineRecipe recipe;
-    recipe.data = it->recipe;
+    recipe.data = record.recipe;
     const auto& limits = device->properties();
     const bool supported =
         (!recipe.data.rasterization.depthClampEnable || limits.depthClamp) &&
@@ -16561,12 +16615,12 @@ void Gta4NativeGraphicsSystem::ReplayNativePipelineRecipes() {
     if (!supported) {
       {
         std::lock_guard lock(state.records_mutex);
-        state.records.erase(it->key);
+        if (state.records.erase(record.key))
+          state.recipe_generation.fetch_add(1, std::memory_order_release);
       }
-      it = state.replay.erase(it);
       continue;
     }
-    recipe.layout = it->key.indexed_descriptors || !cached_pipeline_layout_
+    recipe.layout = record.key.indexed_descriptors || !cached_pipeline_layout_
         ? pipeline_layout_ : cached_pipeline_layout_;
     bool missing = false;
     bool incompatible = false;
@@ -16592,16 +16646,16 @@ void Gta4NativeGraphicsSystem::ReplayNativePipelineRecipes() {
     if (incompatible) {
       {
         std::lock_guard lock(state.records_mutex);
-        state.records.erase(it->key);
+        if (state.records.erase(record.key))
+          state.recipe_generation.fetch_add(1, std::memory_order_release);
       }
-      it = state.replay.erase(it);
       continue;
     }
     if (missing) {
-      ++it;
+      state.replay.push_back(record);
       continue;
     }
-    const auto key = it->key;
+    const auto key = record.key;
     if (!state.compiler->Enqueue(key, [this, recipe, device] {
           NativePipelineCompilerState::Result result;
           const uint64_t begin = rex::chrono::Clock::QueryHostTickCount();
@@ -16616,15 +16670,16 @@ void Gta4NativeGraphicsSystem::ReplayNativePipelineRecipes() {
           }
           return result;
         })) {
+      state.replay.push_front(record);
       break;
     }
     {
       std::lock_guard lock(state.records_mutex);
       if (state.records.size() < NativePipelineCompilerState::kMaximumRecipes) {
-        state.records.emplace(key, recipe.data);
+        if (state.records.emplace(key, recipe.data).second)
+          state.recipe_generation.fetch_add(1, std::memory_order_release);
       }
     }
-    it = state.replay.erase(it);
   }
 }
 
@@ -16688,6 +16743,7 @@ void Gta4NativeGraphicsSystem::StopNativePipelineCompiler() {
   native_pipeline_compiler_->compiler->Stop();
   DrainNativePipelineCompiles();
   native_pipeline_compiler_->writer->Stop();
+  SaveNativePipelineRecipes();
   SaveNativePipelineCache();
   native_pipeline_compiler_.reset();
 }
@@ -21134,7 +21190,8 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
       {
         std::lock_guard lock(native_pipeline_compiler_->records_mutex);
         if (native_pipeline_compiler_->records.size() < NativePipelineCompilerState::kMaximumRecipes) {
-          native_pipeline_compiler_->records.emplace(key, recipe->data);
+          if (native_pipeline_compiler_->records.emplace(key, recipe->data).second)
+            native_pipeline_compiler_->recipe_generation.fetch_add(1, std::memory_order_release);
         }
       }
       const bool queued = native_pipeline_compiler_->compiler->Enqueue(

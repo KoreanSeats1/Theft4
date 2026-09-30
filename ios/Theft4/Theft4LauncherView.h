@@ -33,6 +33,8 @@
 @property(nonatomic, readonly) UISwitch *prewarmTargetReuse;
 @property(nonatomic, readonly) UISwitch *rendererEfficiency;
 @property(nonatomic, readonly) UISwitch *parallelPreparation;
+@property(nonatomic, readonly) UISwitch *frameAssembly;
+@property(nonatomic, readonly) UISwitch *parallelTextureConversion;
 @property(nonatomic, readonly) UIButton *downloadLogButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;

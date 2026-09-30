@@ -11,14 +11,15 @@
 
 namespace rex::graphics::gta4_native {
 
-// One independent stage is available in the current frame graph. Keep at most
-// one helper outstanding; GCD owns the threads and chooses cores on every SoC.
+// Each owner admits at most one helper. GCD owns the threads and chooses cores
+// on every SoC; callers impose stage-specific work and CPU-capacity limits.
 // No model identifiers, affinity masks, spinning, or per-draw dispatches.
 class NativePreparationTask {
  public:
   using Function = void (*)(void*);
   NativePreparationTask() = default;
-  void Initialize() {
+  void Initialize(bool requested = Requested(),
+                  const char* name = "Theft4 constant preparation", uint32_t minimum_cpus = 4) {
     if (initialized_) return;
     initialized_ = true;
 #if defined(__APPLE__)
@@ -30,11 +31,11 @@ class NativePreparationTask {
     available_cpus_ = uint32_t(std::max(0, std::min(physical, active)));
     // Leave capacity for the guest producer, render worker and audio/runtime.
     // Unknown topology and small systems retain the original serial path.
-    if (available_cpus_ < 4 || !Requested()) return;
+    if (available_cpus_ < minimum_cpus || !requested) return;
     group_ = dispatch_group_create();
     auto attributes = dispatch_queue_attr_make_with_qos_class(
         DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
-    queue_ = dispatch_queue_create("Theft4 constant preparation", attributes);
+    queue_ = dispatch_queue_create(name, attributes);
 #endif
   }
   ~NativePreparationTask() {

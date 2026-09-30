@@ -17,7 +17,10 @@ extern "C" {
 // Fields176-184: preparation availability/topology, then per-publication draws,
 // dispatch/work/wait ticks, helper CPU ns (0=unavailable), uploaded bytes, and queue delay ticks.
 // Helper work overlaps texture preparation: do not add elapsed spans together.
-enum { REX_LIGHT_FIELDS = 185 };
+// Fields185-196: assembly/texture launch controls and cumulative work counters.
+// Fields197-198: per-publication index conversions prepared by the constant helper.
+// Texture times are wall ticks and can overlap; never sum them as CPU time.
+enum { REX_LIGHT_FIELDS = 199 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

@@ -78,6 +78,7 @@
 #include "native_performance_samples.h"
 #include "native_profile_detail.h"
 #include "native_pipeline_lookup_memo.h"
+#include "native_pipeline_request_cache.h"
 #include "native_reflection_registry.h"
 #include "native_resolve_policy.h"
 #include "native_room_light_probe.h"
@@ -221,6 +222,21 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     mutable NativePipelineLookupMemo<NativeFixedFunctionState, kRenderTargetCount, VkPipeline>
         pipeline_lookup_memo;
     mutable bool pipeline_lookup_inherited = false;
+  };
+
+  struct NativePipelineRequestKey {
+    const NativeShader* vertex_shader = nullptr;
+    const NativeShader* pixel_shader = nullptr;
+    uint64_t declaration_generation = 0;
+    uint32_t vertex_handle = 0, pixel_handle = 0, declaration_handle = 0;
+    std::array<uint32_t, kVertexStreamCount> strides{};
+    NativeFixedFunctionState fixed{};
+    NativePipelineLookupContext<kRenderTargetCount> context{};
+    bool operator==(const NativePipelineRequestKey&) const = default;
+  };
+  struct NativePipelineRequestReceipt {
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::optional<std::array<bool, kVertexStreamCount>> required_streams;
   };
 
   struct NativePersistentBufferEntry;
@@ -1193,6 +1209,20 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   const NativePreparedGuestConstants* FindPreparedGuestConstants(
       const NativeCommand& command) const;
   NativePreparationTask constant_preparation_task_;
+  struct PreparedIndexConversion {
+    const NativeBufferResource* buffer = nullptr;
+    bool index32 = false;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<PreparedIndexConversion> prepared_index_conversions_;
+  uint64_t preparation_index_bytes_ = 0, preparation_index_count_ = 0;
+  // Submit holds command_capture_mutex_ throughout texture capture, dispatch
+  // and join. Only one texture helper can be outstanding across producers.
+  NativePreparationTask texture_conversion_task_;
+  std::vector<uint8_t> texture_conversion_source_;
+  std::atomic<uint64_t> texture_conversion_jobs_{0}, texture_conversion_bytes_{0},
+      texture_conversion_copy_ticks_{0}, texture_conversion_helper_ticks_{0},
+      texture_conversion_join_ticks_{0}, texture_bulk_rows_{0}, texture_bulk_bytes_{0};
   std::vector<NativePreparedGuestConstants> prepared_guest_constants_;
   std::array<uint64_t, performance::kCounterCount> preparation_counters_{};
   bool prepared_guest_constants_ready_ = false;
@@ -1769,6 +1799,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t pipeline_snapshot_reuses_=0,shader_snapshot_reuses_=0;
   uint64_t zero_dof_skips_=0,postfx_direct_writes_=0;
   std::shared_ptr<const NativePipelineState> last_pipeline_snapshot_;
+  uint64_t last_pipeline_snapshot_source_version_ = 0;
+  uint64_t assembly_snapshot_reuses_ = 0, assembly_pipeline_requests_ = 0,
+           assembly_pipeline_hits_ = 0;
+  NativePipelineRequestCache<NativePipelineRequestKey, NativePipelineRequestReceipt>
+      pipeline_request_cache_;
   std::shared_ptr<const NativeShaderState> last_shader_snapshot_;
   std::shared_ptr<const NativePipelineState> SnapshotPipeline(const NativeCommand&, bool);
   std::vector<NativeCommand> current_frame_;

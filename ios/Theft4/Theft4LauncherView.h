@@ -30,6 +30,7 @@
 @property(nonatomic, readonly) UISwitch *runtimeWaitImprovements;
 @property(nonatomic, readonly) UISwitch *directGuestClock;
 @property(nonatomic, readonly) UISwitch *frameScheduling;
+@property(nonatomic, readonly) UISwitch *prewarmTargetReuse;
 @property(nonatomic, readonly) UIButton *downloadLogButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;

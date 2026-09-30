@@ -1052,6 +1052,18 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     bool uses_presenter = false;
   };
 
+  // Worker-owned, one-entry prewarm memo. Never crosses a non-draw command,
+  // publication, resource mutation or pause. Recording keeps its own memo.
+  struct NativePrewarmTargetCache {
+    std::array<SurfaceDescriptor, kRenderTargetCount> colors{};
+    SurfaceDescriptor depth{};
+    NativeAttachmentUsage usage{};
+    NativeRenderingTarget target{};
+    uint64_t virtual_revision = 0;
+    VkSampleCountFlagBits sample_override = VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM;
+    bool valid = false;
+  };
+
   struct NativePipelineKey {
     uint64_t vertex_shader_hash = 0;
     uint64_t pixel_shader_hash = 0;
@@ -1555,6 +1567,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool ResolveRenderingTarget(const NativeCommand& command, VkImageView presenter_view,
                               uint32_t presenter_width, uint32_t presenter_height,
                               NativeRenderingTarget& target, bool allow_allocation = true);
+  bool ResolvePrewarmRenderingTarget(const NativeCommand& command, NativeRenderingTarget& target);
   NativeAttachmentUsage GetRenderingTargetUsage(const NativeCommand& command) const;
   bool TransitionRenderingTarget(VkCommandBuffer command_buffer, NativeRenderingTarget& target);
   bool AllocateUpload(VkDeviceSize size, VkDeviceSize alignment, NativeUploadAllocation& allocation,
@@ -2187,6 +2200,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t texture_image_evicted_bytes_ = 0;
   uint64_t texture_allocation_retry_count_ = 0;
   uint64_t texture_allocation_failure_count_ = 0;
+  NativePrewarmTargetCache prewarm_target_cache_{};
+  uint64_t prewarm_target_requests_ = 0, prewarm_target_hits_ = 0;
+  uint64_t prewarm_surface_lookups_avoided_ = 0;
   std::vector<std::unique_ptr<NativeSurfaceImage>> native_surface_images_;
   std::unordered_map<uint32_t, std::vector<NativeSurfaceImage*>> surface_images_by_handle_;
   struct NativeTextureReadback {

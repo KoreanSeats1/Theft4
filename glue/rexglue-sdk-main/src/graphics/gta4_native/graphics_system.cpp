@@ -443,7 +443,11 @@ constexpr size_t HostPauseCount = 160;
 constexpr size_t HostPauseDrainTicks = 161;
 constexpr size_t HostPauseDrainSucceeded = 162;
 constexpr size_t ObservedCommands = 163;
-static_assert(ObservedCommands + 1 == REX_LIGHT_FIELDS);
+constexpr size_t PrewarmTargetRequests = 164;
+constexpr size_t PrewarmTargetHits = 165;
+constexpr size_t PrewarmSurfaceLookupsAvoided = 166;
+constexpr size_t PrewarmTargetReuseEnabled = 167;
+static_assert(PrewarmTargetReuseEnabled + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -628,7 +632,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -6722,6 +6726,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     bool worker_refilled_batch = false, worker_waited = false;
 #endif
     if (worker_batch_.empty()) {
+      if (!host_active_.load(std::memory_order_acquire)) prewarm_target_cache_.valid = false;
       WaitForHostActivity();
       std::unique_lock lock(render_mutex_);
 #ifdef THEFT4_LAB_BUILD
@@ -6852,6 +6857,14 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
     // The batch is worker-owned. Process its front in place and pop it after
     // per-command scopes have released their references.
     NativeCommand& command = NativeQueueCommand(worker_batch_.front());
+    // Full non-draw commands can flush/publish, retire surfaces or change
+    // reflection registrations. Invalidate before their side effects. Compact
+    // setters cannot mutate surface ownership; their changed inputs are keyed.
+    if (command.type != CommandType::kDrawPrimitive &&
+        command.type != CommandType::kDrawPrimitiveUp &&
+        command.type != CommandType::kDrawIndexedPrimitive) {
+      prewarm_target_cache_.valid = false;
+    }
     const auto pop_processed_command = MakeScopeExit([&] {
 #ifdef THEFT4_LAB_BUILD
       assert(worker_batch_logical_commands);
@@ -18905,6 +18918,7 @@ void Gta4NativeGraphicsSystem::AppendQueuedTextureProtection(std::unordered_set<
 }
 
 void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {
+  prewarm_target_cache_.valid = false;
   current_frame_.clear();
   frame_texture_protection_.clear();
 }
@@ -20095,6 +20109,79 @@ bool Gta4NativeGraphicsSystem::TransitionRenderingTarget(VkCommandBuffer command
   return true;
 }
 
+namespace {
+bool NativePrewarmTargetReuseEnabled() {
+#if defined(__APPLE__) && defined(THEFT4_LAB_BUILD) && TARGET_OS_IPHONE
+  static const bool enabled = [] {
+    const char* setting = std::getenv("THEFT4_PREWARM_TARGET_REUSE");
+    return !setting || std::strcmp(setting, "0") != 0;
+  }();
+  return enabled;
+#else
+  return false;
+#endif
+}
+}  // namespace
+
+bool Gta4NativeGraphicsSystem::ResolvePrewarmRenderingTarget(
+    const NativeCommand& command, NativeRenderingTarget& target) {
+  ++prewarm_target_requests_;
+  auto& memo = prewarm_target_cache_;
+  // Diagnostics retain complete lookup events. Never cache a failure: a
+  // missing image must be retried after recording allocates it.
+  if (!NativePrewarmTargetReuseEnabled() || NativeRendererEventTraceEnabled() ||
+      REXCVAR_GET(gta4_validate_native_hot_caches)) {
+    memo.valid = false;
+    return ResolveRenderingTarget(command, VK_NULL_HANDLE, 0, 0, target, false);
+  }
+  const auto& state = *command.pipeline_state;
+  const NativeAttachmentUsage usage = GetRenderingTargetUsage(command);
+  const uint64_t revision = virtual_surface_registry_revision_.load(std::memory_order_acquire);
+  const auto samples = GetNativeSceneSampleOverride();
+  // Surface-image equivalence is deliberately weaker (placement aliases).
+  // A resolver receipt must compare every descriptor input, including inactive
+  // attachments that can supply attachmentless extents.
+  const auto same_descriptor = [](const SurfaceDescriptor& a, const SurfaceDescriptor& b) {
+    return a.handle == b.handle && a.flags == b.flags && a.base == b.base &&
+        a.address == b.address && a.packed_dimensions == b.packed_dimensions &&
+        a.format == b.format && a.width == b.width && a.height == b.height &&
+        a.sample_type == b.sample_type;
+  };
+  const bool same_usage = memo.usage.color_attachment_mask == usage.color_attachment_mask &&
+      memo.usage.color_write_mask == usage.color_write_mask &&
+      memo.usage.depth_stencil_aspects == usage.depth_stencil_aspects;
+  if (memo.valid && memo.virtual_revision == revision && memo.sample_override == samples &&
+      same_usage && same_descriptor(memo.depth, state.depth_stencil) &&
+      std::equal(memo.colors.begin(), memo.colors.end(), state.render_targets.begin(),
+                 same_descriptor) &&
+      virtual_surface_registry_revision_.load(std::memory_order_acquire) == revision) {
+    target = memo.target;
+    // Resolver hits still update usage/lifetime bookkeeping, just as ordinary
+    // GetOrCreateSurfaceImage hits do. No pipeline/draw is skipped.
+    for (auto* surface : target.color_surfaces) if (surface) {
+      MarkNativeSurfaceImageUsed(*surface);
+      ++prewarm_surface_lookups_avoided_;
+    }
+    if (target.depth_surface) {
+      MarkNativeSurfaceImageUsed(*target.depth_surface);
+      ++prewarm_surface_lookups_avoided_;
+    }
+    ++prewarm_target_hits_;
+    return true;
+  }
+  memo.valid = false;
+  if (!ResolveRenderingTarget(command, VK_NULL_HANDLE, 0, 0, target, false)) return false;
+  memo.colors = state.render_targets;
+  memo.depth = state.depth_stencil;
+  memo.usage = usage;
+  memo.target = target;
+  memo.virtual_revision = revision;
+  memo.sample_override = samples;
+  memo.valid = virtual_surface_registry_revision_.load(std::memory_order_acquire) == revision &&
+      GetNativeSceneSampleOverride() == samples;
+  return true;
+}
+
 void Gta4NativeGraphicsSystem::TryPrewarmDrawPipeline(const NativeCommand& command) {
   if (!REXCVAR_GET(gta4_native_pipeline_prewarm) || !pipeline_layout_ || !command.pipeline_state ||
       !command.pipeline_state->vertex_shader_resource ||
@@ -20156,7 +20243,7 @@ void Gta4NativeGraphicsSystem::TryPrewarmDrawPipeline(const NativeCommand& comma
     return;
   }
   NativeRenderingTarget target{};
-  if (!ResolveRenderingTarget(command, VK_NULL_HANDLE, 0, 0, target, false)) {
+  if (!ResolvePrewarmRenderingTarget(command, target)) {
     return;
   }
   GetOrCreateDrawPipeline(command, primitive_type, target, user_pointer_stride,
@@ -34174,6 +34261,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
+  prewarm_target_cache_.valid = false;
   if (!present.device) ++light_internal_flushes_;
   light::FrameScope light_frame(present.device != 0, present.submitted_frame,
       current_frame_.size(), native_texture_images_.size(),
@@ -34195,6 +34283,10 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::HostPauseCount] = host_pause_count_;
     values[light::HostPauseDrainTicks] = host_pause_drain_ticks_;
     values[light::HostPauseDrainSucceeded] = host_pause_drain_succeeded_;
+    values[light::PrewarmTargetRequests] = prewarm_target_requests_;
+    values[light::PrewarmTargetHits] = prewarm_target_hits_;
+    values[light::PrewarmSurfaceLookupsAvoided] = prewarm_surface_lookups_avoided_;
+    values[light::PrewarmTargetReuseEnabled] = NativePrewarmTargetReuseEnabled();
   }
   if (light_frame.active && (present.submitted_frame % 120) == 0) {
     REXLOG_INFO("gta4-draw-reuse: frame={} pipeline-on={} scope-on={} "

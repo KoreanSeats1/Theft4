@@ -10,7 +10,8 @@ extern "C" {
 // reflect driver-call durations (including background work), not GPU time.
 // Fields116 onward are bounded command/phase/boundary and activity metadata.
 // Phase IDs follow RenderPhase; counts describe commands visited in recording.
-enum { REX_LIGHT_FIELDS = 164 };
+// Fields164-166 are cumulative prewarm work counters;167 is the launch mode.
+enum { REX_LIGHT_FIELDS = 168 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

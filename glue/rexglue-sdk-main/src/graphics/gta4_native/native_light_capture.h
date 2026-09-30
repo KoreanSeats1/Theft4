@@ -11,7 +11,10 @@ extern "C" {
 // Fields116 onward are bounded command/phase/boundary and activity metadata.
 // Phase IDs follow RenderPhase; counts describe commands visited in recording.
 // Fields164-166 are cumulative prewarm work counters;167 is the launch mode.
-enum { REX_LIGHT_FIELDS = 168 };
+// Fields168-175: efficiency launch mode, then cumulative renderer work counters.
+// Dynamic counts are state groups, not individual Vulkan calls (stencil groups
+// may emit three or six calls). Counter snapshots are taken at publication end.
+enum { REX_LIGHT_FIELDS = 176 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

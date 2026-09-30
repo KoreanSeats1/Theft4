@@ -13,14 +13,24 @@ namespace rex::graphics::gta4_native {
 template <size_t DescriptorSetCount, size_t VertexBindingCount = 16>
 class NativeDrawStateCache {
  public:
-  void Reset() { *this = {}; }
+  struct Statistics { uint64_t dynamic_requested = 0, dynamic_emitted = 0; };
+  const Statistics& statistics() const { return statistics_; }
+  // Statistics are cumulative; command state never survives an external encoder.
+  void Reset() {
+    pipeline_ = {}; vertex_buffers_ = {}; index_buffer_ = {}; descriptors_ = {};
+    viewport_ = {}; scissor_ = {}; depth_bias_ = {}; stencil_ = {};
+    blend_constants_ = {}; push_constants_ = {};
+  }
 
-  bool UpdatePipeline(uint64_t pipeline) {
+  bool UpdatePipeline(uint64_t pipeline, bool uniform_dynamic_state = false) {
     if (!pipeline_.Update(pipeline)) {
       return false;
     }
-    // A different pipeline can contain static state that invalidates dynamic
-    // values. Conservatively re-emit them even for compatible native pipelines.
+    // All title draw pipelines declare the same seven dynamic states. Binding
+    // another such pipeline does not invalidate these values in Vulkan. Helper
+    // pipelines still Reset(), including failures after partially recording.
+    // Push constants are separately keyed by their exact pipeline layout.
+    if (uniform_dynamic_state) return true;
     viewport_ = {};
     scissor_ = {};
     depth_bias_ = {};
@@ -45,20 +55,21 @@ class NativeDrawStateCache {
                          const std::array<uint64_t, DescriptorSetCount>& sets) {
     return descriptors_.Update({layout, sets});
   }
-  bool UpdateViewport(const std::array<uint32_t, 6>& bits) { return viewport_.Update(bits); }
+  bool UpdateViewport(const std::array<uint32_t, 6>& bits) { return UpdateDynamic(viewport_, bits); }
   bool UpdateScissor(const std::array<int64_t, 4>& rectangle) {
-    return scissor_.Update(rectangle);
+    return UpdateDynamic(scissor_, rectangle);
   }
-  bool UpdateDepthBias(const std::array<uint32_t, 3>& bits) { return depth_bias_.Update(bits); }
-  bool UpdateStencil(const std::array<uint32_t, 6>& faces) { return stencil_.Update(faces); }
+  bool UpdateDepthBias(const std::array<uint32_t, 3>& bits) { return UpdateDynamic(depth_bias_, bits); }
+  bool UpdateStencil(const std::array<uint32_t, 6>& faces) { return UpdateDynamic(stencil_, faces); }
   bool UpdateBlendConstants(const std::array<uint32_t, 4>& bits) {
-    return blend_constants_.Update(bits);
+    return UpdateDynamic(blend_constants_, bits);
   }
   bool UpdatePushConstants(uint64_t layout, const std::array<uint64_t, 3>& addresses) {
     return push_constants_.Update({layout, addresses});
   }
 
  private:
+  Statistics statistics_{};
   template <typename Value>
   struct Tracked {
     std::optional<Value> last;
@@ -70,6 +81,13 @@ class NativeDrawStateCache {
       return true;
     }
   };
+  template <typename Value>
+  bool UpdateDynamic(Tracked<Value>& state, const Value& value) {
+    ++statistics_.dynamic_requested;
+    const bool changed = state.Update(value);
+    statistics_.dynamic_emitted += changed;
+    return changed;
+  }
   template <size_t Count>
   struct LayoutValues {
     uint64_t layout;

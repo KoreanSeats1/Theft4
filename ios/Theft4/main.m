@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
+#import <Metal/MTLDeviceCertification.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/log.h>
 #include <stdio.h>
@@ -25,6 +26,17 @@ extern int rex_gta4_native_profile_status(void);
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
+
+static NSString *Theft4PerformanceProfileFields(void) {
+    NSProcessInfo *process = NSProcessInfo.processInfo;
+    BOOL standard = [process hasPerformanceProfile:NSProcessPerformanceProfileDefault];
+    BOOL sustained = [process hasPerformanceProfile:NSProcessPerformanceProfileSustained];
+    // Two false answers mean unknown, not proof of the default profile.
+    NSString *profile = standard && sustained ? @"both" : sustained ? @"sustained" :
+        standard ? @"default" : @"unknown";
+    return [NSString stringWithFormat:@"performance_profile=%@ profile_default=%d profile_sustained=%d",
+        profile, standard, sustained];
+}
 
 @interface Theft4MetalView : UIView
 @end
@@ -198,6 +210,7 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_directGuestClock;
     UISwitch *_frameScheduling;
     UISwitch *_prewarmTargetReuse;
+    UISwitch *_rendererEfficiency;
     NSURL *_schedulingURL;
     NSMutableString *_schedulingRows; // serial export queue owns capture storage
     NSUInteger _schedulingBytes;
@@ -335,6 +348,9 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(performanceProfileChanged:)
+        name:NSProcessInfoPerformanceProfileDidChangeNotification object:nil];
     self.controllerUserInteractionEnabled = YES;
     _legacyIPadProfile = configureDeviceProfile();
     const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
@@ -358,6 +374,7 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4DirectGuestClock": @YES,
         @"Theft4FrameScheduling": @YES,
         @"Theft4PrewarmTargetReuse": @YES,
+        @"Theft4RendererEfficiency": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
     }];
     // Build 65 uses build 44's indices. Migrate those persisted choices once,
@@ -425,6 +442,10 @@ static void bootEvent(void *context, const char *event) {
     _reflectionQuality = _bringupOverlay.reflectionQuality;
     _antiAliasing = _bringupOverlay.antiAliasing;
     _performanceCapture = _bringupOverlay.performanceCapture;
+    _rendererEfficiency = _bringupOverlay.rendererEfficiency;
+    _rendererEfficiency.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4RendererEfficiency"];
+    [_rendererEfficiency addTarget:self action:@selector(rendererEfficiencyChanged:)
+        forControlEvents:UIControlEventValueChanged];
     _prewarmTargetReuse = _bringupOverlay.prewarmTargetReuse;
     _prewarmTargetReuse.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4PrewarmTargetReuse"];
     [_prewarmTargetReuse addTarget:self action:@selector(prewarmTargetReuseChanged:)
@@ -1054,6 +1075,22 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)frameSchedulingChanged:(UISwitch *)sender {
     [self setFrameSchedulingEnabled:sender.on];
+}
+
+- (void)performanceProfileChanged:(NSNotification *)notification {
+    NSString *fields = Theft4PerformanceProfileFields();
+    const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self record:[@"performance.profile_changed " stringByAppendingString:fields]];
+        if (!self->_publicationCaptureActive) return;
+        NSString *row = [NSString stringWithFormat:@"marker,,%llu,,%@\n",
+            (unsigned long long)timestamp, fields];
+        dispatch_async(self->_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:row]; });
+    });
+}
+
+- (void)rendererEfficiencyChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4RendererEfficiency"];
 }
 
 - (void)prewarmTargetReuseChanged:(UISwitch *)sender {
@@ -1755,7 +1792,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = [NSString stringWithFormat:@"# build84: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
+    NSString *header = [NSString stringWithFormat:@"# build85: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
+    header = [header stringByAppendingFormat:@"marker,,%llu,,%@\n",
+        (unsigned long long)(CACurrentMediaTime() * 1e9), Theft4PerformanceProfileFields()];
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _publicationCaptureURL = nil;
         [self record:@"capture.long_start_failed"];
@@ -1764,7 +1803,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _lightCaptureURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
     NSString *lightHeader = [NSString stringWithFormat:
-        @"# build84: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm counters cumulative; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        @"# build85: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
         (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
@@ -1774,7 +1813,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _runtimeCallerURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"runtime-callers-"]];
     NSString *callerHeader = [NSString stringWithFormat:
-        @"# build84; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
+        @"# build85; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
         _directGuestClock.on, _runtimeWaitImprovements.on,
         (unsigned long long)rex_runtime_callers_frequency(),
         (unsigned long long)(uintptr_t)_dyld_get_image_header(0)];
@@ -1785,7 +1824,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _schedulingURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"frame-scheduling-"]];
     NSString *schedulingHeader = [NSString stringWithFormat:
-        @"# build84 initial_mode=%d; times=ns; event=1:identity 2:qos_request 3:fixed_work 4:audio_work 5:witness_budget; roles=1:guest 2:main 4:native 8:present_producer 16:audio; work=1:register 2:buffer 3:audio_prepare 4:audio_mix 5:xma_work 6:xma_decode; units=fixed_iterations_or_cumulative_calls; audio_sampling=1/64_DSP_1/256_XMA; nested_scopes_overlap; sampled_call_counts_omit_unsampled_tail; in_flight_samples_may_finish_after_stop; requested_qos_excludes_override; result=POSIX_status; witness_max_threads=4; witness_counts_frozen=16384; witness_budget_per_thread=0.025pct_plus_2ms_startup; cpu_ns_zero=unavailable; bounded4MiB; dropped_UINT64_MAX=thread_capacity_exceeded\n%s\n",
+        @"# build85 initial_mode=%d; times=ns; event=1:identity 2:qos_request 3:fixed_work 4:audio_work 5:witness_budget; roles=1:guest 2:main 4:native 8:present_producer 16:audio; work=1:register 2:buffer 3:audio_prepare 4:audio_mix 5:xma_work 6:xma_decode; units=fixed_iterations_or_cumulative_calls; audio_sampling=1/64_DSP_1/256_XMA; nested_scopes_overlap; sampled_call_counts_omit_unsampled_tail; in_flight_samples_may_finish_after_stop; requested_qos_excludes_override; result=POSIX_status; witness_max_threads=4; witness_counts_frozen=16384; witness_budget_per_thread=0.025pct_plus_2ms_startup; cpu_ns_zero=unavailable; bounded4MiB; dropped_UINT64_MAX=thread_capacity_exceeded\n%s\n",
         rex_frame_scheduling_mode(), rex_frame_scheduling_columns()];
     if (![schedulingHeader writeToURL:_schedulingURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         [self record:@"capture.scheduling_start_failed"];
@@ -1912,7 +1951,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
     if (execute) {
+        [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(_frameScheduling.on);
+        setenv("THEFT4_RENDERER_EFFICIENCY", _rendererEfficiency.on ? "1" : "0", 1);
         setenv("THEFT4_PREWARM_TARGET_REUSE", _prewarmTargetReuse.on ? "1" : "0", 1);
         setenv("THEFT4_DIRECT_GUEST_CLOCK", _directGuestClock.on ? "1" : "0", 1);
         setenv("THEFT4_RUNTIME_WAIT_FIXES", _runtimeWaitImprovements.on ? "1" : "0", 1);
@@ -2105,6 +2146,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
     // Scene disconnect normally releases it first. No callback may access a
     // partially deallocated controller; scene ownership requires shutdown.
     NSCAssert(_core == NULL, @"Scene must shut down its core before release");

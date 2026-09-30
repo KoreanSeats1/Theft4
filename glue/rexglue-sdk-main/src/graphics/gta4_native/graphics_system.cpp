@@ -447,7 +447,15 @@ constexpr size_t PrewarmTargetRequests = 164;
 constexpr size_t PrewarmTargetHits = 165;
 constexpr size_t PrewarmSurfaceLookupsAvoided = 166;
 constexpr size_t PrewarmTargetReuseEnabled = 167;
-static_assert(PrewarmTargetReuseEnabled + 1 == REX_LIGHT_FIELDS);
+constexpr size_t RendererEfficiencyEnabled = 168;
+constexpr size_t DynamicGroupsRequested = 169;
+constexpr size_t DynamicGroupsEmitted = 170;
+constexpr size_t BindingStagesVisited = 171;
+constexpr size_t BindingStagesSkipped = 172;
+constexpr size_t BarrierCalls = 173;
+constexpr size_t AttachmentBarriers = 174;
+constexpr size_t DynamicDerivationReuses = 175;
+static_assert(DynamicDerivationReuses + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -632,7 +640,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -754,6 +762,20 @@ extern "C" __attribute__((visibility("default"))) int rex_gta4_native_memory_pro
 }
 
 namespace {
+
+// Latched before the first gameplay command; a fresh launch applies changes.
+// Shared by the draw encoder, descriptor preparation and attachment barriers.
+bool NativeRendererEfficiencyEnabled() {
+#if defined(__APPLE__) && defined(THEFT4_LAB_BUILD) && TARGET_OS_IPHONE
+  static const bool enabled = [] {
+    const char* setting = std::getenv("THEFT4_RENDERER_EFFICIENCY");
+    return !setting || std::strcmp(setting, "0") != 0;
+  }();
+  return enabled;
+#else
+  return false;
+#endif
+}
 
 namespace transition = rex::diagnostics::gta4_transition;
 namespace gpu_flight = rex::diagnostics::gpu_flight;
@@ -18170,6 +18192,12 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
   };
   std::array<SamplerMemo, kShaderTextureCount> sampler_memo{};
   NativePreparedBindingMemo<NativeCommand> prepared_bindings;
+  NativeDrawDescriptorKey null_descriptor_key{};
+  null_descriptor_key.images_2d.fill(null_texture_2d_.view);
+  null_descriptor_key.images_2d_array.fill(null_texture_2d_array_.view);
+  null_descriptor_key.images_3d.fill(null_texture_3d_.view);
+  null_descriptor_key.images_cube.fill(null_texture_cube_.view);
+  null_descriptor_key.samplers.fill(null_sampler_);
   const bool reuse_prepared_bindings = !trace_reflections && !FireTraceConfig().enabled &&
       !EmissionTraceConfig().pipeline_full_readback && !PhoneTraceConfig().enabled &&
       REXCVAR_GET(gta4_native_light_color_delta_probe) != "room" &&
@@ -18315,12 +18343,10 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       alpha_card_category = ClassifyAlphaCardDiagnosticShader(alpha_card_pixel_shader->filename);
     }
 
-    std::array<VkDescriptorImageInfo, kShaderTextureCount> images_2d{};
-    std::array<VkDescriptorImageInfo, kShaderTextureCount> images_2d_array{};
-    std::array<VkDescriptorImageInfo, kShaderTextureCount> images_3d{};
-    std::array<VkDescriptorImageInfo, kShaderTextureCount> images_cube{};
-    std::array<VkDescriptorImageInfo, kShaderTextureCount> samplers{};
-    std::array<uint64_t, kShaderTextureCount> image_lifetimes{};
+    // Build the final descriptor tuple directly, avoiding five temporary
+    // VkDescriptorImageInfo arrays and their per-stage copy on every draw.
+    NativeDrawDescriptorKey descriptor_key = null_descriptor_key;
+    descriptor_key.layout_epoch = next_cached_descriptor_epoch_;
     command.descriptor_page = UINT32_MAX;
     command.image_descriptor_epoch = 0;
     command.sampler_descriptor_epoch = 0;
@@ -18349,16 +18375,15 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     command.guest_null_texture_mask = 0;
     command.failed_texture_mask = 0;
     command.bindings_prepared = false;
-    for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-      images_2d[stage] = {VK_NULL_HANDLE, null_texture_2d_.view,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      images_2d_array[stage] = {VK_NULL_HANDLE, null_texture_2d_array_.view,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      images_3d[stage] = {VK_NULL_HANDLE, null_texture_3d_.view,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      images_cube[stage] = {VK_NULL_HANDLE, null_texture_cube_.view,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      samplers[stage] = {null_sampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    const bool sparse_indexed = NativeRendererEfficiencyEnabled() &&
+        native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_;
+    uint32_t remaining_stages = sparse_indexed ? (command.used_texture_mask & kSupportedShaderTextureMask)
+        : ((uint32_t{1} << kShaderTextureCount) - 1);
+    native_binding_stages_skipped_ += kShaderTextureCount - std::popcount(remaining_stages);
+    while (remaining_stages) {
+      const uint32_t stage = std::countr_zero(remaining_stages);
+      remaining_stages &= remaining_stages - 1;
+      ++native_binding_stages_visited_;
       if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_) {
         command.texture_descriptor_indices[stage] = 0;
         command.sampler_descriptor_indices[stage] = 0;
@@ -18381,23 +18406,23 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       NativeTextureImage* image = required
           ? prepared_image(command.textures[stage]) : nullptr;
       if (image) {
-        image_lifetimes[stage] = image->descriptor_lifetime;
+        descriptor_key.image_lifetimes[stage] = image->descriptor_lifetime;
         switch (image->source->info.dimension) {
           case xenos::DataDimension::k3D:
-            images_3d[stage].imageView = image->resource.view;
+            descriptor_key.images_3d[stage] = image->resource.view;
             break;
           case xenos::DataDimension::kCube:
-            images_cube[stage].imageView = image->resource.view;
+            descriptor_key.images_cube[stage] = image->resource.view;
             break;
           case xenos::DataDimension::k2DOrStacked:
             if (image->source->info.is_stacked) {
-              images_2d_array[stage].imageView = image->resource.view;
+              descriptor_key.images_2d_array[stage] = image->resource.view;
             } else {
-              images_2d[stage].imageView = image->resource.view;
+              descriptor_key.images_2d[stage] = image->resource.view;
             }
             break;
           default:
-            images_2d[stage].imageView = image->resource.view;
+            descriptor_key.images_2d[stage] = image->resource.view;
             break;
         }
         NativeSamplerKey effective_sampler_key{};
@@ -18414,7 +18439,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
           }
         }
         if (sampler) {
-          samplers[stage].sampler = sampler->sampler;
+          descriptor_key.samplers[stage] = sampler->sampler;
         }
         if (IsHoveGantryGeometryCandidate(command)) {
           static std::atomic<uint64_t> hove_sample_bind_count{0};
@@ -18626,7 +18651,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
                 "texture-index={} sampler-index={}",
                 trace, stage, image->source->vector_font_id, image->source->handle,
                 image->source->generation, uint32_t(image->source->info.dimension),
-                fmt::ptr(image->resource.view), fmt::ptr(samplers[stage].sampler), !sampler,
+                fmt::ptr(image->resource.view), fmt::ptr(descriptor_key.samplers[stage]), !sampler,
                 command.texture_descriptor_indices[stage],
                 command.sampler_descriptor_indices[stage]);
           }
@@ -18681,7 +18706,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
         binding.texture_stage = stage;
         binding.image = image ? image->resource.image : VK_NULL_HANDLE;
         binding.view = image ? image->resource.view : null_texture_2d_.view;
-        binding.sampler = samplers[stage].sampler;
+        binding.sampler = descriptor_key.samplers[stage];
         binding.image_lifetime = image ? image->descriptor_lifetime : 0;
         if (sampler) binding.sampler_info = sampler->creation_info;
       }
@@ -18697,16 +18722,6 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       continue;
     }
 
-    NativeDrawDescriptorKey descriptor_key{};
-    descriptor_key.layout_epoch = next_cached_descriptor_epoch_;
-    descriptor_key.image_lifetimes = image_lifetimes;
-    for (uint32_t stage = 0; stage < kShaderTextureCount; ++stage) {
-      descriptor_key.images_2d[stage] = images_2d[stage].imageView;
-      descriptor_key.images_2d_array[stage] = images_2d_array[stage].imageView;
-      descriptor_key.images_3d[stage] = images_3d[stage].imageView;
-      descriptor_key.images_cube[stage] = images_cube[stage].imageView;
-      descriptor_key.samplers[stage] = samplers[stage].sampler;
-    }
     if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && native_descriptor_paging_) {
       if (!AssignIndexedWorkingSet(command, descriptor_key)) return false;
       prepared_bindings.Remember(command);
@@ -20057,6 +20072,32 @@ bool Gta4NativeGraphicsSystem::TransitionRenderingTarget(VkCommandBuffer command
                                                          NativeRenderingTarget& target) {
   auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
   const auto& dfn = vulkan_provider->vulkan_device()->functions();
+  std::array<VkImageMemoryBarrier, kRenderTargetCount + 1> barriers{};
+  std::array<VkDeviceMemory, kRenderTargetCount + 1> memories{};
+  uint32_t count = 0;
+  VkPipelineStageFlags source_stages = 0, destination_stages = 0;
+  const auto flush = [&] {
+    if (!count) return;
+    profile::CpuCall(profile::CpuOp::kDriverBarrier, [&] {
+      dfn.vkCmdPipelineBarrier(command_buffer, source_stages, destination_stages, 0,
+          0, nullptr, 0, nullptr, count, barriers.data());
+    });
+    ++native_attachment_barrier_calls_;
+    native_attachment_barriers_ += count;
+    count = 0; source_stages = destination_stages = 0;
+  };
+  const auto append = [&](const VkImageMemoryBarrier& barrier, VkDeviceMemory memory,
+                          VkPipelineStageFlags source, VkPipelineStageFlags destination) {
+    // A repeated image or shared/unknown allocation may need the original
+    // sequential dependency. Never combine those barriers in one call.
+    bool separate = !NativeRendererEfficiencyEnabled() || !memory;
+    for (uint32_t i = 0; i < count; ++i)
+      separate |= barriers[i].image == barrier.image || memories[i] == memory || !memories[i];
+    if (separate) flush();
+    barriers[count] = barrier; memories[count++] = memory;
+    source_stages |= source; destination_stages |= destination;
+    if (separate) flush();
+  };
   for (uint32_t index = 0; index < kRenderTargetCount; ++index) {
     if ((target.color_attachment_mask & (1u << index)) == 0) {
       continue;
@@ -20079,9 +20120,8 @@ bool Gta4NativeGraphicsSystem::TransitionRenderingTarget(VkCommandBuffer command
     barrier.image = image->resource.image;
     barrier.subresourceRange =
         ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
-    profile::CpuCall(profile::CpuOp::kDriverBarrier, [&] { return dfn.vkCmdPipelineBarrier(command_buffer, source_synchronization.stages,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &barrier); });
+    append(barrier, image->resource.memory, source_synchronization.stages,
+           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     image->layout = barrier.newLayout;
   }
   if (target.depth_stencil_attachment_active && target.depth_surface) {
@@ -20100,12 +20140,11 @@ bool Gta4NativeGraphicsSystem::TransitionRenderingTarget(VkCommandBuffer command
     barrier.image = image.resource.image;
     barrier.subresourceRange =
         ui::vulkan::util::InitializeSubresourceRange(image.aspect, 0, 1, 0, 1);
-    profile::CpuCall(profile::CpuOp::kDriverBarrier, [&] { return dfn.vkCmdPipelineBarrier(
-        command_buffer, source_synchronization.stages,
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0,
-        0, nullptr, 0, nullptr, 1, &barrier); });
+    append(barrier, image.resource.memory, source_synchronization.stages,
+           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
     image.layout = barrier.newLayout;
   }
+  flush();
   return true;
 }
 
@@ -20946,13 +20985,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
         ConvertCompareFunction(fixed_function_state.ccw_stencil_function);
   }
 
-  const std::array<VkDynamicState, 7> dynamic_states = {VK_DYNAMIC_STATE_VIEWPORT,
-                                                        VK_DYNAMIC_STATE_SCISSOR,
-                                                        VK_DYNAMIC_STATE_DEPTH_BIAS,
-                                                        VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                                                        VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-                                                        VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
-                                                        VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+  const auto& dynamic_states = NativePipelineRecipe::DynamicStates();
   VkPipelineDynamicStateCreateInfo dynamic_state{};
   dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynamic_state.dynamicStateCount = uint32_t(dynamic_states.size());
@@ -21793,7 +21826,8 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
       return false;
     }
   }
-  if (native_draw_state_cache_.UpdatePipeline(NativeVulkanHandleIdentity(pipeline))) {
+  if (native_draw_state_cache_.UpdatePipeline(
+          NativeVulkanHandleIdentity(pipeline), NativeRendererEfficiencyEnabled())) {
     profile::CpuCall(profile::CpuOp::kDriverBind, [&] { return dfn.vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline); });
   }
   TraceModernShaderDraw(command, pipeline, target.samples);
@@ -21808,12 +21842,22 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                                 draw_descriptor_sets.data(), 0, nullptr); });
   }
   auto& dynamic_derivation = native_dynamic_draw_derivation_cache_;
+  // Viewport/scissor/bias depend only on these exact fields. Blend, stencil,
+  // shader and color-write changes must not rebuild unrelated geometry state.
+  const bool fixed_derivation_equal = NativeRendererEfficiencyEnabled()
+      ? dynamic_derivation.fixed.viewport_bits == fixed.viewport_bits &&
+        dynamic_derivation.fixed.scissor == fixed.scissor &&
+        dynamic_derivation.fixed.depth_bias_bits == fixed.depth_bias_bits &&
+        dynamic_derivation.fixed.slope_scaled_depth_bias_bits == fixed.slope_scaled_depth_bias_bits
+      : dynamic_derivation.fixed == fixed;
   const bool dynamic_derivation_hit = dynamic_derivation.valid &&
-      dynamic_derivation.fixed == fixed && dynamic_derivation.width == width &&
+      fixed_derivation_equal && dynamic_derivation.width == width &&
       dynamic_derivation.height == height && dynamic_derivation.logical_width == logical_width &&
       dynamic_derivation.logical_height == logical_height &&
-      dynamic_derivation.color_write_mask == target.color_write_mask &&
-      dynamic_derivation.color_formats == target.color_formats;
+      (NativeRendererEfficiencyEnabled() ||
+       (dynamic_derivation.color_write_mask == target.color_write_mask &&
+        dynamic_derivation.color_formats == target.color_formats));
+  if (dynamic_derivation_hit) ++native_dynamic_derivation_reuses_;
   if (!dynamic_derivation_hit) {
     dynamic_derivation = {};
     dynamic_derivation.valid = true;
@@ -34266,6 +34310,19 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
   light::FrameScope light_frame(present.device != 0, present.submitted_frame,
       current_frame_.size(), native_texture_images_.size(),
       host_activity_epoch_.load(std::memory_order_relaxed));
+  const auto capture_efficiency_counters = MakeScopeExit([&] {
+    if (!light_frame.active) return;
+    auto& values = light_frame.sample.value;
+    const auto& statistics = native_draw_state_cache_.statistics();
+    values[light::RendererEfficiencyEnabled] = NativeRendererEfficiencyEnabled();
+    values[light::DynamicGroupsRequested] = statistics.dynamic_requested;
+    values[light::DynamicGroupsEmitted] = statistics.dynamic_emitted;
+    values[light::BindingStagesVisited] = native_binding_stages_visited_;
+    values[light::BindingStagesSkipped] = native_binding_stages_skipped_;
+    values[light::BarrierCalls] = native_attachment_barrier_calls_;
+    values[light::AttachmentBarriers] = native_attachment_barriers_;
+    values[light::DynamicDerivationReuses] = native_dynamic_derivation_reuses_;
+  });
   if (light_frame.active) {
     auto& values = light_frame.sample.value;
     if (active_worker_command_ && active_worker_command_->type == CommandType::kPresent) {

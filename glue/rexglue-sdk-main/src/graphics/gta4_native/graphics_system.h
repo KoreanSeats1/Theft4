@@ -2057,6 +2057,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
   NativeDrawStateCache<6, kVertexStreamCount> native_draw_state_cache_;
+  uint64_t native_binding_stages_visited_ = 0, native_binding_stages_skipped_ = 0;
+  uint64_t native_attachment_barrier_calls_ = 0, native_attachment_barriers_ = 0;
+  uint64_t native_dynamic_derivation_reuses_ = 0;
   struct NativeDynamicDrawDerivationCache {
     bool valid = false;
     NativeFixedFunctionState fixed{};

@@ -13,6 +13,8 @@ else()
     set(THEFT4_LAB_PLIST_VALUE "<false/>")
 endif()
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
+option(THEFT4_SUSTAINED_EXECUTION
+    "Request the system sustained performance profile on supported devices" OFF)
 set(THEFT4_ARM64_TUNE "" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
 option(THEFT4_ENABLE_THIN_LTO
@@ -464,6 +466,11 @@ if(THEFT4_SIGN_DEVICE AND NOT CMAKE_OSX_SYSROOT MATCHES "(iphonesimulator|iPhone
         XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
         XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
         XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${LIBERTY_IOS_DEVELOPMENT_TEAM}")
+    if(THEFT4_SUSTAINED_EXECUTION)
+        set_target_properties(Theft4 PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
+                "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Theft4Sustained.entitlements")
+    endif()
 endif()
 
 # Compile the consumer as C, proving the public boundary has no C++/UIKit types.

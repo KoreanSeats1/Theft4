@@ -48,6 +48,9 @@ class NativePipelineRecipe {
   };
   static_assert(std::is_trivially_copyable_v<Snapshot>);
 
+  // Shared with the immediate creation path and the draw-state cache contract.
+  static constexpr const auto& DynamicStates() { return kDynamicStates; }
+
   Snapshot data{};
   std::array<VkShaderModule, 2> modules{};
   VkPipelineLayout layout = VK_NULL_HANDLE;

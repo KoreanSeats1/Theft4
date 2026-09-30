@@ -455,7 +455,16 @@ constexpr size_t BindingStagesSkipped = 172;
 constexpr size_t BarrierCalls = 173;
 constexpr size_t AttachmentBarriers = 174;
 constexpr size_t DynamicDerivationReuses = 175;
-static_assert(DynamicDerivationReuses + 1 == REX_LIGHT_FIELDS);
+constexpr size_t ParallelPreparationEnabled = 176;
+constexpr size_t PreparationAvailableCpus = 177;
+constexpr size_t PreparationDraws = 178;
+constexpr size_t PreparationDispatchTicks = 179;
+constexpr size_t PreparationWorkTicks = 180;
+constexpr size_t PreparationWaitTicks = 181;
+constexpr size_t PreparationCpuNs = 182;
+constexpr size_t PreparationUploadBytes = 183;
+constexpr size_t PreparationQueueDelayTicks = 184;
+static_assert(PreparationQueueDelayTicks + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -640,7 +649,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -776,6 +785,10 @@ bool NativeRendererEfficiencyEnabled() {
   return false;
 #endif
 }
+
+// Helpers collect counters privately; only the renderer mutates profile rows.
+thread_local std::array<uint64_t, rex::graphics::gta4_native::performance::kCounterCount>*
+    native_preparation_counters = nullptr;
 
 namespace transition = rex::diagnostics::gta4_transition;
 namespace gpu_flight = rex::diagnostics::gpu_flight;
@@ -6550,6 +6563,10 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
   REXLOG_INFO("gta4-native-frame-admission: cpu-present-limit={} gpu-resource-slots={} "
               "pending-includes-active-publish=true",
               cpu_present_admission_limit_, REXCVAR_GET(gta4_native_frames_in_flight));
+  constant_preparation_task_.Initialize();
+  REXLOG_INFO("gta4-native-preparation: enabled={} available-cpus={} helper-limit=1 "
+              "scheduler=GCD qos=user-initiated min-draws=128 max-commands=16384",
+              constant_preparation_task_.available(), constant_preparation_task_.available_cpus());
   if (current_frame_.capacity() < kInitialFrameCommandCapacity) {
     current_frame_.reserve(kInitialFrameCommandCapacity);
   }
@@ -11269,6 +11286,10 @@ bool Gta4NativeGraphicsSystem::IsNativeGpuProfileFrameActive() const {
 
 void Gta4NativeGraphicsSystem::AddNativeGpuProfileCounter(performance::Counter counter,
                                                           uint64_t value) {
+  if (native_preparation_counters) {
+    (*native_preparation_counters)[size_t(counter)] += value;
+    return;
+  }
   if (active_frame_slot_ < native_gpu_profile_state_.frames.size()) {
     native_gpu_profile_state_.frames[active_frame_slot_].sample_builder.AddCounter(counter, value);
   }
@@ -21406,42 +21427,101 @@ void Gta4NativeGraphicsSystem::InsertNativeGpuPassLabel(
   native_gpu_pass_label_function_(command_buffer,&info);
 }
 
-bool Gta4NativeGraphicsSystem::BindCommonDrawState(
-    VkCommandBuffer command_buffer, const NativeCommand& command, VkPipeline pipeline,
-    uint32_t width, uint32_t height, uint32_t logical_width, uint32_t logical_height,
-    VkSampleCountFlagBits samples, NativeFrameResources& resources,
-    const NativeRenderingTarget& target) {
-  const profile::CpuScope profile_scope(profile::CpuOp::kCommonBindings);
-
-  (void)resources;
-  if (!command.bindings_prepared || command.failed_texture_mask) {
-    TraceNativeRendererEvent("draw-rejected", "reason=required-binding-realization");
-    return false;
+void Gta4NativeGraphicsSystem::BeginParallelGuestConstants(bool trace_stages) {
+  // Ensure capacity/reset completed first. Until Finish, the helper exclusively
+  // owns guest constant versions and the constant arena. Texture preparation
+  // accesses separate resources, never those versions or that arena.
+  prepared_guest_constants_ready_ = false;
+  preparation_draws_ = preparation_cpu_ns_ = preparation_work_ticks_ = 0;
+  preparation_wait_ticks_ = preparation_dispatch_ticks_ = preparation_queue_delay_ticks_ = 0;
+  preparation_counters_.fill(0);
+  prepared_guest_constants_.clear();
+  if (!constant_preparation_task_.available() || trace_stages ||
+      current_frame_.size() < 128 || current_frame_.size() > 16384 ||
+      g_native_memory_profile_deep_active.load(std::memory_order_acquire) ||
+      REXCVAR_GET(gta4_validate_native_hot_caches) || FireTraceConfig().enabled ||
+      EmissionTraceConfig().pipeline_full_readback || PhoneTraceConfig().enabled ||
+      REXCVAR_GET(gta4_native_light_color_delta_probe) == "room" ||
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace) ||
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProbes) ||
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTranslucency)) return;
+  size_t eligible = 0;
+  for (const auto& command : current_frame_) {
+    eligible += command.shader_state && command.pipeline_state &&
+        (command.type == CommandType::kDrawPrimitive ||
+         command.type == CommandType::kDrawPrimitiveUp ||
+         command.type == CommandType::kDrawIndexedPrimitive);
   }
-  const VkPipelineLayout draw_pipeline_layout =
-      native_descriptor_backend_ == NativeDescriptorBackend::kCached && cached_pipeline_layout_
-          ? cached_pipeline_layout_
-          : pipeline_layout_;
-  if (!pipeline || !draw_pipeline_layout || !command.shader_state ||
-      !command.shader_state->vertex_constants || !command.shader_state->pixel_constants ||
-      command.shader_state->vertex_constants->byte_size != kVertexConstantsSize ||
-      command.shader_state->pixel_constants->byte_size != kPixelConstantsSize) {
-    return false;
-  }
+  if (eligible < 128) return;
+  const uint64_t begin = light::Tick();
+  prepared_guest_constants_.resize(current_frame_.size());
+  preparation_queued_tick_ = light::Tick();
+  if (!constant_preparation_task_.Start(this, [](void* context) {
+        static_cast<Gta4NativeGraphicsSystem*>(context)->RunParallelGuestConstants();
+      })) prepared_guest_constants_.clear();
+  preparation_dispatch_ticks_ = light::Tick() - begin;
+}
 
-  InsertNativeGpuPassLabel(command_buffer,command);
-  const NativeFixedFunctionState& fixed = command.fixed_function_state;
-  const float requested_viewport_x = std::bit_cast<float>(fixed.viewport_bits[0]);
-  const float requested_viewport_y = std::bit_cast<float>(fixed.viewport_bits[1]);
-  const float requested_viewport_width = std::bit_cast<float>(fixed.viewport_bits[2]);
-  const float requested_viewport_height = std::bit_cast<float>(fixed.viewport_bits[3]);
-  const float requested_min_depth = std::bit_cast<float>(fixed.viewport_bits[4]);
-  const float requested_max_depth = std::bit_cast<float>(fixed.viewport_bits[5]);
-  NativeUploadAllocation vertex_constants_allocation;
-  NativeUploadAllocation pixel_constants_allocation;
-  NativeUploadAllocation shared_constants_allocation;
-  const std::vector<uint8_t>* vertex_constants = nullptr;
-  const std::vector<uint8_t>* pixel_constants = nullptr;
+void Gta4NativeGraphicsSystem::RunParallelGuestConstants() {
+  const uint64_t begin = light::Tick();
+  preparation_queue_delay_ticks_ = begin - preparation_queued_tick_;
+#if defined(__APPLE__)
+  timespec cpu_begin{}, cpu_end{};
+  const bool has_cpu = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_begin) == 0;
+#endif
+  native_preparation_counters = &preparation_counters_;
+  const auto restore_counters = MakeScopeExit([&] { native_preparation_counters = nullptr; });
+  // Preserve draw order, delta-parent reuse, shader-specific projection and
+  // content equality checks. No Vulkan call or guest-memory access occurs here.
+  for (size_t index = 0; index < current_frame_.size(); ++index) {
+    const auto& command = current_frame_[index];
+    if (command.type != CommandType::kDrawPrimitive &&
+        command.type != CommandType::kDrawPrimitiveUp &&
+        command.type != CommandType::kDrawIndexedPrimitive) continue;
+    auto& result = prepared_guest_constants_[index];
+    result.command = &command;
+    result.shader_state = command.shader_state.get();
+    result.pipeline_state = command.pipeline_state.get();
+    result.ready = PrepareGuestDrawConstants(command, result);
+    preparation_draws_ += result.ready;
+  }
+#if defined(__APPLE__)
+  if (has_cpu && clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_end) == 0) {
+    const int64_t elapsed = (int64_t(cpu_end.tv_sec) - cpu_begin.tv_sec) * 1000000000ll +
+        int64_t(cpu_end.tv_nsec) - cpu_begin.tv_nsec;
+    if (elapsed > 0) preparation_cpu_ns_ = uint64_t(elapsed);
+  }
+#endif
+  preparation_work_ticks_ = light::Tick() - begin;
+}
+
+void Gta4NativeGraphicsSystem::FinishParallelGuestConstants() {
+  if (!constant_preparation_task_.pending()) return;
+  const uint64_t begin = light::Tick();
+  constant_preparation_task_.Wait();
+  preparation_wait_ticks_ += light::Tick() - begin;
+  for (size_t i = 0; i < preparation_counters_.size(); ++i)
+    if (preparation_counters_[i])
+      AddNativeGpuProfileCounter(performance::Counter(i), preparation_counters_[i]);
+  prepared_guest_constants_ready_ = true;
+}
+
+const Gta4NativeGraphicsSystem::NativePreparedGuestConstants*
+Gta4NativeGraphicsSystem::FindPreparedGuestConstants(const NativeCommand& command) const {
+  if (!prepared_guest_constants_ready_ ||
+      diagnostic_command_index_ >= prepared_guest_constants_.size()) return nullptr;
+  const auto& prepared = prepared_guest_constants_[diagnostic_command_index_];
+  // Diagnostic synthetic draws and changed snapshots retain immediate binding.
+  return prepared.ready && prepared.command == &command &&
+      prepared.shader_state == command.shader_state.get() &&
+      prepared.pipeline_state == command.pipeline_state.get() ? &prepared : nullptr;
+}
+
+bool Gta4NativeGraphicsSystem::PrepareGuestDrawConstants(
+    const NativeCommand& command, NativePreparedGuestConstants& prepared) {
+  if (!command.pipeline_state || !command.shader_state ||
+      !command.shader_state->vertex_constants || !command.shader_state->pixel_constants)
+    return false;
   if (active_frame_slot_ >= frame_constant_arenas_.size()) return false;
   static const bool projection_enabled = [] {
     const char* value = std::getenv("THEFT4_CONSTANT_REUSE");
@@ -21524,9 +21604,54 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
     return result != Binding::Result::kFailure;
   };
   if (!bind_guest_constants(NativeConstantBufferKind::kVertex, command.shader_state->vertex_constants,
-                             vertex_constants_allocation, vertex_constants) ||
+                             prepared.vertex, prepared.vertex_bytes) ||
       !bind_guest_constants(NativeConstantBufferKind::kPixel, command.shader_state->pixel_constants,
-                             pixel_constants_allocation, pixel_constants)) return false;
+                             prepared.pixel, prepared.pixel_bytes)) return false;
+  return true;
+}
+
+bool Gta4NativeGraphicsSystem::BindCommonDrawState(
+    VkCommandBuffer command_buffer, const NativeCommand& command, VkPipeline pipeline,
+    uint32_t width, uint32_t height, uint32_t logical_width, uint32_t logical_height,
+    VkSampleCountFlagBits samples, NativeFrameResources& resources,
+    const NativeRenderingTarget& target) {
+  const profile::CpuScope profile_scope(profile::CpuOp::kCommonBindings);
+
+  (void)resources;
+  if (!command.bindings_prepared || command.failed_texture_mask) {
+    TraceNativeRendererEvent("draw-rejected", "reason=required-binding-realization");
+    return false;
+  }
+  const VkPipelineLayout draw_pipeline_layout =
+      native_descriptor_backend_ == NativeDescriptorBackend::kCached && cached_pipeline_layout_
+          ? cached_pipeline_layout_
+          : pipeline_layout_;
+  if (!pipeline || !draw_pipeline_layout || !command.shader_state ||
+      !command.shader_state->vertex_constants || !command.shader_state->pixel_constants ||
+      command.shader_state->vertex_constants->byte_size != kVertexConstantsSize ||
+      command.shader_state->pixel_constants->byte_size != kPixelConstantsSize) {
+    return false;
+  }
+
+  InsertNativeGpuPassLabel(command_buffer,command);
+  const NativeFixedFunctionState& fixed = command.fixed_function_state;
+  const float requested_viewport_x = std::bit_cast<float>(fixed.viewport_bits[0]);
+  const float requested_viewport_y = std::bit_cast<float>(fixed.viewport_bits[1]);
+  const float requested_viewport_width = std::bit_cast<float>(fixed.viewport_bits[2]);
+  const float requested_viewport_height = std::bit_cast<float>(fixed.viewport_bits[3]);
+  const float requested_min_depth = std::bit_cast<float>(fixed.viewport_bits[4]);
+  const float requested_max_depth = std::bit_cast<float>(fixed.viewport_bits[5]);
+  NativePreparedGuestConstants immediate_constants;
+  const auto* prepared_constants = FindPreparedGuestConstants(command);
+  if (!prepared_constants) {
+    if (!PrepareGuestDrawConstants(command, immediate_constants)) return false;
+    prepared_constants = &immediate_constants;
+  }
+  NativeUploadAllocation vertex_constants_allocation = prepared_constants->vertex;
+  NativeUploadAllocation pixel_constants_allocation = prepared_constants->pixel;
+  NativeUploadAllocation shared_constants_allocation;
+  const std::vector<uint8_t>* vertex_constants = prepared_constants->vertex_bytes;
+  const std::vector<uint8_t>* pixel_constants = prepared_constants->pixel_bytes;
   // Delta-backed allocations intentionally have no contiguous guest copy.
   // The optional artifact traces below inspect guest bytes, so reconstruct
   // them only while one of those diagnostics is active. Normal rendering and
@@ -34306,6 +34431,9 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
   prewarm_target_cache_.valid = false;
+  preparation_draws_ = preparation_cpu_ns_ = preparation_work_ticks_ = 0;
+  preparation_wait_ticks_ = preparation_dispatch_ticks_ = preparation_queue_delay_ticks_ = 0;
+  preparation_counters_.fill(0);
   if (!present.device) ++light_internal_flushes_;
   light::FrameScope light_frame(present.device != 0, present.submitted_frame,
       current_frame_.size(), native_texture_images_.size(),
@@ -34322,6 +34450,17 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::BarrierCalls] = native_attachment_barrier_calls_;
     values[light::AttachmentBarriers] = native_attachment_barriers_;
     values[light::DynamicDerivationReuses] = native_dynamic_derivation_reuses_;
+    values[light::ParallelPreparationEnabled] = constant_preparation_task_.available();
+    values[light::PreparationAvailableCpus] = constant_preparation_task_.available_cpus();
+    values[light::PreparationDraws] = preparation_draws_;
+    values[light::PreparationDispatchTicks] = preparation_dispatch_ticks_;
+    values[light::PreparationWorkTicks] = preparation_work_ticks_;
+    values[light::PreparationWaitTicks] = preparation_wait_ticks_;
+    values[light::PreparationCpuNs] = preparation_cpu_ns_;
+    values[light::PreparationQueueDelayTicks] = preparation_queue_delay_ticks_;
+    values[light::PreparationUploadBytes] =
+        preparation_counters_[size_t(performance::Counter::kVertexConstantUploadBytes)] +
+        preparation_counters_[size_t(performance::Counter::kPixelConstantUploadBytes)];
   });
   if (light_frame.active) {
     auto& values = light_frame.sample.value;
@@ -34969,6 +35108,12 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
           REXLOG_WARN("gta4-native-stage: trace={} frame={} stage=texture-prepare-begin",
                       trace_sequence, submitted_frame);
         }
+        BeginParallelGuestConstants(trace_stages);
+        const auto finish_constant_preparation = MakeScopeExit([&] {
+          FinishParallelGuestConstants();
+          prepared_guest_constants_ready_ = false;
+          prepared_guest_constants_.clear();
+        });
         // Prepare the frontbuffer first. If publishing its stable indexed
         // descriptor discovers a capability/runtime failure, the permanent
         // cached-backend fallback must happen before draw descriptors for this
@@ -34993,8 +35138,10 @@ bool Gta4NativeGraphicsSystem::ClearGuestOutput(
             return false;
           }
         }
-        const bool textures_prepared = PrepareFrameTextures(command_buffer_, bool(present_source),
-                                                            submitted_frame, trace_stages) &&
+        const bool texture_bindings_prepared = PrepareFrameTextures(
+            command_buffer_, bool(present_source), submitted_frame, trace_stages);
+        FinishParallelGuestConstants();
+        const bool textures_prepared = texture_bindings_prepared &&
                                        RefreshPackedDepthAliases(command_buffer_, 0);
         if (trace_stages) {
           REXLOG_WARN(
@@ -35733,6 +35880,9 @@ void Gta4NativeGraphicsSystem::Shutdown() {
     }
 #endif
   }
+  FinishParallelGuestConstants();
+  prepared_guest_constants_.clear();
+  prepared_guest_constants_ready_ = false;
   ShutdownDeferredDiagnosticWorker();
 
   if (presenter_) {

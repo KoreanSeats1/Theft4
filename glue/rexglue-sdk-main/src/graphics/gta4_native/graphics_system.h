@@ -40,6 +40,7 @@
 #include "frame_constant_arena.h"
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
+#include "native_preparation_task.h"
 #include "native_constant_projection.h"
 #include "native_texture_protection.h"
 #include "native_command_packet.h"
@@ -1172,6 +1173,33 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t last_used_submission = 0;
     uint32_t last_used_frame = 0;
   };
+
+  // These results belong to current_frame_, and are consumed only after the
+  // preparation task joins. GPU bytes remain in the original fence-owned arena.
+  struct NativePreparedGuestConstants {
+    const NativeCommand* command = nullptr;
+    const NativeShaderState* shader_state = nullptr;
+    const NativePipelineState* pipeline_state = nullptr;
+    NativeUploadAllocation vertex{}, pixel{};
+    const std::vector<uint8_t>* vertex_bytes = nullptr;
+    const std::vector<uint8_t>* pixel_bytes = nullptr;
+    bool ready = false;
+  };
+  bool PrepareGuestDrawConstants(const NativeCommand& command,
+                                 NativePreparedGuestConstants& prepared);
+  void BeginParallelGuestConstants(bool trace_stages);
+  void FinishParallelGuestConstants();
+  void RunParallelGuestConstants();
+  const NativePreparedGuestConstants* FindPreparedGuestConstants(
+      const NativeCommand& command) const;
+  NativePreparationTask constant_preparation_task_;
+  std::vector<NativePreparedGuestConstants> prepared_guest_constants_;
+  std::array<uint64_t, performance::kCounterCount> preparation_counters_{};
+  bool prepared_guest_constants_ready_ = false;
+  uint64_t preparation_draws_ = 0, preparation_cpu_ns_ = 0;
+  uint64_t preparation_work_ticks_ = 0, preparation_wait_ticks_ = 0;
+  uint64_t preparation_dispatch_ticks_ = 0;
+  uint64_t preparation_queued_tick_ = 0, preparation_queue_delay_ticks_ = 0;
 
   using NativeConstantBufferKind = FrameConstantKind;
 

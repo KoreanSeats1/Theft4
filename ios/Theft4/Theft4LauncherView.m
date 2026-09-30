@@ -332,6 +332,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+    _parallelPreparation = [UISwitch new];
+    _parallelPreparation.onTintColor = Ink(0xB6884D);
+    _parallelPreparation.accessibilityIdentifier = @"settings.parallelPreparation";
     _rendererEfficiency = [UISwitch new];
     _rendererEfficiency.onTintColor = Ink(0xB6884D);
     _rendererEfficiency.accessibilityIdentifier = @"settings.rendererEfficiency";
@@ -359,6 +362,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"RENDERER EFFICIENCY" detail:@"Reduce repeated draw setup and resource preparation. Turn off to compare. Fully close and reopen Theft4 after changing." toggle:_rendererEfficiency],
+        [self setting:@"PARALLEL RENDER PREPARATION" detail:@"Prepare shader data alongside textures when CPU capacity allows. Turn off to compare. Fully close and reopen after changing." toggle:_parallelPreparation],
         [self setting:@"RENDER TARGET REUSE" detail:@"Reduce repeated renderer setup. Turn off to compare the previous behavior. Fully close and reopen Theft4 after changing." toggle:_prewarmTargetReuse],
         [self setting:@"FRAME SCHEDULING" detail:@"Prioritize frame production. Hold the frame-time graph during play to switch between this and original scheduling without restarting." toggle:_frameScheduling],
         [self setting:@"DIRECT GUEST CLOCK" detail:@"Build 82 comparison. On enables the revised game clock; Off restores the previous clock. Fully close and reopen Theft4 after changing." toggle:_directGuestClock],

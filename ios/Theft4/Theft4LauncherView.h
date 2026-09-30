@@ -32,6 +32,7 @@
 @property(nonatomic, readonly) UISwitch *frameScheduling;
 @property(nonatomic, readonly) UISwitch *prewarmTargetReuse;
 @property(nonatomic, readonly) UISwitch *rendererEfficiency;
+@property(nonatomic, readonly) UISwitch *parallelPreparation;
 @property(nonatomic, readonly) UIButton *downloadLogButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;

@@ -664,6 +664,7 @@ add_library(libavcodec STATIC
     ${FFMPEG_DIR}/libavcodec/fft_float.c
     ${FFMPEG_DIR}/libavcodec/fft_fixed_32.c
     ${FFMPEG_DIR}/libavcodec/fft_init_table.c
+    ${FFMPEG_DIR}/libavcodec/texturedsp.c
 )
 
 # Windows-specific source

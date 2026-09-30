@@ -20,7 +20,17 @@ extern "C" {
 // Fields185-196: assembly/texture launch controls and cumulative work counters.
 // Fields197-198: per-publication index conversions prepared by the constant helper.
 // Texture times are wall ticks and can overlap; never sum them as CPU time.
-enum { REX_LIGHT_FIELDS = 199 };
+// Fields199-200: sparse task decompressions (bit32) and available-memory
+// estimate (bit64). A zero value without its valid bit is unavailable.
+// Fields201-206: pressure mode and cumulative action/accounting counters.
+// Texture bytes are logical retirement; actual freeing awaits GPU completion.
+// Fields207-217: one whole assembly frame per60, cumulative wall ticks.
+// Categories overlap: constant/snapshot/prewarm/insertion are within assembly.
+// Queue/condition include waiting and must not be interpreted as CPU time.
+// Fields218-221: sampled post-Present command clearing, draws, logical
+// setters and batch acquisitions. Sample count advances after clearing;
+// consume the following publication row to include that completed sample.
+enum { REX_LIGHT_FIELDS = 222 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

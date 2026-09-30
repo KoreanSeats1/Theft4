@@ -2071,6 +2071,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   NativeGpuProfileState native_gpu_profile_state_;
   profile::CpuRecorder native_cpu_recorder_;
   profile::TransportSummary native_profile_transport_;
+  profile::TransportSummary light_assembly_transport_;
+  bool light_assembly_sampling_ = false;
+  uint64_t light_assembly_epoch_ = 0, light_assembly_frame_count_ = 0;
+  uint64_t light_assembly_sampled_frames_ = 0, light_assembly_prewarm_ticks_ = 0;
+  uint64_t light_assembly_clear_ticks_ = 0;
   uint64_t native_profile_clock_probe_ticks_ = UINT64_MAX;
   struct NativeMemoryProfileState {
     bool active = false;
@@ -2169,6 +2174,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool image_allocation_pool_enabled_=true;
   uint64_t texture_allocation_reuses_=0;
   void TrimTextureAllocationPool(bool all);
+  void BeginMemoryPressureRecovery(uint32_t frame, bool title_present);
   uint64_t command_pool_reset_count_ = 0;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineCache native_pipeline_cache_ = VK_NULL_HANDLE;
@@ -2263,6 +2269,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::atomic<uint64_t> buffer_validation_sample_ticks_{0};
   NativePeriodicWorkSchedule buffer_cache_poll_schedule_{kNativeBufferCachePollPhaseFrames};
   bool buffer_cache_reclamation_pending_ = false;
+  uint64_t memory_pressure_seen_ = 0, memory_pressure_handled_ = 0;
+  uint32_t memory_pressure_frames_remaining_ = 0;
+  uint64_t memory_pressure_pool_freed_bytes_ = 0;
+  uint64_t memory_pressure_texture_retired_bytes_ = 0, memory_pressure_texture_start_bytes_ = 0;
+  uint64_t memory_pressure_buffer_freed_bytes_ = 0, memory_pressure_buffer_start_bytes_ = 0;
   uint64_t texture_image_eviction_count_ = 0;
   uint64_t texture_image_evicted_bytes_ = 0;
   uint64_t texture_allocation_retry_count_ = 0;

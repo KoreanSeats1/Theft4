@@ -335,6 +335,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _frameAssembly = [UISwitch new];
     _frameAssembly.onTintColor = Ink(0xB6884D);
     _frameAssembly.accessibilityIdentifier = @"settings.frameAssembly";
+    _memoryRecovery = [UISwitch new];
+    _memoryRecovery.onTintColor = Ink(0xB6884D);
+    _memoryRecovery.accessibilityIdentifier = @"settings.memoryRecovery";
     _parallelTextureConversion = [UISwitch new];
     _parallelTextureConversion.onTintColor = Ink(0xB6884D);
     _parallelTextureConversion.accessibilityIdentifier = @"settings.parallelTextureConversion";
@@ -370,6 +373,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"RENDERER EFFICIENCY" detail:@"Reduce repeated draw setup and resource preparation. Turn off to compare. Fully close and reopen Theft4 after changing." toggle:_rendererEfficiency],
         [self setting:@"PARALLEL RENDER PREPARATION" detail:@"Prepare shader data alongside textures when CPU capacity allows. Turn off to compare. Fully close and reopen after changing." toggle:_parallelPreparation],
         [self setting:@"FRAME ASSEMBLY REUSE" detail:@"Reuse repeated draw setup and prepare new index data earlier. Fully close and reopen after changing." toggle:_frameAssembly],
+        [self setting:@"MEMORY PRESSURE RECOVERY" detail:@"Release unused graphics caches when iOS needs memory. Fully close and reopen after changing." toggle:_memoryRecovery],
         [self setting:@"PARALLEL TEXTURE CONVERSION" detail:@"Use available CPU capacity for larger texture conversions and batch texture copies. Fully close and reopen after changing." toggle:_parallelTextureConversion],
         [self setting:@"RENDER TARGET REUSE" detail:@"Reduce repeated renderer setup. Turn off to compare the previous behavior. Fully close and reopen Theft4 after changing." toggle:_prewarmTargetReuse],
         [self setting:@"FRAME SCHEDULING" detail:@"Prioritize frame production. Hold the frame-time graph during play to switch between this and original scheduling without restarting." toggle:_frameScheduling],

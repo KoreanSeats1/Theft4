@@ -35,6 +35,7 @@
 @property(nonatomic, readonly) UISwitch *parallelPreparation;
 @property(nonatomic, readonly) UISwitch *frameAssembly;
 @property(nonatomic, readonly) UISwitch *parallelTextureConversion;
+@property(nonatomic, readonly) UISwitch *memoryRecovery;
 @property(nonatomic, readonly) UIButton *downloadLogButton;
 - (void)refreshConfigurationSummary;
 - (void)setActive:(BOOL)active;

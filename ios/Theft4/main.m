@@ -214,6 +214,7 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_parallelPreparation;
     UISwitch *_frameAssembly;
     UISwitch *_parallelTextureConversion;
+    UISwitch *_memoryRecovery;
     NSURL *_schedulingURL;
     NSMutableString *_schedulingRows; // serial export queue owns capture storage
     NSUInteger _schedulingBytes;
@@ -379,6 +380,7 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4PrewarmTargetReuse": @YES,
         @"Theft4RendererEfficiency": @YES,
         @"Theft4ParallelPreparation": @YES,
+        @"Theft4MemoryRecovery": @YES,
         @"Theft4FrameAssembly": @YES,
         @"Theft4ParallelTextureConversion": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
@@ -451,6 +453,9 @@ static void bootEvent(void *context, const char *event) {
     _frameAssembly = _bringupOverlay.frameAssembly;
     _frameAssembly.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FrameAssembly"];
     [_frameAssembly addTarget:self action:@selector(frameAssemblyChanged:) forControlEvents:UIControlEventValueChanged];
+    _memoryRecovery = _bringupOverlay.memoryRecovery;
+    _memoryRecovery.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4MemoryRecovery"];
+    [_memoryRecovery addTarget:self action:@selector(memoryRecoveryChanged:) forControlEvents:UIControlEventValueChanged];
     _parallelTextureConversion = _bringupOverlay.parallelTextureConversion;
     _parallelTextureConversion.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ParallelTextureConversion"];
     [_parallelTextureConversion addTarget:self action:@selector(parallelTextureConversionChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1103,6 +1108,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             (unsigned long long)timestamp, fields];
         dispatch_async(self->_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:row]; });
     });
+}
+
+- (void)memoryRecoveryChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4MemoryRecovery"];
 }
 
 - (void)frameAssemblyChanged:(UISwitch *)sender {
@@ -1818,7 +1827,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = [NSString stringWithFormat:@"# build88: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
+    NSString *header = [NSString stringWithFormat:@"# build89: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
     header = [header stringByAppendingFormat:@"marker,,%llu,,%@\n",
         (unsigned long long)(CACurrentMediaTime() * 1e9), Theft4PerformanceProfileFields()];
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
@@ -1829,7 +1838,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _lightCaptureURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
     NSString *lightHeader = [NSString stringWithFormat:
-        @"# build88: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        @"# build89: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events 32=decompressions 64=available-memory; sparse assembly1frame/60 with overlapping wall categories; pressure texture bytes mean retirement; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
         (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
@@ -1979,6 +1988,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (execute) {
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(_frameScheduling.on);
+        setenv("THEFT4_MEMORY_RECOVERY", _memoryRecovery.on ? "1" : "0", 1);
         setenv("THEFT4_FRAME_ASSEMBLY", _frameAssembly.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_TEXTURE_CONVERSION", _parallelTextureConversion.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_PREPARATION", _parallelPreparation.on ? "1" : "0", 1);

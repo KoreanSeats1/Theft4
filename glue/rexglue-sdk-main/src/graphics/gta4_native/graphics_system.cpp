@@ -496,7 +496,21 @@ constexpr size_t AssemblyConditionTicks = 215, AssemblyProtectionTicks = 216;
 constexpr size_t AssemblyTransferTicks = 217;
 constexpr size_t AssemblyClearTicks = 218, AssemblyDrawCommands = 219;
 constexpr size_t AssemblyStateCommands = 220, AssemblyBatches = 221;
-static_assert(AssemblyBatches + 1 == REX_LIGHT_FIELDS);
+constexpr size_t CommandStreamEnabled = 222;
+constexpr size_t CpuCleanupEnabled = 223;
+constexpr size_t ProducerBufferedStates = 224;
+constexpr size_t ProducerStatePackets = 225;
+constexpr size_t RetainedCommandAcquires = 226;
+constexpr size_t CleanupStarted = 227;
+constexpr size_t CleanupCompleted = 228;
+constexpr size_t CleanupCommands = 229;
+constexpr size_t CleanupCpuNs = 230;
+constexpr size_t CleanupWallNs = 231;
+constexpr size_t CleanupRetainedMetadata = 232;
+constexpr size_t CleanupHighWaterMetadata = 233;
+constexpr size_t CleanupBusyFallbacks = 234;
+constexpr size_t CleanupBudgetFallbacks = 235;
+static_assert(CleanupBudgetFallbacks + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -689,7 +703,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -832,6 +846,26 @@ bool NativeFrameAssemblyEnabled() {
     const char* setting = std::getenv("THEFT4_FRAME_ASSEMBLY");
     return !setting || std::strcmp(setting, "0") != 0;
   }();
+  return enabled;
+#else
+  return false;
+#endif
+}
+
+bool NativeCommandStreamEnabled() {
+#if defined(__APPLE__) && defined(THEFT4_LAB_BUILD) && TARGET_OS_IPHONE
+  static const bool enabled = [] { const char* value=std::getenv("THEFT4_COMMAND_STREAM");
+    return !value || std::strcmp(value,"0")!=0; }();
+  return enabled;
+#else
+  return false;
+#endif
+}
+
+bool NativeCpuCleanupRequested() {
+#if defined(__APPLE__) && defined(THEFT4_LAB_BUILD) && TARGET_OS_IPHONE
+  static const bool enabled = [] { const char* value=std::getenv("THEFT4_CPU_CLEANUP");
+    return !value || std::strcmp(value,"0")!=0; }();
   return enabled;
 #else
   return false;
@@ -4363,6 +4397,9 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       std::memcpy(&lifetime, title_command, sizeof(lifetime));
       if (!lifetime.owner || uint64_t(lifetime.owner) + 32 != lifetime.resource ||
           lifetime.reason < 1 || lifetime.reason > 4) return false;
+#ifdef THEFT4_LAB_BUILD
+      if (!FlushPendingState()) return false;
+#endif
       if (!NativeBufferLifetimeTrackingEnabled()) return true;
       uint64_t generation = 0;
       {
@@ -4391,6 +4428,9 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       std::memcpy(&unlock, title_command, sizeof(unlock));
       if (!unlock.resource || (unlock.resource & 3) ||
           uint64_t(unlock.resource) + 32 > uint64_t(UINT32_MAX) + 1) return false;
+#ifdef THEFT4_LAB_BUILD
+      if (!FlushPendingState()) return false;
+#endif
       if (!NativeBufferUnlockOrderingEnabled()) return true;
       std::lock_guard lock(buffer_resource_mutex_);
       MarkBufferWriteLocked(unlock.resource);
@@ -4401,6 +4441,7 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
 #ifdef THEFT4_LAB_BUILD
   const bool binding_cache_allowed = !fire_envelope && !tv_envelope && !phone_envelope;
   if (!profile_transport) producer_binding_skips_pending_ = 0;
+  if ((!binding_cache_allowed || profile_transport) && !FlushPendingState()) return false;
   if (!binding_cache_allowed) producer_binding_cache_.Reset();
   if (binding_cache_allowed && render_worker_running_ &&
       producer_binding_cache_.CanSkip(title_command, title_command_size)) {
@@ -4428,6 +4469,21 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       if (header.type == CommandType::kSetPixelShader) shader_state.pixel_shader = shader.shader;
       else shader_state.vertex_shader = shader.shader;
     }
+    if (NativeCommandStreamEnabled() && state_batching_enabled && !profile_transport) {
+      if (!render_worker_running_) { producer_pending_state_.reset(); producer_binding_cache_.Reset(); return false; }
+      if (!producer_pending_state_) producer_pending_state_ = state_command_recycler_.Acquire();
+      state.sequence = ++diagnostic_submit_sequence_;
+      state.epoch = diagnostic_producer_epoch_;
+      const bool appended = producer_pending_state_->TryAppend(state);
+      assert(appended); (void)appended;
+      producer_buffered_states_.fetch_add(1,std::memory_order_relaxed);
+      producer_binding_cache_.RememberQueued(title_command,title_command_size);
+      // A full packet publishes immediately. Partial packets publish with the
+      // next noncompact command, so the worker cannot snatch an unfinished run.
+      if (producer_pending_state_->size() == NativeStatePacket::kCapacity)
+        return FlushPendingState();
+      return true;
+    }
     const uint64_t validated = profile_transport ? profile::CpuTick() : 0;
     bool notify_worker = false;
     {
@@ -4436,7 +4492,7 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
       const uint64_t queue_acquired = profile_transport ? profile::CpuTick() : 0;
       const auto can_submit = [this] {
         return !render_worker_running_ || render_queue_.CanAccept(
-            true, kMaximumQueuedCommands, queued_title_presents_, cpu_present_admission_limit_);
+            true, kMaximumQueuedCommands - (NativeCommandStreamEnabled() ? NativeStatePacket::kCapacity : 0), queued_title_presents_, cpu_present_admission_limit_);
       };
       producer_waiting_ = !can_submit();
       uint32_t timeouts = 0;
@@ -4535,8 +4591,15 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     const uint64_t queue_lock_end = profile_transport ? profile::CpuTick() : 0;
     const auto producer_can_submit = [this]() {
       return !render_worker_running_ ||
-             (render_queue_.size() < kMaximumQueuedCommands &&
-              queued_title_presents_ < cpu_present_admission_limit_);
+             (render_queue_.size() + 1
+#ifdef THEFT4_LAB_BUILD
+              + PendingStateCommands()
+#endif
+              <= kMaximumQueuedCommands
+#ifdef THEFT4_LAB_BUILD
+              - (NativeCommandStreamEnabled() ? NativeStatePacket::kCapacity : 0)
+#endif
+              && queued_title_presents_ < cpu_present_admission_limit_);
     };
     producer_waiting_ = !producer_can_submit();
     if (producer_waiting_) {
@@ -4617,6 +4680,9 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
           std::exchange(producer_binding_skips_pending_, 0);
 #endif
     }
+#ifdef THEFT4_LAB_BUILD
+    PushPendingStateLocked();
+#endif
     QueueTextureProtection(native_command, true);
     render_queue_.push_back(std::move(queued_command));
 #ifdef THEFT4_LAB_BUILD
@@ -4699,12 +4765,26 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
   const auto synchronous = native_command.synchronous;
   {
     std::unique_lock lock(render_mutex_);
-    producer_waiting_ = render_queue_.size() >= kMaximumQueuedCommands ||
-                        queued_title_presents_ >= cpu_present_admission_limit_;
+    producer_waiting_ = render_queue_.size() + 1
+#ifdef THEFT4_LAB_BUILD
+        + PendingStateCommands()
+#endif
+        > kMaximumQueuedCommands
+#ifdef THEFT4_LAB_BUILD
+        - (NativeCommandStreamEnabled() ? NativeStatePacket::kCapacity : 0)
+#endif
+        || queued_title_presents_ >= cpu_present_admission_limit_;
     render_condition_.wait(lock, [this]() {
       return !render_worker_running_ ||
-             (render_queue_.size() < kMaximumQueuedCommands &&
-              queued_title_presents_ < cpu_present_admission_limit_);
+             (render_queue_.size() + 1
+#ifdef THEFT4_LAB_BUILD
+              + PendingStateCommands()
+#endif
+              <= kMaximumQueuedCommands
+#ifdef THEFT4_LAB_BUILD
+              - (NativeCommandStreamEnabled() ? NativeStatePacket::kCapacity : 0)
+#endif
+              && queued_title_presents_ < cpu_present_admission_limit_);
     });
     producer_waiting_ = false;
     if (!render_worker_running_) {
@@ -4715,6 +4795,9 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
     if (phone_envelope) PhoneTraceLog("native-sync-queued", fmt::format(
         "run={} event={} seq={} epoch={} texture={:08X}", phone_context.run, phone_context.event,
         native_command.diagnostic_submit_sequence, native_command.diagnostic_producer_epoch, lock_command.texture));
+#ifdef THEFT4_LAB_BUILD
+    PushPendingStateLocked();
+#endif
     QueueTextureProtection(native_command, true);
     render_queue_.push_back(std::move(queued_command));
   }
@@ -5444,14 +5527,16 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
                     vertex_source, native_command.shader_constant_delta.vertex_constants)
               : CaptureConstantPayloadDelta(vertex_source, dirty_delta.vertex_constant_ranges,
                                             kNativeConstantGroupBytes,
-                                            native_command.shader_constant_delta.vertex_constants);
+                                            native_command.shader_constant_delta.vertex_constants,
+                                            NativeCommandStreamEnabled());
       const bool pixel_captured =
           full_semantic_capture
               ? CaptureCompleteConstantSnapshot(
                     pixel_source, native_command.shader_constant_delta.pixel_constants)
               : CaptureConstantPayloadDelta(pixel_source, dirty_delta.pixel_constant_ranges,
                                             kNativeConstantGroupBytes,
-                                            native_command.shader_constant_delta.pixel_constants);
+                                            native_command.shader_constant_delta.pixel_constants,
+                                            NativeCommandStreamEnabled());
       if (light_semantic_capture) {
         native_command.captured_vertex_constants_hash =
             XXH3_64bits(vertex_source.data(), vertex_source.size());
@@ -6777,6 +6862,16 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
               "pending-includes-active-publish=true",
               cpu_present_admission_limit_, REXCVAR_GET(gta4_native_frames_in_flight));
   constant_preparation_task_.Initialize();
+#ifdef THEFT4_LAB_BUILD
+  current_frame_.SetOwned(NativeCommandStreamEnabled());
+  command_recycler_.InitializePayloadReuse(NativeCommandStreamEnabled());
+  cpu_cleanup_.Initialize(NativeCommandStreamEnabled() && NativeCpuCleanupRequested(),
+                          constant_preparation_task_.available_cpus());
+  REXLOG_INFO("gta4-native-stream: owned-commands={} producer-packets={} cpu-cleanup={} "
+              "cleanup-qos=utility max-batches=1 max-commands=8192 max-direct-metadata=64MiB "
+              "payload-reuse-max=8KiB/slot",
+              NativeCommandStreamEnabled(),NativeCommandStreamEnabled(),cpu_cleanup_.available());
+#endif
   REXLOG_INFO("gta4-native-work: assembly-reuse={} parallel-texture-requested={} "
               "texture-min-cpus=6 texture-source-cap=4194304 index-frame-cap=2097152",
               NativeFrameAssemblyEnabled(), NativeParallelTextureConversionEnabled());
@@ -7130,7 +7225,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       --worker_batch_logical_commands;
       auto processed = worker_batch_.take_front();
       const uint64_t recycle_begin = profile_transport ? profile::CpuTick() : 0;
-      command_recycler_.Recycle(processed.TakeFull());
+      if (processed.FullCommand()) command_recycler_.Recycle(processed.TakeFull());
       if (recycle_begin)
         transport.worker_recycle_ticks += profile::CpuTick() - recycle_begin;
 #else
@@ -7380,7 +7475,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           // when this batch is recorded. Snapshot image identities there.
           AddProtectedTextureGenerations(command, frame_texture_protection_);
           const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
-          current_frame_.push_back(std::move(command));
+          RetainWorkerCommand(command);
           if (insert_begin)
             transport.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         }
@@ -7502,7 +7597,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         }
         AddProtectedTextureGenerations(command, frame_texture_protection_);
         const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
-        current_frame_.push_back(std::move(command));
+        RetainWorkerCommand(command);
         if (insert_begin)
           transport.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         break;
@@ -7675,7 +7770,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         if (command.phone_trace) TracePhoneNativeCommand("worker-finalized", command);
         AddProtectedTextureGenerations(command, frame_texture_protection_);
         const uint64_t insert_begin = assembly_begin ? profile::CpuTick() : 0;
-        current_frame_.push_back(std::move(command));
+        RetainWorkerCommand(command);
         if (insert_begin)
           transport.worker_frame_insert_ticks += profile::CpuTick() - insert_begin;
         startup_present_follows_texture_lock_flush = false;
@@ -7703,6 +7798,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   command_recycler_.FlushWorker();
   state_command_recycler_.FlushWorker();
   worker_batch_deferred_queue_protection_.Reset();
+#endif
+#ifdef THEFT4_LAB_BUILD
+  cpu_cleanup_.Wait(); // all CPU destructors finish before GPU/cache/pool teardown
 #endif
   DestroyVulkanWorkerObjects();
 }
@@ -12053,7 +12151,11 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
     return uint64_t(sizeof(NativeCommand)) + command.bytes.heap_capacity() +
            command.payload.capacity();
   };
+#ifdef THEFT4_LAB_BUILD
+  uint64_t command_transport_bytes = current_frame_.CapacityStorageBytes();
+#else
   uint64_t command_transport_bytes = current_frame_.capacity() * sizeof(NativeCommand);
+#endif
   uint64_t command_transport_logical = current_frame_.size() * sizeof(NativeCommand);
   uint64_t command_count = current_frame_.size();
   for (const NativeCommand& command : current_frame_) {
@@ -19278,9 +19380,64 @@ void Gta4NativeGraphicsSystem::AppendQueuedTextureProtection(std::unordered_set<
       AddProtectedTextureGenerations(NativeQueueCommand(command), generations);
 }
 
+#ifdef THEFT4_LAB_BUILD
+size_t Gta4NativeGraphicsSystem::PendingStateCommands() const {
+  return producer_pending_state_ ? producer_pending_state_->size() : 0;
+}
+void Gta4NativeGraphicsSystem::PushPendingStateLocked() {
+  if (!producer_pending_state_) return;
+  render_queue_.push_back(NativeQueuedCommand(std::move(producer_pending_state_)));
+  producer_state_packets_.fetch_add(1,std::memory_order_relaxed);
+}
+bool Gta4NativeGraphicsSystem::FlushPendingState() {
+  if (!producer_pending_state_) return true;
+  const size_t count=PendingStateCommands();
+  bool notify=false;
+  {
+    std::unique_lock lock(render_mutex_);
+    const auto can_submit=[&] { return !render_worker_running_ ||
+        (render_queue_.size()+count <= kMaximumQueuedCommands-NativeStatePacket::kCapacity &&
+         queued_title_presents_ < cpu_present_admission_limit_); };
+    producer_waiting_=!can_submit();
+    render_condition_.wait(lock,can_submit);
+    producer_waiting_=false;
+    if (!render_worker_running_) { producer_pending_state_.reset(); producer_binding_cache_.Reset(); return false; }
+    notify=render_queue_.empty();
+    PushPendingStateLocked();
+  }
+  if (notify) render_condition_.notify_one();
+  return true;
+}
+#endif
+
+void Gta4NativeGraphicsSystem::RetainWorkerCommand(NativeCommand& command) {
+#ifdef THEFT4_LAB_BUILD
+  if (current_frame_.owned()) {
+    assert(worker_batch_.front().FullCommand()==&command);
+    current_frame_.push_back(worker_batch_.front().TakeFull());
+    return;
+  }
+#endif
+  current_frame_.push_back(std::move(command));
+}
+
 void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {
   prewarm_target_cache_.valid = false;
+#ifdef THEFT4_LAB_BUILD
+  // Publication joins its preparation task. Explicitly cover abandoned frames
+  // too before handing their CPU owners to another thread.
+  FinishParallelGuestConstants();
+  cpu_cleanup_.Poll();
+  if (memory_pressure_frames_remaining_) cpu_cleanup_.Wait();
+  if (current_frame_.owned()) {
+    if (!memory_pressure_frames_remaining_ && cpu_cleanup_.TryStart(
+            current_frame_.Owners(),current_frame_.metadata_bytes(),command_recycler_))
+      current_frame_.ClearMetadata();
+    else current_frame_.RecycleOwners(command_recycler_);
+  } else current_frame_.clear();
+#else
   current_frame_.clear();
+#endif
   frame_texture_protection_.clear();
 }
 
@@ -34933,6 +35090,22 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::AssemblyDrawCommands] = assembly.worker_draw_commands;
     values[light::AssemblyStateCommands] = assembly.worker_state_commands;
     values[light::AssemblyBatches] = assembly.worker_batches;
+#ifdef THEFT4_LAB_BUILD
+    values[light::CommandStreamEnabled] = NativeCommandStreamEnabled();
+    values[light::CpuCleanupEnabled] = cpu_cleanup_.available();
+    values[light::ProducerBufferedStates] = producer_buffered_states_.load(std::memory_order_relaxed);
+    values[light::ProducerStatePackets] = producer_state_packets_.load(std::memory_order_relaxed);
+    values[light::RetainedCommandAcquires] = command_recycler_.RetainedAcquires();
+    values[light::CleanupStarted] = cpu_cleanup_.started();
+    values[light::CleanupCompleted] = cpu_cleanup_.completed();
+    values[light::CleanupCommands] = cpu_cleanup_.commands();
+    values[light::CleanupCpuNs] = cpu_cleanup_.cpu_ns();
+    values[light::CleanupWallNs] = cpu_cleanup_.wall_ns();
+    values[light::CleanupRetainedMetadata] = cpu_cleanup_.retained_metadata_bytes();
+    values[light::CleanupHighWaterMetadata] = cpu_cleanup_.high_water_metadata_bytes();
+    values[light::CleanupBusyFallbacks] = cpu_cleanup_.busy_fallbacks();
+    values[light::CleanupBudgetFallbacks] = cpu_cleanup_.budget_fallbacks();
+#endif
     values[light::PreparationUploadBytes] =
         preparation_counters_[size_t(performance::Counter::kVertexConstantUploadBytes)] +
         preparation_counters_[size_t(performance::Counter::kPixelConstantUploadBytes)];
@@ -36357,6 +36530,10 @@ void Gta4NativeGraphicsSystem::Shutdown() {
 #endif
   }
   FinishParallelGuestConstants();
+#ifdef THEFT4_LAB_BUILD
+  cpu_cleanup_.Wait();
+  { std::lock_guard capture_lock(command_capture_mutex_); producer_pending_state_.reset(); }
+#endif
   prepared_guest_constants_.clear();
   prepared_guest_constants_ready_ = false;
   ShutdownDeferredDiagnosticWorker();

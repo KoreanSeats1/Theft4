@@ -215,6 +215,8 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_frameAssembly;
     UISwitch *_parallelTextureConversion;
     UISwitch *_memoryRecovery;
+    UISwitch *_commandStream;
+    UISwitch *_cpuCleanup;
     NSURL *_schedulingURL;
     NSMutableString *_schedulingRows; // serial export queue owns capture storage
     NSUInteger _schedulingBytes;
@@ -381,6 +383,8 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4RendererEfficiency": @YES,
         @"Theft4ParallelPreparation": @YES,
         @"Theft4MemoryRecovery": @YES,
+        @"Theft4CommandStream": @YES,
+        @"Theft4CpuCleanup": @YES,
         @"Theft4FrameAssembly": @YES,
         @"Theft4ParallelTextureConversion": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
@@ -453,6 +457,12 @@ static void bootEvent(void *context, const char *event) {
     _frameAssembly = _bringupOverlay.frameAssembly;
     _frameAssembly.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FrameAssembly"];
     [_frameAssembly addTarget:self action:@selector(frameAssemblyChanged:) forControlEvents:UIControlEventValueChanged];
+    _commandStream = _bringupOverlay.commandStream;
+    _commandStream.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4CommandStream"];
+    [_commandStream addTarget:self action:@selector(commandStreamChanged:) forControlEvents:UIControlEventValueChanged];
+    _cpuCleanup = _bringupOverlay.cpuCleanup;
+    _cpuCleanup.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4CpuCleanup"];
+    [_cpuCleanup addTarget:self action:@selector(cpuCleanupChanged:) forControlEvents:UIControlEventValueChanged];
     _memoryRecovery = _bringupOverlay.memoryRecovery;
     _memoryRecovery.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4MemoryRecovery"];
     [_memoryRecovery addTarget:self action:@selector(memoryRecoveryChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1110,6 +1120,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     });
 }
 
+- (void)commandStreamChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4CommandStream"];
+}
+- (void)cpuCleanupChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4CpuCleanup"];
+}
 - (void)memoryRecoveryChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4MemoryRecovery"];
 }
@@ -1827,7 +1843,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = [NSString stringWithFormat:@"# build89: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
+    NSString *header = [NSString stringWithFormat:@"# build90: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", _runtimeWaitImprovements.on, _directGuestClock.on];
     header = [header stringByAppendingFormat:@"marker,,%llu,,%@\n",
         (unsigned long long)(CACurrentMediaTime() * 1e9), Theft4PerformanceProfileFields()];
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
@@ -1838,7 +1854,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _lightCaptureURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
     NSString *lightHeader = [NSString stringWithFormat:
-        @"# build89: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events 32=decompressions 64=available-memory; sparse assembly1frame/60 with overlapping wall categories; pressure texture bytes mean retirement; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        @"# build90: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events 32=decompressions 64=available-memory; sparse assembly1frame/60 with overlapping wall categories; pressure texture bytes mean retirement; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
         (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
@@ -1848,7 +1864,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _runtimeCallerURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"runtime-callers-"]];
     NSString *callerHeader = [NSString stringWithFormat:
-        @"# build88; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
+        @"# build90; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
         _directGuestClock.on, _runtimeWaitImprovements.on,
         (unsigned long long)rex_runtime_callers_frequency(),
         (unsigned long long)(uintptr_t)_dyld_get_image_header(0)];
@@ -1859,7 +1875,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _schedulingURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"frame-scheduling-"]];
     NSString *schedulingHeader = [NSString stringWithFormat:
-        @"# build88 initial_mode=%d; times=ns; event=1:identity 2:qos_request 3:fixed_work 4:audio_work 5:witness_budget; roles=1:guest 2:main 4:native 8:present_producer 16:audio; work=1:register 2:buffer 3:audio_prepare 4:audio_mix 5:xma_work 6:xma_decode; units=fixed_iterations_or_cumulative_calls; audio_sampling=1/64_DSP_1/256_XMA; nested_scopes_overlap; sampled_call_counts_omit_unsampled_tail; in_flight_samples_may_finish_after_stop; requested_qos_excludes_override; result=POSIX_status; witness_max_threads=4; witness_counts_frozen=16384; witness_budget_per_thread=0.025pct_plus_2ms_startup; cpu_ns_zero=unavailable; bounded4MiB; dropped_UINT64_MAX=thread_capacity_exceeded\n%s\n",
+        @"# build90 initial_mode=%d; times=ns; event=1:identity 2:qos_request 3:fixed_work 4:audio_work 5:witness_budget; roles=1:guest 2:main 4:native 8:present_producer 16:audio; work=1:register 2:buffer 3:audio_prepare 4:audio_mix 5:xma_work 6:xma_decode; units=fixed_iterations_or_cumulative_calls; audio_sampling=1/64_DSP_1/256_XMA; nested_scopes_overlap; sampled_call_counts_omit_unsampled_tail; in_flight_samples_may_finish_after_stop; requested_qos_excludes_override; result=POSIX_status; witness_max_threads=4; witness_counts_frozen=16384; witness_budget_per_thread=0.025pct_plus_2ms_startup; cpu_ns_zero=unavailable; bounded4MiB; dropped_UINT64_MAX=thread_capacity_exceeded\n%s\n",
         rex_frame_scheduling_mode(), rex_frame_scheduling_columns()];
     if (![schedulingHeader writeToURL:_schedulingURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         [self record:@"capture.scheduling_start_failed"];
@@ -1988,6 +2004,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (execute) {
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(_frameScheduling.on);
+        setenv("THEFT4_COMMAND_STREAM", _commandStream.on ? "1" : "0", 1);
+        setenv("THEFT4_CPU_CLEANUP", _cpuCleanup.on ? "1" : "0", 1);
         setenv("THEFT4_MEMORY_RECOVERY", _memoryRecovery.on ? "1" : "0", 1);
         setenv("THEFT4_FRAME_ASSEMBLY", _frameAssembly.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_TEXTURE_CONVERSION", _parallelTextureConversion.on ? "1" : "0", 1);

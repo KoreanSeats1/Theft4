@@ -67,8 +67,15 @@ inline bool ValidateConstantPayloadDelta(const ConstantPayloadDelta& delta, size
 inline bool CaptureConstantPayloadDelta(std::span<const uint8_t> source,
                                         const DirtyRangeSet& dirty_ranges,
                                         uint32_t bytes_per_element,
-                                        ConstantPayloadDelta& result) {
-  result = {};
+                                        ConstantPayloadDelta& result,
+                                        bool retain_capacity = false) {
+  if (retain_capacity) {
+    result.ranges.clear();
+    result.payload.clear();
+    result.complete_snapshot = false;
+  } else {
+    result = {};
+  }
   if (!bytes_per_element) {
     return false;
   }

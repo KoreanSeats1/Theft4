@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -46,6 +47,8 @@
 #include "native_command_packet.h"
 #ifdef THEFT4_LAB_BUILD
 #include "native_command_recycler.h"
+#include "native_retained_commands.h"
+#include "native_deferred_cleanup.h"
 #include "native_producer_binding_cache.h"
 #include "native_worker_batch.h"
 #endif
@@ -432,6 +435,31 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t diagnostic_submit_sequence = 0;
     uint32_t diagnostic_producer_epoch = 0;
     std::shared_ptr<SynchronousCommand> synchronous;
+    size_t RecyclingMetadataBytes() const {
+      return sizeof(NativeCommand) + bytes.heap_capacity() + payload.capacity() +
+          shader_constant_delta.vertex_constants.payload.capacity() +
+          shader_constant_delta.pixel_constants.payload.capacity() +
+          sizeof(ConstantDeltaRange) * (shader_constant_delta.vertex_constants.ranges.capacity() +
+                                      shader_constant_delta.pixel_constants.ranges.capacity());
+    }
+    void ResetForReuse() {
+      auto old_payload = std::move(payload);
+      auto old_delta = std::move(shader_constant_delta);
+      // This releases all resource/version/trace owners. Only empty byte/range
+      // capacity survives, up to 8KiB total per slot; oversized storage is shed.
+      *this = NativeCommand{};
+      size_t retained = 0;
+      const auto keep = [&](auto& source,auto& target) {
+        using Element = typename std::remove_reference_t<decltype(source)>::value_type;
+        const size_t bytes = source.capacity() * sizeof(Element);
+        if (bytes <= 8192 - retained) { source.clear(); target=std::move(source); retained+=bytes; }
+      };
+      keep(old_delta.vertex_constants.ranges,shader_constant_delta.vertex_constants.ranges);
+      keep(old_delta.pixel_constants.ranges,shader_constant_delta.pixel_constants.ranges);
+      keep(old_delta.vertex_constants.payload,shader_constant_delta.vertex_constants.payload);
+      keep(old_delta.pixel_constants.payload,shader_constant_delta.pixel_constants.payload);
+      keep(old_payload,payload);
+    }
   };
 
   struct NativeUploadBuffer {
@@ -1540,6 +1568,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void QueueTextureProtection(const NativeCommand& command, bool retain);
   void AppendQueuedTextureProtection(std::unordered_set<uint64_t>& generations) const;
   void ClearNativeFrameCommands();
+  void RetainWorkerCommand(NativeCommand& command);
+#ifdef THEFT4_LAB_BUILD
+  size_t PendingStateCommands() const;
+  void PushPendingStateLocked(); // command_capture_mutex_ and render_mutex_
+  bool FlushPendingState(); // caller owns command_capture_mutex_
+#endif
   static void AddProtectedTextureGenerations(const NativeCommand& command,
                                              std::unordered_set<uint64_t>& generations);
   std::unordered_set<uint64_t> CollectProtectedTextureGenerations(
@@ -1735,13 +1769,15 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::condition_variable render_condition_;
   std::pmr::synchronized_pool_resource snapshot_pool_;
 #ifdef THEFT4_LAB_BUILD
-  // Construct once on the producer, then move only the owning pointer through
-  // the queue and batch. The worker still moves retained draws into its frame.
+  // Construct once on the producer. Enabled command-stream mode retains the
+  // same unique owner through queue, staging, and frame; OFF uses value frames.
   using NativeQueuedCommand = NativeCommandPacket<NativeCommand>;
   NativeCommandRecycler<NativeCommand, 128, 2048> command_recycler_;
   NativeCommandRecycler<NativeStatePacket, 128, 1024> state_command_recycler_;
   NativeProducerBindingCache producer_binding_cache_;
   uint64_t producer_binding_skips_pending_ = 0;
+  std::unique_ptr<NativeStatePacket> producer_pending_state_; // command_capture_mutex_
+  std::atomic<uint64_t> producer_state_packets_{0}, producer_buffered_states_{0};
   DirtyStateDelta producer_dirty_delta_;
   DirtyDeltaScratch producer_dirty_scratch_; // command_capture_mutex_ owns both.
 #else
@@ -1806,7 +1842,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       pipeline_request_cache_;
   std::shared_ptr<const NativeShaderState> last_shader_snapshot_;
   std::shared_ptr<const NativePipelineState> SnapshotPipeline(const NativeCommand&, bool);
+#ifdef THEFT4_LAB_BUILD
+  NativeRetainedCommands<NativeCommand> current_frame_;
+  NativeDeferredCleanup<NativeCommand,NativeCommandRecycler<NativeCommand,128,2048>> cpu_cleanup_;
+#else
   std::vector<NativeCommand> current_frame_;
+#endif
   NativeFrameResources recording_resources_;
   std::unordered_set<uint64_t> frame_texture_protection_;
   const NativeCommand* active_worker_command_ = nullptr;

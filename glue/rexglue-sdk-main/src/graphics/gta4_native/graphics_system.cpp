@@ -10,6 +10,9 @@
 #include "native_cpu_profile_scope.h"
 #include "native_profile_shader_category.h"
 #include "modern_shader_options.h"
+#ifdef THEFT4_ASTC_EXPERIMENT
+#include "theft4_astc_texture.h"
+#endif
 #ifdef THEFT4_LAB_BUILD
 #include <rex/graphics/gta4_native/pacing_profile.h>
 #if defined(__APPLE__) && defined(__MACH__)
@@ -17909,7 +17912,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     return existing->second.get();
   }
   protected_texture_generations_.insert(texture->generation);
-  const VkFormat format = ConvertTextureFormat(texture->info.format);
+  VkFormat format = ConvertTextureFormat(texture->info.format);
   if (format == VK_FORMAT_UNDEFINED) {
     return reject("format");
   }
@@ -17931,6 +17934,92 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
       vulkan_device->physical_device(), format, &format_properties);
   constexpr VkFormatFeatureFlags kRequiredTextureFeatures =
       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+#ifdef THEFT4_ASTC_EXPERIMENT
+  std::vector<uint8_t> converted_payload;
+  std::vector<NativeTextureResource::MipLevel> converted_mips;
+  const std::vector<uint8_t>* upload_payload = &texture->payload;
+  const std::vector<NativeTextureResource::MipLevel>* upload_mips = &texture->mip_levels;
+  const bool source_supported =
+      (format_properties.optimalTilingFeatures & kRequiredTextureFeatures) ==
+      kRequiredTextureFeatures;
+  const bool is_bc = format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ||
+                     format == VK_FORMAT_BC2_UNORM_BLOCK ||
+                     format == VK_FORMAT_BC3_UNORM_BLOCK;
+  const char* force_setting = std::getenv("THEFT4_ASTC_FORCE");
+  const bool force_astc = force_setting && std::strcmp(force_setting, "1") == 0;
+  if (is_bc && !texture->gpu_produced && (!source_supported || force_astc)) {
+    const auto source_format =
+        format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ? theft4::astc::BcFormat::kBc1
+      : format == VK_FORMAT_BC2_UNORM_BLOCK ? theft4::astc::BcFormat::kBc2
+                                             : theft4::astc::BcFormat::kBc3;
+    std::vector<theft4::astc::Mip> source_mips;
+    source_mips.reserve(texture->mip_levels.size());
+    for (const auto& mip : texture->mip_levels) {
+      source_mips.push_back({mip.level, mip.width, mip.height, mip.depth,
+                             mip.base_array_layer, mip.layer_count,
+                             mip.buffer_row_length, mip.buffer_image_height,
+                             mip.payload_offset, mip.payload_size});
+    }
+    theft4::astc::Input input{source_format, texture->content_hash,
+                              texture->info.width + 1, texture->info.height + 1,
+                              texture->payload, source_mips};
+    const char* root_setting = std::getenv("THEFT4_ASTC_PREPARATION_ROOT");
+    const std::filesystem::path root = root_setting && *root_setting
+                                           ? std::filesystem::path(root_setting)
+                                           : std::filesystem::path();
+    theft4::astc::Prepared prepared;
+    std::string preparation_error;
+    const auto started = std::chrono::steady_clock::now();
+    VkFormatProperties astc_properties{};
+    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+        vulkan_device->physical_device(), VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+        &astc_properties);
+    const bool astc_supported =
+        (astc_properties.optimalTilingFeatures & kRequiredTextureFeatures) ==
+        kRequiredTextureFeatures;
+    bool prepared_astc = astc_supported && !root.empty() &&
+        theft4::astc::PrepareAstc4x4(input, root, prepared, &preparation_error);
+    if (!prepared_astc &&
+        !theft4::astc::DecodeToRgba8(input, prepared, &preparation_error)) {
+      theft4::astc::RecordObservedTexture(root, input, nullptr, "conversion-failed", 0);
+      REXLOG_WARN("gta4-native-astc: conversion failed for {:016X}: {}",
+                  texture->content_hash, preparation_error);
+      return reject("astc-and-rgba-fallback-failed");
+    }
+    format = prepared_astc ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                           : VK_FORMAT_R8G8B8A8_UNORM;
+    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+        vulkan_device->physical_device(), format, &format_properties);
+    const uint64_t elapsed_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count());
+    theft4::astc::RecordObservedTexture(
+        root, input, &prepared,
+        prepared_astc ? (prepared.cache_hit ? "astc-cache-hit" : "astc-encoded")
+                      : "rgba8-fallback", elapsed_ms);
+    if (!prepared_astc) {
+      REXLOG_WARN("gta4-native-astc: {:016X} used RGBA8 fallback: {}",
+                  texture->content_hash, preparation_error);
+    }
+    converted_payload = std::move(prepared.payload);
+    converted_mips.reserve(prepared.mips.size());
+    for (const auto& mip : prepared.mips) {
+      NativeTextureResource::MipLevel copy{};
+      copy.level = mip.level;
+      copy.width = mip.width;
+      copy.height = mip.height;
+      copy.depth = mip.depth;
+      copy.base_array_layer = mip.base_array_layer;
+      copy.layer_count = mip.layer_count;
+      copy.buffer_row_length = mip.buffer_row_length;
+      copy.buffer_image_height = mip.buffer_image_height;
+      copy.payload_offset = mip.payload_offset;
+      copy.payload_size = mip.payload_size;
+      converted_mips.push_back(copy);
+    }
+    upload_payload = &converted_payload;
+    upload_mips = &converted_mips;
+  }
+#endif
   if ((format_properties.optimalTilingFeatures & kRequiredTextureFeatures) !=
       kRequiredTextureFeatures) {
     return reject("format-capabilities");
@@ -18161,11 +18250,18 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
 
   if (!texture->gpu_produced) {
     NativeUploadAllocation upload;
-    if (!AllocateUpload(texture->payload.size(), 16, upload, NativeUploadKind::kTexture)) {
+    #ifdef THEFT4_ASTC_EXPERIMENT
+    const auto& payload_to_upload = *upload_payload;
+    const auto& mips_to_upload = *upload_mips;
+    #else
+    const auto& payload_to_upload = texture->payload;
+    const auto& mips_to_upload = texture->mip_levels;
+    #endif
+    if (!AllocateUpload(payload_to_upload.size(), 16, upload, NativeUploadKind::kTexture)) {
       DestroyNativeTextureImage(*image);
       return reject("upload-allocation");
     }
-    std::memcpy(upload.mapping, texture->payload.data(), texture->payload.size());
+    std::memcpy(upload.mapping, payload_to_upload.data(), payload_to_upload.size());
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -18181,8 +18277,8 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
                              &barrier); });
 
     std::vector<VkBufferImageCopy> copies;
-    copies.reserve(texture->mip_levels.size());
-    for (const NativeTextureResource::MipLevel& mip : texture->mip_levels) {
+    copies.reserve(mips_to_upload.size());
+    for (const NativeTextureResource::MipLevel& mip : mips_to_upload) {
       VkBufferImageCopy copy{};
       copy.bufferOffset = upload.offset + mip.payload_offset;
       copy.bufferRowLength = mip.buffer_row_length;

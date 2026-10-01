@@ -161,6 +161,12 @@ template <typename Full>
 const Full& NativeQueueCommand(const NativeCommandPacket<Full>& packet) {
   assert(packet.FullCommand()); return *packet.FullCommand();
 }
+// Non-Lab builds queue the full command directly rather than wrapping it in a
+// compact state packet. Keep the same access helper valid in both builds.
+template <typename Command>
+Command& NativeQueueCommand(Command& command) { return command; }
+template <typename Command>
+const Command& NativeQueueCommand(const Command& command) { return command; }
 template <typename Command>
 bool NativeQueueHasResources(const Command&) { return true; }
 template <typename Full>

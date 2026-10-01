@@ -23,6 +23,11 @@ option(THEFT4_COMPILE_GTA4_NATIVE_BACKEND
     "Compile-check LibertyRecomp's GTA IV native renderer for iOS without selecting it" OFF)
 option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
     "Embed the GTA IV native renderer behind THEFT4_GRAPHICS_BACKEND=native" OFF)
+option(THEFT4_ASTC_EXPERIMENT
+    "Enable isolated on-device BC-to-ASTC preparation and discovery" OFF)
+if(THEFT4_ASTC_EXPERIMENT AND NOT THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+    message(FATAL_ERROR "The ASTC experiment requires the GTA IV native renderer")
+endif()
 
 set(THEFT4_NATIVE_FONT_ASSET_ROOT
     "${CMAKE_SOURCE_DIR}/LibertyRecompLib/font_atlases")
@@ -201,6 +206,23 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         target_link_libraries(theft4_gta4_native_compile PRIVATE
             rex::runtime
             xxHash::xxhash)
+        if(THEFT4_ASTC_EXPERIMENT)
+            set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
+            set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
+            set(ASTCENC_WERROR OFF CACHE BOOL "" FORCE)
+            set(ASTCENC_UNIVERSAL_BUILD OFF CACHE BOOL "" FORCE)
+            set(ASTCENC_ISA_NEON ON CACHE BOOL "" FORCE)
+            add_subdirectory("${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder"
+                "${CMAKE_BINARY_DIR}/theft4-astc-encoder" EXCLUDE_FROM_ALL)
+            target_sources(theft4_gta4_native_compile PRIVATE
+                bridge/theft4_astc_texture.cpp)
+            target_include_directories(theft4_gta4_native_compile PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
+            target_link_libraries(theft4_gta4_native_compile PRIVATE
+                astcenc-neon-static)
+            target_compile_definitions(theft4_gta4_native_compile PRIVATE
+                THEFT4_ASTC_EXPERIMENT=1)
+        endif()
         target_compile_definitions(theft4_gta4_native_compile PRIVATE
             REX_HAS_VULKAN=1
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
@@ -412,10 +434,20 @@ if(THEFT4_ENABLE_GAME_STARTUP)
 endif()
 
 set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
+option(THEFT4_TEXTURE_PREPARATION_PREVIEW
+    "Show the capability-gated texture source inventory during setup" OFF)
 add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
+    Theft4/Theft4TextureSources.m
     Theft4/Theft4LauncherView.m
     Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
     Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
+if(THEFT4_ASTC_EXPERIMENT)
+    target_sources(Theft4 PRIVATE
+        "${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder/LICENSE.txt")
+    set_source_files_properties(
+        "${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder/LICENSE.txt"
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
 set_source_files_properties(Theft4/XeniOS-Touch-LICENSE.txt PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources)
 set_source_files_properties("${THEFT4_ASSET_CATALOG}" PROPERTIES
@@ -426,6 +458,12 @@ target_link_libraries(Theft4 PRIVATE theft4_core_bridge
     "-framework AVFoundation" "-framework AudioToolbox")
 target_link_options(Theft4 PRIVATE "LINKER:-dead_strip")
 target_compile_options(Theft4 PRIVATE -fobjc-arc)
+if(THEFT4_TEXTURE_PREPARATION_PREVIEW OR THEFT4_ASTC_EXPERIMENT)
+    target_compile_definitions(Theft4 PRIVATE THEFT4_TEXTURE_PREPARATION_PREVIEW=1)
+endif()
+if(THEFT4_ASTC_EXPERIMENT)
+    target_compile_definitions(Theft4 PRIVATE THEFT4_ASTC_EXPERIMENT=1)
+endif()
 if(THEFT4_LAB_BUILD AND THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
     target_compile_definitions(Theft4 PRIVATE THEFT4_LAB_NATIVE_CAPTURE=1)
 endif()

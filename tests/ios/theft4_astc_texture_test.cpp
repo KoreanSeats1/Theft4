@@ -132,6 +132,21 @@ int main() {
   Prepared after_clear;
   Check(PrepareAstc4x4(input, root, after_clear, &error) && !after_clear.cache_hit &&
             after_clear.cache_persisted, "Cleared cache could not be regenerated");
+  for (const char* name : {"preparation-state.json", "prepared-cache-index.json",
+                           "archive-texture-manifest.json", "game-save.sav"})
+    std::ofstream(root / name) << "fixture";
+  Check(DeletePreparedCache(root, &error) && !fs::exists(root / "astc-v1") &&
+            !fs::exists(root / "preparation-state.json") &&
+            !fs::exists(root / "prepared-cache-index.json"),
+        "Prepared cache and completion status were not deleted");
+  Check(fs::exists(root / "archive-texture-manifest.json") &&
+            fs::exists(root / "observed-textures.jsonl") && fs::exists(root / "game-save.sav"),
+        "Cache deletion removed unrelated files");
+  Check(SetPreparationCacheBudget(root, budget, &error), "Cache budget did not recover after deletion");
+  Prepared after_delete;
+  Check(PrepareAstc4x4(input, root, after_delete, &error) &&
+            !after_delete.cache_hit && after_delete.cache_persisted,
+        "Deleted cache could not be prepared again");
   fs::remove_all(root);
   std::cout << "ASTC texture conversion and cache: PASS\n";
 }

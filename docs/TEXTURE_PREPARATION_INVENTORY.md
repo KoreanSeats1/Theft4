@@ -31,7 +31,10 @@ next Play session. It starts On when the device reports no direct BC support,
 and Off when direct BC support is present. With the switch On, first launch
 shows an explanation, then indexes and prepares static textures before Play.
 Progress includes counts, reused/new conversions and an estimated remaining
-time. Gameplay is not started during preparation. The app stays awake while
+time. The UI adds a cyan progress bar with a percentage for each
+of the two steps (checking files, preparing textures), an estimate for the
+current step, and explicit one-time setup notes. Longer notes scroll on phones.
+Gameplay is not started during preparation. The app stays awake while
 active and pauses preparation when backgrounded. Pause/resume retains
 completed atomic cache files; a killed process also retains those files.
 Resuming revisits the manifest and reuses the saved textures.
@@ -43,7 +46,19 @@ entries are not evicted. Completion requires every manifest key to have been
 saved. Subsequent launches compare source filenames, sizes and mtimes and
 check saved cache filenames, without re-encoding the game. A changed source
 set rescans; missing cache files require preparation again. Matching cache
-keys are reused across both cases.
+keys are reused across both cases. The System settings page offers
+**Delete Prepared Texture Cache**, with Cancel and destructive confirmation.
+Deletion is blocked during preparation/gameplay and removes only `astc-v1`
+and its completion/index markers. The source manifest, diagnostics, original
+game and saves remain; preparation is required again before ASTC Play.
+
+The notes give iPhone 15 Pro (A17 Pro), iPhone 16 (A18) and M3/M4/M5 iPads as
+examples of devices that skip the requirement. Apple's
+[GPU feature tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+list BC support on all Apple9 GPUs and some Apple7/Apple8 iPad GPUs. The app
+uses `MTLDevice.supportsBCTextureCompression`, rather than inferring support
+from the device name or age. A forced comparison toggle remains available in
+the experimental app.
 
 Files live under `Library/Application Support/Theft4/texture-preparation`:
 `archive-texture-manifest.json`, `preparation-state.json`,
@@ -129,6 +144,10 @@ check passed, and the updated test app installed on the A12Z iPad. Its
 on-device indexing screen was visually checked with live progress and a Pause
 button. Full on-device preparation, resume acceptance and gameplay comparison
 remain pending until that run finishes.
+The subsequent UI/cache-control revision also passed both host tests and the
+iOS Release compiler check. It is saved as an installable app under
+`out/device-apps/astc-preparation-ui-20261002/Theft4.app`; installation is
+deferred until the current A12Z preparation completes, as the user requested.
 The encoder is Arm's `astc-encoder` 5.3.0 (Apache-2.0),
 vendored under `thirdparty/astc-encoder` with its license bundled in the app.
 

@@ -46,6 +46,8 @@ std::string TextureCacheKey(const Input& input);
 // Persistent, bounded budget for a prepared installation. No eviction occurs.
 bool SetPreparationCacheBudget(const std::filesystem::path& root, uint64_t bytes,
                                std::string* error);
+// Caller must stop preparation/gameplay first. Retains manifest and diagnostics.
+bool DeletePreparedCache(const std::filesystem::path& root, std::string* error);
 
 // The input is the renderer's already-untiled, endian-corrected BC payload.
 // Unsupported layouts fail closed so the caller can retain its existing path.

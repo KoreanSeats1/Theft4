@@ -415,7 +415,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     ]];
 #ifdef THEFT4_ASTC_EXPERIMENT
     UIStackView *astcRow = (UIStackView *)[self setting:@"ASTC TEXTURE COMPATIBILITY"
-        detail:@"Convert BC textures as they appear and save the results. First visits may pause; revisits use the cache. Off compares a larger RGBA8 compatibility path on devices without BC support. The older-GPU display fix stays automatic. Set before Play."
+        detail:@"One-time setup for devices without BC texture support. Saves compressed ASTC copies before Play to reduce texture-conversion pauses and GPU memory use. Later launches reuse them. Devices with direct BC support, such as iPhone 15 Pro (A17 Pro), iPhone 16 (A18), and M3/M4/M5 iPads, skip this requirement automatically. On can force a test on supported devices; Off uses RGBA8 on unsupported devices."
         toggle:_astcConversion];
     astcRow.backgroundColor = [Ink(0x35CDD1) colorWithAlphaComponent:.12];
     astcRow.layer.borderColor = [Ink(0x35CDD1) colorWithAlphaComponent:.60].CGColor;
@@ -427,6 +427,10 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UILabel *astcTitle = (UILabel *)astcText.arrangedSubviews.firstObject;
     astcTitle.textColor = Ink(0x6BE5E7);
     [systemRows insertObject:astcRow atIndex:2];
+    _deleteTextureCacheButton = Action(@"DELETE PREPARED TEXTURE CACHE", NO);
+    _deleteTextureCacheButton.accessibilityIdentifier = @"settings.deleteTextureCache";
+    [systemRows insertObject:Column(@[_deleteTextureCacheButton,
+        Copy(@"Free the storage used by prepared textures. Confirmation required. Your game files and saves are kept. Devices that need ASTC must prepare textures again before Play.", 12, NO)], 7) atIndex:3];
 #endif
     _system = Column(systemRows, 20);
 

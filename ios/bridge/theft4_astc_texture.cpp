@@ -337,6 +337,19 @@ bool SetPreparationCacheBudget(const std::filesystem::path& root, uint64_t bytes
   return usage.valid;
 }
 
+bool DeletePreparedCache(const std::filesystem::path& root, std::string* error) {
+  std::lock_guard lock(cache_mutex);
+  std::error_code ec;
+  for (const char* name : {"preparation-state.json", "prepared-cache-index.json"}) {
+    std::filesystem::remove(root / name, ec);
+    if (ec) { SetError(error, "Cannot reset texture preparation status."); return false; }
+  }
+  std::filesystem::remove_all(root / "astc-v1", ec);
+  cache_usage.erase((root / "astc-v1").string());
+  if (ec) { SetError(error, "Some prepared textures could not be deleted. Try again before Play."); return false; }
+  return true;
+}
+
 bool DecodeToRgba8(const Input& input, Prepared& output, std::string* error) {
   if (!ValidInput(input, error)) return false;
   Prepared candidate;

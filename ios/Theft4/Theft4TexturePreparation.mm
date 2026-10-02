@@ -35,8 +35,15 @@ NSDictionary *Dictionary(const Json& value) {
 }
 - (BOOL)running { return _running; }
 - (void)cancel { _cancelRequested.store(true); }
++ (BOOL)deletePreparedCacheAtSupport:(NSURL *)support error:(NSString **)failure {
+  std::string error;
+  const bool ok = theft4::astc::DeletePreparedCache(Root(support), &error);
+  if (!ok && failure) *failure = [NSString stringWithUTF8String:error.c_str()];
+  return ok;
+}
 + (BOOL)isCompleteForGame:(NSURL *)game support:(NSURL *)support {
   try {
+    const auto started = std::chrono::steady_clock::now();
     const auto state = Load(Root(support) / "preparation-state.json");
     if (!state.value("complete", false) || state.value("encoderSchema", 0) != 1 ||
         state.at("sourceFingerprint") != theft4::astc::TextureSourceFingerprint(game.fileSystemRepresentation)) return NO;
@@ -49,6 +56,10 @@ NSDictionary *Dictionary(const Json& value) {
     for (const auto& entry : std::filesystem::directory_iterator(Root(support) / "astc-v1"))
       if (entry.path().extension() == ".bin") available.insert(entry.path().stem().string());
     for (const auto& key : index) if (!available.contains(key.get<std::string>())) return NO;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    NSLog(@"[texture-preparation] saved cache verified: %lu textures in %lld ms; no conversion required",
+          (unsigned long)index.size(), (long long)elapsed);
     return YES;
   } catch (...) { return NO; }
 }
@@ -80,11 +91,14 @@ NSDictionary *Dictionary(const Json& value) {
       if (!manifest.is_object() || manifest.value("schemaVersion", 0) != 1 ||
           manifest.value("sourceFingerprint", Json::object()) != fingerprint) {
         notify({{"phase", "indexing"}, {"completed", 0}, {"total", 0}}, true);
+        const auto scan_started = std::chrono::steady_clock::now();
         if (!theft4::astc::ScanTextureManifest(game_path, game_path / "aes_key.bin", {},
           [&](const theft4::astc::ScanProgress& p) {
+            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - scan_started).count();
             notify({{"phase", "indexing"}, {"completed", p.containers},
                     {"total", p.total_containers}, {"textures", p.textures},
-                    {"current", p.current_source}});
+                    {"current", p.current_source},
+                    {"remainingSeconds", p.containers >= 8 ? elapsed * (p.total_containers - p.containers) / p.containers : -1}});
           }, self->_cancelRequested, manifest, error)) throw std::runtime_error(error);
         Save(root / "archive-texture-manifest.json", manifest);
       }

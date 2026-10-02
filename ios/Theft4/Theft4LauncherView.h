@@ -41,6 +41,7 @@
 @property(nonatomic, readonly) UISwitch *parallelTextureConversion;
 #ifdef THEFT4_ASTC_EXPERIMENT
 @property(nonatomic, readonly) UISwitch *astcConversion;
+@property(nonatomic, readonly) UIButton *deleteTextureCacheButton;
 #endif
 @property(nonatomic, readonly) UISwitch *memoryRecovery;
 @property(nonatomic, readonly) UISwitch *commandStream;

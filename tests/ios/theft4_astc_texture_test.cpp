@@ -40,7 +40,7 @@ int main() {
   }
   Prepared encoded;
   Check(PrepareAstc4x4(input, root, encoded, &error), "ASTC conversion failed");
-  Check(!encoded.cache_hit && encoded.payload.size() == 32 &&
+  Check(!encoded.cache_hit && encoded.cache_persisted && encoded.payload.size() == 32 &&
             encoded.mips.size() == 2, "ASTC output layout is incorrect");
   astcenc_config decode_config{};
   Check(astcenc_config_init(ASTCENC_PRF_LDR, 4, 4, 1, ASTCENC_PRE_FAST,
@@ -64,7 +64,7 @@ int main() {
         "ASTC output did not preserve the red test image");
   Prepared cached;
   Check(PrepareAstc4x4(input, root, cached, &error), "ASTC cache read failed");
-  Check(cached.cache_hit && cached.payload == encoded.payload,
+  Check(cached.cache_hit && cached.cache_persisted && cached.payload == encoded.payload,
         "ASTC cache returned different data");
 
   // BC2 stores four-bit alpha values separately from its four-color block.
@@ -119,6 +119,19 @@ int main() {
   RecordObservedTexture(root, input, &rebuilt, "astc-encoded", 12);
   Check(fs::exists(root / "observed-textures.jsonl"),
         "Observed texture list was not written");
+  const uint64_t budget = 3ull * 1024 * 1024 * 1024;
+  Check(SetPreparationCacheBudget(root, budget, &error), "Preparation cache budget failed");
+  uint64_t saved_budget = 0;
+  std::ifstream(root / "cache-budget.txt") >> saved_budget;
+  Check(saved_budget == budget && fs::exists(cache_path),
+        "Preparation budget was not persisted or removed a completed texture");
+  Check(!SetPreparationCacheBudget(root, 17ull * 1024 * 1024 * 1024, &error),
+        "Unbounded preparation cache budget was accepted");
+  fs::remove_all(root / "astc-v1");
+  Check(SetPreparationCacheBudget(root, budget, &error), "Cache accounting did not reset after deletion");
+  Prepared after_clear;
+  Check(PrepareAstc4x4(input, root, after_clear, &error) && !after_clear.cache_hit &&
+            after_clear.cache_persisted, "Cleared cache could not be regenerated");
   fs::remove_all(root);
   std::cout << "ASTC texture conversion and cache: PASS\n";
 }

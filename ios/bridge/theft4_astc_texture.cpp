@@ -13,6 +13,7 @@
 #include <sstream>
 #include <thread>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace theft4::astc {
 namespace {
@@ -20,6 +21,7 @@ namespace {
 constexpr size_t kMaxMipBytes = 64u * 1024u * 1024u;
 constexpr size_t kMaxTextureBytes = 256u * 1024u * 1024u;
 constexpr uint64_t kMaxCacheBytes = 1024ull * 1024ull * 1024ull;
+constexpr uint64_t kMaximumPreparationBudget = 16ull * 1024ull * 1024ull * 1024ull;
 constexpr uint64_t kMinimumFreeBytes = 256ull * 1024ull * 1024ull;
 constexpr std::array<char, 8> kMagic{'T', '4', 'A', 'S', 'T', 'C', '0', '1'};
 
@@ -44,6 +46,28 @@ struct CacheMip {
   uint64_t offset;
   uint64_t size;
 };
+
+struct CacheUsage { uint64_t bytes = 0; uint64_t budget = kMaxCacheBytes; bool valid = false; };
+std::mutex cache_mutex;
+std::unordered_map<std::string, CacheUsage> cache_usage;
+
+CacheUsage& CacheAccounting(const std::filesystem::path& directory) {
+  auto& usage = cache_usage[directory.string()];
+  if (usage.valid) return usage;
+  usage.bytes = 0; usage.budget = kMaxCacheBytes;
+  uint64_t saved_budget = 0;
+  std::ifstream budget_file(directory.parent_path() / "cache-budget.txt");
+  if (budget_file >> saved_budget && saved_budget >= kMaxCacheBytes &&
+      saved_budget <= kMaximumPreparationBudget) usage.budget = saved_budget;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+    if (ec) break;
+    if (entry.is_regular_file(ec)) usage.bytes += entry.file_size(ec);
+    if (ec) break;
+  }
+  usage.valid = !ec;
+  return usage;
+}
 
 void SetError(std::string* error, const char* message) {
   if (error) *error = message;
@@ -233,26 +257,29 @@ bool ReadCache(const std::filesystem::path& path, const Input& input, Prepared& 
     candidate.mips.push_back(mip);
   }
   candidate.cache_hit = true;
+  candidate.cache_persisted = true;
   output = std::move(candidate);
   return true;
 }
 
-void WriteCache(const std::filesystem::path& path, const Input& input,
+bool WriteCache(const std::filesystem::path& path, const Input& input,
                 const Prepared& prepared) {
+  std::lock_guard lock(cache_mutex);
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
-  if (ec) return;
+  if (ec) return false;
   const auto space = std::filesystem::space(path.parent_path(), ec);
-  if (ec || space.available < prepared.payload.size() + kMinimumFreeBytes) return;
+  if (ec || space.available < prepared.payload.size() + kMinimumFreeBytes) return false;
   // The experiment keeps a hard per-installation disk bound. If it is reached,
   // conversion still works for the current session but is not persisted.
-  uint64_t cache_bytes = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ec)) {
-    if (ec) return;
-    if (entry.is_regular_file(ec)) cache_bytes += entry.file_size(ec);
-    if (ec || cache_bytes > kMaxCacheBytes) return;
-  }
-  if (cache_bytes + prepared.payload.size() > kMaxCacheBytes) return;
+  auto& usage = CacheAccounting(path.parent_path());
+  if (!usage.valid) return false;
+  const uint64_t file_bytes = sizeof(CacheHeader) + prepared.mips.size() * sizeof(CacheMip) +
+                              prepared.payload.size();
+  const uint64_t old_bytes = std::filesystem::exists(path, ec)
+                              ? std::filesystem::file_size(path, ec) : 0;
+  if (ec || usage.bytes < old_bytes || file_bytes > usage.budget ||
+      usage.bytes - old_bytes > usage.budget - file_bytes) return false;
   CacheHeader header{};
   std::memcpy(header.magic, kMagic.data(), kMagic.size());
   header.source_format = uint32_t(input.format);
@@ -277,14 +304,38 @@ void WriteCache(const std::filesystem::path& path, const Input& input,
     file.flush();
     if (!file) {
       std::filesystem::remove(temp, ec);
-      return;
+      return false;
     }
   }
   std::filesystem::rename(temp, path, ec);
-  if (ec) std::filesystem::remove(temp, ec);
+  if (ec) { std::filesystem::remove(temp, ec); return false; }
+  usage.bytes = usage.bytes - old_bytes + file_bytes;
+  return true;
 }
 
 }  // namespace
+
+std::string TextureCacheKey(const Input& input) { return CacheKey(input); }
+
+bool SetPreparationCacheBudget(const std::filesystem::path& root, uint64_t bytes,
+                               std::string* error) {
+  if (bytes < kMaxCacheBytes || bytes > kMaximumPreparationBudget) {
+    SetError(error, "Prepared textures exceed the 16 GiB cache limit."); return false;
+  }
+  std::lock_guard lock(cache_mutex);
+  std::error_code ec;
+  std::filesystem::create_directories(root / "astc-v1", ec);
+  if (ec) { SetError(error, "Cannot create texture cache."); return false; }
+  const auto temp = root / "cache-budget.txt.tmp";
+  { std::ofstream file(temp); file << bytes << '\n'; file.flush();
+    if (!file) { SetError(error, "Cannot save texture cache budget."); return false; } }
+  std::filesystem::rename(temp, root / "cache-budget.txt", ec);
+  if (ec) { SetError(error, "Cannot publish texture cache budget."); return false; }
+  cache_usage[(root / "astc-v1").string()].valid = false;
+  auto& usage = CacheAccounting(root / "astc-v1"); usage.budget = bytes;
+  if (!usage.valid) SetError(error, "Cannot inspect texture cache storage.");
+  return usage.valid;
+}
 
 bool DecodeToRgba8(const Input& input, Prepared& output, std::string* error) {
   if (!ValidInput(input, error)) return false;
@@ -367,7 +418,7 @@ bool PrepareAstc4x4(const Input& input, const std::filesystem::path& preparation
   }
   astcenc_context_free(context);
   if (!success) return false;
-  WriteCache(path, input, candidate);
+  candidate.cache_persisted = WriteCache(path, input, candidate);
   output = std::move(candidate);
   return true;
 }

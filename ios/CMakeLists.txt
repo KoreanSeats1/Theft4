@@ -220,9 +220,11 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             add_subdirectory("${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder"
                 "${CMAKE_BINARY_DIR}/theft4-astc-encoder" EXCLUDE_FROM_ALL)
             target_sources(theft4_gta4_native_compile PRIVATE
-                bridge/theft4_astc_texture.cpp)
+                bridge/theft4_astc_texture.cpp
+                bridge/theft4_texture_manifest.cpp)
             target_include_directories(theft4_gta4_native_compile PRIVATE
-                "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
+                "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/crypto")
             target_link_libraries(theft4_gta4_native_compile PRIVATE
                 astcenc-neon-static)
             target_compile_definitions(theft4_gta4_native_compile PRIVATE
@@ -441,14 +443,24 @@ endif()
 set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
 option(THEFT4_TEXTURE_PREPARATION_PREVIEW
     "Show the capability-gated texture source inventory during setup" OFF)
+if(THEFT4_ASTC_EXPERIMENT)
+    set(THEFT4_TEXTURE_PREPARATION_PREVIEW ON)
+endif()
 add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
     Theft4/Theft4TextureSources.m
     Theft4/Theft4LauncherView.m
     Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
     Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
 if(THEFT4_ASTC_EXPERIMENT)
+    enable_language(OBJCXX)
     target_sources(Theft4 PRIVATE
+        Theft4/Theft4TexturePreparation.mm
         "${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder/LICENSE.txt")
+    set_source_files_properties(Theft4/Theft4TexturePreparation.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc")
+    set_target_properties(Theft4 PROPERTIES OBJCXX_STANDARD 23 OBJCXX_STANDARD_REQUIRED YES)
+    target_include_directories(Theft4 PRIVATE "${CMAKE_SOURCE_DIR}/thirdparty/json/include")
+    target_compile_features(Theft4 PRIVATE cxx_std_23)
     set_source_files_properties(
         "${CMAKE_SOURCE_DIR}/thirdparty/astc-encoder/LICENSE.txt"
         PROPERTIES MACOSX_PACKAGE_LOCATION Resources)

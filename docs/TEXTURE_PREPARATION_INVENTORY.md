@@ -7,46 +7,68 @@ saves, and caches are separate. It is an experiment for device validation, not
 an ordinary release build. Its ASTC code is compiled only with
 `THEFT4_ASTC_EXPERIMENT=ON` and the native GTA IV renderer enabled.
 
-## First launch and observed list
+## One-time preparation and observed list
 
 After the user supplies and verifies the extracted game and TU8 inside this
-app's `Documents/game`, setup explains that the initial source scan inventories
-filenames only. It scans loose `.xtd` and `.wtd` dictionaries, `.rpf` and `.img`
-archives, and drawable/fragment resources that may contain or reference
-textures. The bounded, symlink-safe source list is saved to
-`Library/Application Support/Theft4/texture-preparation/source-inventory.json`.
-No game file is modified by the scan.
+app's `Documents/game`, the ASTC setup reads loose Xbox texture dictionaries,
+drawables and fragments (`.xtd`, `.xdr`, `.xdd`, `.xft`) and RPF2/IMG3 resource
+entries. It decrypts archive tables when needed, decompresses bounded RSC5/RSC85
+resources, and validates embedded texture objects. It uses the renderer's
+tiling, endian, mip layout and content-hash routines to generate the same
+cache keys as gameplay. Game files are read only.
 
-Actual BC textures are discovered only when gameplay loads them. The cyan
+The local TU8 scan found 99,054 source texture records, representing 49,867
+unique BC1/BC2/BC3 textures and 2,567,750,080 bytes (2.39 GiB) of ASTC 4x4
+payload. It matched 2,452 of 2,460 previously observed runtime keys. The eight
+unmatched keys retain the runtime path. The scan also reports 35 unsupported
+RPF warnings from audio archives; these are retained in the manifest rather
+than treated as evidence of complete coverage. 3D textures, arrays, cubes and
+GPU-produced textures are outside the static 2D preparation pass.
+
+The cyan
 **ASTC Texture Compatibility** switch in System controls conversion for the
 next Play session. It starts On when the device reports no direct BC support,
-and Off when direct BC support is present. With the switch Off, encountered BC
-textures are still logged, with no ASTC encoding; unsupported BC textures use
-an RGBA8 control path instead. With the switch On, the native renderer already untile/swaps
-their blocks, hashes the payload, and enumerates
-mips and layers. On the ASTC app's first encounter, BC1, BC2, or BC3 textures
-are decoded and encoded to ASTC 4x4. A content-keyed file under
-`texture-preparation/astc-v1` is reused on later encounters and launches.
-The cache is limited to 1 GiB and is written atomically. Corrupt cache files
-are rejected and rebuilt. If ASTC encoding or format support fails, RGBA8 is
-used for that texture. 3D BC textures use RGBA8 in this experiment. GPU-produced
-textures stay on their existing path.
+and Off when direct BC support is present. With the switch On, first launch
+shows an explanation, then indexes and prepares static textures before Play.
+Progress includes counts, reused/new conversions and an estimated remaining
+time. Gameplay is not started during preparation. The app stays awake while
+active and pauses preparation when backgrounded. Pause/resume retains
+completed atomic cache files; a killed process also retains those files.
+Resuming revisits the manifest and reuses the saved textures.
+
+The service checks remaining disk space plus a 1 GiB reserve and persists a
+cache budget sized for the complete manifest plus 64 MiB headroom. The default
+runtime-only budget remains 1 GiB; preparation can raise it up to 16 GiB. Cache
+entries are not evicted. Completion requires every manifest key to have been
+saved. Subsequent launches compare source filenames, sizes and mtimes and
+check saved cache filenames, without re-encoding the game. A changed source
+set rescans; missing cache files require preparation again. Matching cache
+keys are reused across both cases.
+
+Files live under `Library/Application Support/Theft4/texture-preparation`:
+`archive-texture-manifest.json`, `preparation-state.json`,
+`prepared-cache-index.json`, `cache-budget.txt` and `astc-v1/*.bin`. Corrupt
+payloads are checksum-checked and rebuilt when read. With the switch Off,
+unsupported BC textures use RGBA8 for the control comparison. With it On,
+textures outside the manifest may still encode at first encounter; encoder or
+format failures use RGBA8. 3D BC textures use RGBA8 in this experiment.
 
 The append-only `texture-preparation/observed-textures.jsonl` records the
 unique content key, source format, dimensions, mip count, input/output bytes,
 cache hit, preparation time, and result. It contains metadata, not texture
-pixels. Both JSON files are included in the app's diagnostic export. A single
+pixels. The observed log, source inventory and preparation summary are included
+in the app's diagnostic export. A single
 drive cannot find every texture; different locations, saves, mods, and title
 updates can produce different observed lists. Base-game source files should be
 similar for an identical installation, but each app installation prepares its
 own derived cache.
 
-Turning the switch On forces ASTC conversion even if the GPU supports BC, so
-it can be compared on a modern iPad. A production variant should gate this on
-actual GPU format capabilities and decide whether on-device encoding time is
-acceptable. The first encounter may pause rendering while compression runs;
-subsequent encounters should be faster. This must be measured on device before
-merging or promising a first-run duration.
+Turning the switch On forces preparation even if the GPU supports BC, for
+comparison on modern hardware. Production should retain actual capability
+gating. Unprepared first encounters can pause rendering while compression
+runs. A successful source scan is not proof that every runtime texture is
+covered or that other frame-time stalls have been fixed. Device acceptance
+and first-run duration still need measurement before merging.
 
 ## Older-device rendering path
 
@@ -87,16 +109,27 @@ runtime flags used by the ordinary app, plus:
 
 Use the user's signing team for an installable device build. Install only the
 ASTC bundle ID. Copy the user's legally supplied game and a disposable test
-save into this app's separate container. On the first run, note source-scan
-counts, drive a repeatable route, export diagnostics, relaunch, and drive the
-same route. Compare missing textures, visible quality, conversion stalls,
-cache-hit count, disk use, and frame pacing with the ordinary app. Visit a new
-area to exercise cache misses. Do not interpret a source-container scan or a
-successful build as device gameplay acceptance.
+save into this app's separate container. Complete preparation, verify
+pause/relaunch reuse and the completion marker, then drive a repeatable route,
+export diagnostics, relaunch and drive the same route. Compare missing
+textures, visible quality, conversion stalls, cache-hit count, disk use and
+frame pacing. Visit a new area to exercise any remaining misses. The test-only
+`--theft4-prepare-textures` launch argument starts preparation without Play.
 
 `tests/ios/theft4_astc_texture_test.cpp` checks BC1/BC2/BC3 decoding, ASTC
-output, cache reuse, corruption recovery, and observed-list creation with
-synthetic blocks. The encoder is Arm's `astc-encoder` 5.3.0 (Apache-2.0),
+output, cache reuse, corruption recovery, persisted budgets, cache deletion
+recovery and observed-list creation with synthetic blocks.
+`tests/ios/theft4_texture_manifest_test.cpp` validates resource/archive bounds,
+synthetic LZX decoding, exact cache identities, deduplication, cancellation,
+source changes and manifest path containment. The host-only scan/test tool is
+documented in `tools/texture-preparation/README.md`.
+On 2026-10-02, both host test binaries passed, all 49,867 unique textures
+passed a second manifest-key reconstruction check, the iOS Release compiler
+check passed, and the updated test app installed on the A12Z iPad. Its
+on-device indexing screen was visually checked with live progress and a Pause
+button. Full on-device preparation, resume acceptance and gameplay comparison
+remain pending until that run finishes.
+The encoder is Arm's `astc-encoder` 5.3.0 (Apache-2.0),
 vendored under `thirdparty/astc-encoder` with its license bundled in the app.
 
 ## References for import-time preparation
@@ -105,9 +138,8 @@ The [Xbox 360 GTA IV setup guide](https://github.com/luisxl15/GTA-IV-RECOMP-XBOX
 documents the extracted `game/`, `xbox360/`, `common/`, and title-update layout.
 The [RAGE Console Texture Editor source](https://github.com/indirivacua/RAGE-Console-Texture-Editor)
 includes `GTAIV.TextureResource.Xbox360.pas` for Xbox 360 texture dictionaries.
-This repository also has a prototype `tools/xtd_tools/xtd_cli.c` for listing
-textures from a loose XTD. These are format and parser references, not a
-complete texture-to-archive manifest for a given game installation. The local
-source inventory is authoritative for the installed copy; pre-conversion still
-needs to map observed content keys to archive entries or load the assets through
-the game's existing asset path before Play.
+The [GTA IV Modding Toolkit IMG3 parser](https://github.com/Heidric/GTAIVModdingToolkit/blob/main/core/img3.py)
+documents IMG entry offsets, sectors, padding and encrypted-table handling.
+These are format references; the manifest generated from each installed copy
+is the preparation input. It contains paths and metadata, not game pixels or
+an embedded AES key.

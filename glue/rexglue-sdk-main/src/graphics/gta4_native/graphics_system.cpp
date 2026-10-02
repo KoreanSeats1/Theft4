@@ -517,7 +517,9 @@ constexpr size_t CrossPhaseScopeReuses = 243, UnusedBankBindings = 244;
 constexpr size_t UnusedBankLogicalBytes = 245, ProjectionReuses = 246;
 constexpr size_t HardwareSmaaEnabled = 247, SmaaHardwareRequests = 248;
 constexpr size_t SmaaHardwareFrames = 249, SmaaHardwareFallbacks = 250;
-static_assert(SmaaHardwareFallbacks + 1 == REX_LIGHT_FIELDS);
+constexpr size_t FrameResourceSharing = 251, OwnerPagesCreated = 252, OwnerCellsCreated = 253;
+constexpr size_t ConstantCapturesRecycled = 254, ConstantCaptureReuses = 255, NativeRecordBytes = 256;
+static_assert(NativeRecordBytes + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -710,7 +712,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total,graphics_preparation_enabled,fused_smaa_enabled,smaa_fusion_requests,smaa_fusion_frames,smaa_fusion_fallbacks,static_pipeline_requests,static_pipeline_hits,cross_phase_scope_reuses,unused_bank_bindings_frame,unused_bank_logical_bytes_frame,projection_reuses_frame,hardware_smaa_enabled,smaa_hardware_requests,smaa_hardware_frames,smaa_hardware_fallbacks";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total,graphics_preparation_enabled,fused_smaa_enabled,smaa_fusion_requests,smaa_fusion_frames,smaa_fusion_fallbacks,static_pipeline_requests,static_pipeline_hits,cross_phase_scope_reuses,unused_bank_bindings_frame,unused_bank_logical_bytes_frame,projection_reuses_frame,hardware_smaa_enabled,smaa_hardware_requests,smaa_hardware_frames,smaa_hardware_fallbacks,frame_resource_sharing_enabled,owner_pages_created_total,owner_cells_created_total,constant_captures_recycled_total,constant_capture_reuses_total,native_record_bytes";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -4770,6 +4772,9 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
     if (title_header.type == CommandType::kPresent) {
       ++queued_title_presents_;
       ++diagnostic_producer_epoch_;
+#ifdef THEFT4_LAB_BUILD
+      producer_owner_page_.reset();
+#endif
     }
   }
   if (wake_worker) render_condition_.notify_one();
@@ -4881,6 +4886,9 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
   }
   render_condition_.notify_one();
 
+#ifdef THEFT4_LAB_BUILD
+  producer_owner_page_.reset();
+#endif
   std::unique_lock completion_lock(synchronous->mutex);
   synchronous->condition.wait(completion_lock, [&synchronous]() { return synchronous->complete; });
   std::memcpy(result, &synchronous->result, sizeof(synchronous->result));
@@ -5428,6 +5436,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     bool direct_dirty = false;
     bool direct_fetch_match = false;
     const char* selection = "none";
+    std::shared_ptr<const NativeTextureResource> selected_source;
     {
       std::lock_guard lock(texture_resource_mutex_);
       auto direct = texture_resources_.find(present.frontbuffer_texture);
@@ -5436,22 +5445,22 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       direct_fetch_match = direct_resource && fetch_matches(*direct_resource);
       if (direct_resource && !direct_dirty &&
           (direct_resource->gpu_produced || direct_fetch_match)) {
-        native_command.present_source = std::move(direct_resource);
+        selected_source = direct_resource;
         selection = "direct";
       } else {
         for (const auto& [handle, resource] : texture_resources_) {
           (void)handle;
           if (resource && fetch_matches(*resource) &&
-              (!native_command.present_source ||
-               resource->generation > native_command.present_source->generation)) {
-            native_command.present_source = resource;
+              (!selected_source || resource->generation > selected_source->generation)) {
+            selected_source = resource;
           }
         }
-        if (native_command.present_source) {
+        if (selected_source) {
           selection = "fetch-fallback";
         }
       }
     }
+    CaptureRecordResource(native_command, native_command.present_source, selected_source);
     if (ShouldLogDiagnosticFrame(present.submitted_frame)) {
       std::fprintf(
           stderr,
@@ -5492,8 +5501,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     }
   }
   if (header.type == CommandType::kResolve) {
-    native_command.resolve_destination =
-        CreateResolvedTextureResource(*static_cast<const ResolveCommand*>(command));
+    CaptureRecordResource(native_command, native_command.resolve_destination, CreateResolvedTextureResource(*static_cast<const ResolveCommand*>(command)));
     if (!native_command.resolve_destination) {
       return reject(header.type, "resolve-destination-resource");
     }
@@ -5505,7 +5513,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     if (source == texture_resources_.end() || !source->second || !source->second->gpu_produced) {
       return reject(header.type, "depth-handoff-source-texture");
     }
-    native_command.depth_handoff_source = source->second;
+    CaptureRecordResource(native_command, native_command.depth_handoff_source, source->second);
   }
 
   const bool draw_command = header.type == CommandType::kDrawPrimitive ||
@@ -5564,6 +5572,11 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     native_command.device_snapshot.storage = std::move(snapshot);
 
     if (draw_command || header.type == CommandType::kClear) {
+#ifdef THEFT4_LAB_BUILD
+      native_command.constant_capture = constant_capture_recycler_.Acquire();
+#else
+      native_command.constant_capture = std::make_unique<NativeConstantCapture>();
+#endif
       NativeDirtyWords dirty_words{};
       if (dirty_state) {
         dirty_words = dirty_state->words;
@@ -5602,18 +5615,18 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       const bool vertex_captured =
           full_semantic_capture
               ? CaptureCompleteConstantSnapshot(
-                    vertex_source, native_command.shader_constant_delta.vertex_constants)
+                    vertex_source, native_command.constant_capture->delta.vertex_constants)
               : CaptureConstantPayloadDelta(vertex_source, dirty_delta.vertex_constant_ranges,
                                             kNativeConstantGroupBytes,
-                                            native_command.shader_constant_delta.vertex_constants,
+                                            native_command.constant_capture->delta.vertex_constants,
                                             NativeCommandStreamEnabled());
       const bool pixel_captured =
           full_semantic_capture
               ? CaptureCompleteConstantSnapshot(
-                    pixel_source, native_command.shader_constant_delta.pixel_constants)
+                    pixel_source, native_command.constant_capture->delta.pixel_constants)
               : CaptureConstantPayloadDelta(pixel_source, dirty_delta.pixel_constant_ranges,
                                             kNativeConstantGroupBytes,
-                                            native_command.shader_constant_delta.pixel_constants,
+                                            native_command.constant_capture->delta.pixel_constants,
                                             NativeCommandStreamEnabled());
       if (light_semantic_capture) {
         native_command.captured_vertex_constants_hash =
@@ -5624,13 +5637,13 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       if (!vertex_captured || !pixel_captured) {
         return reject(header.type, "constant-delta-capture");
       }
-      native_command.shader_constant_delta.booleans_present =
+      native_command.constant_capture->delta.booleans_present =
           full_semantic_capture || dirty_delta.boolean_constant_mask.Any();
-      if (native_command.shader_constant_delta.booleans_present) {
-        native_command.shader_constant_delta.booleans = {LoadGuestWord(device_state, 0x2780),
+      if (native_command.constant_capture->delta.booleans_present) {
+        native_command.constant_capture->delta.booleans = {LoadGuestWord(device_state, 0x2780),
                                                          LoadGuestWord(device_state, 0x2790)};
       }
-      native_command.shader_constant_delta.compare_snapshot = compare_transport;
+      native_command.constant_capture->delta.compare_snapshot = compare_transport;
       native_command.dirty_components = dirty_delta.TouchedComponents();
       if (dirty_words[3]) {
         native_command.dirty_components |=
@@ -5697,13 +5710,13 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       const uint32_t handle =
           LoadGuestWord(device_state, kStreamBufferBase + stream * sizeof(uint32_t));
       if (handle) {
-        native_command.vertex_buffers[stream] = CaptureBufferResource(handle);
+        CaptureRecordResource(native_command, native_command.vertex_buffers[stream], CaptureBufferResource(handle));
       }
     }
     if (header.type == CommandType::kDrawIndexedPrimitive) {
       const uint32_t handle = LoadGuestWord(device_state, kIndexBufferOffset);
       if (handle) {
-        native_command.index_buffer = CaptureBufferResource(handle);
+        CaptureRecordResource(native_command, native_command.index_buffer, CaptureBufferResource(handle));
       }
       CaptureBulbSource(native_command, device_state);
     }
@@ -5756,7 +5769,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       const uint32_t handle =
           LoadGuestWord(device_state, kTextureHandleBase + stage * sizeof(uint32_t));
       if (handle) {
-        native_command.textures[stage] = CaptureTextureResource(handle, fetch, stage);
+        CaptureRecordResource(native_command, native_command.textures[stage], CaptureTextureResource(handle, fetch, stage));
       }
     };
     if (REXCVAR_GET(gta4_native_sparse_texture_walks)) {
@@ -6943,6 +6956,11 @@ void Gta4NativeGraphicsSystem::StartRenderWorker() {
 #ifdef THEFT4_LAB_BUILD
   current_frame_.SetOwned(NativeCommandStreamEnabled());
   command_recycler_.InitializePayloadReuse(NativeCommandStreamEnabled());
+  constant_capture_recycler_.InitializePayloadReuse(true);
+  REXLOG_INFO("gta4-native-frame-owners: sharing={} record-bytes={} reference-bytes={} "
+              "owner-page-cell-limit=8192 capture-recycler-slots=512",
+              FrameResourceSharingEnabled(), sizeof(NativeCommand),
+              sizeof(NativeCommandResourceRef<const NativeTextureResource>));
   cpu_cleanup_.Initialize(NativeCommandStreamEnabled() && NativeCpuCleanupRequested(),
                           constant_preparation_task_.available_cpus());
   REXLOG_INFO("gta4-native-stream: owned-commands={} producer-packets={} cpu-cleanup={} "
@@ -7814,13 +7832,13 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
             transport.worker_constant_ticks += profile::CpuTick() - constant_begin;
           SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
           const uint64_t snapshot_begin = assembly_begin ? profile::CpuTick() : 0;
-          command.pipeline_state = SnapshotPipeline(command, true);
+          CaptureRecordResource(command, command.pipeline_state, SnapshotPipeline(command, true), true);
           if (snapshot_begin)
             transport.worker_snapshot_ticks += profile::CpuTick() - snapshot_begin;
         } else {
           SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kStateSnapshot);
           const uint64_t snapshot_begin = assembly_begin ? profile::CpuTick() : 0;
-          command.pipeline_state = SnapshotPipeline(command, false);
+          CaptureRecordResource(command, command.pipeline_state, SnapshotPipeline(command, false), true);
           if (snapshot_begin)
             transport.worker_snapshot_ticks += profile::CpuTick() - snapshot_begin;
         }
@@ -7874,6 +7892,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   worker_batch_texture_protection_.Reset();
 #ifdef THEFT4_LAB_BUILD
   command_recycler_.FlushWorker();
+  constant_capture_recycler_.FlushWorker();
   state_command_recycler_.FlushWorker();
   worker_batch_deferred_queue_protection_.Reset();
 #endif
@@ -7881,6 +7900,18 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   cpu_cleanup_.Wait(); // all CPU destructors finish before GPU/cache/pool teardown
 #endif
   DestroyVulkanWorkerObjects();
+}
+
+bool Gta4NativeGraphicsSystem::FrameResourceSharingEnabled() const {
+#ifdef THEFT4_LAB_BUILD
+  static const bool enabled = [] {
+    const char* value = std::getenv("THEFT4_FRAME_RESOURCE_SHARING");
+    return !value || std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
+#else
+  return false;
+#endif
 }
 
 std::shared_ptr<const Gta4NativeGraphicsSystem::NativePipelineState>
@@ -8065,6 +8096,7 @@ void Gta4NativeGraphicsSystem::ApplyStateCommand(CommandType type, const void* b
 }
 
 bool Gta4NativeGraphicsSystem::ApplyShaderConstantDelta(NativeCommand& command, uint32_t device) {
+  if (!command.constant_capture) return false; // a capture is applied exactly once
   auto [device_entry, inserted] =
       device_constant_states_.try_emplace(device, kVertexConstantsSize, kPixelConstantsSize);
   (void)inserted;
@@ -8087,30 +8119,30 @@ bool Gta4NativeGraphicsSystem::ApplyShaderConstantDelta(NativeCommand& command, 
   const auto content_hash = [](std::span<const uint8_t> bytes) {
     return XXH3_64bits(bytes.data(), bytes.size());
   };
-  if (!ValidateConstantPayloadDelta(command.shader_constant_delta.vertex_constants,
+  if (!ValidateConstantPayloadDelta(command.constant_capture->delta.vertex_constants,
                                     state.vertex_constants.byte_size()) ||
-      !ValidateConstantPayloadDelta(command.shader_constant_delta.pixel_constants,
+      !ValidateConstantPayloadDelta(command.constant_capture->delta.pixel_constants,
                                     state.pixel_constants.byte_size()) ||
       (!state.vertex_constants.initialized() &&
-       !command.shader_constant_delta.vertex_constants.complete_snapshot) ||
+       !command.constant_capture->delta.vertex_constants.complete_snapshot) ||
       (!state.pixel_constants.initialized() &&
-       !command.shader_constant_delta.pixel_constants.complete_snapshot) ||
-      (!command.shader_constant_delta.booleans_present && !state.booleans.initialized())) {
+       !command.constant_capture->delta.pixel_constants.complete_snapshot) ||
+      (!command.constant_capture->delta.booleans_present && !state.booleans.initialized())) {
     return false;
   }
   ConstantApplyResult vertex_result =
-      state.vertex_constants.Apply(command.shader_constant_delta.vertex_constants, content_hash);
+      state.vertex_constants.Apply(command.constant_capture->delta.vertex_constants, content_hash);
   ConstantApplyResult pixel_result =
-      state.pixel_constants.Apply(command.shader_constant_delta.pixel_constants, content_hash);
+      state.pixel_constants.Apply(command.constant_capture->delta.pixel_constants, content_hash);
   AuthoritativeScalarState<std::array<uint32_t, 2>>::ApplyResult boolean_result{};
-  if (command.shader_constant_delta.booleans_present) {
-    boolean_result = state.booleans.Apply(command.shader_constant_delta.booleans);
+  if (command.constant_capture->delta.booleans_present) {
+    boolean_result = state.booleans.Apply(command.constant_capture->delta.booleans);
   }
   if (!vertex_result || !pixel_result || boolean_result.status != ConstantApplyStatus::kApplied) {
     return false;
   }
 
-  if (command.shader_constant_delta.compare_snapshot) {
+  if (command.constant_capture->delta.compare_snapshot) {
     if (command.device_snapshot.size() < kGuestDeviceSize) {
       return false;
     }
@@ -8233,10 +8265,10 @@ bool Gta4NativeGraphicsSystem::ApplyShaderConstantDelta(NativeCommand& command, 
          command.captured_vertex_constants_hash != command.vertex_constants_hash) ||
         (command.captured_pixel_constants_hash &&
          command.captured_pixel_constants_hash != command.pixel_constants_hash) ||
-        (command.shader_constant_delta.vertex_constants.complete_snapshot &&
-         command.shader_constant_delta.pixel_constants.complete_snapshot &&
-         command.shader_constant_delta.booleans_present &&
-         state.booleans.value() != command.shader_constant_delta.booleans)) {
+        (command.constant_capture->delta.vertex_constants.complete_snapshot &&
+         command.constant_capture->delta.pixel_constants.complete_snapshot &&
+         command.constant_capture->delta.booleans_present &&
+         state.booleans.value() != command.constant_capture->delta.booleans)) {
       REXLOG_ERROR(
           "gta4-native-light-state: point=constant-snapshot-mismatch device={:08X} "
           "type={} context={:08X} captured={:016X}/{:016X} applied={:016X}/{:016X} "
@@ -8244,13 +8276,19 @@ bool Gta4NativeGraphicsSystem::ApplyShaderConstantDelta(NativeCommand& command, 
           device, CommandTypeName(command.type), command.light_trace_id,
           command.captured_vertex_constants_hash, command.captured_pixel_constants_hash,
           command.vertex_constants_hash, command.pixel_constants_hash,
-          command.shader_constant_delta.booleans[0],
-          command.shader_constant_delta.booleans[1], state.booleans.value()[0],
+          command.constant_capture->delta.booleans[0],
+          command.constant_capture->delta.booleans[1], state.booleans.value()[0],
           state.booleans.value()[1]);
       return false;
     }
-    command.shader_state = std::move(shader_state);
+    CaptureRecordResource(command, command.shader_state, shader_state, true);
   }
+#ifdef THEFT4_LAB_BUILD
+  if (FrameResourceSharingEnabled() && command.constant_capture) {
+    constant_capture_recycler_.Recycle(command.constant_capture.Take());
+    ++constant_captures_recycled_;
+  }
+#endif
   return true;
 }
 
@@ -9270,7 +9308,7 @@ void Gta4NativeGraphicsSystem::DestroyNativePersistentBuffers() {
 }
 
 bool Gta4NativeGraphicsSystem::GetOrCreatePersistentBuffer(
-    VkCommandBuffer command_buffer, const std::shared_ptr<const NativeBufferResource>& owner,
+    VkCommandBuffer command_buffer, const NativeBufferResource* owner,
     const NativePersistentBufferKey& key, const uint8_t* source, VkDeviceSize size,
     NativeUploadKind upload_kind, NativeUploadAllocation& allocation) {
   const profile::CpuScope profile_scope(profile::CpuOp::kPersistentBuffer);
@@ -17827,7 +17865,7 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
 }
 
 Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCreateTextureImage(
-    VkCommandBuffer command_buffer, const std::shared_ptr<const NativeTextureResource>& texture) {
+    VkCommandBuffer command_buffer, NativeResourceView<NativeTextureResource> texture) {
   const profile::CpuScope profile_scope(profile::CpuOp::kTextureLookup);
 
   auto reject = [&texture](const char* reason) -> NativeTextureImage* {
@@ -17899,7 +17937,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   }
 
   auto image = std::make_unique<NativeTextureImage>();
-  image->source = texture;
+  image->source = texture.Share();
   image->format = format;
   image->logical_width = texture->info.width + 1;
   image->logical_height = texture->info.height + 1;
@@ -19590,6 +19628,9 @@ void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {
   current_frame_.clear();
 #endif
   frame_texture_protection_.clear();
+#ifdef THEFT4_LAB_BUILD
+  worker_owner_page_.reset();
+#endif
 }
 
 
@@ -21974,7 +22015,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
 }
 
 bool Gta4NativeGraphicsSystem::UploadBufferResource(
-    const std::shared_ptr<const NativeBufferResource>& resource, VkCommandBuffer command_buffer,
+    const NativeBufferResource* resource, VkCommandBuffer command_buffer,
     bool index_buffer, bool index32, const NativePipelineState* vertex_state,
     uint32_t vertex_stream, NativeFrameResources& resources, NativeUploadAllocation& allocation) {
   const profile::CpuScope profile_scope(profile::CpuOp::kBufferUpload);
@@ -23458,7 +23499,7 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
       return fail("vertex-stream-bounds");
     }
     NativeUploadAllocation stream_allocation;
-    if (!UploadBufferResource(resource, command_buffer, false, false, command.pipeline_state.get(),
+    if (!UploadBufferResource(resource.get(), command_buffer, false, false, command.pipeline_state.get(),
                               stream, resources, stream_allocation)) {
       return fail("vertex-stream-upload");
     }
@@ -23592,7 +23633,7 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
       return fail("vertex-stream-resource");
     }
     NativeUploadAllocation stream_allocation;
-    if (!UploadBufferResource(resource, command_buffer, false, false, command.pipeline_state.get(),
+    if (!UploadBufferResource(resource.get(), command_buffer, false, false, command.pipeline_state.get(),
                               stream, resources, stream_allocation)) {
       return fail("vertex-stream-upload");
     }
@@ -23613,7 +23654,7 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
     return fail("index-bounds");
   }
   NativeUploadAllocation index_allocation;
-  if (!UploadBufferResource(command.index_buffer, command_buffer, true, index32, nullptr, 0,
+  if (!UploadBufferResource(command.index_buffer.get(), command_buffer, true, index32, nullptr, 0,
                             resources, index_allocation)) {
     return fail("index-upload");
   }
@@ -35361,6 +35402,14 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::UnusedBankLogicalBytes] = constant_arena.unused_bank_bytes_avoided;
     values[light::ProjectionReuses] = constant_arena.projection_reuses;
     values[light::HardwareSmaaEnabled] = NativeHardwareSmaaEnabled();
+    values[light::FrameResourceSharing] = FrameResourceSharingEnabled();
+    values[light::NativeRecordBytes] = sizeof(NativeCommand);
+#ifdef THEFT4_LAB_BUILD
+    values[light::OwnerPagesCreated] = owner_pages_created_.load(std::memory_order_relaxed);
+    values[light::OwnerCellsCreated] = owner_cells_created_.load(std::memory_order_relaxed);
+    values[light::ConstantCapturesRecycled] = constant_captures_recycled_;
+    values[light::ConstantCaptureReuses] = constant_capture_recycler_.RetainedAcquires();
+#endif
     values[light::SmaaHardwareRequests] = native_smaa_hardware_requests_;
     values[light::SmaaHardwareFrames] = native_smaa_hardware_frames_;
     values[light::SmaaHardwareFallbacks] = native_smaa_hardware_fallbacks_;
@@ -36842,7 +36891,11 @@ void Gta4NativeGraphicsSystem::Shutdown() {
   FinishParallelGuestConstants();
 #ifdef THEFT4_LAB_BUILD
   cpu_cleanup_.Wait();
-  { std::lock_guard capture_lock(command_capture_mutex_); producer_pending_state_.reset(); }
+  {
+    std::lock_guard capture_lock(command_capture_mutex_);
+    producer_pending_state_.reset();
+    producer_owner_page_.reset();
+  }
 #endif
   prepared_guest_constants_.clear();
   prepared_guest_constants_ready_ = false;

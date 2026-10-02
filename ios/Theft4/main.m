@@ -216,6 +216,7 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_graphicsPreparation;
     UISwitch *_fusedSmaa;
     UISwitch *_hardwareSmaa;
+    UISwitch *_frameResourceSharing;
     UISwitch *_parallelTextureConversion;
     UISwitch *_memoryRecovery;
     UISwitch *_commandStream;
@@ -392,6 +393,7 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4GraphicsPreparation": @YES,
         @"Theft4FusedSmaa": @YES,
         @"Theft4HardwareSmaa": @YES,
+        @"Theft4FrameResourceSharing": @YES,
         @"Theft4ParallelTextureConversion": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
     }];
@@ -466,6 +468,9 @@ static void bootEvent(void *context, const char *event) {
     _fusedSmaa = _bringupOverlay.fusedSmaa;
     _fusedSmaa.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FusedSmaa"];
     [_fusedSmaa addTarget:self action:@selector(fusedSmaaChanged:) forControlEvents:UIControlEventValueChanged];
+    _frameResourceSharing = _bringupOverlay.frameResourceSharing;
+    _frameResourceSharing.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FrameResourceSharing"];
+    [_frameResourceSharing addTarget:self action:@selector(frameResourceSharingChanged:) forControlEvents:UIControlEventValueChanged];
     _hardwareSmaa = _bringupOverlay.hardwareSmaa;
     _hardwareSmaa.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4HardwareSmaa"];
     [_hardwareSmaa addTarget:self action:@selector(hardwareSmaaChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1150,6 +1155,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 - (void)fusedSmaaChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4FusedSmaa"];
+}
+- (void)frameResourceSharingChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4FrameResourceSharing"];
 }
 - (void)hardwareSmaaChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4HardwareSmaa"];
@@ -2037,6 +2045,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         setenv("THEFT4_GRAPHICS_PREPARATION", _graphicsPreparation.on ? "1" : "0", 1);
         setenv("THEFT4_FUSED_SMAA", _fusedSmaa.on ? "1" : "0", 1);
         setenv("THEFT4_HARDWARE_SMAA", _hardwareSmaa.on ? "1" : "0", 1);
+        setenv("THEFT4_FRAME_RESOURCE_SHARING", _frameResourceSharing.on ? "1" : "0", 1);
         setenv("THEFT4_FRAME_ASSEMBLY", _frameAssembly.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_TEXTURE_CONVERSION", _parallelTextureConversion.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_PREPARATION", _parallelPreparation.on ? "1" : "0", 1);

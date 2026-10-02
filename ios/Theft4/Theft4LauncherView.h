@@ -37,6 +37,7 @@
 @property(nonatomic, readonly) UISwitch *graphicsPreparation;
 @property(nonatomic, readonly) UISwitch *fusedSmaa;
 @property(nonatomic, readonly) UISwitch *hardwareSmaa;
+@property(nonatomic, readonly) UISwitch *frameResourceSharing;
 @property(nonatomic, readonly) UISwitch *parallelTextureConversion;
 @property(nonatomic, readonly) UISwitch *memoryRecovery;
 @property(nonatomic, readonly) UISwitch *commandStream;

@@ -8,6 +8,7 @@
 #include <rex/ui/vulkan/api.h>
 
 #include "postfx_resource_pool.h"
+#include "present_constants.h"
 #include "native_gpu_timing.h"
 
 namespace rex::ui::vulkan {
@@ -61,11 +62,21 @@ class SmaaPipeline {
     uint32_t staging_buffers = 0;
   };
 
+  struct Presentation {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    PostFxExtent extent{};
+    NativePresentConstants constants{};
+  };
+  // The borrowed destination must already be in COLOR_ATTACHMENT_OPTIMAL.
+  // A false return records no commands, so the caller may use the old chain.
   bool Record(VkCommandBuffer command_buffer, const ui::vulkan::VulkanDevice* device,
               VkDescriptorPool frame_descriptor_pool, VkPipelineCache pipeline_cache,
               VkImage source_image, VkImageView source_view, VkImageLayout& source_layout,
               PostFxExtent extent, SmaaQuality quality, Output& output,
-              const NativeGpuTimingSink* timing = nullptr);
+              const NativeGpuTimingSink* timing = nullptr,
+              const Presentation* presentation = nullptr);
   bool RequiresExtentResourceRecreation(PostFxExtent extent) const;
   void Destroy(const ui::vulkan::VulkanDevice* device);
   MemoryUsage QueryMemoryUsage() const;
@@ -80,7 +91,10 @@ class SmaaPipeline {
 
   bool EnsureStaticResources(const ui::vulkan::VulkanDevice* device,
                              VkPipelineCache pipeline_cache);
-  bool EnsureExtentResources(const ui::vulkan::VulkanDevice* device, PostFxExtent extent);
+  bool EnsurePresentationResources(const ui::vulkan::VulkanDevice* device,
+                                   VkPipelineCache cache, VkFormat format);
+  bool EnsureExtentResources(const ui::vulkan::VulkanDevice* device, PostFxExtent extent,
+                             bool needs_output);
   bool RecordLookupUpload(VkCommandBuffer command_buffer,
                           const ui::vulkan::VulkanDevice* device);
   void DestroyExtentResources(const ui::vulkan::VulkanDevice* device);
@@ -101,6 +115,9 @@ class SmaaPipeline {
   std::array<VkPipeline, size_t(SmaaQuality::kCount)> edge_pipelines_{};
   std::array<VkPipeline, size_t(SmaaQuality::kCount)> weight_pipelines_{};
   VkPipeline neighborhood_pipeline_ = VK_NULL_HANDLE;
+  VkPipeline presentation_pipeline_ = VK_NULL_HANDLE;
+  VkPipelineLayout presentation_layout_ = VK_NULL_HANDLE;
+  VkFormat presentation_format_ = VK_FORMAT_UNDEFINED;
 };
 
 }  // namespace rex::graphics::gta4_native

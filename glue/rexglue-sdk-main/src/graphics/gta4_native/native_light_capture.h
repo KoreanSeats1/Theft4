@@ -30,7 +30,7 @@ extern "C" {
 // Fields218-221: sampled post-Present command clearing, draws, logical
 // setters and batch acquisitions. Sample count advances after clearing;
 // consume the following publication row to include that completed sample.
-enum { REX_LIGHT_FIELDS = 236 };
+enum { REX_LIGHT_FIELDS = 247 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

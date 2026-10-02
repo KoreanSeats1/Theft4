@@ -332,6 +332,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+    _graphicsPreparation = [UISwitch new];
+    _graphicsPreparation.onTintColor = Ink(0xB6884D);
+    _graphicsPreparation.accessibilityIdentifier = @"settings.graphicsPreparation";
+    _fusedSmaa = [UISwitch new];
+    _fusedSmaa.onTintColor = Ink(0xB6884D);
+    _fusedSmaa.accessibilityIdentifier = @"settings.fusedSmaa";
     _frameAssembly = [UISwitch new];
     _frameAssembly.onTintColor = Ink(0xB6884D);
     _frameAssembly.accessibilityIdentifier = @"settings.frameAssembly";
@@ -378,6 +384,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"RENDERER EFFICIENCY" detail:@"Reduce repeated draw setup and resource preparation. Turn off to compare. Fully close and reopen Theft4 after changing." toggle:_rendererEfficiency],
         [self setting:@"PARALLEL RENDER PREPARATION" detail:@"Prepare shader data alongside textures when CPU capacity allows. Turn off to compare. Fully close and reopen after changing." toggle:_parallelPreparation],
+        [self setting:@"GRAPHICS PREPARATION" detail:@"Reduce repeated shader and pipeline setup. Fully close and reopen after changing." toggle:_graphicsPreparation],
+        [self setting:@"FUSED SMAA PRESENTATION" detail:@"Combine the final SMAA blend with display output when compatible. Fully close and reopen after changing." toggle:_fusedSmaa],
         [self setting:@"FRAME ASSEMBLY REUSE" detail:@"Reuse repeated draw setup and prepare new index data earlier. Fully close and reopen after changing." toggle:_frameAssembly],
         [self setting:@"COMMAND STREAM OPTIMIZATION" detail:@"Reduce repeated draw setup and state transfers. Fully close and reopen after changing." toggle:_commandStream],
         [self setting:@"BACKGROUND CPU CLEANUP" detail:@"Use available CPU capacity to release completed draw data. Requires Command Stream Optimization. Fully close and reopen after changing." toggle:_cpuCleanup],

@@ -213,6 +213,8 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_rendererEfficiency;
     UISwitch *_parallelPreparation;
     UISwitch *_frameAssembly;
+    UISwitch *_graphicsPreparation;
+    UISwitch *_fusedSmaa;
     UISwitch *_parallelTextureConversion;
     UISwitch *_memoryRecovery;
     UISwitch *_commandStream;
@@ -386,6 +388,8 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4CommandStream": @YES,
         @"Theft4CpuCleanup": @YES,
         @"Theft4FrameAssembly": @YES,
+        @"Theft4GraphicsPreparation": @YES,
+        @"Theft4FusedSmaa": @YES,
         @"Theft4ParallelTextureConversion": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
     }];
@@ -454,6 +458,12 @@ static void bootEvent(void *context, const char *event) {
     _reflectionQuality = _bringupOverlay.reflectionQuality;
     _antiAliasing = _bringupOverlay.antiAliasing;
     _performanceCapture = _bringupOverlay.performanceCapture;
+    _graphicsPreparation = _bringupOverlay.graphicsPreparation;
+    _graphicsPreparation.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4GraphicsPreparation"];
+    [_graphicsPreparation addTarget:self action:@selector(graphicsPreparationChanged:) forControlEvents:UIControlEventValueChanged];
+    _fusedSmaa = _bringupOverlay.fusedSmaa;
+    _fusedSmaa.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FusedSmaa"];
+    [_fusedSmaa addTarget:self action:@selector(fusedSmaaChanged:) forControlEvents:UIControlEventValueChanged];
     _frameAssembly = _bringupOverlay.frameAssembly;
     _frameAssembly.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4FrameAssembly"];
     [_frameAssembly addTarget:self action:@selector(frameAssemblyChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1130,6 +1140,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4MemoryRecovery"];
 }
 
+- (void)graphicsPreparationChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4GraphicsPreparation"];
+}
+- (void)fusedSmaaChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4FusedSmaa"];
+}
 - (void)frameAssemblyChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4FrameAssembly"];
 }
@@ -2007,6 +2023,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         setenv("THEFT4_COMMAND_STREAM", _commandStream.on ? "1" : "0", 1);
         setenv("THEFT4_CPU_CLEANUP", _cpuCleanup.on ? "1" : "0", 1);
         setenv("THEFT4_MEMORY_RECOVERY", _memoryRecovery.on ? "1" : "0", 1);
+        setenv("THEFT4_GRAPHICS_PREPARATION", _graphicsPreparation.on ? "1" : "0", 1);
+        setenv("THEFT4_FUSED_SMAA", _fusedSmaa.on ? "1" : "0", 1);
         setenv("THEFT4_FRAME_ASSEMBLY", _frameAssembly.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_TEXTURE_CONVERSION", _parallelTextureConversion.on ? "1" : "0", 1);
         setenv("THEFT4_PARALLEL_PREPARATION", _parallelPreparation.on ? "1" : "0", 1);

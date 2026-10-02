@@ -510,7 +510,12 @@ constexpr size_t CleanupRetainedMetadata = 232;
 constexpr size_t CleanupHighWaterMetadata = 233;
 constexpr size_t CleanupBusyFallbacks = 234;
 constexpr size_t CleanupBudgetFallbacks = 235;
-static_assert(CleanupBudgetFallbacks + 1 == REX_LIGHT_FIELDS);
+constexpr size_t GraphicsPreparationEnabled = 236, FusedSmaaEnabled = 237;
+constexpr size_t SmaaFusionRequests = 238, SmaaFusionFrames = 239, SmaaFusionFallbacks = 240;
+constexpr size_t StaticPipelineRequests = 241, StaticPipelineHits = 242;
+constexpr size_t CrossPhaseScopeReuses = 243, UnusedBankBindings = 244;
+constexpr size_t UnusedBankLogicalBytes = 245, ProjectionReuses = 246;
+static_assert(ProjectionReuses + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -703,7 +708,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total,graphics_preparation_enabled,fused_smaa_enabled,smaa_fusion_requests,smaa_fusion_frames,smaa_fusion_fallbacks,static_pipeline_requests,static_pipeline_hits,cross_phase_scope_reuses,unused_bank_bindings_frame,unused_bank_logical_bytes_frame,projection_reuses_frame";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -838,6 +843,21 @@ bool NativeRendererEfficiencyEnabled() {
 #else
   return false;
 #endif
+}
+
+bool NativeGraphicsPreparationEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("THEFT4_GRAPHICS_PREPARATION");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  return enabled;
+}
+bool NativeFusedSmaaEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("THEFT4_FUSED_SMAA");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  return enabled;
 }
 
 bool NativeFrameAssemblyEnabled() {
@@ -9398,7 +9418,10 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
                     command.shader_state->vertex_constants &&
                     command.shader_state->pixel_constants;
     }
-    if (draw_count <= arena.storage.capacity / worst_case_draw) {
+    const VkDeviceSize extra = NativeGraphicsPreparationEnabled() && draw_count
+        ? aligned(kVertexConstantsSize) : 0;
+    if (arena.storage.capacity >= extra &&
+        draw_count <= (arena.storage.capacity - extra) / worst_case_draw) {
       arena.storage.write_offset = 0;
       return arena.index.SetByteCapacity(size_t(arena.storage.capacity));
     }
@@ -9470,6 +9493,7 @@ bool Gta4NativeGraphicsSystem::EnsureFrameConstantArenaCapacity() {
     // bound; the slot semantic map usually collapses this substantially.
     add_allocation(sizeof(NativeSharedConstants));
   }
+  if (NativeGraphicsPreparationEnabled() && draw_count) add_allocation(kVertexConstantsSize);
   if (overflow) {
     REXLOG_ERROR(
         "gta4-native-constants: slot arena exceeds maxStorageBufferRange={} slot={} "
@@ -9668,6 +9692,10 @@ bool Gta4NativeGraphicsSystem::ResetFrameConstantArena(uint32_t slot, uint64_t c
   arena.has_last_shared_key = false;
   for (auto& bank : arena.projected_bindings)
     for (auto& entry : bank) entry = {};
+  arena.projected_stamps = {};
+  arena.projected_clock = 0;
+  arena.unused_allocation = {};
+  arena.unused_bank_bindings = arena.unused_bank_bytes_avoided = 0;
   arena.projection_reuses = 0;
   arena.projection_changed_version_reuses = 0;
   arena.projection_fallbacks = 0;
@@ -20865,8 +20893,25 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
       !REXCVAR_GET(gta4_validate_native_hot_caches) && context.lifetime &&
       state.vertex_shader_resource && state.vertex_declaration_resource;
   NativePipelineRequestKey request;
+  const auto* provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
+  const auto* device = provider ? provider->vulkan_device() : nullptr;
+  bool static_request = use_request_cache && NativeGraphicsPreparationEnabled() && device;
+  if (static_request) {
+    const auto& fixed = command.fixed_function_state;
+    const NativeStencilMaskRefSelection stencil = SelectNativeStencilMaskRef(
+        fixed.two_sided_stencil != 0, device->properties().separateStencilMaskRef, fixed.cull_mode,
+        {fixed.stencil_reference, fixed.stencil_mask, fixed.stencil_write_mask},
+        {fixed.back_stencil_reference, fixed.back_stencil_mask, fixed.back_stencil_write_mask});
+    static_request = (!fixed.stencil_enable || stencil.representable) &&
+        SelectNativeBlendConstants(fixed.blend_controls,
+            NativeBlendWriteMask(target.color_write_mask, target.color_formats), fixed.blend_constants,
+            !device->properties().portabilitySubset ||
+            device->properties().constantAlphaColorBlendFactors).representable;
+  }
   uint64_t selector = 0;
-  if (use_request_cache) {
+  const bool allow_receipt = use_request_cache &&
+      (!NativeGraphicsPreparationEnabled() || static_request);
+  if (allow_receipt) {
     ++assembly_pipeline_requests_;
     request.vertex_shader = state.vertex_shader_resource;
     request.pixel_shader = state.pixel_shader_resource;
@@ -20877,6 +20922,19 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
     for (size_t i = 0; i < request.strides.size(); ++i)
       request.strides[i] = state.vertex_streams[i].stride;
     request.fixed = command.fixed_function_state;
+    if (static_request) {
+      request.fixed.viewport_bits = {};
+      request.fixed.scissor = {};
+      request.fixed.scissor_enable = 0;
+      request.fixed.blend_constants = {};
+      request.fixed.alpha_reference = 0;
+      request.fixed.alpha_to_mask &= 0x100u;  // Keep the late-fragment coverage enable.
+      request.fixed.clip_plane_bits = {};
+      request.fixed.stencil_reference = request.fixed.stencil_mask = request.fixed.stencil_write_mask = 0;
+      request.fixed.back_stencil_reference = request.fixed.back_stencil_mask = request.fixed.back_stencil_write_mask = 0;
+      request.fixed.slope_scaled_depth_bias_bits = request.fixed.depth_bias_bits = 0;
+      ++native_static_pipeline_requests_;
+    }
     request.context = context;
     selector = uint64_t(reinterpret_cast<uintptr_t>(request.vertex_shader)) ^
         std::rotl(uint64_t(reinterpret_cast<uintptr_t>(request.pixel_shader)), 19) ^
@@ -20901,6 +20959,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
     selector ^= selector >> 33;
     if (const auto* cached = pipeline_request_cache_.Find(request, selector)) {
       ++assembly_pipeline_hits_;
+      if (static_request) ++native_static_pipeline_hits_;
       AddNativeGpuProfileCounter(performance::Counter::kPipelineRequestReuses);
       if (cached->required_streams) state.required_vertex_streams = cached->required_streams;
       state.pipeline_lookup_memo.Store(&state, command.fixed_function_state, context,
@@ -20912,7 +20971,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
   VkPipeline pipeline = GetOrCreatePipeline(state, command.fixed_function_state, primitive_type,
                                               target, user_pointer_stride,
                                               primitive_restart_enable, prewarm);
-  if (use_request_cache && pipeline)
+  if (allow_receipt && pipeline)
     pipeline_request_cache_.Store(request, selector, {pipeline, state.required_vertex_streams});
   state.pipeline_lookup_memo.Store(&state, command.fixed_function_state, context, pipeline);
   if (pipeline) state.pipeline_lookup_inherited = false;
@@ -22125,9 +22184,10 @@ bool Gta4NativeGraphicsSystem::PrepareGuestDrawConstants(
   const NativeShader* projection_vs = command.pipeline_state->vertex_shader_resource;
   const NativeShader* projection_ps = command.pipeline_state->pixel_shader_resource;
   NativeConstantUsage projection_usage;
-  if (projection_enabled && projection_vs && projection_ps) {
+  if (projection_enabled && projection_vs &&
+      (projection_ps || NativeGraphicsPreparationEnabled())) {
     projection_usage = projection_vs->constant_usage;
-    projection_usage.Merge(projection_ps->constant_usage);
+    if (projection_ps) projection_usage.Merge(projection_ps->constant_usage);
   }
   const auto bind_guest_constants = [&](NativeConstantBufferKind kind, const auto& version,
                                          NativeUploadAllocation& allocation,
@@ -22137,7 +22197,35 @@ bool Gta4NativeGraphicsSystem::PrepareGuestDrawConstants(
     auto& arena = frame_constant_arenas_[active_frame_slot_];
     auto& bindings = arena.immutable_bindings;
     const size_t bank = kind == NativeConstantBufferKind::kVertex ? 0 : 1;
-    const size_t memo_index = ((uintptr_t(projection_vs) >> 4) ^ (uintptr_t(projection_ps) >> 7)) % 64;
+    if (NativeGraphicsPreparationEnabled() && projection_usage.known &&
+        !REXCVAR_GET(gta4_validate_native_hot_caches) &&
+        std::all_of(projection_usage.banks[bank].begin(), projection_usage.banks[bank].end(),
+                    [](uint64_t mask) { return mask == 0; })) {
+      if (!arena.unused_allocation.device_address) {
+        static const std::array<uint8_t, kVertexConstantsSize> zero{};
+        if (!GetOrCreateFrameConstantBuffer(NativeConstantBufferKind::kUnused, 1, zero,
+                                           false, arena.unused_allocation)) return false;
+      }
+      allocation = arena.unused_allocation;
+      bytes = nullptr;
+      ++arena.unused_bank_bindings;
+      arena.unused_bank_bytes_avoided += required_size;
+      return true;
+    }
+    const size_t set = ((uintptr_t(projection_vs) >> 4) ^ (uintptr_t(projection_ps) >> 7)) % 64;
+    size_t memo_index = set;
+    if (NativeGraphicsPreparationEnabled() && projection_usage.known) {
+      memo_index = set * 4;
+      for (size_t way = 0; way < 4; ++way) {
+        const size_t index = set * 4 + way;
+        const auto& candidate = arena.projected_bindings[bank][index];
+        if (candidate.vertex == projection_vs && candidate.pixel == projection_ps &&
+            candidate.mask == projection_usage.banks[bank]) { memo_index = index; break; }
+        if (arena.projected_stamps[bank][index] < arena.projected_stamps[bank][memo_index])
+          memo_index = index;
+      }
+      arena.projected_stamps[bank][memo_index] = ++arena.projected_clock;
+    }
     auto& memo = arena.projected_bindings[bank][memo_index];
     if (projection_usage.known && memo.vertex == projection_vs && memo.pixel == projection_ps &&
         memo.mask == projection_usage.banks[bank] &&
@@ -27409,6 +27497,30 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
       use_high_precision_source ? high_precision_source->width : source.width;
   uint32_t shader_source_height =
       use_high_precision_source ? high_precision_source->height : source.height;
+  NativeHDRPresentConstants constants{};
+  constants.source_width = int32_t(shader_source_width);
+  constants.source_height = int32_t(shader_source_height);
+  constants.destination_width = int32_t(presenter_width);
+  constants.destination_height = int32_t(presenter_height);
+  constants.hdr_headroom = std::max(1.0f, hdr_headroom);
+  const auto configured_hdr_mode = rex::graphics::gta4_native::ParseHdrMode(
+      rex::cvar::GetFlagByName("gta4_native_hdr_mode"));
+  const auto effective_hdr_mode =
+      hdr_output ? configured_hdr_mode.value_or(rex::graphics::gta4_native::HdrMode::kScRgb)
+                 : rex::graphics::gta4_native::HdrMode::kOff;
+  constants.hdr_mode = uint32_t(effective_hdr_mode);
+  constants.paper_white_nits = static_cast<float>(
+      std::clamp(rex::cvar::Query<double>("gta4_native_hdr_paper_white_nits"), 80.0, 500.0));
+  constants.peak_nits = static_cast<float>(
+      std::clamp(rex::cvar::Query<double>("gta4_native_hdr_peak_nits"), 80.0, 2000.0));
+  constants.shoulder_start = static_cast<float>(
+      std::clamp(rex::cvar::Query<double>("gta4_native_auto_hdr_shoulder_start"), 0.0, 1.0));
+  constants.shoulder_power = static_cast<float>(
+      std::clamp(rex::cvar::Query<double>("gta4_native_auto_hdr_shoulder_power"), 1.0, 10.0));
+  const uint32_t aa_bits = GetNativePresentationAABits();
+  const uint32_t ssaa_bits = ssaa_applied ? 32u : 0u;
+  constants.output_mode = (hdr_output ? 1u : 0u) | aa_bits | ssaa_bits | 4u |
+                          (REXCVAR_GET(gta4_native_output_dither) ? 8u : 0u);
   SmaaPipeline::Output smaa_output{};
   VkImageLayout smaa_output_layout = VK_IMAGE_LAYOUT_UNDEFINED;
   bool smaa_applied = false;
@@ -27429,6 +27541,33 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
     }
     const SmaaQuality quality =
         ParseSmaaQuality(rex::cvar::Query<std::string>("gta4_native_smaa_quality"));
+    const bool fuse = NativeFusedSmaaEnabled() && !ssaa_applied && !aa_bits &&
+        shader_source_width == presenter_width && shader_source_height == presenter_height &&
+        rex::cvar::Query<std::string>("gta4_native_upscaler") != "fsr1" &&
+        !NativeRendererEventTraceEnabled() && !EmissionTraceConfig().pipeline_full_readback &&
+        !FireTraceConfig().enabled && !PhoneTraceConfig().enabled &&
+        !rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeProbes);
+    if (fuse) {
+      SmaaPipeline::Presentation destination{presenter_image, presenter_view,
+          ui::vulkan::VulkanPresenter::kGuestOutputFormat,
+          {presenter_width, presenter_height}, constants};
+      ++native_smaa_fusion_requests_;
+      if (smaa_pipeline_.Record(command_buffer, vulkan_device, frame_descriptor_pool_,
+          native_pipeline_cache_, shader_source_image, shader_source_view, *shader_source_layout,
+          {shader_source_width, shader_source_height}, quality, smaa_output, timing, &destination)) {
+        if (++native_smaa_fusion_frames_ == 1) {
+          REXLOG_INFO("gta4-native-graphics: fused-smaa=active extent={}x{} hdr={} "
+                      "intermediate-bytes-omitted={}", presenter_width, presenter_height,
+                      constants.hdr_mode, uint64_t(presenter_width) * presenter_height * 8);
+        }
+        native_draw_state_cache_.Reset();
+        native_pipeline_cache_generation_.fetch_add(1, std::memory_order_release);
+        SwitchNativeGpuProfileRange(command_buffer, performance::GpuRange::kPresent);
+        return true;
+      }
+      if (++native_smaa_fusion_fallbacks_ == 1)
+        REXLOG_WARN("gta4-native-graphics: fused-smaa unavailable; using separate passes");
+    }
     smaa_applied = smaa_pipeline_.Record(
         command_buffer, vulkan_device, frame_descriptor_pool_, native_pipeline_cache_,
         shader_source_image, shader_source_view, *shader_source_layout,
@@ -27549,30 +27688,6 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
                                   resolve_conversion_pipeline_layout_, 0, 1, &descriptor_set, 0,
                                   nullptr); });
       native_draw_state_cache_.Reset();
-      NativeHDRPresentConstants constants{};
-      constants.source_width = int32_t(shader_source_width);
-      constants.source_height = int32_t(shader_source_height);
-      constants.destination_width = int32_t(presenter_width);
-      constants.destination_height = int32_t(presenter_height);
-      constants.hdr_headroom = std::max(1.0f, hdr_headroom);
-      const auto configured_hdr_mode = rex::graphics::gta4_native::ParseHdrMode(
-          rex::cvar::GetFlagByName("gta4_native_hdr_mode"));
-      const auto effective_hdr_mode =
-          hdr_output ? configured_hdr_mode.value_or(rex::graphics::gta4_native::HdrMode::kScRgb)
-                     : rex::graphics::gta4_native::HdrMode::kOff;
-      constants.hdr_mode = uint32_t(effective_hdr_mode);
-      constants.paper_white_nits = static_cast<float>(
-          std::clamp(rex::cvar::Query<double>("gta4_native_hdr_paper_white_nits"), 80.0, 500.0));
-      constants.peak_nits = static_cast<float>(
-          std::clamp(rex::cvar::Query<double>("gta4_native_hdr_peak_nits"), 80.0, 2000.0));
-      constants.shoulder_start = static_cast<float>(
-          std::clamp(rex::cvar::Query<double>("gta4_native_auto_hdr_shoulder_start"), 0.0, 1.0));
-      constants.shoulder_power = static_cast<float>(
-          std::clamp(rex::cvar::Query<double>("gta4_native_auto_hdr_shoulder_power"), 1.0, 10.0));
-      const uint32_t aa_bits = GetNativePresentationAABits();
-      const uint32_t ssaa_bits = ssaa_applied ? 32u : 0u;
-      constants.output_mode = (hdr_output ? 1u : 0u) | aa_bits | ssaa_bits | 4u |
-                              (REXCVAR_GET(gta4_native_output_dither) ? 8u : 0u);
       if (NativeRendererEventTraceEnabled()) {
       TraceNativeRendererEvent(
           "present-shader",
@@ -33007,7 +33122,8 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
         REXCVAR_GET(gta4_native_component_scope_reuse)) {
       ++native_component_scope_candidates_;
       // RGB/alpha masks are pipeline state, not rendering attachment state.
-      // Restrict this path to the same single-sample title view and phase.
+      // Keep identical single-sample guest views; phase labels may differ when
+      // Graphics Preparation is enabled and the ownership proof below holds.
       // Multisample producer resolves and every explicit scope break retain
       // their existing order; probes retain their original observation scopes.
       NativeRenderingTarget same_mask_target = target;
@@ -33019,12 +33135,14 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       reuse_component_scope =
           previous_draw && !target.uses_presenter && !target.is_reflection &&
           target.samples == VK_SAMPLE_COUNT_1_BIT &&
+          (!NativeGraphicsPreparationEnabled() || !producer_depth_resolve.attached) &&
           target.guest_samples == active_target.guest_samples &&
           target.logical_width == active_target.logical_width &&
           target.logical_height == active_target.logical_height &&
           targets_equal(active_target, same_mask_target) &&
-          previous.render_phase == command.render_phase &&
-          previous.render_phase_object == command.render_phase_object &&
+          (NativeGraphicsPreparationEnabled() ||
+           (previous.render_phase == command.render_phase &&
+            previous.render_phase_object == command.render_phase_object)) &&
           !diagnostic_frame && !collect_frame_diagnostics && !force_content_probe &&
           !diagnostic_variants_enabled && !fire_images_ && !bulb_trace_frame_ &&
           !PhoneTraceConfig().readbacks && !NativeRendererEventTraceEnabled() &&
@@ -33057,7 +33175,12 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
       }
       reuse_component_scope &= active_scope_virtual_revision ==
           virtual_surface_registry_revision_.load(std::memory_order_acquire);
-      if (reuse_component_scope) ++native_component_scope_reuses_;
+      if (reuse_component_scope) {
+        ++native_component_scope_reuses_;
+        if (previous.render_phase != command.render_phase ||
+            previous.render_phase_object != command.render_phase_object)
+          ++native_cross_phase_scope_reuses_;
+      }
     }
     if (!rendering || (!targets_equal(active_target, target) && !reuse_component_scope)) {
       if (rendering) {
@@ -35054,6 +35177,18 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::PreparationWaitTicks] = preparation_wait_ticks_;
     values[light::PreparationCpuNs] = preparation_cpu_ns_;
     values[light::PreparationQueueDelayTicks] = preparation_queue_delay_ticks_;
+    values[light::GraphicsPreparationEnabled] = NativeGraphicsPreparationEnabled();
+    values[light::FusedSmaaEnabled] = NativeFusedSmaaEnabled();
+    values[light::SmaaFusionRequests] = native_smaa_fusion_requests_;
+    values[light::SmaaFusionFrames] = native_smaa_fusion_frames_;
+    values[light::SmaaFusionFallbacks] = native_smaa_fusion_fallbacks_;
+    values[light::StaticPipelineRequests] = native_static_pipeline_requests_;
+    values[light::StaticPipelineHits] = native_static_pipeline_hits_;
+    values[light::CrossPhaseScopeReuses] = native_cross_phase_scope_reuses_;
+    const auto& constant_arena = frame_constant_arenas_[active_frame_slot_];
+    values[light::UnusedBankBindings] = constant_arena.unused_bank_bindings;
+    values[light::UnusedBankLogicalBytes] = constant_arena.unused_bank_bytes_avoided;
+    values[light::ProjectionReuses] = constant_arena.projection_reuses;
     values[light::AssemblyEnabled] = NativeFrameAssemblyEnabled();
     values[light::AssemblySnapshotReuses] = assembly_snapshot_reuses_;
     values[light::AssemblyPipelineRequests] = assembly_pipeline_requests_;

@@ -19,6 +19,7 @@ enum class FrameConstantKind : uint8_t {
   kVertex,
   kPixel,
   kShared,
+  kUnused,  // Shader-proven unread bank; identity never aliases guest versions.
 };
 
 struct FrameConstantIdentity {

@@ -1059,19 +1059,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   };
   static_assert(sizeof(NativeResolveConversionConstants) == 64);
 
-  struct NativeHDRPresentConstants {
-    int32_t source_width = 0;
-    int32_t source_height = 0;
-    int32_t destination_width = 0;
-    int32_t destination_height = 0;
-    float hdr_headroom = 1.0f;
-    uint32_t output_mode = 0;
-    uint32_t hdr_mode = 0;
-    float paper_white_nits = 203.0f;
-    float peak_nits = 400.0f;
-    float shoulder_start = 0.0f;
-    float shoulder_power = 2.5f;
-  };
+  using NativeHDRPresentConstants = NativePresentConstants;
 
   struct NativeRenderingTarget {
     std::array<NativeSurfaceImage*, kRenderTargetCount> color_surfaces{};
@@ -1275,8 +1263,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       NativeUploadAllocation allocation{};
       NativeConstantMask mask{};
     };
-    // Bounded direct-mapped memo, independent of the full-bank cache.
-    std::array<std::array<ProjectedBinding, 64>, 2> projected_bindings{};
+    // 64 sets, four ways: immutable shader families survive hash collisions.
+    std::array<std::array<ProjectedBinding, 256>, 2> projected_bindings{};
+    std::array<std::array<uint64_t, 256>, 2> projected_stamps{};
+    uint64_t projected_clock = 0;
+    NativeUploadAllocation unused_allocation{};
+    uint64_t unused_bank_bindings = 0, unused_bank_bytes_avoided = 0;
     NativeUploadBuffer storage;
     FrameConstantArenaIndex index;
     FrameGenerationMap<NativeSharedConstantSemanticKey, uint64_t,
@@ -2256,6 +2248,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t native_pipeline_inherited_hits_ = 0;
   uint64_t native_component_scope_candidates_ = 0;
   uint64_t native_component_scope_reuses_ = 0;
+  uint64_t native_cross_phase_scope_reuses_ = 0;
+  uint64_t native_static_pipeline_requests_ = 0, native_static_pipeline_hits_ = 0;
+  uint64_t native_smaa_fusion_requests_ = 0, native_smaa_fusion_frames_ = 0,
+           native_smaa_fusion_fallbacks_ = 0;
   std::vector<NativeResolveConversionPipeline> resolve_conversion_pipelines_;
   VkPipeline hdr_present_pipeline_ = VK_NULL_HANDLE;
   std::array<NativeTextureImage, NativeFrameContextRing::kSlotCount> hdr_present_mirrors_{};

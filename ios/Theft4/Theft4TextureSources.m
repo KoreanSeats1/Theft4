@@ -10,6 +10,12 @@ BOOL Theft4DeviceNeedsBCTexturePreparation(void) {
            !device.supportsBCTextureCompression;
 }
 
+BOOL Theft4DeviceNeedsOlderBCPresentation(void) {
+    if (!Theft4DeviceNeedsBCTexturePreparation()) return NO;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    return device && ![device supportsFamily:MTLGPUFamilyApple10];
+}
+
 static NSString *Theft4TextureSourceKind(NSString *extension) {
     if ([extension isEqualToString:@"xtd"] || [extension isEqualToString:@"wtd"])
         return @"texture-dictionary";

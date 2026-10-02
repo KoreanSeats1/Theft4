@@ -415,7 +415,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     ]];
 #ifdef THEFT4_ASTC_EXPERIMENT
     UIStackView *astcRow = (UIStackView *)[self setting:@"ASTC TEXTURE COMPATIBILITY"
-        detail:@"Convert BC textures as they appear and save the results. First visits may pause; revisits use the cache. Turn off to compare the original path. On devices without BC support, Off may leave textures missing. Set before Play."
+        detail:@"Convert BC textures as they appear and save the results. First visits may pause; revisits use the cache. Off compares a larger RGBA8 compatibility path on devices without BC support. The older-GPU display fix stays automatic. Set before Play."
         toggle:_astcConversion];
     astcRow.backgroundColor = [Ink(0x35CDD1) colorWithAlphaComponent:.12];
     astcRow.layer.borderColor = [Ink(0x35CDD1) colorWithAlphaComponent:.60].CGColor;

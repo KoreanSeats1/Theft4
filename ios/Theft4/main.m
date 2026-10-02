@@ -324,9 +324,38 @@ static void coreEvent(void *context, const char *event) {
     [controller record:[NSString stringWithUTF8String:event]];
 }
 
+#ifdef THEFT4_ASTC_EXPERIMENT
+static void configureAstcCompatibilityDefaults(const char *profile) {
+    const uint64_t physicalMemory = NSProcessInfo.processInfo.physicalMemory;
+    const BOOL olderBCDevice = Theft4DeviceNeedsOlderBCPresentation();
+    setenv("THEFT4_ASTC_OLDER_GPU", olderBCDevice ? "1" : "0", 0);
+    if (!olderBCDevice || !physicalMemory ||
+        physicalMemory >= (UINT64_C(7) << 30))
+        return;
+    // BC-incompatible iPhones and iPads in the <=6 GiB memory tier use the
+    // stable one-frame renderer defaults measured on the A12Z. The native
+    // renderer independently selects direct presentation by its GPU limits.
+    const char *disabledSettings[] = {
+        "THEFT4_LAB_ASYNC_PIPELINES", "THEFT4_LAB_TEXTURE_CONTENT_CACHE",
+        "THEFT4_PIPELINE_SNAPSHOT_REUSE", "THEFT4_COMPONENT_SCOPE_REUSE",
+        "THEFT4_SPARSE_TEXTURE_WALKS"};
+    for (size_t index = 0; index < sizeof(disabledSettings) / sizeof(disabledSettings[0]); ++index)
+        setenv(disabledSettings[index], "0", 0);
+    setenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT", "1", 0);
+    os_log(OS_LOG_DEFAULT,
+           "Theft4 ASTC stability defaults active for %{public}s (%{public}llu MiB)",
+           profile, (unsigned long long)(physicalMemory >> 20));
+}
+#endif
+
 static BOOL configureDeviceProfile(void) {
     const char *configured = getenv("THEFT4_DEVICE_PROFILE");
-    if (configured) return strcmp(configured, "legacy-ipad") == 0;
+    if (configured) {
+#ifdef THEFT4_ASTC_EXPERIMENT
+        configureAstcCompatibilityDefaults(configured);
+#endif
+        return strcmp(configured, "legacy-ipad") == 0;
+    }
 
     struct utsname systemInfo = {};
     const char *machine = uname(&systemInfo) == 0 ? systemInfo.machine : "unknown";
@@ -338,6 +367,9 @@ static BOOL configureDeviceProfile(void) {
     const char *profile = theft4_device_profile_name(isIPad, physicalMemory, isA19);
     setenv("THEFT4_DEVICE_PROFILE", profile, 0);
     setenv("THEFT4_DEVICE_MODEL", machine, 0);
+#ifdef THEFT4_ASTC_EXPERIMENT
+    configureAstcCompatibilityDefaults(profile);
+#endif
     os_log(OS_LOG_DEFAULT,
            "Theft4 launch profile %{public}s for %{public}s (%{public}llu MiB)",
            profile, machine, (unsigned long long)(physicalMemory >> 20));
@@ -2187,7 +2219,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         NSString *preparationRoot = [_supportURL.path
             stringByAppendingPathComponent:@"texture-preparation"];
         setenv("THEFT4_ASTC_PREPARATION_ROOT", preparationRoot.fileSystemRepresentation, 1);
-        setenv("THEFT4_ASTC_ENABLED", _astcConversion.on ? "1" : "0", 1);
+        const char *astcForce = getenv("THEFT4_ASTC_FORCE");
+        const BOOL astcEnabled = astcForce && *astcForce
+            ? strcmp(astcForce, "1") == 0 : _astcConversion.on;
+        setenv("THEFT4_ASTC_ENABLED", astcEnabled ? "1" : "0", 1);
+        NSLog(@"Theft4 ASTC test: enabled=%@ switch=%@ force=%@",
+              astcEnabled ? @"yes" : @"no", _astcConversion.on ? @"on" : @"off",
+              astcForce ? [NSString stringWithUTF8String:astcForce] : @"unset");
 #endif
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(_frameScheduling.on);

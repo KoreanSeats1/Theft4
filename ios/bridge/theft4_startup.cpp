@@ -45,6 +45,7 @@ REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_snapshot_reuse);
 REXCVAR_DECLARE(bool, gta4_native_component_scope_reuse);
+REXCVAR_DECLARE(bool, gta4_trace_startup_content);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
@@ -158,6 +159,10 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             REXLOG_INFO("Theft4 bounded frame diagnostics enabled: {}", captures.string());
         }
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+        if (const char* content_probe = std::getenv("THEFT4_NATIVE_CONTENT_PROBE");
+            content_probe && std::string_view(content_probe) == "1") {
+            REXCVAR_SET(gta4_trace_startup_content, true);
+        }
         // Keep detailed diagnostics opt-in. A19 phones skip speculative
         // prewarming after the observed deep render-worker backlog; pipeline
         // creation at the authoritative recording point remains enabled.

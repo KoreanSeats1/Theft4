@@ -21,8 +21,8 @@ Actual BC textures are discovered only when gameplay loads them. The cyan
 **ASTC Texture Compatibility** switch in System controls conversion for the
 next Play session. It starts On when the device reports no direct BC support,
 and Off when direct BC support is present. With the switch Off, encountered BC
-textures are still logged, with no ASTC encoding; unsupported BC textures may
-remain missing. With the switch On, the native renderer already untile/swaps
+textures are still logged, with no ASTC encoding; unsupported BC textures use
+an RGBA8 control path instead. With the switch On, the native renderer already untile/swaps
 their blocks, hashes the payload, and enumerates
 mips and layers. On the ASTC app's first encounter, BC1, BC2, or BC3 textures
 are decoded and encoded to ASTC 4x4. A content-keyed file under
@@ -47,6 +47,29 @@ actual GPU format capabilities and decide whether on-device encoding time is
 acceptable. The first encounter may pause rendering while compression runs;
 subsequent encounters should be faster. This must be measured on device before
 merging or promising a first-run duration.
+
+## Older-device rendering path
+
+The ASTC test app checks Metal's Apple GPU family and BC support, plus Vulkan's
+BC3 sampled-image support and fragment sampler limit. On Apple GPU families
+before Apple 10, when BC3 is unsupported and the GPU allows at most 16 samplers,
+the native renderer compacts each draw's active sampler bindings to fit that
+limit and presents its final frontbuffer with a direct Vulkan blit. On the
+11-inch iPad Pro (2nd generation, A12Z), the normal fullscreen present shader
+produced a black screen even though the frontbuffer contained pixels; the
+direct path displayed the opening 3D cutscene at the 30 FPS cap. This
+capability check applies to other older GPUs with the same limits without
+changing the newer GPU path. It is independent of the cyan conversion switch,
+which controls texture format preparation.
+
+For BC-incompatible iPhones and iPads in the sub-7 GiB physical-memory tier,
+the ASTC app also defaults to one native frame in flight and disables the
+speculative pipeline, texture-content cache, and draw-reuse paths. This stable
+control combination avoided an A12Z GPU fault seen with build 93 defaults;
+the individual fault trigger has not yet been isolated. Launch overrides remain
+available for comparisons. These are test-app defaults, not changes to the
+ordinary Theft4 build or its performance branch. The device's existing
+limited-memory graphics preset keeps anti-aliasing off on the tested iPad.
 
 ## Build and test
 
@@ -75,3 +98,16 @@ successful build as device gameplay acceptance.
 output, cache reuse, corruption recovery, and observed-list creation with
 synthetic blocks. The encoder is Arm's `astc-encoder` 5.3.0 (Apache-2.0),
 vendored under `thirdparty/astc-encoder` with its license bundled in the app.
+
+## References for import-time preparation
+
+The [Xbox 360 GTA IV setup guide](https://github.com/luisxl15/GTA-IV-RECOMP-XBOX-360/blob/main/docs/SETUP.md)
+documents the extracted `game/`, `xbox360/`, `common/`, and title-update layout.
+The [RAGE Console Texture Editor source](https://github.com/indirivacua/RAGE-Console-Texture-Editor)
+includes `GTAIV.TextureResource.Xbox360.pas` for Xbox 360 texture dictionaries.
+This repository also has a prototype `tools/xtd_tools/xtd_cli.c` for listing
+textures from a loose XTD. These are format and parser references, not a
+complete texture-to-archive manifest for a given game installation. The local
+source inventory is authoritative for the installed copy; pre-conversion still
+needs to map observed content keys to archive entries or load the assets through
+the game's existing asset path before Play.

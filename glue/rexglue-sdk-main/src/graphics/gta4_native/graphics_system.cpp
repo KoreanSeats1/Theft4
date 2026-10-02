@@ -16128,7 +16128,16 @@ bool Gta4NativeGraphicsSystem::CreateNativeDescriptors() {
   const bool indexed = native_descriptor_backend_ == NativeDescriptorBackend::kIndexed;
   native_descriptor_capacity_ =
       indexed ? indexed_capacity.sampled_images_per_set : kShaderTextureCount;
-  native_sampler_descriptor_capacity_ = indexed ? indexed_capacity.samplers : kShaderTextureCount;
+  // Metal GPUs before the larger argument-buffer sampler limit expose only 16
+  // samplers per stage. The title has 26 *registers*, but an individual draw
+  // normally uses far fewer distinct samplers. Cached draws compact their
+  // active samplers into the hardware-sized set below.
+  native_sampler_descriptor_capacity_ = indexed ? indexed_capacity.samplers
+      : std::min(kShaderTextureCount, limits.maxPerStageDescriptorSamplers);
+  if (!native_sampler_descriptor_capacity_) {
+    REXLOG_ERROR("gta4-native-descriptors: device exposes no fragment samplers");
+    return false;
+  }
   native_descriptor_paging_ = indexed && REXCVAR_GET(gta4_native_descriptor_paging) &&
                               indexed_capacity.maximum_page_count >= NativeFrameContextRing::kSlotCount;
   native_descriptor_maximum_page_count_ = indexed
@@ -17967,9 +17976,50 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     const std::filesystem::path root = root_setting && *root_setting
                                            ? std::filesystem::path(root_setting)
                                            : std::filesystem::path();
+    static std::atomic_flag astc_mode_logged = ATOMIC_FLAG_INIT;
+    if (!astc_mode_logged.test_and_set()) {
+      REXLOG_INFO("gta4-native-astc: enabled={} source-supported={} root-configured={} "
+                  "sampler-limit={}", astc_enabled, source_supported, !root.empty(),
+                  native_sampler_descriptor_capacity_);
+    }
+    auto use_prepared = [&](theft4::astc::Prepared& prepared, VkFormat target_format) {
+      format = target_format;
+      vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+          vulkan_device->physical_device(), format, &format_properties);
+      converted_payload = std::move(prepared.payload);
+      converted_mips.reserve(prepared.mips.size());
+      for (const auto& mip : prepared.mips) {
+        NativeTextureResource::MipLevel copy{};
+        copy.level = mip.level;
+        copy.width = mip.width;
+        copy.height = mip.height;
+        copy.depth = mip.depth;
+        copy.base_array_layer = mip.base_array_layer;
+        copy.layer_count = mip.layer_count;
+        copy.buffer_row_length = mip.buffer_row_length;
+        copy.buffer_image_height = mip.buffer_image_height;
+        copy.payload_offset = mip.payload_offset;
+        copy.payload_size = mip.payload_size;
+        converted_mips.push_back(copy);
+      }
+      upload_payload = &converted_payload;
+      upload_mips = &converted_mips;
+    };
     if (!astc_enabled) {
-      theft4::astc::RecordObservedTexture(
-          root, input, nullptr, source_supported ? "bc-direct" : "bc-unsupported", 0);
+      if (source_supported) {
+        theft4::astc::RecordObservedTexture(root, input, nullptr, "bc-direct", 0);
+      } else {
+        theft4::astc::Prepared prepared;
+        std::string decode_error;
+        if (!theft4::astc::DecodeToRgba8(input, prepared, &decode_error)) {
+          theft4::astc::RecordObservedTexture(root, input, nullptr, "rgba8-control-failed", 0);
+          REXLOG_WARN("gta4-native-astc: RGBA8 control decode failed for {:016X}: {}",
+                      texture->content_hash, decode_error);
+          return reject("rgba8-control-failed");
+        }
+        theft4::astc::RecordObservedTexture(root, input, &prepared, "rgba8-control", 0);
+        use_prepared(prepared, VK_FORMAT_R8G8B8A8_UNORM);
+      }
     } else {
     theft4::astc::Prepared prepared;
     std::string preparation_error;
@@ -17990,10 +18040,6 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
                   texture->content_hash, preparation_error);
       return reject("astc-and-rgba-fallback-failed");
     }
-    format = prepared_astc ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
-                           : VK_FORMAT_R8G8B8A8_UNORM;
-    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
-        vulkan_device->physical_device(), format, &format_properties);
     const uint64_t elapsed_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count());
     theft4::astc::RecordObservedTexture(
@@ -18004,24 +18050,8 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
       REXLOG_WARN("gta4-native-astc: {:016X} used RGBA8 fallback: {}",
                   texture->content_hash, preparation_error);
     }
-    converted_payload = std::move(prepared.payload);
-    converted_mips.reserve(prepared.mips.size());
-    for (const auto& mip : prepared.mips) {
-      NativeTextureResource::MipLevel copy{};
-      copy.level = mip.level;
-      copy.width = mip.width;
-      copy.height = mip.height;
-      copy.depth = mip.depth;
-      copy.base_array_layer = mip.base_array_layer;
-      copy.layer_count = mip.layer_count;
-      copy.buffer_row_length = mip.buffer_row_length;
-      copy.buffer_image_height = mip.buffer_image_height;
-      copy.payload_offset = mip.payload_offset;
-      copy.payload_size = mip.payload_size;
-      converted_mips.push_back(copy);
-    }
-    upload_payload = &converted_payload;
-    upload_mips = &converted_mips;
+    use_prepared(prepared, prepared_astc ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                                         : VK_FORMAT_R8G8B8A8_UNORM);
     }
   }
 #endif
@@ -18740,7 +18770,7 @@ bool Gta4NativeGraphicsSystem::PrepareFrameDescriptorPool(uint32_t draw_count,
 
   const uint64_t sampled_image_count =
       uint64_t(draw_count) * kShaderTextureCount * kNativeIndexedImageDescriptorSetCount;
-  const uint64_t sampler_count = uint64_t(draw_count) * kShaderTextureCount;
+  const uint64_t sampler_count = uint64_t(draw_count) * native_sampler_descriptor_capacity_;
   const uint64_t descriptor_set_count =
       uint64_t(draw_count) * kDrawDescriptorSetCount + combined_set_count;
   const uint64_t uint32_max = std::numeric_limits<uint32_t>::max();
@@ -18843,7 +18873,7 @@ bool Gta4NativeGraphicsSystem::EnsureCachedDescriptorCapacity(uint32_t frame_cop
       NativeCachedDescriptorState::kMaximumEntries - allocated_capacity);
   const uint64_t sampled_image_count =
       growth_capacity * kShaderTextureCount * kNativeIndexedImageDescriptorSetCount;
-  const uint64_t sampler_count = growth_capacity * kShaderTextureCount;
+  const uint64_t sampler_count = growth_capacity * native_sampler_descriptor_capacity_;
   const uint64_t descriptor_set_count = growth_capacity * kDrawDescriptorSetCount;
   const uint64_t uint32_max = std::numeric_limits<uint32_t>::max();
   if (!growth_capacity || growth_capacity > uint32_max || sampled_image_count > uint32_max ||
@@ -19135,7 +19165,8 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
         command.sampler_descriptor_indices[stage] = native_null_sampler_descriptor_.index;
       } else {
         command.texture_descriptor_indices[stage] = stage;
-        command.sampler_descriptor_indices[stage] = stage;
+        command.sampler_descriptor_indices[stage] =
+            native_sampler_descriptor_capacity_ < kShaderTextureCount ? 0 : stage;
       }
 
       NativeSampler* sampler = nullptr;
@@ -19455,6 +19486,39 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       // BindCommonDrawState rejects it regardless of the selected backend.
       continue;
     }
+    if (native_descriptor_backend_ == NativeDescriptorBackend::kCached &&
+        native_sampler_descriptor_capacity_ < kShaderTextureCount) {
+      const auto stage_samplers = descriptor_key.samplers;
+      descriptor_key.samplers.fill(null_sampler_);
+      uint32_t compact_count = 0;
+      uint32_t remaining_used = command.used_texture_mask & kSupportedShaderTextureMask;
+      while (remaining_used) {
+        const uint32_t stage = std::countr_zero(remaining_used);
+        remaining_used &= remaining_used - 1;
+        const VkSampler sampler = stage_samplers[stage];
+        uint32_t slot = 0;
+        while (slot < compact_count && descriptor_key.samplers[slot] != sampler) {
+          ++slot;
+        }
+        if (slot == compact_count) {
+          if (compact_count == native_sampler_descriptor_capacity_) {
+            command.failed_texture_mask |= uint32_t{1} << stage;
+            static std::atomic<uint64_t> sampler_overflows{0};
+            const uint64_t overflow = ++sampler_overflows;
+            if (overflow <= 32 || !(overflow % 4096)) {
+              REXLOG_ERROR("gta4-native-descriptors: draw requires more than {} distinct "
+                           "samplers frame={} cmd={} used-mask={:08X} overflow={}",
+                           native_sampler_descriptor_capacity_, submitted_frame, command_index,
+                           command.used_texture_mask, overflow);
+            }
+            break;
+          }
+          descriptor_key.samplers[compact_count++] = sampler;
+        }
+        command.sampler_descriptor_indices[stage] = slot;
+      }
+      if (command.failed_texture_mask) continue;
+    }
     if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && !native_descriptor_paging_) {
       indexed_draw_commands.push_back(&command);
       continue;
@@ -19522,7 +19586,9 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
     return false;
   }
   const uint64_t written_set_count = missing_count * kDrawDescriptorSetCount;
-  const uint64_t written_entry_count = written_set_count * kShaderTextureCount;
+  const uint64_t written_entry_count = missing_count *
+      (kNativeIndexedImageDescriptorSetCount * kShaderTextureCount +
+       native_sampler_descriptor_capacity_);
   const uint32_t persistent_missing = uint32_t(std::min<uint64_t>(
       missing_count, cached_slot.descriptors.capacity() - cached_slot.descriptors.size()));
   const uint32_t transient_missing = uint32_t(missing_count - persistent_missing);
@@ -19597,7 +19663,9 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       writes[set].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[set].dstSet = descriptor_sets[set];
       writes[set].dstBinding = 0;
-      writes[set].descriptorCount = kShaderTextureCount;
+      writes[set].descriptorCount =
+          set < kNativeIndexedImageDescriptorSetCount ? kShaderTextureCount
+                                                      : native_sampler_descriptor_capacity_;
       writes[set].descriptorType =
           set < 4 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
       writes[set].pImageInfo = descriptor_infos[set].data();
@@ -27740,6 +27808,31 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
     return false;
   }
 
+  // BC-incompatible GPUs with a 16-sampler limit need the direct presentation
+  // path on the A12Z. Select it by capability in this isolated ASTC app.
+  bool force_present_blit = false;
+#ifdef THEFT4_ASTC_EXPERIMENT
+  static const bool bc_unsupported = [vulkan_device] {
+    VkFormatProperties bc_properties{};
+    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+        vulkan_device->physical_device(), VK_FORMAT_BC3_UNORM_BLOCK, &bc_properties);
+    return !(bc_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+  }();
+  const char* older_gpu_setting = std::getenv("THEFT4_ASTC_OLDER_GPU");
+  const bool older_gpu = older_gpu_setting && std::string_view(older_gpu_setting) == "1";
+  force_present_blit = !hdr_output && bc_unsupported && older_gpu &&
+      native_sampler_descriptor_capacity_ <= 16;
+  if (const char* setting = std::getenv("THEFT4_ASTC_PRESENT_BLIT")) {
+    force_present_blit = !hdr_output && std::string_view(setting) == "1";
+  }
+  static std::atomic_flag presentation_logged = ATOMIC_FLAG_INIT;
+  if (!presentation_logged.test_and_set()) {
+    REXLOG_INFO("gta4-native-astc: direct-present={} older-gpu={} bc-unsupported={} "
+                "sampler-limit={} hdr={}", force_present_blit, older_gpu, bc_unsupported,
+                native_sampler_descriptor_capacity_, hdr_output);
+  }
+#endif
+
   // GTA IV's resolved frontbuffer is the authoritative display-ready image.
   // The matching FP16 resolve source is an internal render-graph surface whose
   // transfer function and color grading are not part of the presentation ABI;
@@ -27795,7 +27888,7 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
             timing_command_buffer, range);
       }};
   const NativeGpuTimingSink* timing = IsNativeGpuProfileFrameActive() ? &timing_sink : nullptr;
-  if (IsNativeSmaaEnabled()) {
+  if (IsNativeSmaaEnabled() && !force_present_blit) {
     VkImageView smaa_linear_view = VK_NULL_HANDLE;
     if (NativeHardwareSmaaEnabled()) {
       ++native_smaa_hardware_requests_;
@@ -27929,7 +28022,8 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
         hdr_headroom);
   }
 
-  VkPipeline present_pipeline = GetOrCreateHDRPresentPipeline();
+  VkPipeline present_pipeline =
+      force_present_blit ? VK_NULL_HANDLE : GetOrCreateHDRPresentPipeline();
   if (present_pipeline && frame_descriptor_pool_ && presenter_view && shader_source_view) {
     const auto& dfn = vulkan_device->functions();
     const VkDevice device = vulkan_device->device();

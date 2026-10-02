@@ -82,19 +82,26 @@ int theft4_validate_installed_game(const char* game_directory, char* message,
 int theft4_configure_boot_diagnostics(void) {
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
     const bool detailed = enabled && std::string_view(enabled) == "1";
+    const char* content_probe = std::getenv("THEFT4_NATIVE_CONTENT_PROBE");
+    const bool probe_native_content =
+        content_probe && std::string_view(content_probe) == "1";
 #ifdef THEFT4_LAB_BUILD
     // Keep the bounded profiler available for the graph's manual capture
     // gesture. Detailed collection remains dormant until the user arms it.
     return rex::diagnostics::Configure(
                true,
-               detailed
+               probe_native_content
+                   ? "logging,transition,vulkan,presenter,native-trace,native-probes"
+                   : detailed
                    ? "logging,transition,audio,vulkan,presenter,guest-hooks,native-profiler"
                    : "logging,native-profiler")
                ? 0
                : 1;
 #endif
     return rex::diagnostics::Configure(
-               true, detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
+               true, probe_native_content
+                         ? "logging,transition,vulkan,presenter,native-trace,native-probes"
+                         : detailed ? "logging,transition,audio,vulkan,presenter,guest-hooks"
                               : "logging")
                ? 0
                : 1;

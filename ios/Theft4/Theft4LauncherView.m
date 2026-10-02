@@ -338,6 +338,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _fusedSmaa = [UISwitch new];
     _fusedSmaa.onTintColor = Ink(0xB6884D);
     _fusedSmaa.accessibilityIdentifier = @"settings.fusedSmaa";
+    _hardwareSmaa = [UISwitch new];
+    _hardwareSmaa.onTintColor = Ink(0xB6884D);
+    _hardwareSmaa.accessibilityIdentifier = @"settings.hardwareSmaa";
     _frameAssembly = [UISwitch new];
     _frameAssembly.onTintColor = Ink(0xB6884D);
     _frameAssembly.accessibilityIdentifier = @"settings.frameAssembly";
@@ -386,6 +389,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"PARALLEL RENDER PREPARATION" detail:@"Prepare shader data alongside textures when CPU capacity allows. Turn off to compare. Fully close and reopen after changing." toggle:_parallelPreparation],
         [self setting:@"GRAPHICS PREPARATION" detail:@"Reduce repeated shader and pipeline setup. Fully close and reopen after changing." toggle:_graphicsPreparation],
         [self setting:@"FUSED SMAA PRESENTATION" detail:@"Combine the final SMAA blend with display output when compatible. Fully close and reopen after changing." toggle:_fusedSmaa],
+        [self setting:@"HARDWARE SMAA FILTERING" detail:@"Use hardware color filtering to reduce SMAA shader work. Fully close and reopen after changing." toggle:_hardwareSmaa],
         [self setting:@"FRAME ASSEMBLY REUSE" detail:@"Reuse repeated draw setup and prepare new index data earlier. Fully close and reopen after changing." toggle:_frameAssembly],
         [self setting:@"COMMAND STREAM OPTIMIZATION" detail:@"Reduce repeated draw setup and state transfers. Fully close and reopen after changing." toggle:_commandStream],
         [self setting:@"BACKGROUND CPU CLEANUP" detail:@"Use available CPU capacity to release completed draw data. Requires Command Stream Optimization. Fully close and reopen after changing." toggle:_cpuCleanup],

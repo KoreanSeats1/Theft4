@@ -855,6 +855,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     bool descriptor_reclaimed = true;
     std::vector<VkImageView> mip_views;
     VkImageView packed_stencil_view = VK_NULL_HANDLE;
+    VkFormat smaa_srgb_format = VK_FORMAT_UNDEFINED;
+    VkImageView smaa_srgb_view = VK_NULL_HANDLE;
+    bool smaa_srgb_view_attempted = false;
     NativeSurfaceAspectContent packed_source_content{};
     uint64_t packed_source_image_lifetime = 0;
   };
@@ -2250,6 +2253,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t native_component_scope_reuses_ = 0;
   uint64_t native_cross_phase_scope_reuses_ = 0;
   uint64_t native_static_pipeline_requests_ = 0, native_static_pipeline_hits_ = 0;
+  uint64_t native_smaa_hardware_requests_ = 0, native_smaa_hardware_frames_ = 0,
+           native_smaa_hardware_fallbacks_ = 0;
   uint64_t native_smaa_fusion_requests_ = 0, native_smaa_fusion_frames_ = 0,
            native_smaa_fusion_fallbacks_ = 0;
   std::vector<NativeResolveConversionPipeline> resolve_conversion_pipelines_;

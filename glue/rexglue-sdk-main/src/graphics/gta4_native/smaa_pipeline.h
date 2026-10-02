@@ -30,7 +30,7 @@ SmaaQuality ParseSmaaQuality(std::string_view quality);
 class SmaaPipeline {
  public:
   static constexpr uint32_t kDescriptorSetCount = 3;
-  static constexpr uint32_t kCombinedImageSamplerDescriptorCount = 6;
+  static constexpr uint32_t kCombinedImageSamplerDescriptorCount = 7;
 
   struct Output {
     VkImage image = VK_NULL_HANDLE;
@@ -38,6 +38,7 @@ class SmaaPipeline {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat format = VK_FORMAT_UNDEFINED;
     PostFxExtent extent{};
+    bool hardware_filtered = false;
   };
 
   // Public only so the translation-unit helpers can create and destroy the
@@ -76,7 +77,8 @@ class SmaaPipeline {
               VkImage source_image, VkImageView source_view, VkImageLayout& source_layout,
               PostFxExtent extent, SmaaQuality quality, Output& output,
               const NativeGpuTimingSink* timing = nullptr,
-              const Presentation* presentation = nullptr);
+              const Presentation* presentation = nullptr,
+              VkImageView source_linear_view = VK_NULL_HANDLE);
   bool RequiresExtentResourceRecreation(PostFxExtent extent) const;
   void Destroy(const ui::vulkan::VulkanDevice* device);
   MemoryUsage QueryMemoryUsage() const;
@@ -115,7 +117,11 @@ class SmaaPipeline {
   std::array<VkPipeline, size_t(SmaaQuality::kCount)> edge_pipelines_{};
   std::array<VkPipeline, size_t(SmaaQuality::kCount)> weight_pipelines_{};
   VkPipeline neighborhood_pipeline_ = VK_NULL_HANDLE;
+  VkPipeline hardware_neighborhood_pipeline_ = VK_NULL_HANDLE;
+  bool hardware_neighborhood_attempted_ = false;
   VkPipeline presentation_pipeline_ = VK_NULL_HANDLE;
+  VkPipeline hardware_presentation_pipeline_ = VK_NULL_HANDLE;
+  bool hardware_presentation_attempted_ = false;
   VkPipelineLayout presentation_layout_ = VK_NULL_HANDLE;
   VkFormat presentation_format_ = VK_FORMAT_UNDEFINED;
 };

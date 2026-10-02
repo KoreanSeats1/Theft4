@@ -14,6 +14,9 @@ layout(push_constant) uniform SmaaConstants {
 
 layout(set = 0, binding = 0) uniform sampler2D color_gamma_tex;
 layout(set = 0, binding = 1) uniform sampler2D blend_tex;
+#ifdef SMAA_HARDWARE_SRGB
+layout(set = 0, binding = 2) uniform sampler2D color_linear_tex;
+#endif
 layout(location = 0) out vec4 output_color;
 
 #include "smaa_neighborhood_common.glsl"

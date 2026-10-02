@@ -23,6 +23,7 @@ namespace {
 
 #include "smaa/smaa_shaders.inc"
 #include "smaa/smaa_present_ps.inc"
+#include "smaa/smaa_hardware_ps.inc"
 
 constexpr VkFormat kEdgesFormat = VK_FORMAT_R8G8_UNORM;
 constexpr VkFormat kWeightsFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -248,9 +249,9 @@ bool SmaaPipeline::EnsureStaticResources(const ui::vulkan::VulkanDevice* device,
   const std::array<std::array<VkSampler, 3>, kDescriptorSetCount> immutable_samplers = {{
       {point_sampler_, VK_NULL_HANDLE, VK_NULL_HANDLE},
       {linear_sampler_, linear_sampler_, point_sampler_},
-      {linear_sampler_, linear_sampler_, VK_NULL_HANDLE},
+      {linear_sampler_, linear_sampler_, linear_sampler_},
   }};
-  const std::array<uint32_t, kDescriptorSetCount> binding_counts = {1, 3, 2};
+  const std::array<uint32_t, kDescriptorSetCount> binding_counts = {1, 3, 3};
   for (uint32_t pass = 0; pass < kDescriptorSetCount; ++pass) {
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (uint32_t binding = 0; binding < binding_counts[pass]; ++binding) {
@@ -467,7 +468,7 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
                           VkImage source_image, VkImageView source_view,
                           VkImageLayout& source_layout, PostFxExtent extent, SmaaQuality quality,
                           Output& result, const NativeGpuTimingSink* timing,
-                          const Presentation* presentation) {
+                          const Presentation* presentation, VkImageView source_linear_view) {
   result = {};
   if (!command_buffer || !device || !frame_descriptor_pool || !source_image || !source_view ||
       source_layout == VK_IMAGE_LAYOUT_UNDEFINED || !extent.width || !extent.height ||
@@ -482,6 +483,22 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
   const auto& dfn = device->functions();
   const VkDevice vk_device = device->device();
 
+  // Optional pipelines are attempted once, before recording any commands.
+  // A failure selects the already-created manual pipeline for this session.
+  if (source_linear_view && !presentation && !hardware_neighborhood_attempted_) {
+    hardware_neighborhood_attempted_ = true;
+    hardware_neighborhood_pipeline_ = CreateFullscreenPipeline(device, pipeline_cache,
+        pipeline_layouts_[2], kOutputFormat, smaa_hardware_neighborhood_ps,
+        sizeof(smaa_hardware_neighborhood_ps));
+  }
+  if (source_linear_view && presentation && !hardware_presentation_attempted_) {
+    hardware_presentation_attempted_ = true;
+    hardware_presentation_pipeline_ = CreateFullscreenPipeline(device, pipeline_cache,
+        presentation_layout_, presentation->format, smaa_hardware_present_ps,
+        sizeof(smaa_hardware_present_ps));
+  }
+  const bool hardware_filtered = source_linear_view &&
+      (presentation ? hardware_presentation_pipeline_ : hardware_neighborhood_pipeline_);
   std::array<VkDescriptorSet, kDescriptorSetCount> sets{};
   VkDescriptorSetAllocateInfo allocation{};
   allocation.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -519,14 +536,16 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
   }
 
   const std::array<VkImageView, kCombinedImageSamplerDescriptorCount> views = {
-      source_view, edges_.view, area_.view, search_.view, source_view, weights_.view};
+      source_view, edges_.view, area_.view, search_.view, source_view, weights_.view,
+      source_linear_view ? source_linear_view : source_view};
   const std::array<VkImageLayout, kCombinedImageSamplerDescriptorCount> layouts = {
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> set_indices = {0, 1, 1, 1, 2,
-                                                                                  2};
-  const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> bindings = {0, 0, 1, 2, 0, 1};
+                                                                                  2, 2};
+  const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> bindings = {0, 0, 1, 2, 0, 1, 2};
   std::array<VkDescriptorImageInfo, kCombinedImageSamplerDescriptorCount> images{};
   std::array<VkWriteDescriptorSet, kCombinedImageSamplerDescriptorCount> writes{};
   for (size_t index = 0; index < writes.size(); ++index) {
@@ -625,12 +644,15 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
     destination.extent = extent;
     destination.format = presentation->format;
     destination.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    record_pass(destination, presentation_pipeline_, presentation_layout_, sets[2], true);
+    record_pass(destination, hardware_filtered ? hardware_presentation_pipeline_ : presentation_pipeline_,
+                presentation_layout_, sets[2], true);
     result = {destination.image, destination.view, destination.layout, destination.format, extent};
   } else {
-    record_pass(output_, neighborhood_pipeline_, pipeline_layouts_[2], sets[2]);
+    record_pass(output_, hardware_filtered ? hardware_neighborhood_pipeline_ : neighborhood_pipeline_,
+                pipeline_layouts_[2], sets[2]);
     result = {output_.image, output_.view, output_.layout, output_.format, output_.extent};
   }
+  result.hardware_filtered = hardware_filtered;
   return true;
 }
 
@@ -668,6 +690,10 @@ void SmaaPipeline::Destroy(const ui::vulkan::VulkanDevice* device) {
     dfn.vkDestroyPipeline(vk_device, neighborhood_pipeline_, nullptr);
     neighborhood_pipeline_ = VK_NULL_HANDLE;
   }
+  if (hardware_neighborhood_pipeline_) dfn.vkDestroyPipeline(vk_device, hardware_neighborhood_pipeline_, nullptr);
+  if (hardware_presentation_pipeline_) dfn.vkDestroyPipeline(vk_device, hardware_presentation_pipeline_, nullptr);
+  hardware_neighborhood_pipeline_ = hardware_presentation_pipeline_ = VK_NULL_HANDLE;
+  hardware_neighborhood_attempted_ = hardware_presentation_attempted_ = false;
   if (presentation_pipeline_) dfn.vkDestroyPipeline(vk_device, presentation_pipeline_, nullptr);
   if (presentation_layout_) dfn.vkDestroyPipelineLayout(vk_device, presentation_layout_, nullptr);
   presentation_pipeline_ = VK_NULL_HANDLE;

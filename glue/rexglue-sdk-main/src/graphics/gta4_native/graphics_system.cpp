@@ -515,7 +515,9 @@ constexpr size_t SmaaFusionRequests = 238, SmaaFusionFrames = 239, SmaaFusionFal
 constexpr size_t StaticPipelineRequests = 241, StaticPipelineHits = 242;
 constexpr size_t CrossPhaseScopeReuses = 243, UnusedBankBindings = 244;
 constexpr size_t UnusedBankLogicalBytes = 245, ProjectionReuses = 246;
-static_assert(ProjectionReuses + 1 == REX_LIGHT_FIELDS);
+constexpr size_t HardwareSmaaEnabled = 247, SmaaHardwareRequests = 248;
+constexpr size_t SmaaHardwareFrames = 249, SmaaHardwareFallbacks = 250;
+static_assert(SmaaHardwareFallbacks + 1 == REX_LIGHT_FIELDS);
 static std::atomic<uint64_t> cache_save_count{0}, cache_save_total_ticks{0},
     cache_save_active{0}, cache_save_bytes{0};
 constexpr size_t ProbeBase = 23;
@@ -708,7 +710,7 @@ extern "C" void rex_gta4_light_record_pipeline_work(uint64_t compile_ticks,
   }
 }
 extern "C" const char* rex_gta4_light_capture_extra_columns() {
-  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total,graphics_preparation_enabled,fused_smaa_enabled,smaa_fusion_requests,smaa_fusion_frames,smaa_fusion_fallbacks,static_pipeline_requests,static_pipeline_hits,cross_phase_scope_reuses,unused_bank_bindings_frame,unused_bank_logical_bytes_frame,projection_reuses_frame";
+  return "read_lock_count,read_lock_total_ticks,read_lock_max_ticks,read_lock_active,read_validate_count,read_validate_total_ticks,read_validate_max_ticks,read_validate_active,read_host_count,read_host_total_ticks,read_host_max_ticks,read_host_active,read_invalidate_count,read_invalidate_total_ticks,read_invalidate_max_ticks,read_invalidate_active,read_transfer_count,read_transfer_total_ticks,read_transfer_max_ticks,read_transfer_active,read_scatter_count,read_scatter_total_ticks,read_scatter_max_ticks,read_scatter_active,host_task_count,host_task_total_ticks,host_task_max_ticks,host_task_active,deferred_delay_count,deferred_delay_total_ticks,deferred_delay_max_ticks,deferred_delay_active,stream_request_count,stream_request_total_ticks,stream_request_max_ticks,stream_request_active,stream_complete_count,stream_complete_total_ticks,stream_complete_max_ticks,stream_complete_active,stream_pump_count,stream_pump_total_ticks,stream_pump_max_ticks,stream_pump_active,stream_unload_count,stream_unload_total_ticks,stream_unload_max_ticks,stream_unload_active,queued_read_wait_count,queued_read_wait_total_ticks,queued_read_wait_max_ticks,queued_read_wait_active,io_error_count,io_short_count,io_bytes,io_last_handle,io_last_offset,io_last_length,io_last_status,io_last_tick,io_native_errno,clock_stale_count,clock_prevented_ticks,clock_max_stale_ticks,clock_last_stale_tick,fault_handled,fault_unhandled,fault_first_pc,fault_first_address,fault_last_pc,fault_last_address,fault_last_tick,task_faults,task_pageins,task_cow_faults,task_context_switches,cpu_publish_user_ns,cpu_publish_system_ns,cpu_interval_user_ns,cpu_interval_system_ns,renderer_fpcr,pipeline_creates,pipeline_compile_ticks,pipeline_wait_ticks,pipeline_jobs_outstanding,pipeline_jobs_queued,pipeline_job_active,pipeline_replay_pending,pipeline_cache_generation,cache_save_count,cache_save_total_ticks,cache_save_active,cache_save_bytes,draw_primitive_count,draw_up_count,draw_indexed_count,resolve_count,clear_count,handoff_count,release_count,marker_count,other_count,phase_draw_0,phase_draw_1,phase_draw_2,phase_draw_3,phase_draw_4,phase_draw_5,phase_draw_6,phase_begin_0,phase_begin_1,phase_begin_2,phase_begin_3,phase_begin_4,phase_begin_5,phase_begin_6,invalid_phase_count,first_command_sequence,last_command_sequence,first_command_epoch,last_command_epoch,command_epoch_mismatches,command_sequence_regressions,present_epoch,present_sequence,queued_presents,queued_commands,internal_flushes_total,phase_stack_depth,phase_mismatches_total,draw_target_presenter,draw_target_offscreen,draw_target_reflection,draw_target_64x64,draw_target_depth_only,draw_structure_signature,host_activity_epoch,host_pause_count,host_pause_drain_ticks,host_pause_drain_succeeded,record_commands_observed,prewarm_target_requests_total,prewarm_target_hits_total,prewarm_surface_lookups_avoided_total,prewarm_target_reuse_enabled,renderer_efficiency_enabled,dynamic_groups_requested_total,dynamic_groups_emitted_total,binding_stages_visited_total,binding_stages_skipped_total,attachment_barrier_calls_total,attachment_barriers_total,dynamic_derivation_reuses_total,parallel_preparation_enabled,preparation_available_cpus,preparation_draws,preparation_dispatch_ticks,preparation_work_ticks,preparation_wait_ticks,preparation_cpu_ns,preparation_upload_bytes,preparation_queue_delay_ticks,assembly_enabled,assembly_snapshot_reuses_total,assembly_pipeline_requests_total,assembly_pipeline_hits_total,texture_parallel_requested,texture_conversion_jobs_total,texture_conversion_source_bytes_total,texture_conversion_copy_ticks_total,texture_conversion_helper_ticks_total,texture_conversion_join_ticks_total,texture_bulk_rows_total,texture_bulk_bytes_total,preparation_index_count,preparation_index_bytes,task_decompressions,available_memory_bytes,memory_recovery_enabled,pressure_handled_total,pressure_pool_freed_bytes_total,pressure_texture_retired_bytes_total,pressure_buffer_freed_bytes_total,pressure_frames_remaining,assembly_sampled_frames_total,assembly_sampled_ticks_total,assembly_constant_ticks_total,assembly_snapshot_ticks_total,assembly_prewarm_ticks_total,assembly_insert_ticks_total,assembly_recycle_ticks_total,assembly_queue_ticks_total,assembly_condition_ticks_total,assembly_protection_ticks_total,assembly_transfer_ticks_total,assembly_clear_ticks_total,assembly_draw_commands_total,assembly_state_commands_total,assembly_batches_total,command_stream_enabled,cpu_cleanup_enabled,producer_buffered_states_total,producer_state_packets_total,retained_command_acquires_total,cleanup_started_total,cleanup_completed_total,cleanup_commands_total,cleanup_cpu_ns_total,cleanup_wall_ns_total,cleanup_retained_metadata_bytes,cleanup_high_water_metadata_bytes,cleanup_busy_fallbacks_total,cleanup_budget_fallbacks_total,graphics_preparation_enabled,fused_smaa_enabled,smaa_fusion_requests,smaa_fusion_frames,smaa_fusion_fallbacks,static_pipeline_requests,static_pipeline_hits,cross_phase_scope_reuses,unused_bank_bindings_frame,unused_bank_logical_bytes_frame,projection_reuses_frame,hardware_smaa_enabled,smaa_hardware_requests,smaa_hardware_frames,smaa_hardware_fallbacks";
 }
 extern "C" uint64_t rex_gta4_light_capture_start() {
   light::capture_frequency.store(rex::chrono::Clock::QueryHostTickFrequency(), std::memory_order_relaxed);
@@ -852,6 +854,62 @@ bool NativeGraphicsPreparationEnabled() {
   }();
   return enabled;
 }
+bool NativeHardwareSmaaEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("THEFT4_HARDWARE_SMAA");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  return enabled;
+}
+
+// Restrict reinterpretation to corresponding 8-bit UNORM/sRGB formats.
+// Packed, floating-point, depth and compressed formats retain manual decoding.
+VkFormat NativeSmaaSrgbFormat(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
+bool NativeTextureImageCreateInfoSupported(const ui::vulkan::VulkanDevice* device,
+                                          const VkImageCreateInfo& image) {
+  if (!image.pNext) return ui::vulkan::util::IsImageCreateInfoSupported(device, image);
+  if (!device || !device->extensions().ext_1_2_KHR_image_format_list ||
+      !device->vulkan_instance()->extensions().ext_1_1_KHR_get_physical_device_properties2)
+    return false;
+  const auto* list = static_cast<const VkImageFormatListCreateInfo*>(image.pNext);
+  if (list->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO || list->pNext ||
+      list->viewFormatCount != 2 || !list->pViewFormats ||
+      list->pViewFormats[0] != image.format ||
+      list->pViewFormats[1] != NativeSmaaSrgbFormat(image.format) ||
+      list->pViewFormats[1] == VK_FORMAT_UNDEFINED ||
+      !(image.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)) return false;
+  const auto* instance = device->vulkan_instance();
+  const auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
+      instance->functions().vkGetInstanceProcAddr(instance->instance(),
+          instance->api_version() >= VK_MAKE_API_VERSION(0, 1, 1, 0)
+              ? "vkGetPhysicalDeviceImageFormatProperties2"
+              : "vkGetPhysicalDeviceImageFormatProperties2KHR"));
+  if (!query) return false;
+  VkPhysicalDeviceImageFormatInfo2 info{};
+  info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+  info.pNext = list;
+  info.format = image.format;
+  info.type = image.imageType;
+  info.tiling = image.tiling;
+  info.usage = image.usage;
+  info.flags = image.flags;
+  VkImageFormatProperties2 supported{};
+  supported.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+  if (query(device->physical_device(), &info, &supported) != VK_SUCCESS) return false;
+  const auto& caps = supported.imageFormatProperties;
+  return image.extent.width && image.extent.height && image.extent.depth &&
+      image.extent.width <= caps.maxExtent.width && image.extent.height <= caps.maxExtent.height &&
+      image.extent.depth <= caps.maxExtent.depth && image.mipLevels && image.mipLevels <= caps.maxMipLevels &&
+      image.arrayLayers && image.arrayLayers <= caps.maxArrayLayers && (caps.sampleCounts & image.samples);
+}
+
 bool NativeFusedSmaaEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("THEFT4_FUSED_SMAA");
@@ -17549,6 +17607,14 @@ void Gta4NativeGraphicsSystem::DestroyNativeTextureImage(NativeTextureImage& ima
     }
   }
   image.mip_views.clear();
+  if (image.smaa_srgb_view) {
+    TraceNativeFlightMutation("destroy", NativeFlightResourceKind::kTextureView,
+                              NativeVulkanHandleIdentity(image.smaa_srgb_view));
+    profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] {
+      return dfn.vkDestroyImageView(device, image.smaa_srgb_view, nullptr);
+    });
+    image.smaa_srgb_view = VK_NULL_HANDLE;
+  }
   if (image.packed_stencil_view) {
     TraceNativeFlightMutation("destroy", NativeFlightResourceKind::kTextureView,
                               NativeVulkanHandleIdentity(image.packed_stencil_view));
@@ -17635,7 +17701,7 @@ bool Gta4NativeGraphicsSystem::ReleaseRetiredTextureImages(bool drain_all) {
       // superseded generations or the supposedly retired queue grows forever.
       DestroyNativeTextureImage(*image);
       if (image->resource.image || image->resource.memory || image->resource.view ||
-          image->packed_stencil_view || !image->mip_views.empty()) {
+          image->packed_stencil_view || image->smaa_srgb_view || !image->mip_views.empty()) {
         REXLOG_ERROR("gta4-native-memory: retirement still owns Vulkan objects; retaining it");
         return false;
       }
@@ -17693,15 +17759,31 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
   }
   // Unsupported tuples cannot recover by evicting textures or waiting for GPU
   // work. Keep capability rejection outside the memory-pressure retry loop.
-  if (!ui::vulkan::util::IsImageCreateInfoSupported(vulkan_device, image_info)) {
+  if (!NativeTextureImageCreateInfoSupported(vulkan_device, image_info)) {
     return false;
   }
   if (next_native_image_lifetime_ == std::numeric_limits<uint64_t>::max()) {
     return false;
   }
   image.descriptor_lifetime = ++next_native_image_lifetime_;
-  image.allocation_pool_compatible = !image_info.pNext && image_info.sharingMode == VK_SHARING_MODE_EXCLUSIVE &&
-                                    image_info.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED;
+  image.allocation_key.view_formats = {};
+  bool poolable_extension = !image_info.pNext;
+  if (image_info.pNext) {
+    const auto* list = static_cast<const VkImageFormatListCreateInfo*>(image_info.pNext);
+    if (list->sType == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO && !list->pNext &&
+        list->viewFormatCount == 2 && list->pViewFormats &&
+        list->pViewFormats[0] == image_info.format &&
+        list->pViewFormats[1] == NativeSmaaSrgbFormat(image_info.format) &&
+        list->pViewFormats[1] != VK_FORMAT_UNDEFINED &&
+        (image_info.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)) {
+      poolable_extension = true;
+      image.allocation_key.view_formats = {uint32_t(list->pViewFormats[0]),
+                                          uint32_t(list->pViewFormats[1])};
+    }
+  }
+  image.allocation_pool_compatible = poolable_extension &&
+      image_info.sharingMode == VK_SHARING_MODE_EXCLUSIVE &&
+      image_info.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED;
   image.allocation_key.fields = {image_info.flags, uint32_t(image_info.imageType), uint32_t(image_info.format),
       image_info.extent.width,image_info.extent.height,image_info.extent.depth,image_info.mipLevels,
       image_info.arrayLayers,uint32_t(image_info.samples),uint32_t(image_info.tiling),image_info.usage};
@@ -17916,9 +17998,50 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   }
   image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  std::array<VkFormat, 2> smaa_view_formats{format, NativeSmaaSrgbFormat(format)};
+  VkImageFormatListCreateInfo smaa_format_list{};
+  smaa_format_list.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+  smaa_format_list.viewFormatCount = uint32_t(smaa_view_formats.size());
+  smaa_format_list.pViewFormats = smaa_view_formats.data();
+  // A sampling-only companion view shares the resolved image allocation.
+  // An explicit UNORM/sRGB-only list lets MoltenVK retain its optimized Metal
+  // texture usage rather than requesting arbitrary pixel-format reinterpretation.
+  // Include the list in the allocation pool's exact identity. Query
+  // support at resource creation, never on the draw or per-pixel path.
+  if (NativeHardwareSmaaEnabled() && texture->gpu_produced && !packed_source &&
+      !image->is_reflection && !is_3d && !is_cube && !is_2d_array &&
+      image->mip_levels == 1 && image->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+    const VkFormat srgb = NativeSmaaSrgbFormat(format);
+    if (srgb != VK_FORMAT_UNDEFINED) {
+      VkFormatProperties sampling{};
+      const auto& ifn = vulkan_device->vulkan_instance()->functions();
+      ifn.vkGetPhysicalDeviceFormatProperties(vulkan_device->physical_device(), srgb, &sampling);
+      constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                               VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      if ((sampling.optimalTilingFeatures & required) == required) {
+        image_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        image_info.pNext = &smaa_format_list;
+        if (NativeTextureImageCreateInfoSupported(vulkan_device, image_info)) {
+          image->smaa_srgb_format = srgb;
+        } else {
+          image_info.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+          image_info.pNext = nullptr;
+        }
+      }
+    }
+  }
   image->usage = image_info.usage;
   image->samples = image_info.samples;
-  if (!AllocateNativeTextureImage(image_info, *image)) {
+  bool image_allocated = AllocateNativeTextureImage(image_info, *image);
+  if (!image_allocated && image->smaa_srgb_format != VK_FORMAT_UNDEFINED) {
+    // Optional format reinterpretation must never turn a supported guest
+    // texture into a missing resource. Retry its original creation contract.
+    image_info.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    image_info.pNext = nullptr;
+    image->smaa_srgb_format = VK_FORMAT_UNDEFINED;
+    image_allocated = AllocateNativeTextureImage(image_info, *image);
+  }
+  if (!image_allocated) {
     if (!image->is_reflection ||
         (image->width == image->logical_width && image->height == image->logical_height)) {
       return reject("create-image");
@@ -27531,6 +27654,52 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
       }};
   const NativeGpuTimingSink* timing = IsNativeGpuProfileFrameActive() ? &timing_sink : nullptr;
   if (IsNativeSmaaEnabled()) {
+    VkImageView smaa_linear_view = VK_NULL_HANDLE;
+    if (NativeHardwareSmaaEnabled()) {
+      ++native_smaa_hardware_requests_;
+      // The old path decodes after raw-view swizzling. Only identity channel
+      // views preserve that contract when decoding moves into the sampler.
+      const auto& c = source.view_components;
+      const bool identity = (c.r == VK_COMPONENT_SWIZZLE_IDENTITY || c.r == VK_COMPONENT_SWIZZLE_R) &&
+          (c.g == VK_COMPONENT_SWIZZLE_IDENTITY || c.g == VK_COMPONENT_SWIZZLE_G) &&
+          (c.b == VK_COMPONENT_SWIZZLE_IDENTITY || c.b == VK_COMPONENT_SWIZZLE_B) &&
+          (c.a == VK_COMPONENT_SWIZZLE_IDENTITY || c.a == VK_COMPONENT_SWIZZLE_A);
+      if (!use_high_precision_source && identity && source.smaa_srgb_format != VK_FORMAT_UNDEFINED) {
+        if (!source.smaa_srgb_view_attempted) {
+          source.smaa_srgb_view_attempted = true;
+          VkImageViewUsageCreateInfo usage{};
+          usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+          usage.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+          VkImageViewCreateInfo view{};
+          view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+          view.pNext = &usage;
+          view.image = source.resource.image;
+          view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+          view.format = source.smaa_srgb_format;
+          view.components = source.view_components;
+          view.subresourceRange = ui::vulkan::util::InitializeSubresourceRange(
+              VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
+          if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] {
+                return vulkan_device->functions().vkCreateImageView(vulkan_device->device(),
+                    &view, nullptr, &source.smaa_srgb_view);
+              }) != VK_SUCCESS) source.smaa_srgb_view = VK_NULL_HANDLE;
+          if (source.smaa_srgb_view)
+            NameNativeFlightObject(VK_OBJECT_TYPE_IMAGE_VIEW,
+                NativeVulkanHandleIdentity(source.smaa_srgb_view),
+                fmt::format("GTA4 SMAA sRGB view handle {:08X} generation {}",
+                            present_source->handle, present_source->generation));
+        }
+        smaa_linear_view = source.smaa_srgb_view;
+      }
+    }
+    const auto capture_hardware_path = [&] {
+      if (!NativeHardwareSmaaEnabled()) return;
+      if (smaa_output.hardware_filtered) {
+        if (++native_smaa_hardware_frames_ == 1)
+          REXLOG_INFO("gta4-native-graphics: hardware-smaa=active format={} extent={}x{}",
+                      uint32_t(source.smaa_srgb_format), shader_source_width, shader_source_height);
+      } else ++native_smaa_hardware_fallbacks_;
+    };
     const PostFxExtent smaa_extent{shader_source_width, shader_source_height};
     if (smaa_pipeline_.RequiresExtentResourceRecreation(smaa_extent) &&
         !CompleteSecondaryNativeFrameSlot()) {
@@ -27554,7 +27723,8 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
       ++native_smaa_fusion_requests_;
       if (smaa_pipeline_.Record(command_buffer, vulkan_device, frame_descriptor_pool_,
           native_pipeline_cache_, shader_source_image, shader_source_view, *shader_source_layout,
-          {shader_source_width, shader_source_height}, quality, smaa_output, timing, &destination)) {
+          {shader_source_width, shader_source_height}, quality, smaa_output, timing, &destination, smaa_linear_view)) {
+        capture_hardware_path();
         if (++native_smaa_fusion_frames_ == 1) {
           REXLOG_INFO("gta4-native-graphics: fused-smaa=active extent={}x{} hdr={} "
                       "intermediate-bytes-omitted={}", presenter_width, presenter_height,
@@ -27571,7 +27741,8 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
     smaa_applied = smaa_pipeline_.Record(
         command_buffer, vulkan_device, frame_descriptor_pool_, native_pipeline_cache_,
         shader_source_image, shader_source_view, *shader_source_layout,
-        {shader_source_width, shader_source_height}, quality, smaa_output, timing);
+        {shader_source_width, shader_source_height}, quality, smaa_output, timing, nullptr, smaa_linear_view);
+    capture_hardware_path();
     if (smaa_applied) {
       shader_source_image = smaa_output.image;
       shader_source_view = smaa_output.view;
@@ -35189,6 +35360,10 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     values[light::UnusedBankBindings] = constant_arena.unused_bank_bindings;
     values[light::UnusedBankLogicalBytes] = constant_arena.unused_bank_bytes_avoided;
     values[light::ProjectionReuses] = constant_arena.projection_reuses;
+    values[light::HardwareSmaaEnabled] = NativeHardwareSmaaEnabled();
+    values[light::SmaaHardwareRequests] = native_smaa_hardware_requests_;
+    values[light::SmaaHardwareFrames] = native_smaa_hardware_frames_;
+    values[light::SmaaHardwareFallbacks] = native_smaa_hardware_fallbacks_;
     values[light::AssemblyEnabled] = NativeFrameAssemblyEnabled();
     values[light::AssemblySnapshotReuses] = assembly_snapshot_reuses_;
     values[light::AssemblyPipelineRequests] = assembly_pipeline_requests_;

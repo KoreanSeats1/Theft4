@@ -10,8 +10,10 @@
 namespace rex::graphics::gta4_native {
 struct NativeImageAllocationKey {
   // flags, type, format, width/height/depth, mip levels, layers, samples,
-  // tiling and usage. Only exclusive, unextended creation infos are pooled.
+  // tiling and usage. Only exclusive, unextended creation infos or the
+  // explicitly recognized UNORM/sRGB two-format list are pooled.
   std::array<uint32_t, 11> fields{};
+  std::array<uint32_t, 2> view_formats{};
   bool operator==(const NativeImageAllocationKey&) const = default;
 };
 template <typename Allocation>

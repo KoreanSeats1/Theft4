@@ -13,6 +13,11 @@ vec3 smaa_linear_to_srgb(vec3 color) {
 }
 
 vec4 smaa_sample_srgb_linear(vec2 texcoord) {
+#ifdef SMAA_HARDWARE_SRGB
+  // An sRGB view of the same UNORM image decodes RGB before linear filtering.
+  // Alpha remains linear. The encoded view still supplies the no-edge path.
+  return textureLod(color_linear_tex, texcoord, 0.0);
+#else
   ivec2 extent = textureSize(color_gamma_tex, 0);
   vec2 texel_position = texcoord * vec2(extent) - vec2(0.5);
   ivec2 base = ivec2(floor(texel_position));
@@ -28,12 +33,14 @@ vec4 smaa_sample_srgb_linear(vec2 texcoord) {
   vec4 linear_11 = vec4(smaa_srgb_to_linear(encoded_11.rgb), encoded_11.a);
   return mix(mix(linear_00, linear_10, factor.x),
              mix(linear_01, linear_11, factor.x), factor.y);
+#endif
 }
 
 // This is the canonical SMAA 1x neighborhood pass with explicit sRGB
 // decode/encode. The guest frontbuffer is stored as encoded UNORM, so this is
-// equivalent to FusionFix's D3DSAMP_SRGBTEXTURE + D3DRS_SRGBWRITEENABLE path
-// without requiring a mutable-format view of a guest-owned Vulkan image.
+// equivalent to FusionFix's D3DSAMP_SRGBTEXTURE + D3DRS_SRGBWRITEENABLE path.
+// The optional hardware variant supplies a compatible, sampling-only sRGB view;
+// the manual variant remains available for every unsupported image/device.
 vec4 smaa_neighborhood_srgb(vec2 texcoord, vec4 offset) {
   vec4 a;
   a.x = texture(blend_tex, offset.xy).a;

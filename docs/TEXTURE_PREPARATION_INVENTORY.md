@@ -142,12 +142,23 @@ On 2026-10-02, both host test binaries passed, all 49,867 unique textures
 passed a second manifest-key reconstruction check, the iOS Release compiler
 check passed, and the updated test app installed on the A12Z iPad. Its
 on-device indexing screen was visually checked with live progress and a Pause
-button. Full on-device preparation, resume acceptance and gameplay comparison
-remain pending until that run finishes.
+button. On-device preparation finished at 19:45:04 local: all 49,867 keys
+were persisted, with 47,019 newly encoded and 2,848 reused. After a user pause
+and resume during indexing, the completed run took 38 minutes 15 seconds:
+6 minutes 59 seconds indexing and 31 minutes 16 seconds preparation. Including
+the earlier interrupted indexing attempt, elapsed time was 41 minutes 23 seconds.
+ASTC payload is 2.39 GiB; cache metadata and filesystem overhead add to that.
 The subsequent UI/cache-control revision also passed both host tests and the
 iOS Release compiler check. It is saved as an installable app under
-`out/device-apps/astc-preparation-ui-20261002/Theft4.app`; installation is
-deferred until the current A12Z preparation completes, as the user requested.
+`out/device-apps/astc-preparation-ui-20261002/Theft4.app`; it was installed after
+completion, as requested. Normal launch displayed the ready launcher with
+ASTC On and no preparation overlay or new sweep. A copied real cache entry
+matched the host's canonical source hash, mip layout and payload checksum and
+was reused without encoding. The normal-launch console did not capture the
+early cache verification message, so no precise launch-check time is claimed.
+Completion JSON and a readiness screenshot are retained under
+`out/texture-reports/a12z-2026-10-02/`. Gameplay comparison and on-device cache
+confirmation-dialog inspection remain pending; the completed cache was retained.
 The encoder is Arm's `astc-encoder` 5.3.0 (Apache-2.0),
 vendored under `thirdparty/astc-encoder` with its license bundled in the app.
 

@@ -39,6 +39,9 @@
 @property(nonatomic, readonly) UISwitch *hardwareSmaa;
 @property(nonatomic, readonly) UISwitch *frameResourceSharing;
 @property(nonatomic, readonly) UISwitch *parallelTextureConversion;
+#ifdef THEFT4_ASTC_EXPERIMENT
+@property(nonatomic, readonly) UISwitch *astcConversion;
+#endif
 @property(nonatomic, readonly) UISwitch *memoryRecovery;
 @property(nonatomic, readonly) UISwitch *commandStream;
 @property(nonatomic, readonly) UISwitch *cpuCleanup;

@@ -17945,9 +17945,9 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   const bool is_bc = format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ||
                      format == VK_FORMAT_BC2_UNORM_BLOCK ||
                      format == VK_FORMAT_BC3_UNORM_BLOCK;
-  const char* force_setting = std::getenv("THEFT4_ASTC_FORCE");
-  const bool force_astc = force_setting && std::strcmp(force_setting, "1") == 0;
-  if (is_bc && !texture->gpu_produced && (!source_supported || force_astc)) {
+  const char* enabled_setting = std::getenv("THEFT4_ASTC_ENABLED");
+  const bool astc_enabled = enabled_setting && std::strcmp(enabled_setting, "1") == 0;
+  if (is_bc && !texture->gpu_produced) {
     const auto source_format =
         format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ? theft4::astc::BcFormat::kBc1
       : format == VK_FORMAT_BC2_UNORM_BLOCK ? theft4::astc::BcFormat::kBc2
@@ -17967,6 +17967,10 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     const std::filesystem::path root = root_setting && *root_setting
                                            ? std::filesystem::path(root_setting)
                                            : std::filesystem::path();
+    if (!astc_enabled) {
+      theft4::astc::RecordObservedTexture(
+          root, input, nullptr, source_supported ? "bc-direct" : "bc-unsupported", 0);
+    } else {
     theft4::astc::Prepared prepared;
     std::string preparation_error;
     const auto started = std::chrono::steady_clock::now();
@@ -18018,6 +18022,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     }
     upload_payload = &converted_payload;
     upload_mips = &converted_mips;
+    }
   }
 #endif
   if ((format_properties.optimalTilingFeatures & kRequiredTextureFeatures) !=

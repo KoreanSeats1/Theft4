@@ -5,8 +5,8 @@ static NSString *const Theft4TextureInventoryErrorDomain = @"Theft4TextureInvent
 
 BOOL Theft4DeviceNeedsBCTexturePreparation(void) {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    // An unavailable capability query is unknown, not evidence of missing BC.
-    return device && [device respondsToSelector:@selector(supportsBCTextureCompression)] &&
+    // If capability detection is unavailable, favor the compatibility path.
+    return !device || ![device respondsToSelector:@selector(supportsBCTextureCompression)] ||
            !device.supportsBCTextureCompression;
 }
 

@@ -2,10 +2,17 @@
 enable_language(OBJC)
 set(THEFT4_BUNDLE_IDENTIFIER "com.lukebrosious.theft4" CACHE STRING "Theft4 app bundle ID")
 set(THEFT4_DISPLAY_NAME "Theft4" CACHE STRING "Name shown on the device")
+option(THEFT4_ASTC_EXPERIMENT
+    "Enable isolated on-device BC-to-ASTC preparation and discovery" OFF)
 option(THEFT4_LAB_BUILD "Enable the M5 performance and capture baseline" ON)
 if(THEFT4_LAB_BUILD)
-    if(NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4" OR
-       NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4")
+    if(THEFT4_ASTC_EXPERIMENT)
+        if(NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4.astc" OR
+           NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4 ASTC")
+            message(FATAL_ERROR "The ASTC experiment requires its separate app identity")
+        endif()
+    elseif(NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4" OR
+           NOT THEFT4_DISPLAY_NAME STREQUAL "Theft4")
         message(FATAL_ERROR "The M5 baseline requires the official Theft4 app identity")
     endif()
     set(THEFT4_LAB_PLIST_VALUE "<true/>")
@@ -23,8 +30,6 @@ option(THEFT4_COMPILE_GTA4_NATIVE_BACKEND
     "Compile-check LibertyRecomp's GTA IV native renderer for iOS without selecting it" OFF)
 option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
     "Embed the GTA IV native renderer behind THEFT4_GRAPHICS_BACKEND=native" OFF)
-option(THEFT4_ASTC_EXPERIMENT
-    "Enable isolated on-device BC-to-ASTC preparation and discovery" OFF)
 if(THEFT4_ASTC_EXPERIMENT AND NOT THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
     message(FATAL_ERROR "The ASTC experiment requires the GTA IV native renderer")
 endif()

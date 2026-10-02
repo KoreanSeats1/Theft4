@@ -236,6 +236,9 @@ static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
     UISwitch *_hardwareSmaa;
     UISwitch *_frameResourceSharing;
     UISwitch *_parallelTextureConversion;
+#ifdef THEFT4_ASTC_EXPERIMENT
+    UISwitch *_astcConversion;
+#endif
     UISwitch *_memoryRecovery;
     UISwitch *_commandStream;
     UISwitch *_cpuCleanup;
@@ -419,6 +422,11 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4ParallelTextureConversion": @YES,
         @"Theft4DetailedPerformanceCapture": @NO
     }];
+#ifdef THEFT4_ASTC_EXPERIMENT
+    [NSUserDefaults.standardUserDefaults registerDefaults:@{
+        @"Theft4AstcConversion": @(Theft4DeviceNeedsBCTexturePreparation())
+    }];
+#endif
     // Build 65 uses build 44's indices. Migrate those persisted choices once,
     // independently of the retired 0.2.1 migration markers. Never apply Auto here.
     NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
@@ -511,6 +519,12 @@ static void bootEvent(void *context, const char *event) {
     _parallelTextureConversion = _bringupOverlay.parallelTextureConversion;
     _parallelTextureConversion.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ParallelTextureConversion"];
     [_parallelTextureConversion addTarget:self action:@selector(parallelTextureConversionChanged:) forControlEvents:UIControlEventValueChanged];
+#ifdef THEFT4_ASTC_EXPERIMENT
+    _astcConversion = _bringupOverlay.astcConversion;
+    _astcConversion.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4AstcConversion"];
+    [_astcConversion addTarget:self action:@selector(astcConversionChanged:)
+        forControlEvents:UIControlEventValueChanged];
+#endif
     _parallelPreparation = _bringupOverlay.parallelPreparation;
     _parallelPreparation.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ParallelPreparation"];
     [_parallelPreparation addTarget:self action:@selector(parallelPreparationChanged:)
@@ -799,10 +813,10 @@ static void bootEvent(void *context, const char *event) {
         ![NSUserDefaults.standardUserDefaults boolForKey:Theft4TextureSourcesReviewedDefaultsKey()]) {
 #ifdef THEFT4_ASTC_EXPERIMENT
         NSString *capability = Theft4DeviceNeedsBCTexturePreparation()
-            ? @"This iPad does not support BC textures directly."
-            : @"This iPad supports BC textures; this test app will force ASTC conversion for comparison.";
+            ? @"This device does not support BC textures directly, so the cyan ASTC switch starts On."
+            : @"This device supports BC textures, so the cyan ASTC switch starts Off. Turn it On to compare conversion.";
         [self showInstallationTitle:@"ASTC TEST: FIRST LAUNCH"
-                             detail:[NSString stringWithFormat:@"%@\n\nThis separate app has its own game files and saves. The next step lists likely source containers; it does not alter them. While you play, each newly encountered BC texture is converted to ASTC and saved in this app's cache. New areas may pause while conversion runs. Later visits should reuse the cache. The observed texture list is included in the diagnostic export; one play session cannot cover the whole game.", capability]
+                             detail:[NSString stringWithFormat:@"%@\n\nThis separate app has its own game files and saves. The next step lists likely source containers without changing them. Gameplay records encountered BC textures even with conversion Off. With the cyan switch On, first encounters convert to ASTC and save a cache; new areas may pause, while revisits should be faster. Off uses the original path and may show missing textures on unsupported devices. Export Diagnostics to get the observed list. One route cannot cover the whole game.", capability]
                         actionTitle:@"REVIEW SOURCE FILES" spinner:NO
                                step:Theft4InstallationStepTextureSources];
 #else
@@ -995,7 +1009,7 @@ static void bootEvent(void *context, const char *event) {
             if (saved) {
 #ifdef THEFT4_ASTC_EXPERIMENT
                 NSString *detail = [NSString stringWithFormat:
-                    @"Found %@ texture dictionaries, %@ archives, and %@ other graphics resources. This is a source-container list, not a list of individual textures. Play a repeatable route after opening the main screen. ASTC conversion and the observed-texture list begin when the game loads textures; conversion may pause the game on first encounter. Your original game files stay unchanged.",
+                    @"Found %@ texture dictionaries, %@ archives, and %@ other graphics resources. This lists source containers, not individual textures. Play a repeatable route to collect the observed-texture list. Use the cyan ASTC switch in System before Play to turn conversion on or off; first conversion may pause. Your game files stay unchanged.",
                     inventory[@"textureDictionaries"], inventory[@"archives"],
                     inventory[@"graphicsResources"]];
                 [self showInstallationTitle:@"READY FOR ASTC TEST"
@@ -1284,6 +1298,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)parallelTextureConversionChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4ParallelTextureConversion"];
 }
+#ifdef THEFT4_ASTC_EXPERIMENT
+- (void)astcConversionChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4AstcConversion"];
+    [self record:sender.on ? @"astc.enabled_for_next_launch" : @"astc.disabled_for_next_launch"];
+}
+#endif
 - (void)parallelPreparationChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4ParallelPreparation"];
 }
@@ -2167,7 +2187,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         NSString *preparationRoot = [_supportURL.path
             stringByAppendingPathComponent:@"texture-preparation"];
         setenv("THEFT4_ASTC_PREPARATION_ROOT", preparationRoot.fileSystemRepresentation, 1);
-        setenv("THEFT4_ASTC_FORCE", "1", 1);
+        setenv("THEFT4_ASTC_ENABLED", _astcConversion.on ? "1" : "0", 1);
 #endif
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(_frameScheduling.on);

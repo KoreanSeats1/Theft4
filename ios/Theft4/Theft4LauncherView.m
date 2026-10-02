@@ -359,6 +359,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _parallelTextureConversion = [UISwitch new];
     _parallelTextureConversion.onTintColor = Ink(0xB6884D);
     _parallelTextureConversion.accessibilityIdentifier = @"settings.parallelTextureConversion";
+#ifdef THEFT4_ASTC_EXPERIMENT
+    _astcConversion = [UISwitch new];
+    _astcConversion.onTintColor = Ink(0x35CDD1);
+    _astcConversion.accessibilityIdentifier = @"settings.astcConversion";
+#endif
     _parallelPreparation = [UISwitch new];
     _parallelPreparation.onTintColor = Ink(0xB6884D);
     _parallelPreparation.accessibilityIdentifier = @"settings.parallelPreparation";
@@ -385,7 +390,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _detailLabel = Copy(@"Waiting for runtime information…", 12, YES);
     _detailLabel.accessibilityIdentifier = @"core.details";
     NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
-    _system = Column(@[
+    NSMutableArray<UIView *> *systemRows = [NSMutableArray arrayWithArray:@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"RENDERER EFFICIENCY" detail:@"Reduce repeated draw setup and resource preparation. Turn off to compare. Fully close and reopen Theft4 after changing." toggle:_rendererEfficiency],
@@ -407,7 +412,23 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)
-    ], 20);
+    ]];
+#ifdef THEFT4_ASTC_EXPERIMENT
+    UIStackView *astcRow = (UIStackView *)[self setting:@"ASTC TEXTURE COMPATIBILITY"
+        detail:@"Convert BC textures as they appear and save the results. First visits may pause; revisits use the cache. Turn off to compare the original path. On devices without BC support, Off may leave textures missing. Set before Play."
+        toggle:_astcConversion];
+    astcRow.backgroundColor = [Ink(0x35CDD1) colorWithAlphaComponent:.12];
+    astcRow.layer.borderColor = [Ink(0x35CDD1) colorWithAlphaComponent:.60].CGColor;
+    astcRow.layer.borderWidth = 1;
+    astcRow.layer.cornerRadius = 8;
+    astcRow.layoutMargins = UIEdgeInsetsMake(13, 13, 13, 13);
+    astcRow.layoutMarginsRelativeArrangement = YES;
+    UIStackView *astcText = (UIStackView *)astcRow.arrangedSubviews.firstObject;
+    UILabel *astcTitle = (UILabel *)astcText.arrangedSubviews.firstObject;
+    astcTitle.textColor = Ink(0x6BE5E7);
+    [systemRows insertObject:astcRow atIndex:2];
+#endif
+    _system = Column(systemRows, 20);
 
     _pages = @[_play, _graphics, _interfacePage, _system];
     _scroll = [UIScrollView new];

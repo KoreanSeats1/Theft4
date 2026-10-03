@@ -5,6 +5,7 @@ set(THEFT4_DISPLAY_NAME "Theft4" CACHE STRING "Name shown on the device")
 option(THEFT4_ASTC_EXPERIMENT
     "Enable isolated on-device BC-to-ASTC preparation and discovery" OFF)
 option(THEFT4_LAB_BUILD "Enable the M5 performance and capture baseline" ON)
+option(THEFT4_DIRECT_METAL_BACKEND "Compile the experimental live Metal frame backend (not selected by launcher)" OFF)
 option(THEFT4_NATIVE_METAL_CAPTURE "Record bounded private CPU draws for direct Metal replay" OFF)
 set(THEFT4_RENDER_SOURCE_REVISION "development" CACHE STRING "Source revision for private draw captures")
 if(THEFT4_NATIVE_METAL_CAPTURE AND NOT THEFT4_LAB_BUILD)
@@ -38,6 +39,9 @@ option(THEFT4_ENABLE_GTA4_NATIVE_BACKEND
 option(THEFT4_BC_TEXTURE_COMPATIBILITY
     "Prepare unsupported BC textures and select older GPU compatibility paths"
     ${THEFT4_ENABLE_GTA4_NATIVE_BACKEND})
+if(THEFT4_DIRECT_METAL_BACKEND AND NOT THEFT4_ENABLE_GTA4_NATIVE_BACKEND)
+    message(FATAL_ERROR "The live Metal frontend requires the GTA IV native backend")
+endif()
 if(THEFT4_ASTC_EXPERIMENT)
     set(THEFT4_BC_TEXTURE_COMPATIBILITY ON)
 endif()
@@ -250,11 +254,30 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
             GTA4_NATIVE_FONT_ASSET_ROOT="${THEFT4_NATIVE_FONT_ASSET_ROOT}")
         target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
-        if(THEFT4_NATIVE_METAL_CAPTURE)
+        if(THEFT4_NATIVE_METAL_CAPTURE OR THEFT4_DIRECT_METAL_BACKEND)
             target_sources(theft4_gta4_native_compile PRIVATE
                 bridge/theft4_render_plan.cpp
-                bridge/theft4_render_plan_source.cpp
-                bridge/theft4_draw_capture.cpp)
+                bridge/theft4_render_plan_source.cpp)
+        endif()
+        if(THEFT4_DIRECT_METAL_BACKEND)
+            target_sources(theft4_gta4_native_compile PRIVATE
+                bridge/theft4_frame_plan.cpp
+                bridge/theft4_metal_backend.mm
+                bridge/theft4_native_metal.mm
+                bridge/theft4_metal_shader_catalog.cpp
+                bridge/theft4_metal_shader_store.mm
+                bridge/theft4_metal_resources.mm
+                bridge/theft4_metal_plan.mm
+                bridge/theft4_metal_frame.mm
+                bridge/theft4_metal_host_shaders.mm)
+            target_compile_options(theft4_gta4_native_compile PRIVATE
+                "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+            target_compile_definitions(theft4_gta4_native_compile PUBLIC THEFT4_DIRECT_METAL_BACKEND=1)
+            target_link_libraries(theft4_gta4_native_compile PRIVATE
+                "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+        endif()
+        if(THEFT4_NATIVE_METAL_CAPTURE)
+            target_sources(theft4_gta4_native_compile PRIVATE bridge/theft4_draw_capture.cpp)
             target_compile_definitions(theft4_gta4_native_compile PRIVATE
                 "THEFT4_RENDER_SOURCE_REVISION=\"${THEFT4_RENDER_SOURCE_REVISION}\"")
             # The bridge constructs this class outside the native archive;

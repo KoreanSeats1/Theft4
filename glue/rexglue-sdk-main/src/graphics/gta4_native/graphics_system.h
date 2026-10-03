@@ -97,6 +97,9 @@
 #include "split_postfx_pass.h"
 #include "sun_shafts_pass.h"
 
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+#include "theft4_frame_backend.h"
+#endif
 struct ShaderCacheEntry;
 struct ShaderOverrideCacheEntry;
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
@@ -127,12 +130,20 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   Gta4NativeGraphicsSystem(std::unique_ptr<ui::GraphicsProvider> provider,
                            std::unique_ptr<ui::Presenter> presenter,
                            std::unique_ptr<ui::Surface> external_surface);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  explicit Gta4NativeGraphicsSystem(std::unique_ptr<theft4::render::FrameBackend>);
+#endif
   ~Gta4NativeGraphicsSystem() override;
 
   X_STATUS SetupPresentation(ui::WindowedAppContext* app_context) override;
   X_STATUS SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
                          system::KernelState* kernel_state) override;
-  bool has_presentation() const override { return presenter_ != nullptr; }
+  bool has_presentation() const override {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    if (frame_backend_) return frame_backend_->HasPresentation();
+#endif
+    return presenter_ != nullptr;
+  }
   ui::GraphicsProvider* provider() const override { return provider_.get(); }
   ui::Presenter* presenter() const override { return presenter_.get(); }
 
@@ -1876,6 +1887,20 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // Optional externally created presentation surface. Declared before the
   // provider and presenter so those GPU objects are destroyed first.
   std::unique_ptr<ui::Surface> external_surface_;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  std::unique_ptr<theft4::render::FrameBackend> frame_backend_;
+  struct NativeMetalFrameState;
+  std::unique_ptr<NativeMetalFrameState> native_metal_frame_;
+  uint64_t next_native_metal_allocation_ = 0;
+  uint64_t next_native_metal_sequence_ = 0;
+  // Startup acknowledgement uses render_mutex_/render_condition_.
+  bool native_metal_worker_open_complete_ = false;
+  bool native_metal_worker_open_succeeded_ = false;
+  bool PublishNativeMetalFrame(const PresentCommand&,
+      const std::shared_ptr<const NativeTextureResource>&, std::string& error);
+  void ResetNativeMetalFrontend();
+  void ReleaseNativeMetalResource(uint32_t handle);
+#endif
   std::unique_ptr<ui::GraphicsProvider> provider_;
   std::unique_ptr<ui::Presenter> presenter_;
 

@@ -126,6 +126,8 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_pipeline_recipe.h"
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
 #include "theft4_draw_capture.h"
+#endif
+#if defined(THEFT4_NATIVE_METAL_CAPTURE) || defined(THEFT4_DIRECT_METAL_BACKEND)
 #include "theft4_render_plan_source.h"
 #endif
 #include "native_spirv_reflection.h"
@@ -3892,6 +3894,9 @@ struct Gta4NativeGraphicsSystem::NativePipelineCompilerState {
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
 #include "metal_draw_capture.inc"
 #endif
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+#include "metal_frame_frontend.inc"
+#endif
 
 size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
     const NativePipelineKey& key) const noexcept {
@@ -3981,6 +3986,13 @@ Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem(
       cpu_present_admission_limit_(
           std::clamp(REXCVAR_GET(gta4_native_cpu_present_admission), 1u, 2u)) {}
 
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+Gta4NativeGraphicsSystem::Gta4NativeGraphicsSystem(
+    std::unique_ptr<theft4::render::FrameBackend> backend)
+    : frame_backend_(std::move(backend)),
+      cpu_present_admission_limit_(
+          std::clamp(REXCVAR_GET(gta4_native_cpu_present_admission), 1u, 2u)) {}
+#endif
 Gta4NativeGraphicsSystem::~Gta4NativeGraphicsSystem() {
   Shutdown();
 }
@@ -4390,6 +4402,13 @@ void Gta4NativeGraphicsSystem::NameNativeFlightObject(VkObjectType type, uint64_
   } while (0)
 
 X_STATUS Gta4NativeGraphicsSystem::SetupPresentation(ui::WindowedAppContext* app_context) {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    app_context_ = app_context;
+    InitializeRendererAntiAliasingController();
+    return frame_backend_->HasPresentation() ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;
+  }
+#endif
   if (presenter_) {
     return X_STATUS_SUCCESS;
   }
@@ -4427,6 +4446,31 @@ X_STATUS Gta4NativeGraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* fu
     return X_STATUS_UNSUCCESSFUL;
   }
 
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    if (!frame_backend_->Capabilities().max_image_dimension_2d) {
+      memory_ = nullptr;
+      return X_STATUS_UNSUCCESSFUL;
+    }
+    {
+      std::lock_guard lock(render_mutex_);
+      native_metal_worker_open_complete_ = false;
+      native_metal_worker_open_succeeded_ = false;
+    }
+    StartRenderWorker();
+    std::unique_lock lock(render_mutex_);
+    render_condition_.wait(lock, [this] {
+      return native_metal_worker_open_complete_ || !render_worker_running_.load();
+    });
+    const bool opened = native_metal_worker_open_succeeded_;
+    lock.unlock();
+    if (!opened) {
+      Shutdown();
+      return X_STATUS_UNSUCCESSFUL;
+    }
+    return X_STATUS_SUCCESS;
+  }
+#endif
   if (!provider_) {
     provider_ = ui::vulkan::VulkanProvider::Create(false, false, true, true);
     if (!provider_) {
@@ -4844,9 +4888,18 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
 
   if (header.type == CommandType::kQueryDeviceCapabilities) {
     if (command_size != sizeof(QueryDeviceCapabilitiesCommand) ||
-        result_size != sizeof(DeviceCapabilitiesResult) || !provider_) {
+        result_size != sizeof(DeviceCapabilitiesResult)) {
       return false;
     }
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    if (frame_backend_) {
+      DeviceCapabilitiesResult capabilities{};
+      capabilities.max_image_dimension_2d = frame_backend_->Capabilities().max_image_dimension_2d;
+      std::memcpy(result, &capabilities, sizeof(capabilities));
+      return capabilities.max_image_dimension_2d != 0;
+    }
+#endif
+    if (!provider_) return false;
     auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
     const auto* vulkan_device = vulkan_provider->vulkan_device();
     if (!vulkan_device) {
@@ -6962,6 +7015,15 @@ void Gta4NativeGraphicsSystem::WaitForHostActivity() {
   // Drain outside render_mutex_: producers and the UI must remain able to wait.
   const uint64_t begin = rex::chrono::Clock::QueryHostTickCount();
   VkResult result = VK_SUCCESS;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    std::string error;
+    if (!frame_backend_->Drain(error)) {
+      result = VK_ERROR_DEVICE_LOST;
+      REXLOG_ERROR("gta4-metal: background drain failed: {}", error);
+    }
+  } else
+#endif
   if (provider_) {
     const auto* device = static_cast<ui::vulkan::VulkanProvider*>(provider_.get())->vulkan_device();
     result = device->functions().vkDeviceWaitIdle(device->device());
@@ -7124,6 +7186,28 @@ void Gta4NativeGraphicsSystem::TraceModernShaderDraw(
 }
 
 void Gta4NativeGraphicsSystem::RenderWorkerMain() {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    std::string error;
+    const bool opened = frame_backend_->Open(error);
+    {
+      std::lock_guard lock(render_mutex_);
+      native_metal_worker_open_complete_ = true;
+      native_metal_worker_open_succeeded_ = opened;
+    }
+    render_condition_.notify_all();
+    if (!opened) {
+      REXLOG_ERROR("gta4-metal: worker open failed: {}", error);
+      // SetupGuestGpu observes failure and joins this worker through Shutdown.
+      // No guest command can run against an unopened GPU backend.
+      std::unique_lock lock(render_mutex_);
+      render_condition_.wait(lock, [this] { return !render_worker_running_.load(); });
+      lock.unlock();
+      frame_backend_->Close();
+      return;
+    }
+  }
+#endif
   std::vector<std::pair<RenderPhase, uint32_t>> render_phase_stack;
   uint64_t startup_texture_lock_count = 0;
   bool startup_present_follows_texture_lock_flush = false;
@@ -7455,12 +7539,18 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
           last_pipeline_snapshot_.reset();
           last_shader_snapshot_.reset();
           ClearNativeFrameCommands();
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+          if (frame_backend_) ResetNativeMetalFrontend();
+#endif
           modern_shader_frame_.Reset();
           semantic_light_setup_lineage_.OnBoundary(NativeLightingBatchBoundary::kDeviceReset);
         }
         break;
       }
       case CommandType::kDeviceDestroyed: {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+        if (frame_backend_) ResetNativeMetalFrontend();
+#endif
         DeviceCommand device{};
         std::memcpy(&device, command.bytes.data(), sizeof(device));
         environmental_data_by_device_.erase(device.device);
@@ -7581,6 +7671,17 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       case CommandType::kReleaseResource: {
         ReleaseResourceCommand release{};
         std::memcpy(&release, command.bytes.data(), sizeof(release));
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+        if (frame_backend_) {
+          EraseNativeReflectionRegistration(reflection_resources_, release.resource);
+          if (current_frame_.empty()) ReleaseNativeMetalResource(release.resource);
+          else {
+            AddProtectedTextureGenerations(command, frame_texture_protection_);
+            RetainWorkerCommand(command);
+          }
+          break;
+        }
+#endif
         for (const auto& image : native_surface_images_) {
           if (!image || image->descriptor.handle != release.resource) {
             continue;
@@ -7897,6 +7998,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
             command.type == CommandType::kDrawIndexedPrimitive) {
           SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kPipelinePrewarm);
           const uint64_t prewarm_begin = sparse_transport ? profile::CpuTick() : 0;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+          if (!frame_backend_)
+#endif
           TryPrewarmDrawPipeline(command);
           if (prewarm_begin) light_assembly_prewarm_ticks_ += profile::CpuTick() - prewarm_begin;
         }
@@ -7936,6 +8040,15 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
 #endif
 #ifdef THEFT4_LAB_BUILD
   cpu_cleanup_.Wait(); // all CPU destructors finish before GPU/cache/pool teardown
+#endif
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    std::string error;
+    if (!frame_backend_->Drain(error)) REXLOG_ERROR("gta4-metal: shutdown drain failed: {}", error);
+    ResetNativeMetalFrontend();
+    frame_backend_->Close();
+    DestroyShaderResources();
+  } else
 #endif
   DestroyVulkanWorkerObjects();
 }
@@ -8994,15 +9107,20 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
   if (existing != resources_by_hash.end()) {
     shader = existing->second;
   } else {
-    auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
-    const ui::vulkan::VulkanDevice* vulkan_device =
-        vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
-    if (!vulkan_device) {
-      REXLOG_ERROR("gta4-native: Vulkan device unavailable while registering shader");
-      return;
-    }
     auto prepared = PrepareNativeShader(command, *cache_entry, override_entry);
-    if (!prepared || !RealizeVulkanShader(*prepared, *vulkan_device)) return;
+    if (!prepared) return;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    if (!frame_backend_)
+#endif
+    {
+      auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
+      const auto* vulkan_device = vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
+      if (!vulkan_device) {
+        REXLOG_ERROR("gta4-native: Vulkan device unavailable while registering shader");
+        return;
+      }
+      if (!RealizeVulkanShader(*prepared, *vulkan_device)) return;
+    }
     auto resource = std::move(prepared->shader);
 
     shader = resource.get();
@@ -9011,6 +9129,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
   }
 
   shader_handles_[command.shader] = shader;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (!frame_backend_)
+#endif
   ReplayNativePipelineRecipes();
   ++shader_registration_count_;
   if (shader_registration_count_ <= 16 || !(shader_registration_count_ % 256)) {
@@ -28721,6 +28842,12 @@ bool Gta4NativeGraphicsSystem::ReadbackTextureToGuest(const TextureLockCommand& 
   if (!texture->gpu_produced) {
     return true;
   }
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    REXLOG_ERROR("gta4-metal: guest texture readback awaits resolve/resource lowering");
+    return false;
+  }
+#endif
   if (command.array_index || command.dimension != TextureLockDimension::k2D) {
     REXLOG_ERROR("gta4-native: unresolved native texture lock dimension {} array {}",
                  uint32_t(command.dimension), command.array_index);
@@ -36021,6 +36148,17 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) {
+    std::string error;
+    const bool okay = PublishNativeMetalFrame(present, present_source, error);
+    if (!okay) REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
+#if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
+    if (okay && present.device) theft4_frame_counter_note_published();
+#endif
+    return okay;
+  }
+#endif
   prewarm_target_cache_.valid = false;
   preparation_draws_ = preparation_cpu_ns_ = preparation_work_ticks_ = 0;
   preparation_wait_ticks_ = preparation_dispatch_ticks_ = preparation_queue_delay_ticks_ = 0;

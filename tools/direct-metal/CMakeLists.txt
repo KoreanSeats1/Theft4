@@ -79,3 +79,15 @@ set(METAL_SOURCE_REVISION "development" CACHE STRING "Source commit represented 
 target_compile_definitions(metal_probe PRIVATE "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
 target_link_libraries(metal_probe PRIVATE metal_shader_catalog render_plan "-framework Foundation" "-framework Metal"
   "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO")
+
+# Exercise the live worker backend, independently from isolated draw replays.
+add_executable(metal_backend_worker_test backend_worker_test.mm
+  "${ROOT}/ios/bridge/theft4_metal_backend.mm"
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_metal_frame.mm" "${ROOT}/ios/bridge/theft4_metal_host_shaders.mm")
+target_include_directories(metal_backend_worker_test PRIVATE "${ROOT}/ios/bridge"
+  "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_backend_worker_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_backend_worker_test PRIVATE metal_shader_catalog render_plan
+  "-framework Foundation" "-framework Metal" "-framework QuartzCore")

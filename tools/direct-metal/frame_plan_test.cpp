@@ -29,6 +29,32 @@ FramePlan Plan() {
 }
 int main() {
   std::string error;SurfaceContents result;
+  // Consecutive title draws retain their order in a single encoder. Admission
+  // still sees the actual initial clear; later clears, target changes, copies,
+  // discard stores and resolves are boundaries and cannot disappear.
+  FramePlan joined;joined.sequence=1;joined.surfaces={SurfaceFor(101),SurfaceFor(102)};
+  Pass begin;begin.colors[0]=Color(101);begin.colors[0]->clear_color={0.25,0,0,1};
+  AppendPass(joined,begin);
+  Pass continuation;continuation.colors[0]=Color(101,Load::Load);
+  FrameDraw ordered;ordered.capture=DrawFor();continuation.commands.push_back(ordered);
+  AppendPass(joined,continuation);AppendPass(joined,continuation);
+  assert(joined.commands.size()==1&&std::get<Pass>(joined.commands[0]).commands.size()==2);
+  assert(std::get<Pass>(joined.commands[0]).colors[0]->load==Load::Clear);
+  assert(std::get<Pass>(joined.commands[0]).colors[0]->clear_color[0]==0.25);
+  assert(ValidateFrame(joined,{},result,error));
+  auto boundary=joined;AppendPass(boundary,begin);assert(boundary.commands.size()==2);
+  boundary=joined;auto changed=continuation;changed.colors[0]->view.surface={102,1};
+  AppendPass(boundary,changed);assert(boundary.commands.size()==2);
+  boundary=joined;changed=continuation;changed.colors[0]->store=Store::Discard;
+  AppendPass(boundary,changed);assert(boundary.commands.size()==2);
+  boundary=joined;std::get<Pass>(boundary.commands.back()).colors[0]->store=Store::Discard;
+  AppendPass(boundary,continuation);assert(boundary.commands.size()==2);
+  boundary=joined;changed=continuation;changed.depth=Attachment{};
+  AppendPass(boundary,changed);assert(boundary.commands.size()==2);
+  boundary=joined;std::get<Pass>(boundary.commands.back()).colors[0]->resolve=SurfaceView{{102,1},0,0,Aspect::Color};
+  AppendPass(boundary,continuation);assert(boundary.commands.size()==2);
+  boundary=joined;boundary.commands.push_back(ImageCopy{});AppendPass(boundary,continuation);
+  assert(boundary.commands.size()==3);
   auto good=Plan();assert(ValidateFrame(good,{},result,error));assert(result.size()==3);
   const auto reject=[&](FramePlan f,const SurfaceContents& initial={}) {
     SurfaceContents untouched{{{999,1},0,0,Aspect::Color}};auto before=untouched;

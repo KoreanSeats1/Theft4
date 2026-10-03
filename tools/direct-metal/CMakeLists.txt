@@ -91,3 +91,8 @@ target_include_directories(metal_backend_worker_test PRIVATE "${ROOT}/ios/bridge
 target_compile_options(metal_backend_worker_test PRIVATE -fobjc-arc -UNDEBUG)
 target_link_libraries(metal_backend_worker_test PRIVATE metal_shader_catalog render_plan
   "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(primitive_expansion_test primitive_expansion_test.cpp "${ROOT}/ios/bridge/theft4_primitive_expansion.cpp")
+target_include_directories(primitive_expansion_test PRIVATE "${ROOT}/ios/bridge")
+target_compile_options(primitive_expansion_test PRIVATE -UNDEBUG)
+add_test(NAME guest_primitive_expansion COMMAND primitive_expansion_test)

@@ -2,9 +2,25 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <iterator>
 #include <map>
 
 namespace theft4::render {
+void AppendPass(FramePlan& frame,Pass next) {
+  auto* previous=frame.commands.empty()?nullptr:std::get_if<Pass>(&frame.commands.back());
+  const auto compatible=[](const std::optional<Attachment>& a,const std::optional<Attachment>& b) {
+    if(bool(a)!=bool(b))return false;
+    return !a||(a->view==b->view&&!a->resolve&&!b->resolve&&
+        a->store==Store::Store&&b->store==Store::Store&&b->load==Load::Load);
+  };
+  bool merge=previous&&compatible(previous->depth,next.depth)&&compatible(previous->stencil,next.stencil);
+  if(merge)for(size_t slot=0;slot<next.colors.size();++slot)
+    merge&=compatible(previous->colors[slot],next.colors[slot]);
+  if(merge) {
+    previous->commands.insert(previous->commands.end(),std::make_move_iterator(next.commands.begin()),
+                              std::make_move_iterator(next.commands.end()));
+  } else frame.commands.push_back(std::move(next));
+}
 const Surface* FindSurface(const FramePlan& f,SurfaceKey key) {
   for(const auto& s:f.surfaces)if(s&&s->key==key)return s.get();
   return nullptr;

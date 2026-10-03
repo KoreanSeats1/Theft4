@@ -262,6 +262,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         if(THEFT4_DIRECT_METAL_BACKEND)
             target_sources(theft4_gta4_native_compile PRIVATE
                 bridge/theft4_frame_plan.cpp
+                bridge/theft4_primitive_expansion.cpp
                 bridge/theft4_metal_backend.mm
                 bridge/theft4_native_metal.mm
                 bridge/theft4_metal_shader_catalog.cpp

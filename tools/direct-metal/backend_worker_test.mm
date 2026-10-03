@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <cassert>
+#include <cstring>
 #include <thread>
 #include <iostream>
 using namespace theft4;
@@ -62,6 +63,46 @@ int main(int argc,char** argv) {
       size_t i=(y*32+x)*4;bool inside=x>=8&&x<16&&y>=4&&y<8;
       assert(pixels[i]==(inside?255:128));assert(pixels[i+1]==(inside?0:64));assert(pixels[i+2]==(inside?0:128));
     }
+    auto joined=Clear(surface,36,0.5);
+    render::Pass following;following.colors[0]=std::get<render::Pass>(joined->commands[0]).colors[0];
+    following.colors[0]->load=render::Load::Load;
+    rectangle.rectangle={0,0,16,16};rectangle.color={1,0,0,1};following.commands={rectangle};
+    render::AppendPass(*joined,following);
+    rectangle.rectangle={8,0,8,16};rectangle.color={0,1,0,1};following.commands={rectangle};
+    render::AppendPass(*joined,std::move(following));assert(joined->commands.size()==1);
+    assert(backend->Submit(joined,false,error));assert(backend->ReadRGBA8(*joined,*joined->output,pixels,error));
+    for(size_t y=0;y<16;++y)for(size_t x=0;x<32;++x) {
+      const size_t i=(y*32+x)*4;
+      assert(pixels[i]==(x<8?255:x<16?0:128));
+      assert(pixels[i+1]==(x<8?0:x<16?255:64));
+      assert(pixels[i+2]==(x<16?0:128));assert(pixels[i+3]==255);
+    }
+    // Exercise the same offline host programs and 64-byte resolve ABI used by
+    // the live title producer, including scaled color, exponent and MSAA.
+    for(uint32_t samples:{1u,4u}) {
+      if(!(caps.sample_counts&(1u<<samples)))continue;
+      auto input=std::make_shared<render::Surface>(*surface);input->key={100+samples,1};input->samples=samples;
+      auto output=std::make_shared<render::Surface>(*surface);output->key={200+samples,1};output->width=16;output->height=8;
+      auto resolved=Clear(input,40+samples,0.25);resolved->surfaces.push_back(output);
+      auto initialization=std::get<render::Pass>(Clear(output,40+samples,0)->commands[0]);
+      resolved->commands.push_back(initialization);
+      const std::array<uint32_t,16> constants{0,0,0,0,samples==1?0u:2u,samples==1?0u:2u,0,6,0,
+          samples==1?0u:2u,0,4u|(1u<<8),32,16,16,8};
+      auto bytes=std::make_shared<render::Bytes>();bytes->generation=40+samples;
+      bytes->value.resize(sizeof(constants));std::memcpy(bytes->value.data(),constants.data(),sizeof(constants));
+      render::HostDraw conversion;conversion.program=samples==1?render::HostProgram::Resolve:render::HostProgram::ResolveMSAA;
+      conversion.pipeline.colors[0]=render::Format::RGBA8Unorm;conversion.constants={bytes,0,sizeof(constants)};
+      conversion.scissor={0,0,16,8};conversion.fetches[0].produced=*resolved->output;
+      conversion.fetches[0].sampler=std::make_shared<render::Sampler>();
+      initialization.colors[0]->load=render::Load::Load;initialization.commands={conversion};
+      render::AppendPass(*resolved,std::move(initialization));
+      resolved->output=render::SurfaceView{output->key,0,0,render::Aspect::Color};
+      assert(backend->Submit(resolved,false,error));assert(backend->ReadRGBA8(*resolved,*resolved->output,pixels,error));
+      assert(pixels.size()==16*8*4);
+      for(size_t i=0;i<pixels.size();i+=4) {
+        assert(pixels[i]==128&&pixels[i+1]==128&&pixels[i+2]==255&&pixels[i+3]==255);
+      }
+    }
     auto noncolor=*partial->output;noncolor.aspect=render::Aspect::Depth;
     const auto saved=pixels;assert(!backend->ReadRGBA8(*partial,noncolor,pixels,error));assert(pixels==saved);
     backend->Close();assert(!backend->Submit(first,false,error));assert(!backend->Open(error));
@@ -86,6 +127,6 @@ int main(int argc,char** argv) {
     layer.pixelFormat=MTLPixelFormatBGR10_XR;const auto target_saved=target;
     assert(!presentation->Target(target,error));assert(target.width==target_saved.width);
     presentation->Close();
-    std::cout<<"Metal worker admission, ownership, drain, clears, readback and layer contracts passed\n";
+    std::cout<<"Metal worker admission, ownership, drain, joined passes, scaled color/MSAA resolve, readback and layer contracts passed\n";
   }
 }

@@ -6,7 +6,10 @@
 namespace theft4::render {
 struct BackendCapabilities {
   uint32_t max_image_dimension_2d=0;
-  bool bc_textures=false, float32_filtering=false;
+  bool bc_textures=false, astc_textures=false, float32_filtering=false;
+  bool mirror_clamp_to_edge=false;
+  uint32_t maximum_anisotropy=16;
+  float maximum_sampler_lod_bias=16;
   uint32_t sample_counts=0; // Bit N means sample count N is supported.
 };
 struct PresentationTarget {

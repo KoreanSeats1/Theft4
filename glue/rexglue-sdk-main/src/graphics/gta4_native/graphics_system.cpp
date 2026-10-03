@@ -130,6 +130,9 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #if defined(THEFT4_NATIVE_METAL_CAPTURE) || defined(THEFT4_DIRECT_METAL_BACKEND)
 #include "theft4_render_plan_source.h"
 #endif
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+#include "theft4_primitive_expansion.h"
+#endif
 #include "native_spirv_reflection.h"
 #include "native_stencil_volume_policy.h"
 #include "hdr_present_ps.h"
@@ -36143,6 +36146,10 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   }
   return recorded_draw;
 }
+
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+#include "metal_draw_frontend.inc"
+#endif
 
 bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,

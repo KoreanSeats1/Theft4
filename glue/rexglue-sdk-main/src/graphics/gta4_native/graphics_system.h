@@ -1898,6 +1898,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_metal_worker_open_succeeded_ = false;
   bool PublishNativeMetalFrame(const PresentCommand&,
       const std::shared_ptr<const NativeTextureResource>&, std::string& error);
+  bool PrepareNativeMetalDraw(const NativeCommand&, const NativeRenderingTarget&,
+      const NativeMetalFrameState&, theft4::render::FrameDraw&, std::string& error);
   void ResetNativeMetalFrontend();
   void ReleaseNativeMetalResource(uint32_t handle);
 #endif

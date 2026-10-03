@@ -103,6 +103,10 @@ struct FramePlan {
   std::vector<FrameCommand> commands;
   std::optional<SurfaceView> output;
 };
+// Join consecutive draws only when their attachment storage is unchanged and
+// the new pass simply loads the previous stores. Clears/resolves and copies
+// remain explicit boundaries; this avoids an encoder per title draw.
+void AppendPass(FramePlan&,Pass);
 using SurfaceContents=std::set<SurfaceView>;
 const Surface* FindSurface(const FramePlan&,SurfaceKey);
 uint32_t SurfaceSlices(const Surface&);

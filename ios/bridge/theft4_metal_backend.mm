@@ -17,6 +17,8 @@ class Backend final:public render::FrameBackend {
       caps_.max_image_dimension_2d=[device_ supportsFamily:MTLGPUFamilyApple3] ||
           [device_ supportsFamily:MTLGPUFamilyMac2] ? 16384 : 0;
       caps_.bc_textures=device_.supportsBCTextureCompression;
+      caps_.astc_textures=[device_ supportsFamily:MTLGPUFamilyApple3];
+      caps_.mirror_clamp_to_edge=[device_ supportsFamily:MTLGPUFamilyApple7] || [device_ supportsFamily:MTLGPUFamilyMac2];
       caps_.float32_filtering=device_.supports32BitFloatFiltering;
       for(uint32_t samples:{1u,2u,4u,8u})
         if([device_ supportsTextureSampleCount:samples])caps_.sample_counts|=1u<<samples;

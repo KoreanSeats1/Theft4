@@ -75,21 +75,8 @@ MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
     default:return MTLPixelFormatInvalid;
   }
 }
-std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,render::Primitive primitive,std::string& error) {
-  if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
-  if(p.negative_one_to_one){error="This game draw requires explicit negative-one-to-one clip-space shader lowering";return {};}
-  const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
-  if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
-  const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1},Stage::Vertex);
-  const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
-  if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
-  p.vertex.specialization=vs_meta->Specialization(p.vertex.specialization);
-  if(ps_meta)p.fragment.specialization=ps_meta->Specialization(p.fragment.specialization);
-  auto key=std::pair{p,primitive};if(auto it=pipelines_.find(key);it!=pipelines_.end()){error.clear();return it->second;}
-  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1},Stage::Vertex,p.vertex.specialization,error);
-  if(!vertex.function)return {};
-  Shader pixel{};
-  if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,p.fragment.specialization,error);if(!pixel.function)return {};}
+std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer& renderer,const render::Pipeline& p,
+    render::Primitive primitive,const Shader& vertex,const Shader* pixel,std::string& error) {
   auto descriptor=[MTLRenderPipelineDescriptor new];descriptor.rasterSampleCount=p.samples;
   descriptor.inputPrimitiveTopology=primitive==render::Primitive::Point ? MTLPrimitiveTopologyClassPoint :
       (primitive==render::Primitive::Line||primitive==render::Primitive::LineStrip) ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
@@ -105,13 +92,13 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,rend
   for(size_t i=0;i<4;++i) {
     const auto format=p.colors[i];
     if(format>=render::Format::Depth32Float&&format!=render::Format::Invalid){error="Game color target is not a renderable color format";return {};}
-    const auto& b=p.blends[i];auto a=descriptor.colorAttachments[i];a.pixelFormat=PixelFormat(format);
+    const auto& b=p.blends[i];auto a=descriptor.colorAttachments[i];a.pixelFormat=PlanAdapter::PixelFormat(format);
     a.blendingEnabled=b.enabled;a.sourceRGBBlendFactor=BlendFactor(b.source_rgb);
     a.destinationRGBBlendFactor=BlendFactor(b.destination_rgb);a.sourceAlphaBlendFactor=BlendFactor(b.source_alpha);
     a.destinationAlphaBlendFactor=BlendFactor(b.destination_alpha);
     a.rgbBlendOperation=MTLBlendOperation(b.rgb);a.alphaBlendOperation=MTLBlendOperation(b.alpha);a.writeMask=WriteMask(b.write_mask);
   }
-  descriptor.depthAttachmentPixelFormat=PixelFormat(p.depth);descriptor.stencilAttachmentPixelFormat=PixelFormat(p.stencil);
+  descriptor.depthAttachmentPixelFormat=PlanAdapter::PixelFormat(p.depth);descriptor.stencilAttachmentPixelFormat=PlanAdapter::PixelFormat(p.stencil);
   auto depth=[MTLDepthStencilDescriptor new];depth.depthCompareFunction=p.depth_test ? MTLCompareFunction(p.depth_compare) : MTLCompareFunctionAlways;
   depth.depthWriteEnabled=p.depth_write;
   if(p.stencil_test) {
@@ -122,7 +109,24 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,rend
     };
     depth.frontFaceStencil=stencil(p.front);depth.backFaceStencil=stencil(p.back);
   }
-  auto result=p.fragment.hash ? renderer_.MakePipeline(vertex,pixel,descriptor,depth,error) : renderer_.MakeDepthPipeline(vertex,descriptor,depth,error);
+  return pixel ? renderer.MakePipeline(vertex,*pixel,descriptor,depth,error) : renderer.MakeDepthPipeline(vertex,descriptor,depth,error);
+}
+std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,render::Primitive primitive,std::string& error) {
+  if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
+  if(p.negative_one_to_one){error="This game draw requires explicit negative-one-to-one clip-space shader lowering";return {};}
+  const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
+  if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
+  const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1},Stage::Vertex);
+  const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
+  if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
+  p.vertex.specialization=vs_meta->Specialization(p.vertex.specialization);
+  if(ps_meta)p.fragment.specialization=ps_meta->Specialization(p.fragment.specialization);
+  auto key=std::pair{p,primitive};if(auto it=pipelines_.find(key);it!=pipelines_.end()){error.clear();return it->second;}
+  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1},Stage::Vertex,p.vertex.specialization,error);
+  if(!vertex.function)return {};
+  Shader pixel{};
+  if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,p.fragment.specialization,error);if(!pixel.function)return {};}
+  auto result=BuildFixedPipeline(renderer_,p,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
   if(result)pipelines_.emplace(std::move(key),result);return result;
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {

@@ -119,6 +119,41 @@ struct Decoder {
   }
 };
 }
+bool ValidateFixedPipeline(const Pipeline& p,std::string& error) {
+  if(!p.samples||!std::has_single_bit(p.samples)||p.samples>32||!Enum(p.depth_compare)||
+     !Enum(p.depth)||!Enum(p.stencil)||!StencilValid(p.front)||!StencilValid(p.back))
+    return Error(error,"Invalid fixed pipeline state");
+  for(size_t i=0;i<4;++i) {
+    const auto& b=p.blends[i];
+    if(!Enum(p.colors[i])||!Enum(b.source_rgb)||!Enum(b.destination_rgb)||
+        !Enum(b.source_alpha)||!Enum(b.destination_alpha)||!Enum(b.rgb)||!Enum(b.alpha)||b.write_mask>15)
+      return Error(error,"Invalid game attachment blend state");
+    if(p.colors[i]>=Format::Depth32Float)return Error(error,"Invalid game color target format");
+  }
+  if((p.depth!=Format::Invalid&&p.depth!=Format::Depth32Float&&p.depth!=Format::Depth32FloatStencil8)||
+      (p.stencil!=Format::Invalid&&p.stencil!=Format::Stencil8&&p.stencil!=Format::Depth32FloatStencil8)||
+      (p.depth_test&&p.depth==Format::Invalid)||(p.depth_write&&p.depth==Format::Invalid)||
+      (p.stencil_test&&p.stencil==Format::Invalid))return Error(error,"Invalid game depth/stencil attachment role");
+  error.clear();return true;
+}
+bool ValidateSampler(const Sampler& s,std::string& error) {
+  const float min=std::bit_cast<float>(s.min_lod_bits),max=std::bit_cast<float>(s.max_lod_bits);
+  if(!std::isfinite(min)||!std::isfinite(max)||min<0||min>max||!s.anisotropy||s.anisotropy>16)
+    return Error(error,"Invalid game sampler bounds");
+  for(auto address:s.address)if(!Enum(address))return Error(error,"Invalid game sampler address mode");
+  error.clear();return true;
+}
+bool ValidateImage(const Image& i,std::string& error) {
+  if(!i.source||!i.source->generation||i.source->value.empty()||i.source->value.size()>kBlobLimit||
+     !Enum(i.format)||i.format==Format::Invalid||!Enum(i.kind)||!i.width||!i.height||
+     !i.depth||!i.layers||!i.levels||i.width>16384||i.height>16384||i.depth>2048||i.layers>2048||
+     i.levels>15||i.mips.empty()||i.mips.size()>2048)return Error(error,"Invalid game sampled image");
+  for(auto swizzle:i.swizzle)if(!Enum(swizzle))return Error(error,"Invalid game image swizzle");
+  for(const auto& m:i.mips)if(m.level>=i.levels||!m.width||!m.height||!m.depth||!m.row_bytes||
+     !m.image_bytes||m.offset>i.source->value.size()||!m.size||m.size>i.source->value.size()-m.offset)
+    return Error(error,"Invalid game image mip payload");
+  error.clear();return true;
+}
 bool Validate(const Capture& capture, std::string& error) {
   const auto& d=capture.draw;const auto& p=d.pipeline;
   if(!capture.width||!capture.height||capture.width>16384||capture.height>16384||!p.vertex.hash||
@@ -128,18 +163,8 @@ bool Validate(const Capture& capture, std::string& error) {
       !StencilValid(p.front)||!StencilValid(p.back)||d.cull>2||
       d.stencil_front_reference>255||d.stencil_back_reference>255)
     return Error(error,"Invalid game draw/pipeline state");
-  for(size_t i=0;i<4;++i) {
-    const auto& b=p.blends[i];
-    if(!Enum(p.colors[i])||!Enum(b.source_rgb)||!Enum(b.destination_rgb)||
-        !Enum(b.source_alpha)||!Enum(b.destination_alpha)||!Enum(b.rgb)||!Enum(b.alpha)||b.write_mask>15)
-      return Error(error,"Invalid game attachment blend state");
-    if(!p.fragment.hash&&p.colors[i]!=Format::Invalid)return Error(error,"Depth-only draw has a color target");
-    if(p.colors[i]>=Format::Depth32Float)return Error(error,"Invalid game color target format");
-  }
-  if((p.depth!=Format::Invalid&&p.depth!=Format::Depth32Float&&p.depth!=Format::Depth32FloatStencil8)||
-      (p.stencil!=Format::Invalid&&p.stencil!=Format::Stencil8&&p.stencil!=Format::Depth32FloatStencil8)||
-      (p.depth_test&&p.depth==Format::Invalid)||(p.depth_write&&p.depth==Format::Invalid)||
-      (p.stencil_test&&p.stencil==Format::Invalid))return Error(error,"Invalid game depth/stencil attachment role");
+  if(!ValidateFixedPipeline(p,error))return false;
+  for(auto color:p.colors)if(!p.fragment.hash&&color!=Format::Invalid)return Error(error,"Depth-only draw has a color target");
   for(double v:d.viewport)if(!std::isfinite(v))return Error(error,"Nonfinite game viewport");
   for(float v:d.blend_color)if(!std::isfinite(v))return Error(error,"Nonfinite game blend color");
   if(!std::isfinite(d.depth_bias)||!std::isfinite(d.slope_bias)||d.viewport[2]<=0||d.viewport[3]<=0||
@@ -192,21 +217,11 @@ bool Validate(const Capture& capture, std::string& error) {
   for(const auto& b:d.vertices)if(!add(b.source))return Error(error,"Invalid game resource payload");
   if(!add(d.indices.source))return Error(error,"Invalid game resource payload");
   for(const auto& f:d.fetches) {
-    if(f.sampler) {
-      const auto& s=*f.sampler;const float min=std::bit_cast<float>(s.min_lod_bits),max=std::bit_cast<float>(s.max_lod_bits);
-      if(!std::isfinite(min)||!std::isfinite(max)||min<0||min>max||!s.anisotropy||s.anisotropy>16)
-        return Error(error,"Invalid game sampler bounds");
-      for(auto address:s.address)if(!Enum(address))return Error(error,"Invalid game sampler address mode");
+    if(f.sampler&&!ValidateSampler(*f.sampler,error))return false;
+    if(f.image) {
+      if(!add(f.image->source))return Error(error,"Invalid game sampled image payload budget");
+      if(!ValidateImage(*f.image,error))return false;
     }
-    if(!f.image)continue;
-    const auto& i=*f.image;
-    if(!add(i.source)||!Enum(i.format)||i.format==Format::Invalid||!Enum(i.kind)||!i.width||!i.height||
-        !i.depth||!i.layers||!i.levels||i.width>16384||i.height>16384||i.depth>2048||i.layers>2048||
-        i.levels>15||i.mips.empty()||i.mips.size()>2048)return Error(error,"Invalid game sampled image");
-    for(auto swizzle:i.swizzle)if(!Enum(swizzle))return Error(error,"Invalid game image swizzle");
-    for(const auto& m:i.mips)if(m.level>=i.levels||!m.width||!m.height||!m.depth||!m.row_bytes||
-        !m.image_bytes||m.offset>i.source->value.size()||!m.size||m.size>i.source->value.size()-m.offset)
-      return Error(error,"Invalid game image mip payload");
   }
   error.clear();return true;
 }

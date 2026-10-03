@@ -1,4 +1,5 @@
 #include "theft4_metal_frame.h"
+#include "theft4_metal_host_shaders.h"
 #include <algorithm>
 #include <bit>
 #include <map>
@@ -42,13 +43,16 @@ struct FrameAdapter::Impl {
     render::Surface descriptor;
     id<MTLTexture> texture=nil;
     std::map<render::SurfaceView,id<MTLTexture>> views;
+    std::map<render::SurfaceView,id<MTLTexture>> sampled_views;
   };
   Renderer& renderer;
   PlanAdapter draws;
+  HostShaderStore host;
+  std::map<std::pair<render::HostProgram,render::Pipeline>,std::shared_ptr<const Pipeline>> host_pipelines;
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
   FrameResourceStats stats;
-  explicit Impl(Renderer& r):renderer(r),draws(r){}
+  explicit Impl(Renderer& r):renderer(r),draws(r),host(r){}
   void Forget(render::SurfaceKey key) {
     for(auto it=contents.begin();it!=contents.end();) {
       if(it->surface==key)it=contents.erase(it);else ++it;
@@ -78,7 +82,7 @@ struct FrameAdapter::Impl {
     d.storageMode=MTLStorageModePrivate;d.hazardTrackingMode=MTLHazardTrackingModeTracked;
     d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead|MTLTextureUsagePixelFormatView;
     auto texture=renderer.Texture(d,error);if(!texture)return false;
-    surfaces.emplace(s->key,Entry{s,*s,texture,{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
+    surfaces.emplace(s->key,Entry{s,*s,texture,{},{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
     return true;
   }
   id<MTLTexture> View(const render::SurfaceView& view,std::string& error) {
@@ -123,10 +127,54 @@ struct FrameAdapter::Impl {
     }
     return result;
   }
+  id<MTLTexture> SampledView(const render::SurfaceView& view,std::string& error) {
+    auto texture=View(view,error);if(!texture)return nil;
+    if(view.aspect!=render::Aspect::Stencil||texture.pixelFormat!=MTLPixelFormatDepth32Float_Stencil8)return texture;
+    auto& entry=surfaces.at(view.surface);
+    if(auto it=entry.sampled_views.find(view);it!=entry.sampled_views.end())return it->second;
+    auto stencil=[texture newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];
+    if(!stencil){error="Metal rejected the sampled stencil alias";return nil;}
+    entry.sampled_views.emplace(view,stencil);++stats.view_creates;return stencil;
+  }
+  bool PrepareHost(const render::HostDraw& source,MTLRenderPassDescriptor* pass,Draw& draw,std::string& error) {
+    const auto key=std::pair{source.program,source.pipeline};
+    const auto& info=render::kHostPrograms[size_t(source.program)];
+    auto it=host_pipelines.find(key);
+    if(it==host_pipelines.end()) {
+      auto vs=host.Resolve("fullscreen_cw_vs",error),ps=host.Resolve(info.name,error);
+      if(!vs.function||!ps.function)return false;
+      auto pipeline=BuildFixedPipeline(renderer,source.pipeline,render::Primitive::Triangle,vs,&ps,error);
+      if(!pipeline)return false;it=host_pipelines.emplace(key,pipeline).first;
+    }
+    Draw result;result.pipeline=it->second;result.vertex_count=3;
+    id<MTLTexture> target=pass.depthAttachment.texture;
+    if(!target)target=pass.stencilAttachment.texture;
+    for(size_t i=0;i<4&&!target;++i)target=pass.colorAttachments[i].texture;
+    if(!target){error="Host utility has no ordered render target";return false;}
+    result.viewport={0,0,double(target.width),double(target.height),0,1};
+    result.scissor={source.scissor[0],source.scissor[1],source.scissor[2],source.scissor[3]};
+    result.stencil_reference=source.stencil_front_reference;result.stencil_back_reference=source.stencil_back_reference;
+    result.blend_color=source.blend_color;
+    std::vector<HostInput> inputs;
+    for(size_t slot=0;slot<source.fetches.size();++slot)if(info.textures&(1u<<slot)) {
+      const auto& input=source.fetches[slot];
+      auto texture=input.produced ? SampledView(*input.produced,error) : draws.ImageFor(*input.image,error);
+      if(!texture)return false;
+      auto sampler=draws.SamplerFor(*input.sampler,error);if(!sampler)return false;
+      inputs.push_back({uint32_t(slot),texture,sampler});
+    }
+    auto constants=info.constants ? draws.BufferFor(source.constants,error) : BufferView{};
+    if(info.constants&&!constants.buffer)return false;
+    if(!host.Bind(info.name,inputs,constants,result,error))return false;
+    draw=std::move(result);return true;
+  }
 };
 FrameAdapter::FrameAdapter(Renderer& renderer):impl_(std::make_unique<Impl>(renderer)){}
 FrameAdapter::~FrameAdapter()=default;
-bool FrameAdapter::Open(const std::string& libraries,std::string& error){return impl_->draws.Open(libraries,error);}
+bool FrameAdapter::Open(const std::string& libraries,std::string& error){
+  if(!impl_->draws.Open(libraries,error)||!impl_->host.Open(libraries+"/Host",error))return false;
+  impl_->host_pipelines.clear();return true;
+}
 Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error) {
   if(!plan){error="Missing ordered Metal frame plan";return {};}
   RetireResources();render::SurfaceContents final;
@@ -152,6 +200,10 @@ Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& pla
         prepared.commands.push_back(Clear{clear->colors,clear->depth,clear->stencil,
           MTLScissorRect{clear->rectangle[0],clear->rectangle[1],clear->rectangle[2],clear->rectangle[3]},
           clear->color,clear->depth_value,clear->stencil_value});continue;
+      }
+      if(const auto* host=std::get_if<render::HostDraw>(&command)) {
+        Draw draw;if(!impl_->PrepareHost(*host,prepared.descriptor,draw,error))return {};
+        prepared.commands.push_back(std::move(draw));continue;
       }
       const auto& item=std::get<render::FrameDraw>(command);
       auto base=impl_->draws.Realize(item.capture,error);if(!base)return {};
@@ -201,5 +253,5 @@ size_t FrameAdapter::RetireResources() {
 }
 FrameResourceStats FrameAdapter::Stats() const{return impl_->stats;}
 ResourceCacheStats FrameAdapter::ImmutableStats() const{return impl_->draws.ResourceStats();}
-size_t FrameAdapter::PipelineCount() const{return impl_->draws.PipelineCount();}
+size_t FrameAdapter::PipelineCount() const{return impl_->draws.PipelineCount()+impl_->host_pipelines.size();}
 }

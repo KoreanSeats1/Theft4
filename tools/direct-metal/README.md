@@ -189,10 +189,13 @@ texture slots use a separate ABI from guest draw shaders. All 24 compile for
 both iOS and macOS. This establishes compilation and library loading coverage;
 complete scene correctness still requires actual frame integration. GPU oracles
 currently verify ordinary presentation color/orientation/alpha and GPU depth
-handoff. Host shaders are not yet commands in the game frame producer.
+handoff. Host utility commands are now part of the neutral ordered frame
+contract and executor. Their named program, exact constant ABI, static or
+GPU-produced texture inputs, fixed state, and sampler types are validated
+before encoding. The game frontend still needs to produce this contract.
 
 Metal Lab build 7 adds ordered-pass, rectangular-clear/copy, and host utility
-checks, for 27 controlled GPU checks. The rectangle oracle covers independent
+checks, for 28 controlled GPU checks. The rectangle oracle covers independent
 MRT clears, depth changes preserving stencil, stencil-only passes, restoration
 of game draw state, and partial copies preserving outside pixels. Cold
 rectangular-clear pipelines currently compile a small native MSL utility once
@@ -212,3 +215,9 @@ iOS Lab. Host GPU checks expect those libraries and `HOST_SHADER_MANIFEST.json`
 in the stock library directory's `Host` subdirectory. The full game still uses
 the preserved comparison renderer; these checks do not establish gameplay FPS
 or full-frame parity.
+
+The ordered host-command oracle also verifies presentation from GPU-produced
+scene color, a depth handoff between passes, cached host pipelines/constants,
+and presentation from an immutable prepared ASTC image. Short constants reject
+without changing stored output. Utility compilation coverage does not establish
+SMAA, sun-shaft or split-postfx gameplay parity; those need real scene frames.

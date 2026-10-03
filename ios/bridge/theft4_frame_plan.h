@@ -1,5 +1,6 @@
 #pragma once
 #include "theft4_render_plan.h"
+#include "theft4_host_program.h"
 #include <optional>
 #include <set>
 #include <variant>
@@ -54,7 +55,23 @@ struct RectClear {
   float depth_value=1;
   uint32_t stencil_value=0;
 };
-using PassCommand=std::variant<FrameDraw,RectClear>;
+struct HostFetch {
+  std::optional<SurfaceView> produced;
+  std::shared_ptr<const Image> image;
+  std::shared_ptr<const Sampler> sampler;
+};
+struct HostDraw {
+  HostProgram program=HostProgram::Present;
+  // Shader and vertex fields are empty: utilities use their named host
+  // program and a generated fullscreen triangle, with their own constant ABI.
+  Pipeline pipeline;
+  Buffer constants;
+  std::array<HostFetch,4> fetches{};
+  std::array<uint32_t,4> scissor{};
+  std::array<float,4> blend_color{};
+  uint32_t stencil_front_reference=0,stencil_back_reference=0;
+};
+using PassCommand=std::variant<FrameDraw,RectClear,HostDraw>;
 struct Pass {
   std::array<std::optional<Attachment>,4> colors{};
   std::optional<Attachment> depth,stencil;

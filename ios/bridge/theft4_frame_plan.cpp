@@ -157,6 +157,53 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         if(full&&clear->stencil)contents.insert(pass.stencil->view);
         continue;
       }
+      if(const auto* host=std::get_if<HostDraw>(&command)) {
+        const auto& p=host->pipeline;const auto& rect=host->scissor;
+        if(host->program>=HostProgram::Count||p.vertex!=Shader{}||p.fragment!=Shader{}||!p.attributes.empty()||
+           p.negative_one_to_one||p.samples!=samples||host->stencil_front_reference>255||host->stencil_back_reference>255||
+           !rect[2]||!rect[3]||rect[0]>width||rect[1]>height||rect[2]>width-rect[0]||rect[3]>height-rect[1])
+          return Reject(error,"Invalid ordered host utility draw");
+        if(!ValidateFixedPipeline(p,error))return false;
+        if((p.sample_mask&((1u<<samples)-1))!=((1u<<samples)-1))
+          return Reject(error,"Host utility sample-mask lowering is required");
+        for(const auto& stream:p.streams)if(stream!=Stream{})return Reject(error,"Host utility has an unexpected vertex stream");
+        for(float value:host->blend_color)if(!std::isfinite(value))return Reject(error,"Nonfinite host blend color");
+        for(size_t i=0;i<4;++i) {
+          const auto format=pass.colors[i] ? FindSurface(f,pass.colors[i]->view.surface)->format : Format::Invalid;
+          if(p.colors[i]!=format)return Reject(error,"Host utility color formats differ from its ordered pass");
+        }
+        const auto depth=pass.depth ? FindSurface(f,pass.depth->view.surface)->format : Format::Invalid;
+        const auto stencil=pass.stencil ? FindSurface(f,pass.stencil->view.surface)->format : Format::Invalid;
+        if(p.depth!=depth||p.stencil!=stencil)return Reject(error,"Host utility depth/stencil differs from its ordered pass");
+        const auto& info=kHostPrograms[size_t(host->program)];const auto& constants=host->constants;
+        if(info.constants&&(!constants.source||!constants.source->generation||constants.offset%16||
+           constants.source->value.size()>64*1024*1024||constants.offset>constants.source->value.size()||
+           constants.length>constants.source->value.size()-constants.offset||constants.length<info.constants))
+          return Reject(error,"Host utility constants do not match its ABI");
+        if(!info.constants&&constants.source)return Reject(error,"Host utility has unexpected constants");
+        for(size_t slot=0;slot<host->fetches.size();++slot) {
+          const auto& input=host->fetches[slot];
+          if(!(info.textures&(1u<<slot))) {
+            if(input.produced||input.image||input.sampler)return Reject(error,"Host utility has an unexpected texture input");
+            continue;
+          }
+          if(!input.sampler||!ValidateSampler(*input.sampler,error)||bool(input.produced)==bool(input.image))
+            return Reject(error,"Host utility requires one image owner and a valid sampler per input");
+          const bool multisampled=info.multisampled&(1u<<slot);
+          if(input.image) {
+            if(multisampled||input.image->kind!=ImageKind::Texture2D||!ValidateImage(*input.image,error))
+              return Reject(error,"Host static texture type differs from its ABI");
+          }else {
+            const auto& view=*input.produced;
+            if(!View(f,view)||!contents.contains(view)||
+               (FindSurface(f,view.surface)->samples>1)!=multisampled)
+              return Reject(error,"Host utility samples undefined or incorrectly sampled GPU content");
+            for(const auto& attachment:writes)if(SameStorage(view,attachment))
+              return Reject(error,"Host utility samples its active attachment");
+          }
+        }
+        continue;
+      }
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
       if(!Validate(*item.capture,error))return false;

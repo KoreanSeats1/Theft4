@@ -1,4 +1,5 @@
 #include "theft4_metal_host_shaders.h"
+#include "theft4_host_program.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +35,19 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
         m.textures.push_back({b,i,s,t.at("multisampled").get<bool>() ? MTLTextureType2DMultisample : MTLTextureType2D});
       }
       if(!admitted.emplace(name,std::move(m)).second)return Fail(error,"Duplicate host shader identity");
+    }
+    if(admitted.size()!=render::kHostPrograms.size()+1)return Fail(error,"Host program catalog differs from the frame ABI");
+    const auto fullscreen=admitted.find("fullscreen_cw_vs");
+    if(fullscreen==admitted.end()||fullscreen->second.stage!=Stage::Vertex||fullscreen->second.constant_bytes||
+       !fullscreen->second.textures.empty())return Fail(error,"Fullscreen utility vertex ABI differs");
+    for(const auto& expected:render::kHostPrograms) {
+      const auto found=admitted.find(expected.name);
+      if(found==admitted.end()||found->second.stage!=Stage::Fragment||found->second.constant_bytes!=expected.constants)
+        return Fail(error,"Host utility constant ABI differs from the frame contract");
+      uint32_t textures=0,multisampled=0;
+      for(const auto& b:found->second.textures){textures|=1u<<b.binding;if(b.type==MTLTextureType2DMultisample)multisampled|=1u<<b.binding;}
+      if(textures!=expected.textures||multisampled!=expected.multisampled)
+        return Fail(error,"Host utility input ABI differs from the frame contract");
     }
     catalog_=std::move(admitted);directory_=directory;functions_.clear();error.clear();return true;
   }catch(const std::exception& e){error=std::string("Host shader manifest admission: ")+e.what();return false;}

@@ -75,5 +75,27 @@ int main() {
   bad=cleared;std::get<RectClear>(std::get<Pass>(bad.commands[1]).commands[0]).colors=2;reject(bad);
   bad=cleared;std::get<RectClear>(std::get<Pass>(bad.commands[1]).commands[0]).depth=true;reject(bad);
   bad=cleared;std::get<RectClear>(std::get<Pass>(bad.commands[1]).commands[0]).rectangle[0]=UINT32_MAX;reject(bad);
+  auto utilities=Plan();auto& hostPass=std::get<Pass>(utilities.commands[1]);hostPass.commands.clear();
+  HostDraw host;host.pipeline.colors[0]=Format::RGBA8Unorm;host.scissor={0,0,4,4};
+  auto constants=std::make_shared<Bytes>();constants->generation=1;constants->value.resize(44);
+  host.constants={constants,0,44};host.fetches[0].produced=SurfaceView{{2,1},0,0,Aspect::Color};
+  host.fetches[0].sampler=std::make_shared<Sampler>();hostPass.commands.push_back(host);
+  assert(ValidateFrame(utilities,{},result,error));
+  const auto hostDraw=[](FramePlan& f)->HostDraw& {return std::get<HostDraw>(std::get<Pass>(f.commands[1]).commands[0]);};
+  bad=utilities;hostDraw(bad).constants.length=43;reject(bad);
+  bad=utilities;hostDraw(bad).constants.offset=UINT64_MAX;reject(bad);
+  bad=utilities;hostDraw(bad).program=HostProgram::Count;reject(bad);
+  bad=utilities;hostDraw(bad).fetches[0].produced->surface={3,1};reject(bad);
+  bad=utilities;hostDraw(bad).fetches[1]=hostDraw(bad).fetches[0];reject(bad);
+  bad=utilities;hostDraw(bad).pipeline.vertex.hash=1;reject(bad);
+  bad=utilities;hostDraw(bad).pipeline.sample_mask=0;reject(bad);
+  bad=utilities;hostDraw(bad).pipeline.depth_write=true;reject(bad);
+  bad=utilities;auto invalidSampler=std::make_shared<Sampler>();invalidSampler->anisotropy=0;
+  hostDraw(bad).fetches[0].sampler=invalidSampler;reject(bad);
+  // The resolve program samples an MSAA owner directly, not its resolved image.
+  host.program=HostProgram::ResolveMSAA;constants=std::make_shared<Bytes>();constants->generation=1;constants->value.resize(64);
+  host.constants={constants,0,64};host.fetches[0].produced->surface={1,1};hostPass.commands={host};
+  assert(ValidateFrame(utilities,{},result,error));
+  bad=utilities;hostDraw(bad).fetches[0].produced->surface={2,1};reject(bad);
   std::cout<<"Ordered frame dependencies, content validity, resolve actions, generations and transactional rejection passed\n";
 }

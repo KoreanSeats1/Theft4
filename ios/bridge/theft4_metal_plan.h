@@ -6,6 +6,8 @@
 #include <unordered_map>
 
 namespace theft4::metal {
+std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer&,const render::Pipeline&,render::Primitive,
+                                                  const Shader&,const Shader*,std::string& error);
 // Render-worker-owned realization of the frontend's immutable CPU contract.
 // Shader, PSO, sampler and resource hits do no driver creation or disk reads.
 class PlanAdapter {
@@ -24,6 +26,9 @@ class PlanAdapter {
   ResourceCacheStats ResourceStats() const { return resources_.Stats(); }
   size_t RetireResources();
   static MTLPixelFormat PixelFormat(render::Format format);
+  BufferView BufferFor(const render::Buffer& buffer,std::string& error);
+  id<MTLTexture> ImageFor(const render::Image& image,std::string& error);
+  id<MTLSamplerState> SamplerFor(const render::Sampler& sampler,std::string& error);
  private:
   Renderer& renderer_;
   ShaderStore shaders_;
@@ -34,9 +39,6 @@ class PlanAdapter {
   struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;};
   std::unordered_map<const render::Capture*,Prepared> prepared_;
   std::shared_ptr<const Pipeline> PipelineFor(render::Pipeline pipeline,render::Primitive primitive,std::string& error);
-  BufferView BufferFor(const render::Buffer& buffer,std::string& error);
-  id<MTLTexture> ImageFor(const render::Image& image,std::string& error);
-  id<MTLSamplerState> SamplerFor(const render::Sampler& sampler,std::string& error);
   bool EnsureDummyImages(std::string& error);
 };
 }

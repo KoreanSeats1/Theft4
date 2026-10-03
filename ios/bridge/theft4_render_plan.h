@@ -151,4 +151,7 @@ struct Capture {
 bool WriteCapture(const std::string& path, const Capture& capture, std::string& error);
 bool ReadCapture(const std::string& path, Capture& capture, std::string& error);
 bool Validate(const Capture& capture, std::string& error);
+bool ValidateFixedPipeline(const Pipeline&,std::string& error);
+bool ValidateSampler(const Sampler&,std::string& error);
+bool ValidateImage(const Image&,std::string& error);
 }

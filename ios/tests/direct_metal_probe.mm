@@ -633,6 +633,68 @@ struct Probe {
       @"stencil_only_pass_and_clear":@YES,
       @"invalid_copy_rejected_before_encoding":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void OrderedHostUtilities() {
+    namespace r=theft4::render;
+    FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    const auto surface=[](uint64_t id,r::Format format) {
+      auto s=std::make_shared<r::Surface>();s->key={id,1};s->width=W;s->height=H;s->format=format;return s;
+    };
+    auto source=surface(30,r::Format::RGBA8Unorm),output=surface(31,r::Format::BGRA8Unorm),
+      depth=surface(32,r::Format::Depth32Float),forward=surface(33,r::Format::Depth32Float);
+    const r::SurfaceView src{{30,1},0,0,r::Aspect::Color},dst{{31,1},0,0,r::Aspect::Color},
+      sceneDepth{{32,1},0,0,r::Aspect::Depth},forwardDepth{{33,1},0,0,r::Aspect::Depth};
+    const auto attachment=[](r::SurfaceView v,std::array<double,4> color={}) {
+      r::Attachment a;a.view=v;a.load=r::Load::Clear;a.store=r::Store::Store;a.clear_color=color;return a;
+    };
+    r::Pass scene;scene.colors[0]=attachment(src,{0.2,0.4,0.8,0.5});scene.depth=attachment(sceneDepth);scene.depth->clear_depth=0.4;
+    r::RectClear clear;clear.colors=1;clear.rectangle={7,11,19,23};clear.color={1,0,0,0.25};scene.commands.push_back(clear);
+    r::Pass handoff;handoff.depth=attachment(forwardDepth);r::HostDraw copyDepth;
+    copyDepth.program=r::HostProgram::DepthHandoff;copyDepth.pipeline.depth=r::Format::Depth32Float;copyDepth.pipeline.depth_write=true;
+    copyDepth.scissor={0,0,W,H};copyDepth.fetches[0].produced=sceneDepth;copyDepth.fetches[0].sampler=std::make_shared<r::Sampler>();
+    handoff.commands.push_back(copyDepth);
+    r::Pass present;present.colors[0]=attachment(dst);r::HostDraw display;
+    display.pipeline.colors[0]=r::Format::BGRA8Unorm;display.scissor={0,0,W,H};display.fetches[0].produced=src;
+    display.fetches[0].sampler=std::make_shared<r::Sampler>();
+    rex::graphics::gta4_native::NativePresentConstants constants;constants.source_width=W;constants.source_height=H;
+    constants.destination_width=W;constants.destination_height=H;constants.output_mode=4;
+    auto bank=std::make_shared<r::Bytes>();bank->generation=1;bank->value.resize(16+sizeof(constants));
+    memcpy(bank->value.data()+16,&constants,sizeof(constants));display.constants={bank,16,sizeof(constants)};present.commands.push_back(display);
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=5;plan->surfaces={source,output,depth,forward};
+    plan->commands={scene,handoff,present};plan->output=dst;
+    const auto check=[&](bool astc) {
+      auto pixels=renderer.ReadRGBA8(adapter.Output(*plan,error),error);Require(pixels.size()==W*H*4);
+      for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x) {
+        const bool rectangle=x>=7&&y>=11&&x<26&&y<34;
+        const auto expected=astc ? std::array<uint8_t,4>{51,102,204,255} : rectangle ?
+          std::array<uint8_t,4>{255,0,0,64} : std::array<uint8_t,4>{51,102,204,128};
+        for(size_t ch=0;ch<4;++ch)Require(std::abs(int(pixels[(y*W+x)*4+ch])-int(expected[ch]))<=1);
+      }
+    };
+    auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
+    const auto cold=adapter.ImmutableStats();Require(adapter.PipelineCount()==2);
+    receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
+    Require(adapter.ImmutableStats().buffer_creates==cold.buffer_creates&&adapter.PipelineCount()==2);
+    auto invalid=std::make_shared<r::FramePlan>(*plan);
+    std::get<r::HostDraw>(std::get<r::Pass>(invalid->commands.back()).commands[0]).constants.length=43;
+    Require(!adapter.Submit(invalid,error));error.clear();check(false);
+    // The same presentation command also consumes a prepared immutable ASTC
+    // source; this must retain the older-device cache's compressed upload.
+    auto image=std::make_shared<r::Image>();image->format=r::Format::ASTC4x4;image->width=image->height=4;
+    auto astc=std::make_shared<r::Bytes>();astc->generation=1;
+    astc->value={0xfc,0xfd,0xff,0xff,0xff,0xff,0xff,0xff,0x33,0x33,0x66,0x66,0xcc,0xcc,0xff,0xff};
+    image->source=astc;image->mips={{0,0,4,4,1,16,16,0,16}};
+    display.fetches[0].produced.reset();display.fetches[0].image=image;
+    constants.source_width=constants.source_height=4;bank=std::make_shared<r::Bytes>();bank->generation=2;
+    bank->value.resize(sizeof(constants));memcpy(bank->value.data(),&constants,sizeof(constants));display.constants={bank,0,sizeof(constants)};
+    present.commands={display};plan=std::make_shared<r::FramePlan>();plan->sequence=6;plan->surfaces={output};plan->commands={present};plan->output=dst;
+    receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(true);
+    const auto uploaded=adapter.ImmutableStats();receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(true);
+    Require(adapter.ImmutableStats().texture_creates==uploaded.texture_creates&&adapter.ImmutableStats().uploaded_bytes==uploaded.uploaded_bytes);
+    [results addObject:@{@"case":@"ordered_host_utility_commands",@"passed":@YES,
+      @"gpu_depth_handoff_and_presentation":@YES,@"prepared_astc_source":@YES,
+      @"warm_pipelines_and_resources_reused":@YES,@"short_host_constants_rejected":@YES,
+      @"synthetic_validation_geometry":@YES}];
+  }
   void HostUtilityShaders() {
     HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
     Require(host.Size()==24);
@@ -831,7 +893,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.OrderedFrameOperations();probe.HostUtilityShaders();passed=true;
+    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

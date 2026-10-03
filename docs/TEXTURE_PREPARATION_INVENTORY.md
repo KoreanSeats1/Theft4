@@ -108,6 +108,13 @@ available for comparisons. These are test-app defaults, not changes to the
 ordinary Theft4 build or its performance branch. The device's existing
 limited-memory graphics preset keeps anti-aliasing off on the tested iPad.
 
+The ASTC experiment now defaults **Runtime Wait Improvements** Off, matching
+the user's M5 comparison after their reported regression. This overrides the
+inherited build 93 registration default only in the ASTC app, preserves an
+explicit saved choice, and requires a full restart when changed. It is
+independent of ASTC conversion and does not invalidate the prepared cache.
+Whether it contributes to the A12Z's reported 8 FPS remains unmeasured.
+
 ## Build and test
 
 Configure a Release iOS build from the isolated branch with the same headless

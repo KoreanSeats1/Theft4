@@ -459,7 +459,12 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4ModelDetail": @1,
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2,
+#ifdef THEFT4_ASTC_EXPERIMENT
+        // Match the user's known-good M5 wait policy for the compatibility test.
+        @"Theft4RuntimeWaitImprovements": @NO,
+#else
         @"Theft4RuntimeWaitImprovements": @YES,
+#endif
         @"Theft4DirectGuestClock": @YES,
         @"Theft4FrameScheduling": @YES,
         @"Theft4PrewarmTargetReuse": @YES,

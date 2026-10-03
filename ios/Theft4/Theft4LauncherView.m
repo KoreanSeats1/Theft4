@@ -407,7 +407,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"RENDER TARGET REUSE" detail:@"Reduce repeated renderer setup. Turn off to compare the previous behavior. Fully close and reopen Theft4 after changing." toggle:_prewarmTargetReuse],
         [self setting:@"FRAME SCHEDULING" detail:@"Prioritize frame production. Hold the frame-time graph during play to switch between this and original scheduling without restarting." toggle:_frameScheduling],
         [self setting:@"DIRECT GUEST CLOCK" detail:@"Build 82 comparison. On enables the revised game clock; Off restores the previous clock. Fully close and reopen Theft4 after changing." toggle:_directGuestClock],
+#ifdef THEFT4_ASTC_EXPERIMENT
+        [self setting:@"RUNTIME WAIT IMPROVEMENTS" detail:@"Experimental thread-wait changes. Off by default for this compatibility test. After changing, fully close and reopen Theft4 before Play." toggle:_runtimeWaitImprovements],
+#else
         [self setting:@"RUNTIME WAIT IMPROVEMENTS" detail:@"Build 81 comparison. On enables the new thread-wait behavior; Off restores build 80 behavior. After changing, fully close and reopen Theft4 before Play." toggle:_runtimeWaitImprovements],
+#endif
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
         _prepareButton, _restartButton, _detailLabel,

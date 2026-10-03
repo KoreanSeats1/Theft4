@@ -137,8 +137,12 @@ id<MTLTexture> PlanAdapter::ImageFor(const render::Image& image,std::string& err
   const auto swizzle=[](render::Swizzle s){return MTLTextureSwizzle(s);};
   d.swizzle=MTLTextureSwizzleChannelsMake(swizzle(image.swizzle[0]),swizzle(image.swizzle[1]),swizzle(image.swizzle[2]),swizzle(image.swizzle[3]));
   std::vector<TextureUpload> uploads;uploads.reserve(image.mips.size());
+  // The neutral capture records a plane pitch for every image kind. Metal
+  // uses bytesPerImage only for volumes; 2D, array and cube slices are already
+  // selected by their upload offset and slice number.
   for(const auto& m:image.mips)uploads.push_back({m.level,m.slice,m.width,m.height,m.depth,
-      NSUInteger(m.row_bytes),NSUInteger(m.image_bytes),size_t(m.offset),size_t(m.size)});
+      NSUInteger(m.row_bytes),image.kind==render::ImageKind::Texture3D ? NSUInteger(m.image_bytes) : 0,
+      size_t(m.offset),size_t(m.size)});
   return resources_.Texture(Version(image.source),d,image.source->value,uploads,error);
 }
 id<MTLSamplerState> PlanAdapter::SamplerFor(const render::Sampler& s,std::string& error) {

@@ -154,3 +154,12 @@ and trusts the adapter's validated
 index maximum. These boundaries must be expanded before enabling it for all game
 frames. Removing the API translator does not remove the game's CPU work or GPU
 shading workload; the gameplay gain needs measurement.
+
+## Real-game texture upload validation
+
+The first M5 gameplay capture exposed a neutral-to-Metal plane-pitch mismatch.
+The draw adapter now passes a plane pitch only for 3D textures; 2D, array, and
+cube uploads select each slice through its offset and slice index. Resource
+bounds checks remain unchanged. Metal Lab build 6 adds a GPU pixel oracle with
+padded rows and a nonzero payload offset to cover the actual capture contract.
+Private gameplay captures remain outside Git.

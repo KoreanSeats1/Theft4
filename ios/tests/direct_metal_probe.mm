@@ -470,6 +470,45 @@ struct Probe {
     [results addObject:@{@"case":@"game_stream_16_per_instance",@"passed":@YES,
         @"game_streams":@17,@"metal_buffer_slot":@24,@"instances":@2,@"short_instance_stream_rejected":@YES}];
   }
+  void GameTexturePitchPlan() {
+    namespace r=theft4::render;
+    PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    auto capture=std::make_shared<r::Capture>();capture->width=W;capture->height=H;
+    auto& d=capture->draw;
+    d.pipeline.vertex.hash=0x048E49996734F6B5ull;
+    d.pipeline.fragment.hash=0xB9589DA9F4B1770Full;
+    d.pipeline.colors[0]=r::Format::RGBA8Unorm;
+    d.pipeline.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},
+                           {13,0,32,r::VertexFormat::Float4}};
+    d.pipeline.streams[0]={sizeof(Vertex),false};
+    d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};d.vertex_count=6;
+    const auto copy=[](std::span<const uint8_t> bytes) {
+      auto source=std::make_shared<r::Bytes>();source->generation=1;
+      source->value.assign(bytes.begin(),bytes.end());return r::Buffer{source,0,bytes.size()};
+    };
+    Case c{};c.texture=true;auto banks=Constants(c,1);
+    for(size_t i=0;i<3;++i)d.constants[i]=copy({
+      static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+    auto vertices=Quad({1,1,1,1});d.vertices[0]=copy(Bytes(vertices));
+    const uint8_t expected[4][4]{{255,0,0,64},{0,255,0,128},{0,0,255,192},{255,255,0,255}};
+    std::vector<uint8_t> storage(32,0xab);
+    // Nonzero payload offset, padded rows, and a neutral plane pitch. Padding
+    // must never become texels; this reproduces the real capture's contract.
+    memcpy(storage.data()+4,expected[0],8);memcpy(storage.data()+20,expected[2],8);
+    auto image=std::make_shared<r::Image>();image->source=copy(storage).source;
+    image->format=r::Format::RGBA8Unorm;image->width=2;image->height=2;
+    image->mips={{0,0,2,2,1,16,32,4,24}};
+    d.fetches[0].image=image;d.fetches[0].sampler=std::make_shared<r::Sampler>();
+    auto prepared=adapter.Realize(capture,error);Require(bool(prepared));
+    auto target=Color();auto frame=renderer.BeginFrame(error);Require(bool(frame));
+    Require(frame.BeginPass(Pass(target,nil,nil),error));Require(frame.Encode(*prepared,error));
+    Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+    auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    for(NSUInteger y=0;y<H;++y)for(NSUInteger x=0;x<W;++x)for(size_t channel=0;channel<4;++channel)
+      Require(pixels[(y*W+x)*4+channel]==expected[(y>=H/2)*2+(x>=W/2)][channel]);
+    [results addObject:@{@"case":@"game_texture_pitch_adapter",@"passed":@YES,
+      @"padded_rows_and_payload_offset":@YES,@"neutral_plane_pitch":@YES}];
+  }
   void GameDrawPlan() {
     namespace r=theft4::render;
     PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -552,7 +591,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();probe.GameDrawPlan();passed=true;
+    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

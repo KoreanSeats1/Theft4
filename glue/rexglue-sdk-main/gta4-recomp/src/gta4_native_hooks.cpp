@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -22,6 +21,9 @@
 #include <utility>
 #include <vector>
 
+#include <rex/diagnostics/frame_scheduling.h>
+#include <rex/platform.h>
+
 #include <fmt/format.h>
 #include <xxhash.h>
 
@@ -30,9 +32,6 @@
 #include <rex/chrono/clock.h>
 #include <rex/graphics/gta4_native/pacing_profile.h>
 #include <rex/thread.h>
-#if REX_PLATFORM_IOS
-#include "theft4_metal_presenter.h"
-#endif
 #endif
 #include <rex/diagnostics/policy.h>
 #include <rex/graphics/gta4_native/anti_aliasing_policy.h>
@@ -224,12 +223,6 @@ constexpr uint32_t kPointShadowCacheBaseMultiplier = 8;
 constexpr uint32_t kShadowQualityTable = 0x82C595C0;
 constexpr uint32_t kShadowQualityContextStride = 0x100;
 constexpr uint32_t kShadowQualityRangeOffset = 0x14;
-// sub_82273B08 walks 128-byte shadow candidates and 240-byte point-cache
-// records. Observe the title's existing cache ownership before changing its
-// update cadence; a skipped draw is only valid when its atlas tile survives.
-constexpr uint32_t kShadowCandidateCountGlobal = 0x82CF260C;
-constexpr uint32_t kShadowCandidateListGlobal = 0x82A9977C;
-constexpr uint32_t kPointShadowCacheRecords = 0x82C59840;
 // Native rendering consumes the resource descriptors, not their Xbox GPU
 // backing allocation. Keep the guest allocation at the API-valid minimum and
 // patch only the descriptor extents after the trusted D3D constructor returns.
@@ -364,7 +357,7 @@ std::mutex g_native_frame_limiter_mutex;
 gta4::frame_limiter::State g_native_frame_limiter_state;
 uint64_t g_native_frame_limiter_present_count = 0;
 
-#ifdef THEFT4_LAB_BUILD
+#if (defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS) || defined(THEFT4_LAB_BUILD)
 // iOS may resume a short sleep several milliseconds after its requested
 // deadline. Keep the established fixed limiter phase, but leave a bounded
 // final interval for an active wait so an otherwise-ready frame does not miss
@@ -401,7 +394,7 @@ void UpdateLabPacingActiveWaitMargin(std::chrono::steady_clock::duration observe
       Microseconds((g_lab_pacing_active_wait_margin.count() * 7 + target.count()) / 8);
 }
 
-void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
+void WaitForNativePacingDeadline(std::chrono::steady_clock::time_point deadline) {
   using Clock = std::chrono::steady_clock;
   const auto now = Clock::now();
   if (now >= deadline) {
@@ -418,8 +411,7 @@ void WaitForLabPacingDeadline(std::chrono::steady_clock::time_point deadline) {
 #endif
 
 #ifdef THEFT4_LAB_BUILD
-void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr,
-                       int64_t display_target_ns = 0) {
+void PaceNativePresent(uint32_t submitted_frame, pacing::Sample* observation = nullptr) {
 #else
 void PaceNativePresent(uint32_t submitted_frame) {
 #endif
@@ -442,18 +434,8 @@ void PaceNativePresent(uint32_t submitted_frame) {
 #endif
   const int64_t now_ns =
       std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
-#ifdef THEFT4_LAB_BUILD
-  static bool previous_pre_submit = false; // Protected by limiter mutex.
-  const bool pre_submit = display_target_ns != 0;
-  if (previous_pre_submit != pre_submit) g_native_frame_limiter_state = {};
-  previous_pre_submit = pre_submit;
-  const auto decision = pre_submit
-      ? gta4::frame_limiter::PlanDisplayAligned(g_native_frame_limiter_state, requested_limit,
-                                               now_ns, display_target_ns)
-      : gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
-#else
-  const auto decision = gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
-#endif
+  const auto decision =
+      gta4::frame_limiter::Plan(g_native_frame_limiter_state, requested_limit, now_ns);
   g_native_frame_limiter_state = decision.next_state;
   ++g_native_frame_limiter_present_count;
 #ifdef THEFT4_LAB_BUILD
@@ -485,8 +467,8 @@ void PaceNativePresent(uint32_t submitted_frame) {
           std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()).count();
     }
 #endif
-#ifdef THEFT4_LAB_BUILD
-    WaitForLabPacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
+#if (defined(REX_PLATFORM_IOS) && REX_PLATFORM_IOS) || defined(THEFT4_LAB_BUILD)
+    WaitForNativePacingDeadline(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
 #else
     std::this_thread::sleep_until(Clock::time_point(Nanoseconds(decision.wait_until_ns)));
 #endif
@@ -516,10 +498,8 @@ void PaceNativePresent(uint32_t submitted_frame) {
   if (observation) {
     lock.unlock();
     observation->limiter_end = rex::chrono::Clock::QueryHostTickCount();
+    pacing::capture.Record(*observation);
   }
-#if REX_PLATFORM_IOS
-  theft4_frame_stage_record(THEFT4_STAGE_LIMITER_END, submitted_frame, display_target_ns != 0, 0);
-#endif
 #endif
 }
 
@@ -3314,6 +3294,8 @@ bool IsCachedListCommandType(CommandType type) {
     case CommandType::kQueryDeviceCapabilities:
     case CommandType::kRegisterReflectionTarget:
     case CommandType::kReleaseResource:
+    case CommandType::kInvalidateBufferLifetime:
+    case CommandType::kPrepareBufferUnlock:
     case CommandType::kUpdateEnvironmentalData:
     case CommandType::kDepthSurfaceHandoff:
     case CommandType::kRegisterVirtualResource:
@@ -3762,6 +3744,57 @@ NativeResourceLockState ConsumeNativeResourceLock(uint32_t resource, bool outerm
     g_native_resource_locks.erase(existing);
   }
   return state;
+}
+
+// sub_828ECF40's allocator-backed branch embeds a private vertex header at
+// owner+32. Its destructor frees that storage without D3DResource_Release.
+// External/shared headers and ordinary refcounted D3D buffers are not this
+// lifetime: require the complete inline shape before invalidating a capture.
+uint32_t GetNativeInlineVertexBuffer(uint8_t* base, uint32_t owner) {
+  if (!base || !owner || (owner & 3u) || owner > UINT32_MAX - 63u ||
+      LoadU32(base, owner + 28) != owner + 32) {
+    return 0;
+  }
+  const uint32_t resource = owner + 32;
+  const uint32_t flags = LoadU32(base, resource);
+  const uint32_t backing = LoadU32(base, owner + 24);
+  const uint32_t address_word = LoadU32(base, resource + 24);
+  const uint32_t size_word = LoadU32(base, resource + 28);
+  const uint64_t size = uint64_t(LoadU16(base, owner + 4)) * LoadU32(base, owner + 12);
+  if ((flags & ~0xF00u) != 0x00200001u || !backing || (backing & 3u) ||
+      address_word != (backing | 3u) || !size || size > 0x03FFFFFCu || (size & 3u) ||
+      size_word != (uint32_t(size) | 0x10000002u)) {
+    return 0;
+  }
+  return resource;
+}
+
+enum class NativeInlineBufferLifetimeReason : uint32_t {
+  kCreate = 1,
+  kDestroy = 2,
+  kDetach = 3,
+  kRelocate = 4,
+};
+
+void ClearNativeResourceLockState(uint32_t resource) {
+  if (resource) {
+    std::lock_guard lock(g_native_resource_lock_mutex);
+    g_native_resource_locks.erase(resource);
+  }
+}
+
+void NotifyNativeInlineBufferLifetime(uint32_t resource, uint32_t owner,
+                                     NativeInlineBufferLifetimeReason reason) {
+  if (!resource) {
+    return;
+  }
+  InvalidateBufferLifetimeCommand command{};
+  command.resource = resource;
+  command.owner = owner;
+  command.reason = uint32_t(reason);
+  // This command is producer-only and is explicitly excluded from cached
+  // display lists: allocation lifetime must be observed at the actual call.
+  SubmitNativeCommand(command);
 }
 
 void RegisterNativeShader(PPCContext& ctx, uint8_t* base, GuestFunction implementation,
@@ -4790,97 +4823,6 @@ extern "C" void sub_821F1670(PPCContext& ctx, uint8_t* base) {
   }
 }
 
-extern "C" void sub_82273B08(PPCContext& ctx, uint8_t* base) {
-  static const bool trace_enabled = [] {
-    const char* setting = std::getenv("THEFT4_SHADOW_CACHE_TRACE");
-    return setting && std::strcmp(setting, "1") == 0;
-  }();
-  const uint32_t frame = trace_enabled && IsNativeMode()
-                             ? GetNativeLightSubmittedFrame(base) : 0;
-  static std::atomic<uint32_t> last_sampled_frame{0};
-  static std::atomic<uint32_t> sample_count{0};
-  const uint32_t previous_frame = last_sampled_frame.load(std::memory_order_relaxed);
-  const bool sample = frame && sample_count.load(std::memory_order_relaxed) < 120 &&
-                      (previous_frame == 0 || frame >= previous_frame + 60) &&
-                      last_sampled_frame.exchange(frame, std::memory_order_relaxed) != frame;
-  struct Candidate {
-    uint32_t ordinal;
-    uint32_t address;
-    uint32_t flags;
-    uint32_t index_before;
-    uint32_t token_before;
-    std::array<float, 3> position;
-    float extent;
-  };
-  std::array<Candidate, 8> candidates{};
-  uint32_t sampled_count = 0;
-  uint32_t eligible_count = 0;
-  uint32_t flagged_count = 0;
-  uint32_t count = 0;
-  uint32_t list = 0;
-  if (sample) {
-    sample_count.fetch_add(1, std::memory_order_relaxed);
-    count = LoadU32(base, kShadowCandidateCountGlobal);
-    list = LoadU32(base, kShadowCandidateListGlobal);
-    if (count > 256 || !list) {
-      REXLOG_INFO("gta4-point-shadow-cache: frame={} candidate-count={} list={:08X} invalid-sample",
-                  frame, count, list);
-    } else {
-      for (uint32_t ordinal = 0; ordinal < count; ++ordinal) {
-        const uint32_t record = list + ordinal * 128;
-        const uint32_t flags = LoadU32(base, record + 72);
-        if (flags) ++flagged_count;
-        if (flags & 0x6u) ++eligible_count;
-        // Include the first two raw slots to expose list layout, then only
-        // active candidates so a moving light beyond slot four is visible.
-        if (sampled_count >= candidates.size() || (ordinal >= 2 && !(flags & 0x6u)))
-          continue;
-        candidates[sampled_count++] = {
-            ordinal, record, flags, LoadU32(base, record + 100),
-            LoadU32(base, record + 96),
-            {LoadF32(base, record + 32), LoadF32(base, record + 36),
-             LoadF32(base, record + 40)}, LoadF32(base, record + 84)};
-      }
-    }
-  }
-  __imp__sub_82273B08(ctx, base);
-  if (sample && count <= 256 && list) {
-    const uint32_t viewport = LoadU32(base, kCurrentViewportGlobal);
-    const std::array<float, 3> camera = viewport
-        ? std::array<float, 3>{LoadF32(base, viewport + kViewportCameraPositionOffset),
-                               LoadF32(base, viewport + kViewportCameraPositionOffset + 4),
-                               LoadF32(base, viewport + kViewportCameraPositionOffset + 8)}
-        : std::array<float, 3>{};
-    REXLOG_INFO(
-        "gta4-point-shadow-cache: frame={} candidate-count={} flagged={} eligible={} list={:08X} "
-        "viewport={:08X} camera={:.2f},{:.2f},{:.2f}",
-        frame, count, flagged_count, eligible_count, list, viewport,
-        camera[0], camera[1], camera[2]);
-    for (uint32_t i = 0; i < sampled_count; ++i) {
-      const Candidate& candidate = candidates[i];
-      const uint32_t after = LoadU32(base, candidate.address + 100);
-      const uint32_t cache_index = after < 56 ? after : candidate.index_before;
-      const bool cache_valid = cache_index < 56;
-      const uint32_t cache_record = kPointShadowCacheRecords + cache_index * 240;
-      REXLOG_INFO(
-          "gta4-point-shadow-cache: frame={} ordinal={} record={:08X} flags={:08X}->{:08X} "
-          "token={:08X}->{:08X} position={:.2f},{:.2f},{:.2f} "
-          "extent={:.2f} index={}->{} "
-          "cache-valid={} cache-word220={:08X} cache-word224={:08X} "
-          "cache-word228={:08X} cache-word232={:08X}",
-          frame, candidate.ordinal, candidate.address, candidate.flags,
-          LoadU32(base, candidate.address + 72), candidate.token_before,
-          LoadU32(base, candidate.address + 96),
-          candidate.position[0], candidate.position[1], candidate.position[2],
-          candidate.extent, candidate.index_before, after, cache_valid,
-          cache_valid ? LoadU32(base, cache_record + 220) : 0,
-          cache_valid ? LoadU32(base, cache_record + 224) : 0,
-          cache_valid ? LoadU32(base, cache_record + 228) : 0,
-          cache_valid ? LoadU32(base, cache_record + 232) : 0);
-    }
-  }
-}
-
 extern "C" void sub_82270A08(PPCContext& ctx, uint8_t* base) {
   if (!IsNativeMode() || ctx.r3.u32 != kOriginalShadowMapBaseSize) {
     __imp__sub_82270A08(ctx, base);
@@ -5441,6 +5383,59 @@ extern "C" void sub_82A441F8(PPCContext& ctx, uint8_t* base) {
   __imp__sub_82A441F8(ctx, base);
 }
 
+extern "C" void sub_828ECF40(PPCContext& ctx, uint8_t* base) {
+  const bool native_mode = IsNativeMode();
+  const uint32_t owner = ctx.r3.u32;
+  REX_ORIGINAL_FUNC(sub_828ECF40)(ctx, base);
+  if (native_mode) {
+    // Inspect only the completed object; constructor input may be uninitialized.
+    const uint32_t resource = GetNativeInlineVertexBuffer(base, owner);
+    ClearNativeResourceLockState(resource);
+    NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kCreate);
+  }
+}
+
+extern "C" void sub_828ED118(PPCContext& ctx, uint8_t* base) {
+  const uint32_t owner = ctx.r3.u32;
+  const uint32_t resource = IsNativeMode() ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  // Retire the old lookup before the original frees backing. Queued immutable
+  // snapshots retain ownership. Keep lock bookkeeping for its automatic unlock.
+  NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kDestroy);
+  REX_ORIGINAL_FUNC(sub_828ED118)(ctx, base);
+  ClearNativeResourceLockState(resource);
+}
+
+extern "C" void sub_828ECD88(PPCContext& ctx, uint8_t* base) {
+  const uint32_t owner = ctx.r3.u32;
+  const uint32_t resource = IsNativeMode() ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  // Every original branch clears owner+28; retire only its verified inline
+  // header, never a shared external header abandoned by this owner.
+  NotifyNativeInlineBufferLifetime(resource, owner, NativeInlineBufferLifetimeReason::kDetach);
+  REX_ORIGINAL_FUNC(sub_828ECD88)(ctx, base);
+  ClearNativeResourceLockState(resource);
+}
+
+extern "C" void sub_828ED078(PPCContext& ctx, uint8_t* base) {
+  const bool native_mode = IsNativeMode();
+  const uint32_t owner = ctx.r3.u32;
+  // Serialized pointers need not be dereferenceable. The validator only reads
+  // an embedded header after owner+28 already equals this owner's inline slot.
+  const uint32_t previous_resource =
+      native_mode ? GetNativeInlineVertexBuffer(base, owner) : 0;
+  NotifyNativeInlineBufferLifetime(previous_resource, owner,
+                                  NativeInlineBufferLifetimeReason::kRelocate);
+  ClearNativeResourceLockState(previous_resource);
+  REX_ORIGINAL_FUNC(sub_828ED078)(ctx, base);
+  if (native_mode) {
+    const uint32_t resource = GetNativeInlineVertexBuffer(base, owner);
+    ClearNativeResourceLockState(resource);
+    // Always retire the completed identity too: the original may have changed
+    // its backing, and a captured lookup must not survive a reconstruction.
+    NotifyNativeInlineBufferLifetime(resource, owner,
+                                    NativeInlineBufferLifetimeReason::kRelocate);
+  }
+}
+
 extern "C" void D3DResource_Release(PPCContext& ctx, uint8_t* base) {
   const bool native_mode = IsNativeMode();
   const uint32_t resource = ctx.r3.u32;
@@ -5504,6 +5499,15 @@ extern "C" void sub_82A4A600(PPCContext& ctx, uint8_t* base) {
   const uint32_t resource = ctx.r3.u32;
   if (!resource) {
     return;
+  }
+  // Publish dirty intent while the guest header still reports the lock.
+  // A draw producer must not observe an unlocked clean capture while the
+  // outermost ResourceUnlock notification is waiting for the capture mutex.
+  const uint32_t resource_kind = LoadU32(base, resource) & 0xFu;
+  if (resource_kind == 1u || resource_kind == 2u) {
+    PrepareBufferUnlockCommand command{};
+    command.resource = resource;
+    SubmitNativeCommand(command);
   }
   const uint32_t previous = UpdateResourceLockCount(base, resource, -256);
   const bool outermost = (previous & 0xF00) == 0x100;
@@ -7484,39 +7488,29 @@ extern "C" void sub_82A467D8(PPCContext& ctx, uint8_t* base) {
   }
   g_last_present_frontbuffer.store(command.frontbuffer_texture, std::memory_order_relaxed);
 #ifdef THEFT4_LAB_BUILD
-  int64_t display_target = 0;
-#if REX_PLATFORM_IOS
-  static const bool display_pacing = [] {
-    const char* value = std::getenv("THEFT4_DISPLAY_PACING");
-    return value && std::strcmp(value, "1") == 0;
-  }();
-  if (display_pacing && rex::cvar::Query<uint32_t>("gta4_frame_limit") == 30)
-    display_target = theft4_pacing_display_target_ns();
-#endif
-  if (display_target)
-    PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr, display_target);
   if (observe_pacing) {
     pacing_sample.frame = submitted_frame;
     pacing_sample.submit_begin = rex::chrono::Clock::QueryHostTickCount();
   }
-#if REX_PLATFORM_IOS
-  theft4_frame_stage_record(THEFT4_STAGE_GUEST_SUBMIT_BEGIN, submitted_frame, 0, 0);
-#endif
   const bool submitted = SubmitNativeCommand(command);
-#if REX_PLATFORM_IOS
-  theft4_frame_stage_record(THEFT4_STAGE_GUEST_SUBMIT_END, submitted_frame, submitted, 0);
-#endif
   if (observe_pacing) {
     pacing_sample.submitted = submitted;
     pacing_sample.submit_end = rex::chrono::Clock::QueryHostTickCount();
   }
-  if (submitted && !display_target) {
+  if (submitted) {
     PaceNativePresent(submitted_frame, observe_pacing ? &pacing_sample : nullptr);
+    rex::diagnostics::frame_schedule::FrameBoundary(
+        rex::diagnostics::frame_schedule::FrameProducer, submitted_frame,
+        command.diagnostic_guest_caller);
+  } else if (observe_pacing) {
+    pacing::capture.Record(pacing_sample);
   }
-  if (observe_pacing) pacing::capture.Record(pacing_sample);
 #else
   if (SubmitNativeCommand(command)) {
     PaceNativePresent(submitted_frame);
+    rex::diagnostics::frame_schedule::FrameBoundary(
+        rex::diagnostics::frame_schedule::FrameProducer, submitted_frame,
+        command.diagnostic_guest_caller);
   }
 #endif
   ctx.r3.u32 = device;

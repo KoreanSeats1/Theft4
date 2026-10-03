@@ -7,7 +7,7 @@
 #define THEFT4_LAB_NATIVE_16_9 UINT32_MAX
 
 // Shared by the Objective-C launcher/Metal layer and C++ runtime startup.
-// Lab modes follow the device aspect; legacy modes retain their 16:9 budget.
+// All choices retain the proven centered 16:9 presentation.
 typedef enum theft4_output_mode {
     THEFT4_OUTPUT_720P,
     THEFT4_OUTPUT_FSR_1080P,
@@ -59,25 +59,24 @@ static inline uint32_t theft4_lab_render_height(uint32_t height) {
         height == THEFT4_LAB_NATIVE_16_9 ? height : 720;
 }
 
-// GTA IV's scene budget is selected by height. Shape it to the actual device
-// instead of forcing 16:9; the aspect hooks keep HUD geometry in its authored
-// 16:9 coordinate space while the 3D camera expands to the full display.
+// Fixed scene budgets keep their authored 16:9 shape.
 static inline uint32_t theft4_width_for_native_aspect(
     uint32_t height, uint32_t native_width, uint32_t native_height) {
-    if (!native_width || !native_height) return height * 16 / 9;
-    const uint64_t numerator = (uint64_t)height * native_width + native_height / 2;
-    const uint64_t width = numerator / native_height;
-    return width ? (uint32_t)width : 1;
+    (void)native_width;
+    (void)native_height;
+    return height * 16 / 9;
 }
 
 static inline theft4_output_policy theft4_output_policy_for_lab(
     uint32_t render_height, bool fsr1, uint32_t native_width, uint32_t native_height) {
     const uint32_t height = theft4_lab_render_height(render_height);
     if (height == THEFT4_LAB_NATIVE_16_9) {
-        // Native means the full physical device extent and aspect. This path
-        // does not upscale, even if an old FSR preference was left enabled.
-        const uint32_t width = native_width ? native_width : 1920;
-        const uint32_t native_fit_height = native_height ? native_height : 1080;
+        // Largest exact 16:9 physical-pixel extent that fits the drawable.
+        uint32_t units = native_width / 16;
+        if (native_height / 9 < units) units = native_height / 9;
+        if (!units) units = 120;
+        const uint32_t width = units * 16;
+        const uint32_t native_fit_height = units * 9;
         theft4_output_policy policy = {width, native_fit_height, width, native_fit_height,
                                       false, width, native_fit_height};
         return policy;
@@ -86,8 +85,10 @@ static inline theft4_output_policy theft4_output_policy_for_lab(
         height, native_width, native_height);
     theft4_output_policy policy = {width, height, width, height, fsr1, width, height};
     if (fsr1) {
-        policy.output_width = native_width ? native_width : width * 3 / 2;
-        policy.output_height = native_height ? native_height : height * 3 / 2;
+        const theft4_output_policy fit = theft4_output_policy_for_mode(
+            THEFT4_OUTPUT_FSR_BOOST, native_width, native_height);
+        policy.output_width = fit.output_width;
+        policy.output_height = fit.output_height;
         // The existing native hooks divide the logical video mode by 1.5 for
         // FSR Quality. Preserve the selected scene height and native shape
         // independently of the drawable's physical pixel count.

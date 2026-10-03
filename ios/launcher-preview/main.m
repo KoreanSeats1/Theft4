@@ -15,9 +15,6 @@
     // Documentation screenshots use the real launcher controls, without
     // starting captures or touching either physical device's game container.
     self.launcher.showFrameTime.on = [args containsObject:@"--capture-guide"];
-    self.launcher.constantReuse.on = YES;
-    self.launcher.frameStageTiming.on = YES;
-    self.launcher.displayPacing.on = NO;
     self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 3 :
         [args containsObject:@"--900p"] ? 2 : [args containsObject:@"--540p"] ? 0 : 1;
     self.launcher.fsrUpscaling.on = ![args containsObject:@"--no-fsr"];

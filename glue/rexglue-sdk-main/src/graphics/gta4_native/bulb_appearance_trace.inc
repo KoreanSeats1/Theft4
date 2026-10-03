@@ -59,7 +59,8 @@ void Gta4NativeGraphicsSystem::BeginBulbFrame(uint32_t frame) {
   // One visible fixture per sampled frame leaves space for its entire sequence
   // of later writers. Rotate between eligible fixtures, rather than silently
   // exhausting the shared readback buffer on several simultaneous chains.
-  for (const auto& command : current_frame_) {
+  for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
+    const auto& command = current_frame_[command_index];
     if (!command.bulb_trace || !command.pipeline_state || !command.shader_state || !command.vertex_buffers[0]) continue;
     const auto* vs=command.pipeline_state->vertex_shader_resource;
     const auto* ps=command.pipeline_state->pixel_shader_resource;
@@ -83,7 +84,7 @@ void Gta4NativeGraphicsSystem::BeginBulbFrame(uint32_t frame) {
       if (EmissionTraceConfig().corona_trace) {
         BulbRoute route;
         route.source=command.bulb_trace;route.sequence=command.diagnostic_submit_sequence;
-        route.command_index=uint32_t(&command-current_frame_.data());route.region=region;
+        route.command_index=uint32_t(command_index);route.region=region;
         bulb_prospective_route_=std::move(route);
       }
     }

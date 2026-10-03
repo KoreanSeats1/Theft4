@@ -43,7 +43,9 @@ class NativeImmutableBindings {
                        Materialize&& materialize, Upload&& upload,
                        DeltaUpload&& delta_upload) {
     bytes = nullptr;
-    if (!version || !version->byte_size || kind == FrameConstantKind::kShared) return Result::kFailure;
+    if (!version || !version->byte_size ||
+        (kind != FrameConstantKind::kVertex && kind != FrameConstantKind::kPixel))
+      return Result::kFailure;
     const FrameConstantIdentity identity{kind, uint64_t(reinterpret_cast<uintptr_t>(version.get()))};
     if (const auto* hit = versions_.Find(identity)) {
       allocation = hit->allocation; bytes = hit->bytes; return Result::kVersionHit;

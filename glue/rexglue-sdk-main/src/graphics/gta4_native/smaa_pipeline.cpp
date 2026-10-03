@@ -1,9 +1,12 @@
 #include "smaa_pipeline.h"
+#include "native_light_capture.h"
 #include "smaa_source_sync.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+
+#include <rex/chrono/clock.h>
 
 #include <rex/ui/vulkan/device.h>
 #include <rex/ui/vulkan/instance.h>
@@ -19,6 +22,8 @@ namespace rex::graphics::gta4_native {
 namespace {
 
 #include "smaa/smaa_shaders.inc"
+#include "smaa/smaa_present_ps.inc"
+#include "smaa/smaa_hardware_ps.inc"
 
 constexpr VkFormat kEdgesFormat = VK_FORMAT_R8G8_UNORM;
 constexpr VkFormat kWeightsFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -167,8 +172,12 @@ VkPipeline CreateFullscreenPipeline(const ui::vulkan::VulkanDevice* device,
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = layout;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  const uint64_t compile_begin = rex::chrono::Clock::QueryHostTickCount();
   const VkResult result = dfn.vkCreateGraphicsPipelines(
       vk_device, pipeline_cache, 1, &pipeline_info, nullptr, &pipeline);
+  rex_gta4_light_record_pipeline_work(
+      rex::chrono::Clock::QueryHostTickCount() - compile_begin, 0,
+      result == VK_SUCCESS ? 1 : 0);
   dfn.vkDestroyShaderModule(vk_device, fragment, nullptr);
   dfn.vkDestroyShaderModule(vk_device, vertex, nullptr);
   return result == VK_SUCCESS ? pipeline : VK_NULL_HANDLE;
@@ -240,9 +249,9 @@ bool SmaaPipeline::EnsureStaticResources(const ui::vulkan::VulkanDevice* device,
   const std::array<std::array<VkSampler, 3>, kDescriptorSetCount> immutable_samplers = {{
       {point_sampler_, VK_NULL_HANDLE, VK_NULL_HANDLE},
       {linear_sampler_, linear_sampler_, point_sampler_},
-      {linear_sampler_, linear_sampler_, VK_NULL_HANDLE},
+      {linear_sampler_, linear_sampler_, linear_sampler_},
   }};
-  const std::array<uint32_t, kDescriptorSetCount> binding_counts = {1, 3, 2};
+  const std::array<uint32_t, kDescriptorSetCount> binding_counts = {1, 3, 3};
   for (uint32_t pass = 0; pass < kDescriptorSetCount; ++pass) {
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (uint32_t binding = 0; binding < binding_counts[pass]; ++binding) {
@@ -370,20 +379,43 @@ bool SmaaPipeline::RequiresExtentResourceRecreation(PostFxExtent extent) const {
          (output_.image && output_.extent != extent);
 }
 
+bool SmaaPipeline::EnsurePresentationResources(const ui::vulkan::VulkanDevice* device,
+    VkPipelineCache cache, VkFormat format) {
+  if (presentation_pipeline_) return presentation_format_ == format;
+  const auto& dfn = device->functions();
+  if (!presentation_layout_) {
+    VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(NativePresentConstants)};
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.setLayoutCount = 1;
+    info.pSetLayouts = &descriptor_set_layouts_[2];
+    info.pushConstantRangeCount = 1;
+    info.pPushConstantRanges = &range;
+    if (dfn.vkCreatePipelineLayout(device->device(), &info, nullptr,
+        &presentation_layout_) != VK_SUCCESS) return false;
+  }
+  presentation_pipeline_ = CreateFullscreenPipeline(device, cache, presentation_layout_,
+      format, smaa_present_ps, sizeof(smaa_present_ps));
+  if (!presentation_pipeline_) return false;
+  presentation_format_ = format;
+  return true;
+}
+
 bool SmaaPipeline::EnsureExtentResources(const ui::vulkan::VulkanDevice* device,
-                                         PostFxExtent extent) {
-  if (edges_.image && edges_.extent == extent) {
-    return true;
-  }
-  DestroyExtentResources(device);
-  constexpr VkImageUsageFlags kIntermediateUsage =
-      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-  if (!CreateImage(device, kEdgesFormat, extent, kIntermediateUsage, edges_) ||
-      !CreateImage(device, kWeightsFormat, extent, kIntermediateUsage, weights_) ||
-      !CreateImage(device, kOutputFormat, extent, kIntermediateUsage, output_)) {
+                                         PostFxExtent extent, bool needs_output) {
+  constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  if (!edges_.image || edges_.extent != extent || !weights_.image) {
     DestroyExtentResources(device);
-    return false;
+    if (!CreateImage(device, kEdgesFormat, extent, usage, edges_) ||
+        !CreateImage(device, kWeightsFormat, extent, usage, weights_)) {
+      DestroyExtentResources(device);
+      return false;
+    }
   }
+  // Fused launches allocate two extent images. If a later diagnostic needs
+  // the intermediate, add it without touching images used by another slot.
+  if (needs_output && !output_.image &&
+      !CreateImage(device, kOutputFormat, extent, usage, output_)) return false;
   return true;
 }
 
@@ -435,17 +467,38 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
                           VkDescriptorPool frame_descriptor_pool, VkPipelineCache pipeline_cache,
                           VkImage source_image, VkImageView source_view,
                           VkImageLayout& source_layout, PostFxExtent extent, SmaaQuality quality,
-                          Output& result, const NativeGpuTimingSink* timing) {
+                          Output& result, const NativeGpuTimingSink* timing,
+                          const Presentation* presentation, VkImageView source_linear_view) {
   result = {};
   if (!command_buffer || !device || !frame_descriptor_pool || !source_image || !source_view ||
       source_layout == VK_IMAGE_LAYOUT_UNDEFINED || !extent.width || !extent.height ||
       quality >= SmaaQuality::kCount ||
-      !EnsureStaticResources(device, pipeline_cache) || !EnsureExtentResources(device, extent)) {
+      !EnsureStaticResources(device, pipeline_cache) ||
+      (presentation && (!presentation->image || !presentation->view ||
+       presentation->image == source_image || presentation->extent != extent ||
+       !EnsurePresentationResources(device, pipeline_cache, presentation->format))) ||
+      !EnsureExtentResources(device, extent, !presentation)) {
     return false;
   }
   const auto& dfn = device->functions();
   const VkDevice vk_device = device->device();
 
+  // Optional pipelines are attempted once, before recording any commands.
+  // A failure selects the already-created manual pipeline for this session.
+  if (source_linear_view && !presentation && !hardware_neighborhood_attempted_) {
+    hardware_neighborhood_attempted_ = true;
+    hardware_neighborhood_pipeline_ = CreateFullscreenPipeline(device, pipeline_cache,
+        pipeline_layouts_[2], kOutputFormat, smaa_hardware_neighborhood_ps,
+        sizeof(smaa_hardware_neighborhood_ps));
+  }
+  if (source_linear_view && presentation && !hardware_presentation_attempted_) {
+    hardware_presentation_attempted_ = true;
+    hardware_presentation_pipeline_ = CreateFullscreenPipeline(device, pipeline_cache,
+        presentation_layout_, presentation->format, smaa_hardware_present_ps,
+        sizeof(smaa_hardware_present_ps));
+  }
+  const bool hardware_filtered = source_linear_view &&
+      (presentation ? hardware_presentation_pipeline_ : hardware_neighborhood_pipeline_);
   std::array<VkDescriptorSet, kDescriptorSetCount> sets{};
   VkDescriptorSetAllocateInfo allocation{};
   allocation.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -483,14 +536,16 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
   }
 
   const std::array<VkImageView, kCombinedImageSamplerDescriptorCount> views = {
-      source_view, edges_.view, area_.view, search_.view, source_view, weights_.view};
+      source_view, edges_.view, area_.view, search_.view, source_view, weights_.view,
+      source_linear_view ? source_linear_view : source_view};
   const std::array<VkImageLayout, kCombinedImageSamplerDescriptorCount> layouts = {
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> set_indices = {0, 1, 1, 1, 2,
-                                                                                  2};
-  const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> bindings = {0, 0, 1, 2, 0, 1};
+                                                                                  2, 2};
+  const std::array<uint32_t, kCombinedImageSamplerDescriptorCount> bindings = {0, 0, 1, 2, 0, 1, 2};
   std::array<VkDescriptorImageInfo, kCombinedImageSamplerDescriptorCount> images{};
   std::array<VkWriteDescriptorSet, kCombinedImageSamplerDescriptorCount> writes{};
   for (size_t index = 0; index < writes.size(); ++index) {
@@ -508,7 +563,7 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
   const SmaaConstants constants = {1.0f / float(extent.width), 1.0f / float(extent.height),
                                    float(extent.width), float(extent.height)};
   const auto record_pass = [&](Image& destination, VkPipeline pipeline, VkPipelineLayout layout,
-                               VkDescriptorSet descriptor_set) {
+                               VkDescriptorSet descriptor_set, bool final_presentation = false) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcAccessMask = destination.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -522,14 +577,18 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
     barrier.image = destination.image;
     barrier.subresourceRange =
         ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
-    dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &barrier);
+    if (!final_presentation) {
+      dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
+                               nullptr, 1, &barrier);
+    }
     VkRenderingAttachmentInfo attachment{};
     attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     attachment.imageView = destination.view;
     attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // Edge/weight shaders may discard: retain their clear. Presentation
+    // writes every pixel and has no previous contents to preserve.
+    attachment.loadOp = final_presentation ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo rendering{};
     rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -550,9 +609,12 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
     dfn.vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
                                 &descriptor_set, 0, nullptr);
     dfn.vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(constants), &constants);
+        final_presentation ? sizeof(NativePresentConstants) : sizeof(constants),
+        final_presentation ? static_cast<const void*>(&presentation->constants)
+                           : static_cast<const void*>(&constants));
     dfn.vkCmdDraw(command_buffer, 3, 1, 0, 0);
     dfn.vkCmdEndRendering(command_buffer);
+    if (final_presentation) return;
     barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -575,8 +637,22 @@ bool SmaaPipeline::Record(VkCommandBuffer command_buffer, const ui::vulkan::Vulk
   if (timing) {
     timing->Switch(command_buffer, performance::GpuRange::kSmaaNeighborhood);
   }
-  record_pass(output_, neighborhood_pipeline_, pipeline_layouts_[2], sets[2]);
-  result = {output_.image, output_.view, output_.layout, output_.format, output_.extent};
+  if (presentation) {
+    Image destination{};
+    destination.image = presentation->image;
+    destination.view = presentation->view;
+    destination.extent = extent;
+    destination.format = presentation->format;
+    destination.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    record_pass(destination, hardware_filtered ? hardware_presentation_pipeline_ : presentation_pipeline_,
+                presentation_layout_, sets[2], true);
+    result = {destination.image, destination.view, destination.layout, destination.format, extent};
+  } else {
+    record_pass(output_, hardware_filtered ? hardware_neighborhood_pipeline_ : neighborhood_pipeline_,
+                pipeline_layouts_[2], sets[2]);
+    result = {output_.image, output_.view, output_.layout, output_.format, output_.extent};
+  }
+  result.hardware_filtered = hardware_filtered;
   return true;
 }
 
@@ -614,6 +690,15 @@ void SmaaPipeline::Destroy(const ui::vulkan::VulkanDevice* device) {
     dfn.vkDestroyPipeline(vk_device, neighborhood_pipeline_, nullptr);
     neighborhood_pipeline_ = VK_NULL_HANDLE;
   }
+  if (hardware_neighborhood_pipeline_) dfn.vkDestroyPipeline(vk_device, hardware_neighborhood_pipeline_, nullptr);
+  if (hardware_presentation_pipeline_) dfn.vkDestroyPipeline(vk_device, hardware_presentation_pipeline_, nullptr);
+  hardware_neighborhood_pipeline_ = hardware_presentation_pipeline_ = VK_NULL_HANDLE;
+  hardware_neighborhood_attempted_ = hardware_presentation_attempted_ = false;
+  if (presentation_pipeline_) dfn.vkDestroyPipeline(vk_device, presentation_pipeline_, nullptr);
+  if (presentation_layout_) dfn.vkDestroyPipelineLayout(vk_device, presentation_layout_, nullptr);
+  presentation_pipeline_ = VK_NULL_HANDLE;
+  presentation_layout_ = VK_NULL_HANDLE;
+  presentation_format_ = VK_FORMAT_UNDEFINED;
   for (VkPipelineLayout& layout : pipeline_layouts_) {
     if (layout) {
       dfn.vkDestroyPipelineLayout(vk_device, layout, nullptr);

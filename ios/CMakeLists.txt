@@ -13,6 +13,8 @@ else()
     set(THEFT4_LAB_PLIST_VALUE "<false/>")
 endif()
 option(THEFT4_SIGN_DEVICE "Sign Theft4 with the configured development team" OFF)
+option(THEFT4_SUSTAINED_EXECUTION
+    "Request the system sustained performance profile on supported devices" OFF)
 set(THEFT4_ARM64_TUNE "" CACHE STRING
     "ARM64 scheduling target; empty uses the compiler default without changing ISA requirements")
 option(THEFT4_ENABLE_THIN_LTO
@@ -179,6 +181,8 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_aspect_hooks.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_font_selection_trace.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_native_hooks.cpp"
+            # Strong stage wrappers must be in this force-loaded archive.
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_physics_hooks.cpp"
             bridge/theft4_motion_blur.cpp
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
             "${THEFT4_GTA4_NATIVE_SMOLV_ROOT}/smolv.cpp")
@@ -207,6 +211,9 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         endif()
         target_compile_options(theft4_gta4_native_compile PRIVATE
             -Wno-unused-variable)
+        set_source_files_properties(
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_physics_hooks.cpp"
+            PROPERTIES COMPILE_OPTIONS "-ffp-model=strict")
         set_source_files_properties(
             "${THEFT4_GTA4_NATIVE_SHADER_CACHE_ROOT}/shader/shader_cache.cpp"
             PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
@@ -246,7 +253,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
                 "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/stb")
             target_link_libraries(theft4_core_bridge PRIVATE
                 theft4_gta4_native_compile libzstd_static)
-            target_compile_definitions(theft4_core_bridge PRIVATE
+            target_compile_definitions(theft4_core_bridge PUBLIC
                 THEFT4_HAS_GTA4_NATIVE_BACKEND=1)
             # The native hook wrappers intentionally interpose weak generated
             # AOT entry points, so every archive object must be retained.
@@ -289,7 +296,8 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         # same platform-neutral world-transition diagnostics used by the
         # desktop host. Apple codegen emits weak public entry points and
         # separate __imp__ originals specifically for these strong wrappers.
-        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp")
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp"
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fault_probe_hooks.cpp")
     target_sources(theft4_core_bridge PRIVATE
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/flags.cpp"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/ui/renderdoc_api.cpp"
@@ -406,7 +414,7 @@ endif()
 set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
 add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
     Theft4/Theft4LauncherView.m
-    Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m
+    Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
     Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
 set_source_files_properties(Theft4/XeniOS-Touch-LICENSE.txt PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources)
@@ -459,6 +467,11 @@ if(THEFT4_SIGN_DEVICE AND NOT CMAKE_OSX_SYSROOT MATCHES "(iphonesimulator|iPhone
         XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic
         XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
         XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${LIBERTY_IOS_DEVELOPMENT_TEAM}")
+    if(THEFT4_SUSTAINED_EXECUTION)
+        set_target_properties(Theft4 PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
+                "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Theft4Sustained.entitlements")
+    endif()
 endif()
 
 # Compile the consumer as C, proving the public boundary has no C++/UIKit types.

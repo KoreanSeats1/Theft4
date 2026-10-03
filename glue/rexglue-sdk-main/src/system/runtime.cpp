@@ -118,6 +118,14 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
   chrono::Clock::set_guest_tick_frequency(50000000);
   chrono::Clock::set_guest_system_time_base(chrono::Clock::QueryHostSystemTime());
   chrono::Clock::set_guest_time_scalar(1.0);
+  // File verification creates a temporary tool runtime before the launcher
+  // chooses a gameplay policy. It must not freeze the process to the default.
+  if (!config.tool_mode) {
+    if (!chrono::Clock::ConfigureDirectReads(REXCVAR_GET(clock_direct_reads)))
+      return fail(X_STATUS_UNSUCCESSFUL, "Guest clock policy changed; app restart required");
+    REXSYS_INFO("Guest clock direct reads: {} (50 MHz, scalar 1.0, startup-frozen policy)",
+                chrono::Clock::DirectReadsEnabled());
+  }
   diagnostics::gta4_transition::Initialize();
 
   // Enable threading affinity configuration

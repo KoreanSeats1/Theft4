@@ -4,6 +4,7 @@
 #include "theft4_bootstrap_input.h"
 #include "theft4_metal_presenter.h"
 #include "theft4_motion_blur.h"
+#include "theft4_performance_defaults.h"
 #include "gta4_installer.h"
 #include <rex/image_info.h>
 #include <rex/cvar.h>
@@ -15,6 +16,8 @@
 #include <rex/system/user_module.h>
 #include <rex/system/xex_module.h>
 #include <rex/system/xthread.h>
+#include <rex/thread/runtime_wait_policy.h>
+#include <rex/chrono/clock.h>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -33,18 +36,19 @@ REXCVAR_DECLARE(bool, vulkan_transfer_in_draw_pass);
 REXCVAR_DECLARE(bool, vulkan_tight_render_area);
 REXCVAR_DECLARE(std::string, gta4_transition_diagnostics);
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+REXCVAR_DECLARE(bool, vulkan_moltenvk_synchronous_queue_submits);
 REXCVAR_DECLARE(uint32_t, gta4_native_frames_in_flight);
+REXCVAR_DECLARE(uint32_t, gta4_native_cpu_present_admission);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
 REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
+REXCVAR_DECLARE(bool, gta4_native_pipeline_snapshot_reuse);
+REXCVAR_DECLARE(bool, gta4_native_component_scope_reuse);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_gpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_detailed_cpu);
 REXCVAR_DECLARE(bool, gta4_profile_native_autostart);
-REXCVAR_DECLARE(uint32_t, gta4_profile_native_gpu_query_budget);
-REXCVAR_DECLARE(uint32_t, gta4_profile_native_interval);
-REXCVAR_DECLARE(uint32_t, gta4_profile_native_samples);
 REXCVAR_DECLARE(std::string, gta4_anisotropic_filtering);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
@@ -66,6 +70,7 @@ REXCVAR_DECLARE(uint32_t, gta4_drawable_reference_limit);
 
 extern const rex::PPCImageInfo PPCImageConfig;
 extern "C" void gta4_transition_hooks_link_anchor();
+extern "C" void gta4_fault_probe_hooks_link_anchor();
 extern "C" void theft4_ios_audio_hotpaths_link_anchor();
 
 namespace {
@@ -92,6 +97,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // engine. They are observational and still invoke the original AOT
         // functions through their generated __imp__ entry points.
         gta4_transition_hooks_link_anchor();
+        gta4_fault_probe_hooks_link_anchor();
         theft4_ios_audio_hotpaths_link_anchor();
         std::string reason;
         if (!gta4::install::IsInstallReady(game_directory, &reason)) {
@@ -161,14 +167,38 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             device_profile_value ? device_profile_value : "generic";
         const bool a19_profile = device_profile == "a19";
         REXCVAR_SET(gta4_native_pipeline_prewarm, !a19_profile);
-        REXCVAR_SET(gta4_native_sparse_texture_walks, a19_profile);
+        // Independent restart-only controls retain build 77's exact paths.
+        const auto draw_reuse_option = [](const char* name) {
+            const char* raw = std::getenv(name);
+            const std::string_view value = raw ? raw : "1";
+            if (value != "0" && value != "1")
+                throw std::runtime_error(std::string(name) + " must be 0 or 1");
+            return value == "1";
+        };
+        const bool pipeline_snapshot_reuse = draw_reuse_option("THEFT4_PIPELINE_SNAPSHOT_REUSE");
+        const bool component_scope_reuse = draw_reuse_option("THEFT4_COMPONENT_SCOPE_REUSE");
+        REXCVAR_SET(gta4_native_pipeline_snapshot_reuse, pipeline_snapshot_reuse);
+        REXCVAR_SET(gta4_native_component_scope_reuse, component_scope_reuse);
+        REXLOG_INFO("Theft4 draw reuse: pipeline-snapshots={} component-scopes={}",
+                    pipeline_snapshot_reuse, component_scope_reuse);
+        // Both paths capture the same shader-required slots. Keep an explicit
+        // launch rollback to the full 16-slot walks for device comparisons.
+        const char* sparse_walks_value = std::getenv("THEFT4_SPARSE_TEXTURE_WALKS");
+        const bool sparse_texture_walks =
+            !sparse_walks_value || std::string_view(sparse_walks_value) != "0";
+        REXCVAR_SET(gta4_native_sparse_texture_walks, sparse_texture_walks);
+        // Restore the released shader-specific constant reuse default. Explicit
+        // THEFT4_CONSTANT_REUSE=0 retains the complete immutable-bank path.
+        setenv("THEFT4_CONSTANT_REUSE", "1", 0);
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, false);
         REXCVAR_SET(gta4_profile_native_autostart, false);
         REXLOG_INFO(
             "Theft4 device profile: {} pipeline-prewarm={} sparse-texture-walks={} detailed-profile=false "
             "profile-autostart=false",
-            device_profile, !a19_profile, a19_profile);
+            device_profile, !a19_profile, sparse_texture_walks);
+        REXLOG_INFO("Theft4 shader constant projection reuse: {}",
+                    std::string_view(std::getenv("THEFT4_CONSTANT_REUSE")) == "1");
 
         // The launch policy independently selects scene and drawable sizes.
         // Native hooks derive scene = logical video / 1.5 for FSR Quality.
@@ -315,6 +345,43 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             shadow, shadow_map_size, shadow_distance, draw_distance_scale,
             drawable_reference_limit, highest_lod == "1", lod_distance, reflection, anti_aliasing);
 
+        const char* clock_override = std::getenv("THEFT4_DIRECT_GUEST_CLOCK");
+        const std::string_view clock_policy = clock_override ? clock_override : "1";
+        if (clock_policy != "0" && clock_policy != "1")
+            throw std::runtime_error("THEFT4_DIRECT_GUEST_CLOCK must be 0 or 1");
+        REXCVAR_SET(clock_direct_reads, clock_policy == "1");
+        REXLOG_INFO("Theft4 build82 clock requested: direct={} (applied before guest workers)", clock_policy == "1");
+
+        const char* wait_override = std::getenv("THEFT4_RUNTIME_WAIT_FIXES");
+        const std::string_view wait_policy = wait_override ? wait_override : THEFT4_DEFAULT_RUNTIME_WAIT_POLICY;
+        if (wait_policy != "0" && wait_policy != "1") {
+            throw std::runtime_error("THEFT4_RUNTIME_WAIT_FIXES must be 0 or 1");
+        }
+        if (!rex::thread::ConfigureRuntimeWaitFixes(wait_policy == "1")) {
+            throw std::runtime_error("Runtime wait mode changed; fully close and reopen Theft4");
+        }
+        REXLOG_INFO("Theft4 build82 runtime waits: fixes={} (frozen until app restart); "
+                    "multiwait={} guest-delay={} guest-priority={}",
+                    rex::thread::RuntimeWaitFixesEnabled(),
+                    wait_policy == "1" ? "object-notification" : "build80-polling",
+                    wait_policy == "1" ? "microsecond-deadline" : "build80-millisecond",
+                    wait_policy == "1" ? "guest-increment" : "build80-host-query");
+
+        // Admit the next native command stream only after the previous CPU
+        // publication returns. Guest threads may continue other work, and the
+        // two independently owned GPU slots below still overlap CPU/GPU work.
+        // A fresh launch with 2 restores build 79's CPU admission behavior.
+        const char* cpu_admission_override = std::getenv("THEFT4_CPU_PRESENT_ADMISSION");
+        const std::string_view cpu_admission =
+            cpu_admission_override ? cpu_admission_override : "1";
+        if (cpu_admission != "1" && cpu_admission != "2") {
+            throw std::runtime_error("THEFT4_CPU_PRESENT_ADMISSION must be 1 or 2");
+        }
+        const uint32_t cpu_present_limit = cpu_admission == "1" ? 1u : 2u;
+        REXCVAR_SET(gta4_native_cpu_present_admission, cpu_present_limit);
+        REXLOG_INFO("Theft4 native CPU present admission set to {} ({})",
+                    cpu_present_limit, cpu_admission_override ? "launch override" : "iOS default");
+
         // Use both independently owned native frame slots so the CPU can record
         // frame n+1 while the GPU completes frame n.  The renderer keeps command
         // buffers, upload storage, descriptors, constants, query/readback state
@@ -333,27 +400,35 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(gta4_native_frames_in_flight, native_frame_slots);
         REXLOG_INFO("Theft4 native frame-resource slots set to {} ({})",
                     native_frame_slots, frames ? "launch override" : "iOS default");
+        // Encode and commit Metal work on the submitting thread. GPU execution
+        // still overlaps the CPU using the existing frame slots. A fresh launch
+        // with 0 restores build 76's separate driver dispatch queue.
+        const char* synchronous_submit_override =
+            std::getenv("THEFT4_MOLTENVK_SYNCHRONOUS_SUBMITS");
+        const std::string_view synchronous_submits =
+            synchronous_submit_override ? synchronous_submit_override : "1";
+        if (synchronous_submits != "0" && synchronous_submits != "1") {
+            throw std::runtime_error(
+                "THEFT4_MOLTENVK_SYNCHRONOUS_SUBMITS must be 0 or 1");
+        }
+        REXCVAR_SET(vulkan_moltenvk_synchronous_queue_submits,
+                    synchronous_submits == "1");
+        REXLOG_INFO("Theft4 MoltenVK synchronous submissions: {} ({})",
+                    synchronous_submits == "1",
+                    synchronous_submit_override ? "launch override" : "iOS default");
 #ifdef THEFT4_LAB_BUILD
-        // A manual performance capture is bounded to a short, explicit run.
-        // Spend that diagnostic budget on pass-level GPU timestamps so an
-        // exterior capture can distinguish scene draws, reflections and
-        // post-processing instead of reporting one unattributed envelope.
-        // The profiler emits no timestamps during normal play.
-        REXCVAR_SET(gta4_profile_native_detailed_gpu, true);
+        // Keep CPU/transport detail for attribution, but use only the coarse
+        // GPU envelope. Per-pass Metal timestamp blits measurably perturb the
+        // workload and are unnecessary for the CPU/physics comparison.
+        REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
         REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
-        // Keep the all-frame publication/stage trace cheap, and sample enough
-        // deep frames to identify CPU operations and GPU pass families without
-        // placing hundreds of timestamp boundaries into every submitted frame.
-        REXCVAR_SET(gta4_profile_native_gpu_query_budget, 128u);
-        REXCVAR_SET(gta4_profile_native_interval, 3u);
-        REXCVAR_SET(gta4_profile_native_samples, 120u);
         const char* capture_setting = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
         const bool capture_on_launch = capture_setting &&
             std::string_view(capture_setting) == "1";
         REXCVAR_SET(gta4_profile_native_autostart, capture_on_launch);
         REXLOG_INFO(
-            "Theft4 bounded profiler ready: 120 samples / 3-frame interval / "
-            "128 GPU boundaries; capture on launch: {}", capture_on_launch);
+            "Theft4 bounded CPU/pacing plus coarse-GPU profiler ready; "
+            "capture on launch: {}", capture_on_launch);
         // Lab-only default; a fresh launch with 0 restores strict fetch identity
         // in the same executable for controlled A/B runs. Ordinary builds keep
         // the renderer's conservative false default.

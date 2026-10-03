@@ -15309,6 +15309,7 @@ loc_829764AC:
 	if (ctx.cr6.lt) goto loc_8297644C;
 loc_829764C0:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// li r3,0
@@ -24800,6 +24801,7 @@ DEFINE_REX_FUNC(sub_8297A450) {
 	// sth r10,6(r11)
 	REX_STORE_U16(ctx.r11.u32 + 6, ctx.r10.u16);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// mr r3,r27
 	ctx.r3.u64 = ctx.r27.u64;
 	// stw r30,0(r28)
@@ -25087,6 +25089,7 @@ loc_8297A6A0:
 	sub_82993EB0(ctx, base);
 loc_8297A6BC:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// stw r24,0(r23)
@@ -25280,6 +25283,7 @@ loc_8297A7E4:
 	sub_82993F28(ctx, base);
 loc_8297A808:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// li r11,0
 	ctx.r11.s64 = 0;
 	// mr r3,r30

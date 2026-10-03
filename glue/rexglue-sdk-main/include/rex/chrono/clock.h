@@ -19,6 +19,7 @@
 
 REXCVAR_DECLARE(bool, clock_no_scaling);
 REXCVAR_DECLARE(bool, clock_source_raw);
+REXCVAR_DECLARE(bool, clock_direct_reads);
 
 #if REX_ARCH_AMD64
 // Raw clock source requires platform-specific implementation
@@ -27,6 +28,10 @@ REXCVAR_DECLARE(bool, clock_source_raw);
 #endif
 
 namespace rex::chrono {
+
+struct ClockDiagnostics {
+  uint64_t stale_samples, prevented_host_ticks, largest_stale_ticks, last_stale_host_tick;
+};
 
 class Clock {
  public:
@@ -71,6 +76,11 @@ class Clock {
   // Queries the current guest tick count, accounting for frequency adjustment
   // and scaling.
   static uint64_t QueryGuestTickCount();
+  static ClockDiagnostics QueryDiagnostics();
+  // Called during runtime setup before guest workers start. Policy is frozen
+  // for this process; subsequent rate changes rebase the read-only epoch.
+  static bool ConfigureDirectReads(bool enabled);
+  static bool DirectReadsEnabled();
   // Queries the guest time, in FILETIME format, accounting for scaling.
   static uint64_t QueryGuestSystemTime();
   // Queries the milliseconds since the guest began, accounting for scaling.

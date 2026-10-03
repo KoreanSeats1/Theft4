@@ -184,7 +184,12 @@ constexpr uint32_t kRoundMask = 0x03;
 struct FPSCRRegister {
   uint32_t csr;
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+  // ARM FPCR RMode orders +infinity before -infinity; x86 MXCSR reverses them.
+  static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundUp, kRoundDown, kRoundTowardZero};
+#else
   static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundDown, kRoundUp, kRoundTowardZero};
+#endif
 
   using Platform = platform::FPSCRPlatform;
   static constexpr size_t RoundShift = Platform::RoundShift;

@@ -9,7 +9,12 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/diagnostics/runtime_callers.h>
 #include <vector>
+#include <cmath>
+#include <limits>
+#include <rex/cvar.h>
+#include <rex/thread/runtime_wait_policy.h>
 
 #include <rex/chrono/clock.h>
 #include <rex/stream.h>
@@ -27,7 +32,17 @@
 #include <rex/system/xsymboliclink.h>
 #include <rex/system/xthread.h>
 
+REXCVAR_DECLARE(bool, clock_no_scaling);
+
 namespace rex::system {
+namespace {
+uint64_t RuntimeWaitCaller() {
+  if (!rex::diagnostics::callers::Enabled()) return 0;
+  const auto thread = XThread::GetCurrentThread();
+  return thread && thread->thread_state() ? uint32_t(thread->thread_state()->context()->lr) : 0;
+}
+}  // namespace
+
 
 XObject::XObject(Type type) : kernel_state_(nullptr), pointer_ref_count_(1), type_(type) {
   handles_.reserve(10);
@@ -187,6 +202,25 @@ void XObject::SetAttributes(uint32_t obj_attributes_ptr) {
 }
 
 uint32_t XObject::TimeoutTicksToMs(int64_t timeout_ticks) {
+  if (rex::thread::RuntimeWaitFixesEnabled()) {
+    uint64_t magnitude = 0;
+    if (timeout_ticks < 0) {
+      magnitude = uint64_t(-(timeout_ticks + 1)) + 1;
+    } else if (timeout_ticks > 0) {
+      const uint64_t now = chrono::Clock::QueryGuestSystemTime();
+      if (uint64_t(timeout_ticks) > now) magnitude = uint64_t(timeout_ticks) - now;
+    }
+    if (!magnitude) return 0;
+    const double scalar = REXCVAR_GET(clock_no_scaling) ? 1.0 : chrono::Clock::guest_time_scalar();
+    const double speed = std::isfinite(scalar) && scalar > 0.0 ? scalar : 1.0;
+    // The object-wait API has millisecond resolution. Round nonzero waits up
+    // instead of converting them to repeated zero-time probes. This path
+    // returns host duration; its callers must not apply guest scaling twice.
+    const double ms = std::ceil(static_cast<double>(magnitude) / (10000.0 * speed));
+    constexpr uint32_t maximum = std::numeric_limits<uint32_t>::max() - 1;
+    return ms >= double(maximum) ? maximum : static_cast<uint32_t>(ms);
+  }
+
   if (timeout_ticks > 0) {
     // Absolute time, based on January 1, 1601.
     // TODO(benvanik): convert time to relative time.
@@ -202,15 +236,18 @@ uint32_t XObject::TimeoutTicksToMs(int64_t timeout_ticks) {
 
 X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                        uint64_t* opt_timeout) {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::WaitSingle, RuntimeWaitCaller());
   auto wait_handle = GetWaitHandle();
   if (!wait_handle) {
     // Object doesn't support waiting.
     return X_STATUS_SUCCESS;
   }
 
-  auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+  auto timeout_ms = opt_timeout
+      ? std::chrono::milliseconds(rex::thread::RuntimeWaitFixesEnabled()
+            ? TimeoutTicksToMs(*opt_timeout)
+            : chrono::Clock::ScaleGuestDurationMillis(TimeoutTicksToMs(*opt_timeout)))
+      : std::chrono::milliseconds::max();
 
   XThread::CheckTitleTermination();
   auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
@@ -235,9 +272,12 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
 X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, uint32_t wait_reason,
                                 uint32_t processor_mode, uint32_t alertable,
                                 uint64_t* opt_timeout) {
-  auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::SignalAndWait, RuntimeWaitCaller());
+  auto timeout_ms = opt_timeout
+      ? std::chrono::milliseconds(rex::thread::RuntimeWaitFixesEnabled()
+            ? TimeoutTicksToMs(*opt_timeout)
+            : chrono::Clock::ScaleGuestDurationMillis(TimeoutTicksToMs(*opt_timeout)))
+      : std::chrono::milliseconds::max();
 
   auto result =
       rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
@@ -262,15 +302,18 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
 X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_type,
                                uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                                uint64_t* opt_timeout) {
+  rex::diagnostics::callers::Span sample(rex::diagnostics::callers::WaitMultiple, RuntimeWaitCaller());
   std::vector<rex::thread::WaitHandle*> wait_handles(count);
   for (size_t i = 0; i < count; ++i) {
     wait_handles[i] = objects[i]->GetWaitHandle();
     assert_not_null(wait_handles[i]);
   }
 
-  auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+  auto timeout_ms = opt_timeout
+      ? std::chrono::milliseconds(rex::thread::RuntimeWaitFixesEnabled()
+            ? TimeoutTicksToMs(*opt_timeout)
+            : chrono::Clock::ScaleGuestDurationMillis(TimeoutTicksToMs(*opt_timeout)))
+      : std::chrono::milliseconds::max();
 
   XThread::CheckTitleTermination();
   if (wait_type) {

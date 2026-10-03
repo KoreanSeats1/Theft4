@@ -35,6 +35,8 @@
 #include <string>
 
 #include <fcntl.h>
+#include <mach/mach.h>
+#include <mach/vm_map.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -196,10 +198,49 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
 }
 
 bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
-  (void)base_address;
+  // This runs in the access-violation path to detect a watch another thread
+  // already cleared. Never manufacture accessible pages on query failure.
   access_out = PageAccess::kNoAccess;
   length = 0;
-  return false;
+  static_assert(sizeof(vm_address_t) >= sizeof(uintptr_t));
+  static_assert(sizeof(vm_size_t) == sizeof(size_t));
+  const vm_address_t requested = reinterpret_cast<vm_address_t>(base_address);
+  vm_address_t region_address = requested;
+  vm_size_t region_size = 0;
+  vm_region_basic_info_data_64_t info{};
+  mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object_name = MACH_PORT_NULL;
+
+  // vm_region_64 is public on iOS; mach_vm_region/mach_vm.h is not exposed by
+  // its SDK. The fixed-size request/result uses no heap allocation here.
+  const kern_return_t result = vm_region_64(
+      mach_task_self(), &region_address, &region_size, VM_REGION_BASIC_INFO_64,
+      reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+  if (MACH_PORT_VALID(object_name)) {
+    mach_port_deallocate(mach_task_self(), object_name);
+  }
+  if (result != KERN_SUCCESS || info_count < VM_REGION_BASIC_INFO_COUNT_64 ||
+      region_address > requested) {
+    return false;
+  }
+  // A query in an unmapped hole may return the next region. Also check the
+  // upper bound without adding address + size (which could overflow).
+  const vm_size_t offset = requested - region_address;
+  if (offset >= region_size) {
+    return false;
+  }
+  length = static_cast<size_t>(region_size - offset);
+
+  // PageAccess cannot express write-only/execute-only mappings. Report those
+  // conservatively as inaccessible rather than falsely promising read access.
+  if (info.protection & VM_PROT_READ) {
+    const bool writable = (info.protection & VM_PROT_WRITE) != 0;
+    const bool executable = (info.protection & VM_PROT_EXECUTE) != 0;
+    access_out = executable
+                     ? (writable ? PageAccess::kExecuteReadWrite : PageAccess::kExecuteReadOnly)
+                     : (writable ? PageAccess::kReadWrite : PageAccess::kReadOnly);
+  }
+  return true;
 }
 
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,

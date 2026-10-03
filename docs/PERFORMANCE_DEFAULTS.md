@@ -1,0 +1,7 @@
+# Build 94: consolidated performance defaults
+
+The main branch integrates the build-93 renderer/runtime history. The device configuration was read from the M5 on 2026-10-02. Renderer efficiency, parallel render preparation, graphics preparation, fused SMAA, hardware SMAA filtering, frame resource sharing, frame assembly, command stream, utility CPU cleanup, memory-pressure recovery, parallel texture conversion, render-target reuse, frame scheduling and direct guest clock are enabled automatically. Runtime Wait Improvements remains disabled. The obsolete display-aligned submission and old performance-comparison controls are absent from Settings.
+
+The app applies these launch policies directly from ios/bridge/theft4_performance_defaults.h. Persisted old experiment choices no longer override the consolidated configuration. Hardware capability checks and compatible-path fallbacks inside the renderer still apply. Normal graphics, display, touch-control and lightweight capture settings remain adjustable; save import/export on main is retained. The renderer/runtime integration deliberately selects build93 for overlapping old pacing/profiler changes instead of reviving previous experiments.
+
+This consolidation is not evidence that the lag-spike root cause is fixed. Build93 user feedback remains: possibly a little better, broadly similar. Signed build92/build93 artifacts remain rollback options. Build94 changes configuration and settings; the renderer implementation is build93.

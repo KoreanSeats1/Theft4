@@ -206,6 +206,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _playSaveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
     _play = Column(@[_playHeadline, _playIntro, _startButton, _playSaveNote], 22);
 
+    _showCPUUsage = [UISwitch new];
     _showFrameTime = [UISwitch new];
     _showFPS = [UISwitch new];
     _showControls = [UISwitch new];
@@ -214,9 +215,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _fsrBoost = [UISwitch new];
     _motionBlur = [UISwitch new];
     _depthOfField = [UISwitch new];
-    NSArray<UISwitch *> *switches = @[_showFrameTime, _showFPS, _showControls,
+    NSArray<UISwitch *> *switches = @[_showCPUUsage, _showFrameTime, _showFPS, _showControls,
         _anisotropicFiltering, _enhancedOutput, _fsrBoost, _motionBlur, _depthOfField];
-    NSArray<NSString *> *identifiers = @[@"showFrameTime", @"showFPS", @"showTouchControls",
+    NSArray<NSString *> *identifiers = @[@"showCPUUsage", @"showFrameTime", @"showFPS", @"showTouchControls",
         @"anisotropicFiltering", @"enhancedOutput1080p", @"fsrBoost", @"motionBlur",
         @"depthOfField"];
     for (NSUInteger i = 0; i < switches.count; ++i) {
@@ -321,8 +322,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _graphics = Column(graphicsRows, 20);
 
     _interfacePage = Column(@[
+        [self setting:@"CPU / THREAD GRAPH" detail:@"Compact device-core and game-thread activity. Updates once per second; included in long captures while enabled." toggle:_showCPUUsage],
         [self setting:@"FRAME COUNTER" detail:@"Unique game frames in the top-right corner." toggle:_showFPS],
-        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame publication against the 33.3 ms target. Double-tap for a short detailed profile; hold to start or mark a long capture." toggle:_showFrameTime],
+        [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap for a short detailed profile. Hold to mark a lag spike or stop and save a long capture." toggle:_showFrameTime],
         [self setting:@"TOUCH CONTROLS" detail:@"Physical controllers continue to work when the overlay is hidden." toggle:_showControls],
         Copy(@"A connected controller can move focus through this launcher. Use the D-pad or left stick to navigate and A to select.", 12, NO)
     ], 20);
@@ -333,12 +335,6 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xB6884D);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
-    _constantReuse = [UISwitch new];
-    _constantReuse.accessibilityIdentifier = @"experiments.constantReuse";
-    _frameStageTiming = [UISwitch new];
-    _frameStageTiming.accessibilityIdentifier = @"experiments.frameStageTiming";
-    _displayPacing = [UISwitch new];
-    _displayPacing.accessibilityIdentifier = @"experiments.displayPacing";
     _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE", NO);
     _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
     _exportSavesButton = Action(@"EXPORT SAVES TO FILES", NO);
@@ -351,13 +347,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
-        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before pressing Play to record low-overhead frame publication times for this session. Hold the frame-time graph to start, mark, or stop a capture. Double-tap for a separate short detailed profile; this switch is not required." toggle:_performanceCapture],
+        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
-        Copy(@"REVERSIBLE PERFORMANCE EXPERIMENTS", 13, YES),
-        Copy(@"Changes apply on the next game launch. Turn both optimization switches off to restore the previous renderer and limiter paths. No save files or graphics-quality settings are changed.", 12, NO),
-        [self setting:@"SHADER CONSTANT REUSE" detail:@"Reuse immutable shader data only when the compiled shader cannot read the changed values. Unknown accesses use the original path. Default: on for this test round." toggle:_constantReuse],
-        [self setting:@"FRAME-STAGE TIMING" detail:@"Include guest, worker, queue, fence-observation and display-target timestamps in long captures. No per-draw timestamps or GPU queries. Default: on; turn off to compare capture overhead." toggle:_frameStageTiming],
-        [self setting:@"DISPLAY-ALIGNED SUBMISSION" detail:@"Experimental 30 FPS submission pacing using display-link predictions. May change input latency or pacing. Default: off, so constant reuse can be tested alone first." toggle:_displayPacing],
         Copy(@"SAVE TRANSFER", 13, YES),
         Copy(@"Export a dated backup to Files → On My iPhone/iPad → Theft4 → Save Exports. Import a Theft4 save-export folder only while the game is closed; current saves are backed up first.", 12, NO),
         _exportSavesButton, _importSavesButton,

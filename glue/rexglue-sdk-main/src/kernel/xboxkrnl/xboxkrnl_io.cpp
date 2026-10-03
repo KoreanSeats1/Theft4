@@ -12,6 +12,8 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
+#include <rex/diagnostics/runtime_probe.h>
+
 #include <rex/filesystem/device.h>
 #include <rex/kernel/xboxkrnl/private.h>
 #include <rex/logging.h>
@@ -313,11 +315,14 @@ u32 NtReadFile_entry(u32 file_handle, u32 event_handle, mapped_void apc_routine_
     return result;
   }
 
+  namespace probe = rex::diagnostics::runtime_probe;
+  const uint64_t queued_tick = probe::enabled.load(std::memory_order_relaxed) ? probe::Tick() : 0;
   HostTaskAdmissionResult admission = HostTaskAdmissionResult::kNoMemory;
   try {
     admission = REX_KERNEL_STATE()->QueueHostTask(
         [completion, buffer_address = buffer.guest_address(),
-         length = static_cast<uint32_t>(buffer_length), byte_offset]() {
+         length = static_cast<uint32_t>(buffer_length), byte_offset, queued_tick]() {
+          if (queued_tick) probe::Add(probe::Stage::QueuedReadWait, probe::Tick() - queued_tick);
           REXKRNL_DEBUG("[AsyncIO] worker start iosb={:08X} kind=read", completion.io_status_block);
           uint32_t bytes_read = 0;
           const X_STATUS status =

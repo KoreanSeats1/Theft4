@@ -41432,6 +41432,7 @@ loc_82544580:
 	if (!ctx.cr6.lt) goto loc_825445A0;
 loc_82544588:
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// lwz r11,0(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
 	// li r4,0

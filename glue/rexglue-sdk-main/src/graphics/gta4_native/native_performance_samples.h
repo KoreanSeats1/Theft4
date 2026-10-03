@@ -1,7 +1,6 @@
 #ifndef REX_GRAPHICS_GTA4_NATIVE_NATIVE_PERFORMANCE_SAMPLES_H_
 #define REX_GRAPHICS_GTA4_NATIVE_NATIVE_PERFORMANCE_SAMPLES_H_
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -169,9 +168,6 @@ enum class Counter : uint8_t {
   kRenderWorkerQosRelativePriority,
   kThermalState,
   kGuestGapCpuValid,
-  // One means the expensive image-byte and process-memory inventory gauges
-  // were refreshed for this sample. Zero means those gauges were not sampled.
-  kResourceInventoryCaptured,
   kCount,
 };
 
@@ -190,18 +186,6 @@ constexpr size_t kQueriesPerGpuSpan = 2;
 constexpr size_t kMaximumGpuSpansPerFrame = kMaximumGpuQueriesPerFrame / kQueriesPerGpuSpan;
 constexpr size_t kFrameSampleCapacity = 600;
 constexpr size_t kFrameSampleCompletionSlotCount = 2;
-
-constexpr bool ShouldSampleProfileFrame(uint32_t frame, uint32_t last_sampled_frame,
-                                        uint32_t interval) {
-  const uint32_t bounded_interval = std::max(1u, interval);
-  return frame != 0 && (!last_sampled_frame || frame - last_sampled_frame >= bounded_interval);
-}
-
-constexpr bool ShouldCaptureResourceInventory(uint64_t next_capture_sequence,
-                                              uint64_t cadence = 10) {
-  return next_capture_sequence == 1 ||
-         (next_capture_sequence != 0 && cadence != 0 && next_capture_sequence % cadence == 0);
-}
 
 struct GpuSpan {
   GpuRange range = GpuRange::kFrame;

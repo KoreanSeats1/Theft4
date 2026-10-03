@@ -65034,6 +65034,7 @@ loc_829092FC:
 	// stb r10,232(r11)
 	REX_STORE_U8(ctx.r11.u32 + 232, ctx.r10.u8);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// lbz r10,231(r11)
 	ctx.r10.u64 = REX_LOAD_U8(ctx.r11.u32 + 231);
 	// ori r10,r10,2
@@ -70442,6 +70443,7 @@ loc_8290B850:
 	// stw r9,220(r11)
 	REX_STORE_U32(ctx.r11.u32 + 220, ctx.r9.u32);
 	// lwsync 
+	std::atomic_thread_fence(std::memory_order_acq_rel);
 	// lbz r10,231(r11)
 	ctx.r10.u64 = REX_LOAD_U8(ctx.r11.u32 + 231);
 	// ori r10,r10,2

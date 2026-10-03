@@ -11,6 +11,8 @@ add_library(rexcore ${REXCORE_LIBRARY_TYPE}
     bit_stream.cpp
     byte_stream.cpp
     clock.cpp
+    runtime_callers.cpp
+    frame_scheduling.cpp
     cvar.cpp
     diagnostics_policy.cpp
     exception_handler.cpp

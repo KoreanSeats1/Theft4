@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -40,11 +41,15 @@
 #include "frame_constant_arena.h"
 #include "native_working_set.h"
 #include "native_immutable_bindings.h"
+#include "native_preparation_task.h"
 #include "native_constant_projection.h"
 #include "native_texture_protection.h"
 #include "native_command_packet.h"
+#include "native_frame_resource_owners.h"
 #ifdef THEFT4_LAB_BUILD
 #include "native_command_recycler.h"
+#include "native_retained_commands.h"
+#include "native_deferred_cleanup.h"
 #include "native_producer_binding_cache.h"
 #include "native_worker_batch.h"
 #endif
@@ -55,6 +60,7 @@
 #include <memory_resource>
 #include "stateful_constant_state.h"
 #include "native_buffer_arena.h"
+#include "native_buffer_alias_index.h"
 #include "native_bulb_appearance.h"
 #include "native_aspect_content.h"
 #include <rex/graphics/gta4_native/phone_trace.h>
@@ -76,6 +82,7 @@
 #include "native_performance_samples.h"
 #include "native_profile_detail.h"
 #include "native_pipeline_lookup_memo.h"
+#include "native_pipeline_request_cache.h"
 #include "native_reflection_registry.h"
 #include "native_resolve_policy.h"
 #include "native_room_light_probe.h"
@@ -132,8 +139,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
                                bool blocking) override;
 
   void Shutdown() override;
+  // iOS shell lifecycle, before UIKit permits background GPU suspension.
+  // No guest/cache reset. Main-thread wait is bounded; failure is reported.
+  bool SetHostActive(bool active);
 
  private:
+  void WaitForHostActivity();
   enum class NativeVertexNumericType : uint8_t {
     kFloat,
     kSignedInteger,
@@ -214,6 +225,22 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     mutable std::optional<std::array<bool, kVertexStreamCount>> required_vertex_streams;
     mutable NativePipelineLookupMemo<NativeFixedFunctionState, kRenderTargetCount, VkPipeline>
         pipeline_lookup_memo;
+    mutable bool pipeline_lookup_inherited = false;
+  };
+
+  struct NativePipelineRequestKey {
+    const NativeShader* vertex_shader = nullptr;
+    const NativeShader* pixel_shader = nullptr;
+    uint64_t declaration_generation = 0;
+    uint32_t vertex_handle = 0, pixel_handle = 0, declaration_handle = 0;
+    std::array<uint32_t, kVertexStreamCount> strides{};
+    NativeFixedFunctionState fixed{};
+    NativePipelineLookupContext<kRenderTargetCount> context{};
+    bool operator==(const NativePipelineRequestKey&) const = default;
+  };
+  struct NativePipelineRequestReceipt {
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::optional<std::array<bool, kVertexStreamCount>> required_streams;
   };
 
   struct NativePersistentBufferEntry;
@@ -344,7 +371,36 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     VkSamplerCreateInfo sampler_info{};
   };
 
+  // Captured guest deltas are consumed during ordered state application.
+  // They do not need to stay attached to recorded draws until frame cleanup.
+  struct NativeConstantCapture {
+    NativeShaderConstantDelta delta;
+    size_t RecyclingMetadataBytes() const {
+      return sizeof(*this) + delta.vertex_constants.payload.capacity() +
+          delta.pixel_constants.payload.capacity() + sizeof(ConstantDeltaRange) *
+          (delta.vertex_constants.ranges.capacity() + delta.pixel_constants.ranges.capacity());
+    }
+    void ResetForReuse() {
+      size_t retained = 0;
+      const auto reset = [&](auto& values) {
+        using Element = typename std::remove_reference_t<decltype(values)>::value_type;
+        const size_t size = values.capacity() * sizeof(Element);
+        if (size <= 8192 - retained) { values.clear(); retained += size; }
+        else { std::remove_reference_t<decltype(values)> empty; values.swap(empty); }
+      };
+      reset(delta.vertex_constants.ranges); reset(delta.pixel_constants.ranges);
+      reset(delta.vertex_constants.payload); reset(delta.pixel_constants.payload);
+      delta.vertex_constants.complete_snapshot = false;
+      delta.pixel_constants.complete_snapshot = false;
+      delta.booleans = {}; delta.booleans_present = false; delta.compare_snapshot = false;
+    }
+  };
+
   struct NativeCommand {
+#ifdef THEFT4_LAB_BUILD
+    std::shared_ptr<NativeFrameResourceOwners> resource_owner_page;
+    std::shared_ptr<NativeFrameResourceOwners> state_owner_page;
+#endif
     GpuPassOrigin gpu_pass_origin{};
     profile::CommandTransport profile_transport;
     std::shared_ptr<const FireTraceContext> fire_trace;
@@ -361,11 +417,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeInlineBytes<192> bytes;
     std::vector<uint8_t> payload;
     NativeDeviceSnapshot device_snapshot;
-    NativeShaderConstantDelta shader_constant_delta;
-    std::shared_ptr<const NativeShaderState> shader_state;
-    std::array<std::shared_ptr<const NativeBufferResource>, kVertexStreamCount> vertex_buffers{};
-    std::shared_ptr<const NativeBufferResource> index_buffer;
-    std::array<std::shared_ptr<const NativeTextureResource>, kTextureStageCount> textures{};
+    NativeConsumedCapture<NativeConstantCapture> constant_capture;
+    NativeCommandResourceRef<const NativeShaderState> shader_state;
+    std::array<NativeCommandResourceRef<const NativeBufferResource>, kVertexStreamCount> vertex_buffers{};
+    NativeCommandResourceRef<const NativeBufferResource> index_buffer;
+    std::array<NativeCommandResourceRef<const NativeTextureResource>, kTextureStageCount> textures{};
     std::array<xenos::xe_gpu_texture_fetch_t, kTextureStageCount> texture_fetches{};
     uint32_t used_texture_mask = 0;
     std::array<NativeBindingRealization, kTextureStageCount> binding_realization{};
@@ -376,9 +432,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t guest_null_texture_mask = 0;
     uint32_t failed_texture_mask = 0;
     bool bindings_prepared = false;
-    std::shared_ptr<const NativeTextureResource> resolve_destination;
-    std::shared_ptr<const NativeTextureResource> depth_handoff_source;
-    std::shared_ptr<const NativeTextureResource> present_source;
+    NativeCommandResourceRef<const NativeTextureResource> resolve_destination;
+    NativeCommandResourceRef<const NativeTextureResource> depth_handoff_source;
+    NativeCommandResourceRef<const NativeTextureResource> present_source;
     std::shared_ptr<const EnvironmentalDataV1> environmental_data;
     std::array<SurfaceDescriptor, kRenderTargetCount> snapshot_render_targets{};
     SurfaceDescriptor snapshot_depth_stencil{};
@@ -391,7 +447,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t cached_descriptor_epoch = 0;
     uint64_t environmental_data_hash = 0;
     uint32_t descriptor_copy = 0;
-    std::shared_ptr<const NativePipelineState> pipeline_state;
+    NativeCommandResourceRef<const NativePipelineState> pipeline_state;
     NativeFixedFunctionState fixed_function_state{};
     uint64_t captured_fixed_function_state_hash = 0;
     uint64_t recorded_fixed_function_state_hash = 0;
@@ -409,7 +465,45 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t diagnostic_submit_sequence = 0;
     uint32_t diagnostic_producer_epoch = 0;
     std::shared_ptr<SynchronousCommand> synchronous;
+    size_t RecyclingMetadataBytes() const {
+      return sizeof(NativeCommand) + bytes.heap_capacity() + payload.capacity() +
+          (constant_capture ? constant_capture->RecyclingMetadataBytes() : 0);
+    }
+    void ResetForReuse() {
+      auto old_payload = std::move(payload);
+      *this = NativeCommand{};
+      if (old_payload.capacity() <= 8192) {
+        old_payload.clear(); payload = std::move(old_payload);
+      }
+    }
   };
+
+  bool FrameResourceSharingEnabled() const;
+  template <typename T>
+  void CaptureRecordResource(NativeCommand& command, NativeCommandResourceRef<T>& destination,
+                             const std::shared_ptr<T>& source, bool state = false) {
+#ifdef THEFT4_LAB_BUILD
+    if (!source) { destination.reset(); return; }
+    auto& page = state ? command.state_owner_page : command.resource_owner_page;
+    if (!page) {
+      auto& active = state ? worker_owner_page_ : producer_owner_page_;
+      if (!FrameResourceSharingEnabled()) {
+        page = std::make_shared<NativeFrameResourceOwners>(16);
+      } else {
+        if (!active || active->size() >= 8192 - 64) {
+          active = std::make_shared<NativeFrameResourceOwners>();
+          owner_pages_created_.fetch_add(1, std::memory_order_relaxed);
+        }
+        page = active;
+      }
+    }
+    bool inserted = false;
+    destination = page->Capture(source, &inserted);
+    if (inserted) owner_cells_created_.fetch_add(1, std::memory_order_relaxed);
+#else
+    destination = source;
+#endif
+  }
 
   struct NativeUploadBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -804,6 +898,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     bool descriptor_reclaimed = true;
     std::vector<VkImageView> mip_views;
     VkImageView packed_stencil_view = VK_NULL_HANDLE;
+    VkFormat smaa_srgb_format = VK_FORMAT_UNDEFINED;
+    VkImageView smaa_srgb_view = VK_NULL_HANDLE;
+    bool smaa_srgb_view_attempted = false;
     NativeSurfaceAspectContent packed_source_content{};
     uint64_t packed_source_image_lifetime = 0;
   };
@@ -1008,19 +1105,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   };
   static_assert(sizeof(NativeResolveConversionConstants) == 64);
 
-  struct NativeHDRPresentConstants {
-    int32_t source_width = 0;
-    int32_t source_height = 0;
-    int32_t destination_width = 0;
-    int32_t destination_height = 0;
-    float hdr_headroom = 1.0f;
-    uint32_t output_mode = 0;
-    uint32_t hdr_mode = 0;
-    float paper_white_nits = 203.0f;
-    float peak_nits = 400.0f;
-    float shoulder_start = 0.0f;
-    float shoulder_power = 2.5f;
-  };
+  using NativeHDRPresentConstants = NativePresentConstants;
 
   struct NativeRenderingTarget {
     std::array<NativeSurfaceImage*, kRenderTargetCount> color_surfaces{};
@@ -1044,6 +1129,18 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeReflectionTarget reflection{};
     bool is_reflection = false;
     bool uses_presenter = false;
+  };
+
+  // Worker-owned, one-entry prewarm memo. Never crosses a non-draw command,
+  // publication, resource mutation or pause. Recording keeps its own memo.
+  struct NativePrewarmTargetCache {
+    std::array<SurfaceDescriptor, kRenderTargetCount> colors{};
+    SurfaceDescriptor depth{};
+    NativeAttachmentUsage usage{};
+    NativeRenderingTarget target{};
+    uint64_t virtual_revision = 0;
+    VkSampleCountFlagBits sample_override = VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM;
+    bool valid = false;
   };
 
   struct NativePipelineKey {
@@ -1139,7 +1236,6 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* mapping = nullptr;
-    VkDeviceAddress device_address = 0;
     VkDeviceSize capacity = 0;
     VkDeviceSize allocation_size = 0;
     uint32_t memory_type = UINT32_MAX;
@@ -1155,6 +1251,47 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint64_t last_used_submission = 0;
     uint32_t last_used_frame = 0;
   };
+
+  // These results belong to current_frame_, and are consumed only after the
+  // preparation task joins. GPU bytes remain in the original fence-owned arena.
+  struct NativePreparedGuestConstants {
+    const NativeCommand* command = nullptr;
+    const NativeShaderState* shader_state = nullptr;
+    const NativePipelineState* pipeline_state = nullptr;
+    NativeUploadAllocation vertex{}, pixel{};
+    const std::vector<uint8_t>* vertex_bytes = nullptr;
+    const std::vector<uint8_t>* pixel_bytes = nullptr;
+    bool ready = false;
+  };
+  bool PrepareGuestDrawConstants(const NativeCommand& command,
+                                 NativePreparedGuestConstants& prepared);
+  void BeginParallelGuestConstants(bool trace_stages);
+  void FinishParallelGuestConstants();
+  void RunParallelGuestConstants();
+  const NativePreparedGuestConstants* FindPreparedGuestConstants(
+      const NativeCommand& command) const;
+  NativePreparationTask constant_preparation_task_;
+  struct PreparedIndexConversion {
+    const NativeBufferResource* buffer = nullptr;
+    bool index32 = false;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<PreparedIndexConversion> prepared_index_conversions_;
+  uint64_t preparation_index_bytes_ = 0, preparation_index_count_ = 0;
+  // Submit holds command_capture_mutex_ throughout texture capture, dispatch
+  // and join. Only one texture helper can be outstanding across producers.
+  NativePreparationTask texture_conversion_task_;
+  std::vector<uint8_t> texture_conversion_source_;
+  std::atomic<uint64_t> texture_conversion_jobs_{0}, texture_conversion_bytes_{0},
+      texture_conversion_copy_ticks_{0}, texture_conversion_helper_ticks_{0},
+      texture_conversion_join_ticks_{0}, texture_bulk_rows_{0}, texture_bulk_bytes_{0};
+  std::vector<NativePreparedGuestConstants> prepared_guest_constants_;
+  std::array<uint64_t, performance::kCounterCount> preparation_counters_{};
+  bool prepared_guest_constants_ready_ = false;
+  uint64_t preparation_draws_ = 0, preparation_cpu_ns_ = 0;
+  uint64_t preparation_work_ticks_ = 0, preparation_wait_ticks_ = 0;
+  uint64_t preparation_dispatch_ticks_ = 0;
+  uint64_t preparation_queued_tick_ = 0, preparation_queue_delay_ticks_ = 0;
 
   using NativeConstantBufferKind = FrameConstantKind;
 
@@ -1172,8 +1309,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       NativeUploadAllocation allocation{};
       NativeConstantMask mask{};
     };
-    // Bounded direct-mapped memo, independent of the full-bank cache.
-    std::array<std::array<ProjectedBinding, 64>, 2> projected_bindings{};
+    // 64 sets, four ways: immutable shader families survive hash collisions.
+    std::array<std::array<ProjectedBinding, 256>, 2> projected_bindings{};
+    std::array<std::array<uint64_t, 256>, 2> projected_stamps{};
+    uint64_t projected_clock = 0;
+    NativeUploadAllocation unused_allocation{};
+    uint64_t unused_bank_bindings = 0, unused_bank_bytes_avoided = 0;
     NativeUploadBuffer storage;
     FrameConstantArenaIndex index;
     FrameGenerationMap<NativeSharedConstantSemanticKey, uint64_t,
@@ -1185,8 +1326,6 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeSharedConstantSemanticKey last_shared_key{};
     uint64_t last_shared_identity = 0;
     bool has_last_shared_key = false;
-    // The allocation cannot move while this frame slot is recording. Reuse it
-    // alongside the last semantic key instead of probing the arena index again.
     NativeUploadAllocation last_shared_allocation{};
     bool has_last_shared_allocation = false;
     NativeImmutableBindings<NativeUploadAllocation> immutable_bindings;
@@ -1233,6 +1372,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     }
   };
 
+  void InvalidateCapturedTextureResourceLocked(uint32_t handle);
   bool ValidateAndCopyCommand(const void* command, size_t command_size,
                               NativeCommand& native_command);
   void TraceNativeRendererEvent(std::string_view point, std::string_view details = {});
@@ -1250,6 +1390,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::shared_ptr<const NativeTextureResource> CreateResolvedTextureResource(
       const ResolveCommand& command);
   std::shared_ptr<const NativeBufferResource> CaptureBufferResource(uint32_t handle);
+  // Caller holds buffer_resource_mutex_; producer calls also hold capture mutex.
+  void MarkBufferWriteLocked(uint32_t handle);
   SurfaceDescriptor CaptureSurfaceDescriptor(uint32_t handle) const;
   std::shared_ptr<const NativeTextureResource> CaptureTextureResource(
       uint32_t handle, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t stage);
@@ -1284,6 +1426,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool InitializeNativeRendererObjects();
   bool InitializeNativePipelineCache();
   void SaveNativePipelineCache();
+  void SaveNativePipelineRecipes();
   void ScheduleNativePipelineCheckpoint();
   void DrainNativePipelineCompiles();
   void StopNativePipelineCompiler();
@@ -1292,6 +1435,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkPipeline PublishNativePipeline(const NativePipelineKey& key, VkPipeline pipeline,
                                     uint64_t compile_ticks);
   void RecordNativePipelineTiming(uint64_t compile_ticks, uint64_t wait_ticks = 0);
+  void RecordNativePipelineCreated();
   bool CreateNativeUploadBuffer(VkDeviceSize capacity, NativeUploadBuffer& upload_buffer);
   void DestroyNativeUploadBuffer(NativeUploadBuffer& upload_buffer);
   void RetireNativeBuffer(NativeRetiredBuffer buffer);
@@ -1462,6 +1606,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void QueueTextureProtection(const NativeCommand& command, bool retain);
   void AppendQueuedTextureProtection(std::unordered_set<uint64_t>& generations) const;
   void ClearNativeFrameCommands();
+  void RetainWorkerCommand(NativeCommand& command);
+#ifdef THEFT4_LAB_BUILD
+  size_t PendingStateCommands() const;
+  void PushPendingStateLocked(); // command_capture_mutex_ and render_mutex_
+  bool FlushPendingState(); // caller owns command_capture_mutex_
+#endif
   static void AddProtectedTextureGenerations(const NativeCommand& command,
                                              std::unordered_set<uint64_t>& generations);
   std::unordered_set<uint64_t> CollectProtectedTextureGenerations(
@@ -1476,7 +1626,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void ReleasePendingSurfaceImages();
   void QueueSurfaceImageRelease(uint32_t handle);
   NativeTextureImage* GetOrCreateTextureImage(
-      VkCommandBuffer command_buffer, const std::shared_ptr<const NativeTextureResource>& texture);
+      VkCommandBuffer command_buffer, NativeResourceView<NativeTextureResource> texture);
   NativeSurfaceImage* GetOrCreateSurfaceImage(
       const SurfaceDescriptor& descriptor, bool depth,
       VkSampleCountFlagBits host_sample_override = VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM,
@@ -1548,6 +1698,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool ResolveRenderingTarget(const NativeCommand& command, VkImageView presenter_view,
                               uint32_t presenter_width, uint32_t presenter_height,
                               NativeRenderingTarget& target, bool allow_allocation = true);
+  bool ResolvePrewarmRenderingTarget(const NativeCommand& command, NativeRenderingTarget& target);
   NativeAttachmentUsage GetRenderingTargetUsage(const NativeCommand& command) const;
   bool TransitionRenderingTarget(VkCommandBuffer command_buffer, NativeRenderingTarget& target);
   bool AllocateUpload(VkDeviceSize size, VkDeviceSize alignment, NativeUploadAllocation& allocation,
@@ -1564,7 +1715,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void TryPrewarmDrawPipeline(const NativeCommand& command);
   bool GetRequiredVertexStreams(const NativePipelineState& state,
                                 std::array<bool, kVertexStreamCount>& required_streams) const;
-  bool UploadBufferResource(const std::shared_ptr<const NativeBufferResource>& resource,
+  bool UploadBufferResource(const NativeBufferResource* resource,
                             VkCommandBuffer command_buffer, bool index_buffer, bool index32,
                             const NativePipelineState* vertex_state, uint32_t vertex_stream,
                             NativeFrameResources& resources, NativeUploadAllocation& allocation);
@@ -1572,7 +1723,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void DestroyNativePersistentBufferBlock(uint64_t block_id);
   void DestroyNativePersistentBuffers();
   bool GetOrCreatePersistentBuffer(VkCommandBuffer command_buffer,
-                                   const std::shared_ptr<const NativeBufferResource>& owner,
+                                   const NativeBufferResource* owner,
                                    const NativePersistentBufferKey& key, const uint8_t* source,
                                    VkDeviceSize size, NativeUploadKind upload_kind,
                                    NativeUploadAllocation& allocation);
@@ -1656,19 +1807,30 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::condition_variable render_condition_;
   std::pmr::synchronized_pool_resource snapshot_pool_;
 #ifdef THEFT4_LAB_BUILD
-  // Construct once on the producer, then move only the owning pointer through
-  // the queue and batch. The worker still moves retained draws into its frame.
+  // Construct once on the producer. Enabled command-stream mode retains the
+  // same unique owner through queue, staging, and frame; OFF uses value frames.
   using NativeQueuedCommand = NativeCommandPacket<NativeCommand>;
   NativeCommandRecycler<NativeCommand, 128, 2048> command_recycler_;
-  NativeCommandRecycler<NativeStatePacket, 128, 8192> state_command_recycler_;
+  NativeCommandRecycler<NativeConstantCapture, 128, 512> constant_capture_recycler_;
+  std::shared_ptr<NativeFrameResourceOwners> producer_owner_page_; // command_capture_mutex_
+  std::shared_ptr<NativeFrameResourceOwners> worker_owner_page_; // render worker only
+  std::atomic<uint64_t> owner_pages_created_{0}, owner_cells_created_{0};
+  uint64_t constant_captures_recycled_ = 0;
+  NativeCommandRecycler<NativeStatePacket, 128, 1024> state_command_recycler_;
   NativeProducerBindingCache producer_binding_cache_;
   uint64_t producer_binding_skips_pending_ = 0;
+  std::unique_ptr<NativeStatePacket> producer_pending_state_; // command_capture_mutex_
+  std::atomic<uint64_t> producer_state_packets_{0}, producer_buffered_states_{0};
   DirtyStateDelta producer_dirty_delta_;
   DirtyDeltaScratch producer_dirty_scratch_; // command_capture_mutex_ owns both.
 #else
   using NativeQueuedCommand = NativeCommand;
 #endif
+#ifdef THEFT4_LAB_BUILD
+  NativeCommandQueue<NativeCommand> render_queue_;
+#else
   std::deque<NativeQueuedCommand> render_queue_;
+#endif
   NativeTextureProtectionIndex queued_texture_protection_; // render_mutex_ owns this.
   // Render-worker-owned staging. Moving a bounded batch out of render_queue_
   // amortizes the queue mutex without changing command order. Texture
@@ -1688,11 +1850,21 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // the batch completes, then subtracts them once under render_mutex_.
   NativeTextureProtectionIndex worker_batch_deferred_queue_protection_;
 #endif
+  // Frozen before worker creation. Pending Presents include the active CPU
+  // PublishFrame until it returns; GPU frame-resource ownership is independent.
+  const uint32_t cpu_present_admission_limit_;
   uint32_t queued_title_presents_ = 0;
   bool producer_waiting_ = false;
   uint64_t diagnostic_submit_sequence_ = 0;
   uint32_t diagnostic_producer_epoch_ = 1;
   std::atomic<bool> render_worker_running_{false};
+  std::atomic<bool> host_active_{true};
+  std::atomic<uint64_t> host_activity_epoch_{0};
+  bool host_pause_acknowledged_ = false; // render_mutex_
+  bool host_pause_drain_succeeded_ = true; // worker writes before acknowledgement
+  uint64_t host_pause_count_ = 0, host_pause_drain_ticks_ = 0; // worker-owned
+  uint64_t light_internal_flushes_ = 0, light_phase_mismatches_ = 0;
+  uint64_t light_phase_stack_depth_ = 0;
 #if defined(__APPLE__) && defined(__MACH__)
   pthread_t render_worker_{};
   bool render_worker_joinable_ = false;
@@ -1706,9 +1878,19 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t pipeline_snapshot_reuses_=0,shader_snapshot_reuses_=0;
   uint64_t zero_dof_skips_=0,postfx_direct_writes_=0;
   std::shared_ptr<const NativePipelineState> last_pipeline_snapshot_;
+  uint64_t last_pipeline_snapshot_source_version_ = 0;
+  uint64_t assembly_snapshot_reuses_ = 0, assembly_pipeline_requests_ = 0,
+           assembly_pipeline_hits_ = 0;
+  NativePipelineRequestCache<NativePipelineRequestKey, NativePipelineRequestReceipt>
+      pipeline_request_cache_;
   std::shared_ptr<const NativeShaderState> last_shader_snapshot_;
   std::shared_ptr<const NativePipelineState> SnapshotPipeline(const NativeCommand&, bool);
+#ifdef THEFT4_LAB_BUILD
+  NativeRetainedCommands<NativeCommand> current_frame_;
+  NativeDeferredCleanup<NativeCommand,NativeCommandRecycler<NativeCommand,128,2048>> cpu_cleanup_;
+#else
   std::vector<NativeCommand> current_frame_;
+#endif
   NativeFrameResources recording_resources_;
   std::unordered_set<uint64_t> frame_texture_protection_;
   const NativeCommand* active_worker_command_ = nullptr;
@@ -1727,12 +1909,18 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::mutex buffer_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeBufferResource>> buffer_resources_;
   std::unordered_set<uint32_t> dirty_buffer_handles_;
+  NativeBufferAliasIndex buffer_alias_index_;
+  std::unordered_set<uint32_t> unindexed_buffer_handles_;
   uint64_t next_buffer_generation_ = 1;
   std::mutex texture_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeTextureResource>> texture_resources_;
   std::unordered_set<uint32_t> dirty_texture_handles_;
   std::unordered_map<uint32_t, uint32_t> vector_font_ids_;
   NativeVirtualResourceRegistry virtual_resource_registry_;
+  // Published under texture_resource_mutex_; attachment memos read without
+  // taking that producer lock on every draw. Host-write ownership changes do
+  // not affect surface dimensions or target realization.
+  std::atomic<uint64_t> virtual_surface_registry_revision_{0};
   uint64_t next_texture_generation_ = 1;
   std::mutex command_capture_mutex_;
   std::mutex device_snapshot_mutex_;
@@ -1967,6 +2155,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   NativeGpuProfileState native_gpu_profile_state_;
   profile::CpuRecorder native_cpu_recorder_;
   profile::TransportSummary native_profile_transport_;
+  profile::TransportSummary light_assembly_transport_;
+  bool light_assembly_sampling_ = false;
+  uint64_t light_assembly_epoch_ = 0, light_assembly_frame_count_ = 0;
+  uint64_t light_assembly_sampled_frames_ = 0, light_assembly_prewarm_ticks_ = 0;
+  uint64_t light_assembly_clear_ticks_ = 0;
   uint64_t native_profile_clock_probe_ticks_ = UINT64_MAX;
   struct NativeMemoryProfileState {
     bool active = false;
@@ -2017,10 +2210,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_descriptor_layouts_update_after_bind_ = false;
   uint32_t native_descriptor_maximum_page_count_ = 0;
   NativeDrawStateCache<6, kVertexStreamCount> native_draw_state_cache_;
-  // Derived Vulkan dynamic state is pure for a fixed Xenos state plus target
-  // shape. Dense exterior scenes repeat that combination across thousands of
-  // draws; retain the calculation while the normal draw-state cache continues
-  // to decide whether a Vulkan command must actually be emitted.
+  uint64_t native_binding_stages_visited_ = 0, native_binding_stages_skipped_ = 0;
+  uint64_t native_attachment_barrier_calls_ = 0, native_attachment_barriers_ = 0;
+  uint64_t native_dynamic_derivation_reuses_ = 0;
   struct NativeDynamicDrawDerivationCache {
     bool valid = false;
     NativeFixedFunctionState fixed{};
@@ -2066,6 +2258,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool image_allocation_pool_enabled_=true;
   uint64_t texture_allocation_reuses_=0;
   void TrimTextureAllocationPool(bool all);
+  void BeginMemoryPressureRecovery(uint32_t frame, bool title_present);
   uint64_t command_pool_reset_count_ = 0;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineCache native_pipeline_cache_ = VK_NULL_HANDLE;
@@ -2101,6 +2294,17 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkPipelineLayout cached_pipeline_layout_ = VK_NULL_HANDLE;
   std::unordered_map<NativePipelineKey, NativePipeline, NativePipelineKeyHash> native_pipelines_;
   NativePipelineLookupLifetime native_pipeline_lookup_lifetime_;
+  // Render-worker-owned cumulative counters; sampled only by the existing log.
+  uint64_t native_pipeline_memo_inheritances_ = 0;
+  uint64_t native_pipeline_inherited_hits_ = 0;
+  uint64_t native_component_scope_candidates_ = 0;
+  uint64_t native_component_scope_reuses_ = 0;
+  uint64_t native_cross_phase_scope_reuses_ = 0;
+  uint64_t native_static_pipeline_requests_ = 0, native_static_pipeline_hits_ = 0;
+  uint64_t native_smaa_hardware_requests_ = 0, native_smaa_hardware_frames_ = 0,
+           native_smaa_hardware_fallbacks_ = 0;
+  uint64_t native_smaa_fusion_requests_ = 0, native_smaa_fusion_frames_ = 0,
+           native_smaa_fusion_fallbacks_ = 0;
   std::vector<NativeResolveConversionPipeline> resolve_conversion_pipelines_;
   VkPipeline hdr_present_pipeline_ = VK_NULL_HANDLE;
   std::array<NativeTextureImage, NativeFrameContextRing::kSlotCount> hdr_present_mirrors_{};
@@ -2143,12 +2347,30 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::atomic<uint64_t> buffer_fast_path_disable_count_{0};
   std::atomic<uint64_t> buffer_fast_path_request_count_{0};
   std::atomic<bool> buffer_fast_path_disabled_{false};
+  std::atomic<uint64_t> buffer_lifetime_notifications_{0};
+  std::atomic<uint64_t> buffer_lifetime_evictions_{0};
+  std::atomic<uint64_t> buffer_unlock_preparations_{0};
+  std::atomic<uint64_t> buffer_alias_invalidations_{0};
+  std::atomic<uint64_t> buffer_alias_fallbacks_{0};
+  std::atomic<uint64_t> buffer_full_validation_count_{0};
+  std::atomic<uint64_t> buffer_full_validation_bytes_{0};
+  std::atomic<uint64_t> buffer_validation_sample_count_{0};
+  std::atomic<uint64_t> buffer_validation_sample_bytes_{0};
+  std::atomic<uint64_t> buffer_validation_sample_ticks_{0};
   NativePeriodicWorkSchedule buffer_cache_poll_schedule_{kNativeBufferCachePollPhaseFrames};
   bool buffer_cache_reclamation_pending_ = false;
+  uint64_t memory_pressure_seen_ = 0, memory_pressure_handled_ = 0;
+  uint32_t memory_pressure_frames_remaining_ = 0;
+  uint64_t memory_pressure_pool_freed_bytes_ = 0;
+  uint64_t memory_pressure_texture_retired_bytes_ = 0, memory_pressure_texture_start_bytes_ = 0;
+  uint64_t memory_pressure_buffer_freed_bytes_ = 0, memory_pressure_buffer_start_bytes_ = 0;
   uint64_t texture_image_eviction_count_ = 0;
   uint64_t texture_image_evicted_bytes_ = 0;
   uint64_t texture_allocation_retry_count_ = 0;
   uint64_t texture_allocation_failure_count_ = 0;
+  NativePrewarmTargetCache prewarm_target_cache_{};
+  uint64_t prewarm_target_requests_ = 0, prewarm_target_hits_ = 0;
+  uint64_t prewarm_surface_lookups_avoided_ = 0;
   std::vector<std::unique_ptr<NativeSurfaceImage>> native_surface_images_;
   std::unordered_map<uint32_t, std::vector<NativeSurfaceImage*>> surface_images_by_handle_;
   struct NativeTextureReadback {

@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
+#import <Metal/MTLDeviceCertification.h>
 #import <QuartzCore/CAMetalLayer.h>
-#import <QuartzCore/CADisplayLink.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <os/log.h>
 #include <stdio.h>
@@ -9,11 +9,18 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include <stdint.h>
+#include <mach-o/dyld.h>
+#include "../../glue/rexglue-sdk-main/include/rex/diagnostics/runtime_callers.h"
+#include "../../glue/rexglue-sdk-main/include/rex/diagnostics/frame_scheduling.h"
 #include "theft4_core.h"
+#include "theft4_performance_defaults.h"
 #include "theft4_device_profile.h"
 #include "theft4_metal_presenter.h"
+#include "../../glue/rexglue-sdk-main/src/graphics/gta4_native/native_light_capture.h"
+#include "../../glue/rexglue-sdk-main/include/rex/fault_diagnostics.h"
 #include "theft4_lab_diagnostics.h"
 #import "Theft4FrameTimeView.h"
+#import "Theft4CPUUsageView.h"
 extern int rex_gta4_native_profile_start(void);
 extern int rex_gta4_native_profile_status(void);
 #import "Theft4TouchControls.h"
@@ -21,6 +28,17 @@ extern int rex_gta4_native_profile_status(void);
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
+
+static NSString *Theft4PerformanceProfileFields(void) {
+    NSProcessInfo *process = NSProcessInfo.processInfo;
+    BOOL standard = [process hasPerformanceProfile:NSProcessPerformanceProfileDefault];
+    BOOL sustained = [process hasPerformanceProfile:NSProcessPerformanceProfileSustained];
+    // Two false answers mean unknown, not proof of the default profile.
+    NSString *profile = standard && sustained ? @"both" : sustained ? @"sustained" :
+        standard ? @"default" : @"unknown";
+    return [NSString stringWithFormat:@"performance_profile=%@ profile_default=%d profile_sustained=%d",
+        profile, standard, sustained];
+}
 
 @interface Theft4MetalView : UIView
 @end
@@ -452,11 +470,10 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     BOOL _publicationCaptureActive;
     BOOL _publicationCaptureWriteFailed;
     BOOL _publicationCaptureStartedForNativeProfile;
-    CFTimeInterval _publicationCaptureLastDrainTime;
-    uint64_t _frameStageCaptureCursor; // export queue only
-    CADisplayLink *_pacingDisplayLink;
     uint64_t _fpsLastFrames;
     CFTimeInterval _fpsLastTime;
+    UISwitch *_showCPUUsage;
+    Theft4CPUUsageView *_cpuUsageView;
     UISwitch *_showFPS;
     UISwitch *_showFrameTime;
     Theft4FrameTimeView *_frameTimeView;
@@ -477,9 +494,19 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     UISegmentedControl *_reflectionQuality;
     UISegmentedControl *_antiAliasing;
     UISwitch *_performanceCapture;
-    UISwitch *_constantReuse;
-    UISwitch *_frameStageTiming;
-    UISwitch *_displayPacing;
+    NSURL *_schedulingURL;
+    NSMutableString *_schedulingRows; // serial export queue owns capture storage
+    NSUInteger _schedulingBytes;
+    BOOL _schedulingFull;
+    dispatch_source_t _runtimeCallerTimer;
+    NSURL *_runtimeCallerURL;
+    NSMutableString *_runtimeCallerRows; // export queue only after start
+    NSUInteger _runtimeCallerBytes; // export queue only, bounded across flushes
+    BOOL _runtimeCallerFull; // export queue only
+    NSURL *_lightCaptureURL;
+    uint64_t _lightCaptureCursor;
+    CFTimeInterval _publicationCaptureStartTime;
+    NSUInteger _publicationCaptureBytes; // export queue only
     UIButton *_downloadLogButton;
     UIButton *_exportSavesButton;
     UIButton *_importSavesButton;
@@ -522,18 +549,24 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)routeInstallationFlow;
 - (void)checkBaseGame;
 - (void)chooseTitleUpdate;
-- (void)downloadLatestLogCapture;
 - (void)resetAutomaticCaptureForNewSession;
+- (void)downloadLatestLogCapture;
 - (void)exportSavesToFiles;
 - (void)importSavesFromFiles;
 - (void)showSaveMessage:(NSString *)title detail:(NSString *)detail;
 - (void)updateFrameTimeHUD;
-- (void)showInGameMenu:(UITapGestureRecognizer *)gesture;
-- (void)returnToLauncherDuringGame;
-- (void)resumeGameFromLauncher;
+- (BOOL)beginPublicationCapture;
+- (void)drainPublicationCapture;
+- (void)collectRuntimeCallers;
+- (void)collectFrameScheduling;
+- (void)flushFrameScheduling;
+- (void)flushRuntimeCallers;
+- (void)appendPublicationCaptureText:(NSString *)text;
+- (void)stopPublicationCapture;
+- (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture;
 - (void)applyLowPowerPreset;
 - (void)applyLimitedMemoryCaps;
-- (void)syncA19OutputChoice;
+- (void)applyOriginalGraphicsPreset;
 #ifdef THEFT4_INTRO_TEST_BUILD
 - (void)runIntroTestImportSmokeIfRequested;
 #endif
@@ -603,12 +636,15 @@ static void bootEvent(void *context, const char *event) {
 @implementation Theft4ViewController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(performanceProfileChanged:)
+        name:NSProcessInfoPerformanceProfileDidChangeNotification object:nil];
     self.controllerUserInteractionEnabled = YES;
     _legacyIPadProfile = configureDeviceProfile();
     const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
-    _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 ||
-        strcmp(deviceProfile, "legacy-ipad") == 0;
+    _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 || strcmp(deviceProfile, "legacy-ipad") == 0;
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
+        @"Theft4ShowCPUUsage": @YES,
         @"Theft4ShowFPS": @YES,
         @"Theft4ShowFrameTime": @NO,
         @"Theft4ShowTouchControls": @NO,
@@ -616,39 +652,29 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
         @"Theft4MotionBlur": @NO,
-        @"Theft4DepthOfField": @(strcmp(getenv("THEFT4_DEVICE_MODEL") ?: "", "iPhone18,4") != 0),
+        @"Theft4DepthOfField": @YES,
         @"Theft4ShadowQuality": @1,
         @"Theft4DrawDistance": @1,
         @"Theft4ModelDetail": @1,
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2,
-        @"Theft4Round1ConstantReuse": @YES,
-        @"Theft4Round1FrameStageTiming": @YES,
-        @"Theft4Round1DisplayPacing": @YES
     }];
-    // Apply this new all-on baseline once to existing installations. Subsequent
-    // launches preserve the user's individual switch choices for rollback.
-    static NSString *const round1DefaultsMigration = @"Theft4Round1DefaultsOnMigration20260923";
-    if (![NSUserDefaults.standardUserDefaults boolForKey:round1DefaultsMigration]) {
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1ConstantReuse"];
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1FrameStageTiming"];
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"Theft4Round1DisplayPacing"];
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:round1DefaultsMigration];
+    // Build 65 uses build 44's indices. Migrate those persisted choices once,
+    // independently of the retired 0.2.1 migration markers. Never apply Auto here.
+    NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
+    if (![graphicsDefaults boolForKey:@"Theft4GraphicsIndicesMigrationBuild66"]) {
+        NSDictionary *stored = [graphicsDefaults persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
+        for (NSString *key in @[@"Theft4ShadowQuality", @"Theft4DrawDistance", @"Theft4ModelDetail"]) {
+            NSNumber *value = stored[key];
+            if (value) {
+                NSInteger maximum = [key isEqualToString:@"Theft4ModelDetail"] ? 1 : 2;
+                [graphicsDefaults setInteger:MAX(0, MIN(maximum, value.integerValue)) + 1 forKey:key];
+            }
+        }
+        [graphicsDefaults setBool:YES forKey:@"Theft4GraphicsIndicesMigrationBuild66"];
     }
-    // Old builds stored Original=0 and Highest=1. Preserve that choice when
-    // inserting Lower before Original, including on existing installations.
-    static NSString *const lodTierMigration = @"Theft4ModelDetailTierMigration20260924";
-    if (![NSUserDefaults.standardUserDefaults boolForKey:lodTierMigration]) {
-        NSDictionary *storedSettings = [NSUserDefaults.standardUserDefaults
-            persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
-        NSNumber *oldDetail = storedSettings[@"Theft4ModelDetail"];
-        [NSUserDefaults.standardUserDefaults setInteger:(oldDetail && oldDetail.integerValue == 1 ? 2 : 1)
-                                                forKey:@"Theft4ModelDetail"];
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:lodTierMigration];
-    }
-    // Keep gameplay on the proven 16:9 presentation path. Native device-aspect
-    // expansion is withdrawn until world, shadow, post-process and HUD
-    // projections can be validated together on both iPhone and iPad.
+    // The native game image is 1280x720. Keep its layer itself at 16:9 so
+    // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
     _metalView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -687,6 +713,7 @@ static void bootEvent(void *context, const char *event) {
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
 #endif
+    _showCPUUsage = _bringupOverlay.showCPUUsage;
     _showFrameTime = _bringupOverlay.showFrameTime;
     _showFPS = _bringupOverlay.showFPS; _showControls = _bringupOverlay.showControls;
     _anisotropicFiltering = _bringupOverlay.anisotropicFiltering;
@@ -699,31 +726,31 @@ static void bootEvent(void *context, const char *event) {
     _reflectionQuality = _bringupOverlay.reflectionQuality;
     _antiAliasing = _bringupOverlay.antiAliasing;
     _performanceCapture = _bringupOverlay.performanceCapture;
-    _constantReuse = _bringupOverlay.constantReuse;
-    _frameStageTiming = _bringupOverlay.frameStageTiming;
-    _displayPacing = _bringupOverlay.displayPacing;
-    _downloadLogButton = _bringupOverlay.downloadLogButton;
-    [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
-                 forControlEvents:UIControlEventTouchUpInside];
+    rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
     _exportSavesButton = _bringupOverlay.exportSavesButton;
     _importSavesButton = _bringupOverlay.importSavesButton;
     [_exportSavesButton addTarget:self action:@selector(exportSavesToFiles)
-                forControlEvents:UIControlEventTouchUpInside];
+                 forControlEvents:UIControlEventTouchUpInside];
     [_importSavesButton addTarget:self action:@selector(importSavesFromFiles)
-                forControlEvents:UIControlEventTouchUpInside];
-    NSArray *toggles = @[_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
-                         _motionBlur,_depthOfField,_constantReuse,_frameStageTiming,_displayPacing];
-    NSArray *keys = @[@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
+                 forControlEvents:UIControlEventTouchUpInside];
+    _downloadLogButton = _bringupOverlay.downloadLogButton;
+    [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
+                 forControlEvents:UIControlEventTouchUpInside];
+    NSArray *toggles = @[_showCPUUsage,_showFrameTime,_showFPS,_showControls,_anisotropicFiltering,_enhancedOutput,_fsrBoost,
+                         _motionBlur,_depthOfField];
+    NSArray *keys = @[@"Theft4ShowCPUUsage",@"Theft4ShowFrameTime",@"Theft4ShowFPS",@"Theft4ShowTouchControls",@"Theft4AnisotropicFiltering",
                       @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost",@"Theft4MotionBlur",
-                      @"Theft4DepthOfField",
-                      @"Theft4Round1ConstantReuse",
-                      @"Theft4Round1FrameStageTiming",@"Theft4Round1DisplayPacing"];
+                      @"Theft4DepthOfField"];
     for (NSUInteger i=0;i<toggles.count;++i) {
         UISwitch *toggle = toggles[i];
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
+    [_bringupOverlay.originalPresetButton addTarget:self action:@selector(applyOriginalGraphicsPreset)
+        forControlEvents:UIControlEventTouchUpInside];
     [self resetAutomaticCaptureForNewSession];
+    [_performanceCapture addTarget:self action:@selector(displaySettingsChanged:)
+                 forControlEvents:UIControlEventValueChanged];
     NSArray<UISegmentedControl *> *graphicsChoices = @[
         _shadowQuality, _drawDistance, _modelDetail, _reflectionQuality, _antiAliasing];
     NSArray<NSString *> *graphicsKeys = @[
@@ -745,18 +772,11 @@ static void bootEvent(void *context, const char *event) {
         if (![defaults objectForKey:@"Theft4LabFSREnabled"])
             [defaults setBool:_enhancedOutput.on forKey:@"Theft4LabFSREnabled"];
         _bringupOverlay.fsrUpscaling.on = [defaults boolForKey:@"Theft4LabFSREnabled"];
+        [self applyLimitedMemoryCaps];
         [_bringupOverlay.renderResolution addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
         [_bringupOverlay.fsrUpscaling addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
-    }
-    // This release changes both segment indices and the device defaults. Apply
-    // Auto once to installed builds; later manual edits remain persistent.
-    static NSString *const graphicsMigration = @"Theft4GraphicsAutoPresetMigration20260924";
-    if (_bringupOverlay.renderResolution &&
-        ![NSUserDefaults.standardUserDefaults boolForKey:graphicsMigration]) {
-        [self applyLowPowerPreset];
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:graphicsMigration];
     }
     // Older installs may have M-series defaults persisted. Start pre-M iPads
     // in a conservative mode on every process launch, while still allowing an
@@ -803,6 +823,23 @@ static void bootEvent(void *context, const char *event) {
         [_fpsLabel.widthAnchor constraintEqualToConstant:92],
         [_fpsLabel.heightAnchor constraintEqualToConstant:32]
     ]];
+    _cpuUsageView = [Theft4CPUUsageView new];
+    _cpuUsageView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_cpuUsageView];
+    [NSLayoutConstraint activateConstraints:@[
+        [_cpuUsageView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:10],
+        [_cpuUsageView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],
+        [_cpuUsageView.widthAnchor constraintEqualToConstant:236],
+        [_cpuUsageView.heightAnchor constraintEqualToConstant:194]]];
+    __weak Theft4ViewController *cpuController = self;
+    _cpuUsageView.sampleLogHandler = ^(NSString *rows) {
+        Theft4ViewController *controller = cpuController;
+        if (!controller || !controller->_publicationCaptureActive ||
+            !controller->_publicationCaptureQueue) return;
+        dispatch_async(controller->_publicationCaptureQueue, ^{
+            [controller appendPublicationCaptureText:rows];
+        });
+    };
     _frameTimeView = [Theft4FrameTimeView new];
     _frameTimeView.translatesAutoresizingMaskIntoConstraints = NO;
     _frameTimeView.hidden = YES;
@@ -834,6 +871,13 @@ static void bootEvent(void *context, const char *event) {
         _failure = error.localizedDescription ?: @"Application Support is unavailable";
     } else {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
+        NSURL *faultDirectory = [_supportURL URLByAppendingPathComponent:@"faults" isDirectory:YES];
+        if ([NSFileManager.defaultManager createDirectoryAtURL:faultDirectory withIntermediateDirectories:YES attributes:nil error:nil]) {
+            NSURL *faultURL = [faultDirectory URLByAppendingPathComponent:
+                [NSString stringWithFormat:@"fault-%@.bin", NSUUID.UUID.UUIDString]];
+            RexInitializeFaultDiagnostics(faultURL.fileSystemRepresentation);
+            RexSetFaultSnapshotWriter(rex_gta4_light_capture_write_fault_snapshot);
+        }
     }
     [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
@@ -1438,22 +1482,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)resetAutomaticCaptureForNewSession {
-    // Automatic capture is a per-launch opt-in, not a graphics preference.
-    // Retire the old persisted switch so an earlier ON value cannot silently
-    // arm another recording after reopening or updating the app. The graph's
-    // manual short-profile gesture is independent of this switch.
     _performanceCapture.on = NO;
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4DetailedPerformanceCapture"];
 }
 
+- (void)performanceProfileChanged:(NSNotification *)notification {
+    NSString *fields = Theft4PerformanceProfileFields();
+    const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self record:[@"performance.profile_changed " stringByAppendingString:fields]];
+        if (!self->_publicationCaptureActive) return;
+        NSString *row = [NSString stringWithFormat:@"marker,,%llu,,%@\n",
+            (unsigned long long)timestamp, fields];
+        dispatch_async(self->_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:row]; });
+    });
+}
+
 - (void)displaySettingsChanged:(UIControl *)sender {
     if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
-    if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4)
-        _bringupOverlay.fsrUpscaling.on = NO;
+    if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4) _bringupOverlay.fsrUpscaling.on = NO;
     [self applyLimitedMemoryCaps];
-    [NSUserDefaults.standardUserDefaults setBool:_constantReuse.on forKey:@"Theft4Round1ConstantReuse"];
-    [NSUserDefaults.standardUserDefaults setBool:_frameStageTiming.on forKey:@"Theft4Round1FrameStageTiming"];
-    [NSUserDefaults.standardUserDefaults setBool:_displayPacing.on forKey:@"Theft4Round1DisplayPacing"];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
     if (sender == _enhancedOutput && !_enhancedOutput.on) _fsrBoost.on = NO;
     [NSUserDefaults.standardUserDefaults setBool:_fsrBoost.on forKey:@"Theft4ExperimentalFSRBoost"];
@@ -1470,6 +1518,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
     }
     [_bringupOverlay refreshConfigurationSummary];
+    [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
     [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
@@ -1719,9 +1768,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 latestFrameDate = modified;
             }
         }
-        if (latestFrameCapture) success = success && Theft4AppendDiagnosticFile(stream,
-            latestFrameCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:
-                latestFrameCapture.lastPathComponent], &budget, included, skipped);
+        if (latestFrameCapture) {
+            success = success && Theft4AppendDiagnosticFile(stream, latestFrameCapture,
+                [@"Theft4/startup/frame-captures/" stringByAppendingString:latestFrameCapture.lastPathComponent],
+                &budget, included, skipped);
+            NSURL *timingCapture = [frameDirectory URLByAppendingPathComponent:
+                [latestFrameCapture.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
+            if ([fm fileExistsAtPath:timingCapture.path]) success = success && Theft4AppendDiagnosticFile(stream,
+                timingCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:timingCapture.lastPathComponent],
+                &budget, included, skipped);
+            NSURL *callerCapture = [frameDirectory URLByAppendingPathComponent:
+                [latestFrameCapture.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"runtime-callers-"]];
+            if ([fm fileExistsAtPath:callerCapture.path]) success = success && Theft4AppendDiagnosticFile(stream,
+                callerCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:callerCapture.lastPathComponent],
+                &budget, included, skipped);
+            NSURL *schedulingCapture = [frameDirectory URLByAppendingPathComponent:
+                [latestFrameCapture.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"frame-scheduling-"]];
+            if ([fm fileExistsAtPath:schedulingCapture.path]) success = success && Theft4AppendDiagnosticFile(stream,
+                schedulingCapture, [@"Theft4/startup/frame-captures/" stringByAppendingString:schedulingCapture.lastPathComponent],
+                &budget, included, skipped);
+        }
         success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
             @"Theft4/lifecycle.jsonl", &budget, included, skipped);
         success = success && Theft4AppendDiagnosticFile(stream,
@@ -1927,6 +1993,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)updateFrameTimeHUD {
+    [_cpuUsageView setMonitoringActive:(_gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
     BOOL visible = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
     _frameTimeTop.constant = _showFPS.on ? 52 : 10;
@@ -1999,6 +2066,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)appendPublicationCaptureText:(NSString *)text {
     if (!_publicationCaptureURL || !text.length) return;
+    NSData *encoded = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (_publicationCaptureBytes + encoded.length > 20 * 1024 * 1024) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self stopPublicationCapture]; });
+        return;
+    }
+    _publicationCaptureBytes += encoded.length;
     NSError *error = nil;
     NSFileHandle *file = [NSFileHandle fileHandleForWritingToURL:_publicationCaptureURL
                                                           error:&error];
@@ -2012,17 +2085,134 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
-        self->_publicationCaptureActive = NO;
+        [self stopPublicationCapture];
         self->_publicationCaptureWriteFailed = YES;
-        theft4_publication_capture_stop();
         [self record:[NSString stringWithFormat:@"capture.lightweight_write_failed: %@",
             error.localizedDescription ?: @"unknown error"]];
     });
 }
 
+// Scheduling/audio samples are collected into bounded RAM during gameplay.
+// All file writes remain on explicit save/background, using this serial queue.
+- (void)collectFrameScheduling {
+    if (_schedulingFull || !_schedulingRows) return;
+    rex_frame_scheduling_sample rows[128];
+    uint32_t cursor = 0;
+    for (unsigned batch = 0; batch < 64; ++batch) {
+        const uint32_t count = rex_frame_scheduling_read(&cursor, rows, 128);
+        NSMutableString *text = [NSMutableString new];
+        for (uint32_t i = 0; i < count; ++i) {
+            for (unsigned field = 0; field < REX_FRAME_SCHEDULING_FIELDS; ++field) {
+                if (field) [text appendString:@","];
+                if (field == 6 || field == 11 || field == 13)
+                    [text appendFormat:@"%lld", (long long)rows[i].value[field]];
+                else [text appendFormat:@"%llu", (unsigned long long)rows[i].value[field]];
+            }
+            [text appendString:@"\n"];
+        }
+        if (_schedulingBytes + text.length > 4 * 1024 * 1024) {
+            _schedulingFull = YES;
+            rex_frame_scheduling_capture(0);
+            [_schedulingRows appendString:@"# capacity_reached: observations stopped; scheduling mode unchanged\n"];
+            break;
+        }
+        _schedulingBytes += text.length;
+        [_schedulingRows appendString:text];
+        if (count < 128) break;
+    }
+}
+
+- (void)flushFrameScheduling {
+    if (!_schedulingRows) return;
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingToURL:_schedulingURL error:nil];
+    @try {
+        if (!file) @throw [NSException exceptionWithName:@"SchedulingExport" reason:@"Unable to open scheduling file" userInfo:nil];
+        [file seekToEndOfFile];
+        [file writeData:[_schedulingRows dataUsingEncoding:NSUTF8StringEncoding]];
+        NSString *status = [NSString stringWithFormat:@"# snapshot_ns=%llu dropped_records=%llu\n",
+            (unsigned long long)(CACurrentMediaTime() * 1e9),
+            (unsigned long long)rex_frame_scheduling_dropped()];
+        [file writeData:[status dataUsingEncoding:NSUTF8StringEncoding]];
+        [file closeFile];
+        [_schedulingRows setString:@""];
+    } @catch (NSException *exception) {
+        [file closeFile];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_publicationCaptureWriteFailed = YES;
+            [self record:@"capture.scheduling_export_failed"];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CAPTURE SAVE FAILED"
+                message:@"Scheduling and audio observations could not be saved. Leave Theft4 open so they can be recovered."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+        });
+    }
+}
+
+// Runs only on the capture export queue, at most once per second. This is
+// sampled wall time (including descheduling), not CPU time or a full stack trace.
+- (void)collectRuntimeCallers {
+    [self collectFrameScheduling];
+    if (_runtimeCallerFull || !_runtimeCallerRows) return;
+    const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+    const uint64_t frame = theft4_frame_counter_published_frames();
+    rex_runtime_caller_sample rows[128];
+    uint32_t cursor = 0;
+    NSMutableString *text = [NSMutableString new];
+    for (;;) {
+        const uint32_t count = rex_runtime_callers_read(&cursor, rows, 128);
+        for (uint32_t i = 0; i < count; ++i) {
+            const rex_runtime_caller_sample *row = &rows[i];
+            [text appendFormat:@"%llu,%llu,%llu,%llu,0x%llx,%llu,%llu,%llu,%llu\n",
+                (unsigned long long)now, (unsigned long long)frame,
+                (unsigned long long)row->thread_id, (unsigned long long)row->kind,
+                (unsigned long long)row->site, (unsigned long long)row->calls,
+                (unsigned long long)row->samples, (unsigned long long)row->wall_ticks,
+                (unsigned long long)row->max_wall_ticks];
+        }
+        if (count < 128) break;
+    }
+    [text appendFormat:@"# snapshot_ns=%llu dropped_calls=%llu\n",
+        (unsigned long long)now, (unsigned long long)rex_runtime_callers_dropped()];
+    if (_runtimeCallerBytes + text.length > 8 * 1024 * 1024) {
+        _runtimeCallerFull = YES;
+        rex_runtime_callers_enable(0);
+        [_runtimeCallerRows appendString:@"# capacity_reached: caller observations stopped at 8 MiB\n"];
+    } else {
+        _runtimeCallerBytes += text.length; // ASCII only
+        [_runtimeCallerRows appendString:text];
+    }
+}
+
+- (void)flushRuntimeCallers {
+    [self collectRuntimeCallers];
+    [self flushFrameScheduling];
+    if (!_runtimeCallerRows.length) return;
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingToURL:_runtimeCallerURL error:nil];
+    @try {
+        if (!file) @throw [NSException exceptionWithName:@"CallerExport" reason:@"Unable to open caller file" userInfo:nil];
+        [file seekToEndOfFile];
+        [file writeData:[_runtimeCallerRows dataUsingEncoding:NSUTF8StringEncoding]];
+        [file closeFile];
+        [_runtimeCallerRows setString:@""];
+    } @catch (NSException *exception) {
+        [file closeFile];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_publicationCaptureWriteFailed = YES;
+            [self record:@"capture.caller_export_failed"];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CALLER CAPTURE SAVE FAILED"
+                message:@"Caller observations could not be saved. Leave the app open so they can be recovered."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+        });
+    }
+}
+
 - (void)drainPublicationCapture {
     if (!_publicationCaptureActive || !_publicationCaptureQueue) return;
     dispatch_async(_publicationCaptureQueue, ^{
+        [self flushRuntimeCallers];
         theft4_publication_sample samples[256];
         NSMutableString *text = [NSMutableString new];
         uint64_t lost = 0;
@@ -2038,150 +2228,159 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             if (count < 256) break;
         }
         if (lostTotal) [text appendFormat:@"lost,,,%llu,\n", (unsigned long long)lostTotal];
-        theft4_frame_stage_sample stages[256];
-        uint64_t stageLost = 0;
-        for (unsigned batch = 0; batch < 64; ++batch) {
-            const uint32_t count = theft4_frame_stages_read(
-                &self->_frameStageCaptureCursor, stages, 256, &lost);
-            stageLost += lost;
-            for (uint32_t i = 0; i < count; ++i)
-                [text appendFormat:@"guest_stage,%llu,%llu,,stage=%llu a=%llu b=%llu\n",
-                    (unsigned long long)stages[i].frame, (unsigned long long)stages[i].monotonic_ns,
-                    (unsigned long long)stages[i].stage, (unsigned long long)stages[i].a,
-                    (unsigned long long)stages[i].b];
-            if (count < 256) break;
-        }
-        if (stageLost) [text appendFormat:@"stage_lost,,,%llu,\n", (unsigned long long)stageLost];
         const theft4_output_policy output = theft4_metal_get_output_policy();
         [text appendFormat:@"context,,%llu,,thermal=%ld render=%ux%u output=%ux%u\n",
             (unsigned long long)(CACurrentMediaTime() * 1e9),
             (long)NSProcessInfo.processInfo.thermalState,
             output.render_width, output.render_height, output.output_width, output.output_height];
         [self appendPublicationCaptureText:text];
+        NSMutableString *timings = [NSMutableString new];
+        rex_light_sample timingSamples[128];
+        uint64_t timingLost = 0;
+        for (unsigned batch = 0; batch < 128; ++batch) {
+            uint64_t lost = 0;
+            const uint32_t count = rex_gta4_light_capture_read(&self->_lightCaptureCursor, timingSamples, 128, &lost);
+            timingLost += lost;
+            for (uint32_t row = 0; row < count; ++row) {
+                for (unsigned field = 0; field < REX_LIGHT_FIELDS; ++field)
+                    [timings appendFormat:field ? @",%llu" : @"%llu", (unsigned long long)timingSamples[row].value[field]];
+                [timings appendString:@"\n"];
+            }
+            if (count < 128) break;
+        }
+        if (timingLost) [timings appendFormat:@"# lost_records=%llu\n", (unsigned long long)timingLost];
+        NSFileHandle *timingFile = [NSFileHandle fileHandleForWritingToURL:self->_lightCaptureURL error:nil];
+        @try {
+            if (!timingFile) @throw [NSException exceptionWithName:@"TimingExport" reason:@"Unable to open timing file" userInfo:nil];
+            [timingFile seekToEndOfFile];
+            [timingFile writeData:[timings dataUsingEncoding:NSUTF8StringEncoding]];
+            [timingFile closeFile];
+        } @catch (NSException *exception) {
+            [timingFile closeFile];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_publicationCaptureWriteFailed = YES;
+                [self record:@"capture.timing_export_failed"];
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CAPTURE SAVE FAILED"
+                    message:@"Renderer timings could not be saved. Please export logs before closing."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+        }
     });
 }
 
 - (BOOL)beginPublicationCapture {
     if (_publicationCaptureActive) return YES;
-    if (!_supportURL || _publicationCaptureWriteFailed) return NO;
-    if (_publicationCaptureQueue) {
-        const uint64_t cursor = theft4_publication_capture_start();
-        const uint64_t stageCursor = _frameStageTiming.on ? theft4_frame_stages_start() : 0;
-        [self startPacingDisplayLinkIfNeeded];
-        _publicationCaptureActive = YES;
-        _publicationCaptureLastDrainTime = CACurrentMediaTime();
-        dispatch_async(_publicationCaptureQueue, ^{
-            self->_publicationCaptureCursor = cursor;
-            self->_frameStageCaptureCursor = stageCursor;
-            [self appendPublicationCaptureText:@"status,,,,resumed\n"];
-        });
-        [self record:@"capture.lightweight_resumed"];
-        return YES;
-    }
+    if (!_supportURL || _publicationCaptureWriteFailed || _publicationCaptureURL) return NO;
     NSURL *directory = [[_supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES]
         URLByAppendingPathComponent:@"frame-captures" isDirectory:YES];
     NSError *error = nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:directory
-        withIntermediateDirectories:YES attributes:nil error:&error]) {
-        [self record:[NSString stringWithFormat:@"capture.lightweight_start_failed: %@",
-            error.localizedDescription ?: @"directory unavailable"]];
-        return NO;
-    }
+        withIntermediateDirectories:YES attributes:nil error:&error]) return NO;
     NSDateFormatter *formatter = [NSDateFormatter new];
     formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.dateFormat = @"yyyy-MM-dd-HH-mm-ss";
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
-        [NSString stringWithFormat:@"publication-trace-%@.csv", [formatter stringFromDate:NSDate.date]]];
-    NSString *header = [NSString stringWithFormat:
-        @"# round1-v1: publication IDs and guest_stage frame IDs are different namespaces; monotonic_ns is one host clock\n"
-         "# no GPU duration or actual displayed time; display targets are predictions; fence end is CPU observation\n"
-         "# stages: 1 guest-submit-begin; 2 guest-submit-end(a=success); 3 limiter-end(a=pre-submit); 4 worker-begin; 5 worker-end; 6 queue-begin; 7 queue-end(a=submission b=slot); 8 fence-begin; 9 fence-end(frame=0 a=submission b=slot); 10 present-queued(a=content b=result); 11 constants(a=reuses b=changed-version-reuses); 12 constants-fallback(a=count b=arena-bytes); 13 display-target(frame=0 a=predicted-host-ns)\n"
-         "kind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n"
-         "config,,,,constant_reuse=%d display_pacing=%d stage_timing=%d\n",
-         _constantReuse.on, _displayPacing.on, _frameStageTiming.on];
-    if (![header writeToURL:_publicationCaptureURL atomically:YES
-                   encoding:NSUTF8StringEncoding error:&error]) {
+        [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
+            [NSUUID.UUID.UUIDString substringToIndex:8]]];
+    NSString *header = [NSString stringWithFormat:@"# build%@: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"], THEFT4_DEFAULT_RUNTIME_WAIT_FIXES, THEFT4_DEFAULT_DIRECT_GUEST_CLOCK];
+    header = [header stringByAppendingFormat:@"marker,,%llu,,%@\n",
+        (unsigned long long)(CACurrentMediaTime() * 1e9), Theft4PerformanceProfileFields()];
+    if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _publicationCaptureURL = nil;
-        [self record:[NSString stringWithFormat:@"capture.lightweight_start_failed: %@",
-            error.localizedDescription ?: @"file unavailable"]];
+        [self record:@"capture.long_start_failed"];
         return NO;
     }
-    _publicationCaptureQueue = dispatch_queue_create("theft4.publication-capture", DISPATCH_QUEUE_SERIAL);
+    _lightCaptureURL = [directory URLByAppendingPathComponent:
+        [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"renderer-timing-"]];
+    NSString *lightHeader = [NSString stringWithFormat:
+        @"# build%@: host_tick_frequency=%llu; CPU fields are ns; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events 32=decompressions 64=available-memory; sparse assembly1frame/60 with overlapping wall categories; pressure texture bytes mean retirement; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
+        NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"],
+        (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
+    if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        _lightCaptureURL = nil;
+        [self record:@"capture.timing_start_failed"];
+        return NO;
+    }
+    _runtimeCallerURL = [directory URLByAppendingPathComponent:
+        [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"runtime-callers-"]];
+    NSString *callerHeader = [NSString stringWithFormat:
+        @"# build%@; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
+        NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"],
+        THEFT4_DEFAULT_DIRECT_GUEST_CLOCK, THEFT4_DEFAULT_RUNTIME_WAIT_FIXES,
+        (unsigned long long)rex_runtime_callers_frequency(),
+        (unsigned long long)(uintptr_t)_dyld_get_image_header(0)];
+    if (![callerHeader writeToURL:_runtimeCallerURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        [self record:@"capture.caller_start_failed"];
+        return NO;
+    }
+    _schedulingURL = [directory URLByAppendingPathComponent:
+        [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"frame-scheduling-"]];
+    NSString *schedulingHeader = [NSString stringWithFormat:
+        @"# build%@ initial_mode=%d; times=ns; event=1:identity 2:qos_request 3:fixed_work 4:audio_work 5:witness_budget; roles=1:guest 2:main 4:native 8:present_producer 16:audio; work=1:register 2:buffer 3:audio_prepare 4:audio_mix 5:xma_work 6:xma_decode; units=fixed_iterations_or_cumulative_calls; audio_sampling=1/64_DSP_1/256_XMA; nested_scopes_overlap; sampled_call_counts_omit_unsampled_tail; in_flight_samples_may_finish_after_stop; requested_qos_excludes_override; result=POSIX_status; witness_max_threads=4; witness_counts_frozen=16384; witness_budget_per_thread=0.025pct_plus_2ms_startup; cpu_ns_zero=unavailable; bounded4MiB; dropped_UINT64_MAX=thread_capacity_exceeded\n%s\n",
+        NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"],
+        rex_frame_scheduling_mode(), rex_frame_scheduling_columns()];
+    if (![schedulingHeader writeToURL:_schedulingURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        [self record:@"capture.scheduling_start_failed"];
+        return NO;
+    }
+    _schedulingRows = [NSMutableString new];
+    _runtimeCallerRows = [NSMutableString new];
+    _lightCaptureCursor = rex_gta4_light_capture_start();
+    _publicationCaptureQueue = dispatch_queue_create("theft4.publication-capture",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    _runtimeCallerTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _publicationCaptureQueue);
+    dispatch_source_set_timer(_runtimeCallerTimer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 5);
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(_runtimeCallerTimer, ^{ [weakSelf collectRuntimeCallers]; });
+    rex_frame_scheduling_capture(1);
+    rex_runtime_callers_enable(1);
+    dispatch_resume(_runtimeCallerTimer);
     _publicationCaptureCursor = theft4_publication_capture_start();
-    _frameStageCaptureCursor = _frameStageTiming.on ? theft4_frame_stages_start() : 0;
-    [self startPacingDisplayLinkIfNeeded];
+    _publicationCaptureStartTime = CACurrentMediaTime();
     _publicationCaptureActive = YES;
-    _publicationCaptureLastDrainTime = CACurrentMediaTime();
-    [self record:@"capture.lightweight_started"];
+    [self record:@"capture.long_started"];
     return YES;
 }
 
-- (void)startPacingDisplayLinkIfNeeded {
-    if (_pacingDisplayLink || (!_displayPacing.on && !_frameStageTiming.on)) return;
-    _pacingDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(pacingDisplayTick:)];
-    _pacingDisplayLink.preferredFramesPerSecond = 30;
-    [_pacingDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
-}
-
-- (void)pacingDisplayTick:(CADisplayLink *)link {
-    theft4_pacing_note_display_target(link.targetTimestamp);
+- (void)stopPublicationCapture {
+    if (!_publicationCaptureActive) return;
+    rex_frame_scheduling_capture(0);
+    rex_runtime_callers_enable(0);
+    if (_runtimeCallerTimer) { dispatch_source_cancel(_runtimeCallerTimer); _runtimeCallerTimer = nil; }
+    theft4_publication_capture_stop();
+    rex_gta4_light_capture_stop();
+    [self drainPublicationCapture];
+    _publicationCaptureActive = NO;
+    dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:@"status,,,,saved\n"]; });
+    // Drain already-started audio scopes once more without blocking the UI.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), _publicationCaptureQueue, ^{
+        [self collectFrameScheduling];
+        [self flushFrameScheduling];
+    });
+    [self record:@"capture.long_stopped"];
 }
 
 - (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
-    if (!_publicationCaptureActive) {
-        UIAlertController *start = [UIAlertController alertControllerWithTitle:@"LONG CAPTURE IS OFF"
-            message:@"No lightweight frame trace was recorded this run. The System switch starts one on the next launch, or you can start one now. A double-tap records a separate short detailed profile."
-            preferredStyle:UIAlertControllerStyleAlert];
-        [start addAction:[UIAlertAction actionWithTitle:@"Start long capture now"
-            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                if (![self beginPublicationCapture]) {
-                    [self record:@"capture.lightweight_manual_start_failed"];
-                    UIAlertController *failed = [UIAlertController alertControllerWithTitle:@"CAPTURE FAILED"
-                        message:@"Theft4 could not create the trace file. Check free storage, then reopen the app."
-                        preferredStyle:UIAlertControllerStyleAlert];
-                    [failed addAction:[UIAlertAction actionWithTitle:@"OK"
-                        style:UIAlertActionStyleDefault handler:nil]];
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self presentViewController:failed animated:YES completion:nil];
-                    });
-                }
-            }]];
-        [start addAction:[UIAlertAction actionWithTitle:@"Cancel"
-            style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:start animated:YES completion:nil];
-        return;
-    }
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"MARK CAPTURE"
-        message:@"Choose the view or motion for this point in the trace."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSString *label in @[@"city-in-view", @"facing-away", @"stationary", @"moving", @"heavy-area"]) {
-        [menu addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault
+    NSString *message = _publicationCaptureActive ? @"Recording. Choose an action." :
+        @"Enable Long Performance Capture before Play to record the next run.";
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"PERFORMANCE"
+        message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    if (_publicationCaptureActive) {
+        [menu addAction:[UIAlertAction actionWithTitle:@"Mark lag spike" style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *action) {
                 const uint64_t frame = theft4_frame_counter_published_frames();
-                const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
+                const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
                 dispatch_async(self->_publicationCaptureQueue, ^{
-                    [self appendPublicationCaptureText:[NSString stringWithFormat:
-                        @"marker,%llu,%llu,,%@\n", (unsigned long long)frame,
-                        (unsigned long long)timestamp, label]];
+                    [self appendPublicationCaptureText:[NSString stringWithFormat:@"marker,%llu,%llu,,user-lag-spike\n",
+                        (unsigned long long)frame, (unsigned long long)now]];
                 });
             }]];
+        [menu addAction:[UIAlertAction actionWithTitle:@"Stop and save capture" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [self stopPublicationCapture]; }]];
     }
-    [menu addAction:[UIAlertAction actionWithTitle:@"Stop and save capture"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            theft4_publication_capture_stop();
-            [self drainPublicationCapture];
-            self->_publicationCaptureActive = NO;
-            if (!self->_displayPacing.on) {
-                [self->_pacingDisplayLink invalidate];
-                self->_pacingDisplayLink = nil;
-                theft4_pacing_note_display_target(0);
-            }
-            dispatch_async(self->_publicationCaptureQueue, ^{
-                [self appendPublicationCaptureText:@"status,,,,saved\n"];
-            });
-            [self record:@"capture.lightweight_stopped"];
-        }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     menu.popoverPresentationController.sourceView = _frameTimeView;
     menu.popoverPresentationController.sourceRect = _frameTimeView.bounds;
@@ -2189,13 +2388,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)refreshFrameRate {
-    const CFTimeInterval now = CACurrentMediaTime();
-    if (_publicationCaptureActive && now - _publicationCaptureLastDrainTime >= 1.0) {
-        _publicationCaptureLastDrainTime = now;
-        [self drainPublicationCapture];
-    }
+    // Capture stays in preallocated rings during play; save on explicit stop or
+    // background only. Five minutes fits16384 records at the30FPS game cap.
+    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureStartTime >= 300)
+        [self stopPublicationCapture];
     if (_fpsLabel.hidden) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
+    const CFTimeInterval now = CACurrentMediaTime();
     const CFTimeInterval elapsed = now - _fpsLastTime;
     if (elapsed >= 0.2) {
         const double fps = (double)(frames - _fpsLastFrames) / elapsed;
@@ -2238,36 +2437,30 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // The native profiler is armed before the one-shot runtime is created.
     // Its bounded files survive process termination and are exported from the
     // System tab on the next launch.
-    // Keep the detailed profiler unarmed during the ordinary long capture.
-    // It remains available from the HUD on demand.
     setenv("THEFT4_PERFORMANCE_CAPTURE", "0", 1);
     if (theft4_configure_boot_diagnostics() != 0) {
         [self bootEvent:@"Cannot configure loader diagnostics"];
         return;
     }
     if (execute) {
-        // Re-apply hardware caps at the final launch boundary before deriving
-        // any renderer environment variables from the controls.
-        [self applyLimitedMemoryCaps];
-        setenv("THEFT4_CONSTANT_REUSE", _constantReuse.on ? "1" : "0", 1);
-        setenv("THEFT4_DISPLAY_PACING", _displayPacing.on ? "1" : "0", 1);
-        if (_displayPacing.on) [self startPacingDisplayLinkIfNeeded];
+        [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
+        rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
+        theft4_apply_performance_defaults();
         if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime
         // reads and validates its native-renderer launch configuration.
         setenv("THEFT4_ANISOTROPY", _anisotropicFiltering.on ? "4x" : "1x", 1);
         setenv("THEFT4_MOTION_BLUR", _motionBlur.on ? "1" : "0", 1);
         setenv("THEFT4_DEPTH_OF_FIELD", _depthOfField.on ? "1" : "0", 1);
-        setenv("THEFT4_SHADOW_CACHE_TRACE", "1", 1); // 0.2.1 diagnostic build only.
         const char *shadowPresets[] = {"optimized", "original", "enhanced", "ultra"};
         const char *distancePresets[] = {"0.70", "1", "2", "3"};
         const char *reflectionPresets[] = {"original", "1080p", "full"};
         const char *antiAliasingPresets[] = {"off", "fxaa", "smaa"};
         setenv("THEFT4_SHADOW_QUALITY", shadowPresets[_shadowQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_DRAW_DISTANCE", distancePresets[_drawDistance.selectedSegmentIndex], 1);
-        setenv("THEFT4_OPTIMIZED_LOCAL_LIGHTS", _drawDistance.selectedSegmentIndex == 0 ? "1" : "0", 1);
         setenv("THEFT4_FORCE_HIGHEST_LOD", _modelDetail.selectedSegmentIndex == 2 ? "1" : "0", 1);
         setenv("THEFT4_LOD_SELECTION_BIAS", _modelDetail.selectedSegmentIndex == 0 ? "1.75" : "1", 1);
+        setenv("THEFT4_OPTIMIZED_LOCAL_LIGHTS", _drawDistance.selectedSegmentIndex == 0 ? "1" : "0", 1);
         setenv("THEFT4_REFLECTION_RESOLUTION",
             reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
@@ -2277,13 +2470,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         const uint32_t nativeWidth = (uint32_t)floor(_metalView.bounds.size.width * nativeScale);
         const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
         if (_bringupOverlay.renderResolution) {
-            const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
-            const BOOL fixed1080Output = strcmp(deviceProfile, "a19") == 0 ||
-                strcmp(deviceProfile, "iphone-6gb") == 0 ||
-                strcmp(deviceProfile, "legacy-ipad") == 0;
             theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
                 _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
-                fixed1080Output);
+                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 || _limitedMemoryProfile);
         } else {
             theft4_metal_set_output_mode(
                 _fsrBoost.on ? THEFT4_OUTPUT_FSR_BOOST :
@@ -2358,12 +2547,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)activate {
+    if (_publicationCaptureActive) {
+        const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+        dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:
+            [NSString stringWithFormat:@"marker,,%llu,,app-active\n", (unsigned long long)now]]; });
+    }
     [_bringupOverlay setActive:!_executionAttempted];
     _sceneActive = YES;
     [self updateFrameTimeHUD];
     _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
     [self createCore];
     if (_core) [self accept:theft4_core_activate(_core) operation:@"activate"];
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    rex_frame_scheduling_active(1);
+    theft4_native_set_active(true);
+#endif
     [self record:@"scene.active"];
     [self refreshInstallationFlow];
 #ifdef THEFT4_HAS_GAME_STARTUP
@@ -2395,6 +2593,17 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 - (void)pause {
     [self drainPublicationCapture];
+    if (_publicationCaptureActive) {
+        const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);
+        dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:
+            [NSString stringWithFormat:@"marker,,%llu,,app-inactive\n", (unsigned long long)now]]; });
+    }
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    rex_frame_scheduling_active(0);
+    const BOOL quiesced = theft4_native_set_active(false);
+    [self record:quiesced ? @"renderer.quiesced" : @"renderer.pause_failed"];
+    [self drainPublicationCapture];
+#endif
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];
@@ -2403,16 +2612,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)shutdown {
-    [_pacingDisplayLink invalidate];
-    _pacingDisplayLink = nil;
-    theft4_pacing_note_display_target(0);
-    const BOOL captureWasActive = _publicationCaptureActive;
-    theft4_publication_capture_stop();
-    [self drainPublicationCapture];
-    _publicationCaptureActive = NO;
-    if (captureWasActive && _publicationCaptureQueue) dispatch_async(_publicationCaptureQueue, ^{
-        [self appendPublicationCaptureText:@"status,,,,saved-on-shutdown\n"];
-    });
+    rex_frame_scheduling_active(0);
+    [self stopPublicationCapture];
     [_bringupOverlay setActive:NO];
     _sceneActive = NO;
     [self updateFrameTimeHUD];
@@ -2432,10 +2633,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
+    rex_gta4_light_memory_warning();
     if (_core) [self accept:theft4_core_memory_warning(_core) operation:@"memory_warning"];
     [self refresh];
 }
 - (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
     // Scene disconnect normally releases it first. No callback may access a
     // partially deallocated controller; scene ownership requires shutdown.
     NSCAssert(_core == NULL, @"Scene must shut down its core before release");

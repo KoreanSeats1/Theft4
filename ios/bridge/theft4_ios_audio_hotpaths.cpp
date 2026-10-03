@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <rex/diagnostics/frame_scheduling.h>
 #include <rex/logging.h>
 
 #include "gta4_init.h"
@@ -49,6 +50,7 @@ extern "C" void sub_821909D0(PPCContext& ctx, uint8_t* base) {
   } else {
     REXLOG_WARN("Theft4 could not promote GTA audio mixer QoS: {}", result);
   }
+  rex::diagnostics::frame_schedule::MarkAudio();
   __imp__sub_821909D0(ctx, base);
 }
 
@@ -212,4 +214,17 @@ extern "C" void sub_82199BC8(PPCContext& ctx, uint8_t* base) {
               GuestAddress(base, source_address),
               GuestAddress(base, initial_gain_address),
               GuestAddress(base, gain_step_address));
+}
+
+// Finite DSP stages, preserving the generated implementations and guest state.
+// Unlike the infinite mixer entry point, these scopes measure actual batches.
+extern "C" void sub_8218FFB0(PPCContext& ctx, uint8_t* base) {
+  rex::diagnostics::frame_schedule::CpuScope cpu_scope(
+      rex::diagnostics::frame_schedule::AudioPrepare, uint32_t(ctx.lr));
+  __imp__sub_8218FFB0(ctx, base);
+}
+extern "C" void sub_82191228(PPCContext& ctx, uint8_t* base) {
+  rex::diagnostics::frame_schedule::CpuScope cpu_scope(
+      rex::diagnostics::frame_schedule::AudioMix, uint32_t(ctx.lr));
+  __imp__sub_82191228(ctx, base);
 }

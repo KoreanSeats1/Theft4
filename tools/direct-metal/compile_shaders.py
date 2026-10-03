@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 from pathlib import Path
 import subprocess
+import shutil
 
 parser = argparse.ArgumentParser()
 parser.add_argument("sources", type=Path)
@@ -46,11 +47,16 @@ def compile_one(source):
             "diagnostic": str(log)}
 
 sources = sorted(args.sources.glob("*.metal"))
+manifest = args.sources / "manifest.tsv"
+if not manifest.is_file():
+    parser.error("The exported manifest must accompany the Metal shader sources")
 with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
     results = list(pool.map(compile_one, sources))
 report = {"platform": args.platform, "target": target, "standard": standard,
           "sources": len(results), "compiled": sum(r["compiled"] for r in results),
           "rejected": [r for r in results if not r["compiled"]]}
 (args.output / "COMPILATION.json").write_text(json.dumps(report, indent=2) + "\n")
+if sources and not report["rejected"] and manifest.resolve() != (args.output / "manifest.tsv").resolve():
+    shutil.copy2(manifest, args.output / "manifest.tsv")
 print(json.dumps(report))
 raise SystemExit(0 if sources and not report["rejected"] else 1)

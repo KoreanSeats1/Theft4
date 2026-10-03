@@ -1,9 +1,14 @@
 #include "direct_metal_probe.h"
 #include "theft4_native_metal.h"
+#include "theft4_metal_shader_store.h"
+#include "theft4_metal_resources.h"
 #include "native_color_output.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#ifndef THEFT4_METAL_SOURCE_REVISION
+#define THEFT4_METAL_SOURCE_REVISION "development"
+#endif
 
 using namespace theft4::metal;
 namespace {
@@ -21,6 +26,7 @@ template<class T> std::span<const uint8_t> Bytes(const std::vector<T>& v) {
 }
 struct Probe {
   Renderer renderer{1};
+  ShaderStore shaders{renderer};
   NSString* libraries;
   NSString* output;
   std::string error;
@@ -28,16 +34,14 @@ struct Probe {
   void Require(bool truth) {
     if (!truth) throw std::runtime_error(error.empty() ? "Metal validation assertion" : error);
   }
-  Shader ShaderFor(const char* key, bool vertex, bool textured, uint32_t spec = 0) {
-    NSString* path = [libraries stringByAppendingPathComponent:
-        [[NSString stringWithUTF8String:key] stringByAppendingString:@".metallib"]];
-    NSData* data = [NSData dataWithContentsOfFile:path];
-    if (!data) throw std::runtime_error(std::string("Missing game library: ") + key);
-    ShaderInterface abi{};
-    if (textured) { abi.textures = 1; abi.samplers = 1; abi.texture_types[0] = MTLTextureType2D; }
-    auto shader = renderer.LoadShader({static_cast<const uint8_t*>(data.bytes), data.length},
-        vertex ? Stage::Vertex : Stage::Fragment, abi, spec, error);
+  Shader ShaderFor(ShaderKey key, Stage stage, uint32_t spec = 0) {
+    if (!shaders.CatalogSize()) Require(shaders.Open(libraries.UTF8String,error));
+    auto shader = shaders.Resolve(key,stage,spec,error);
     Require(shader.function); return shader;
+  }
+  ShaderKey FragmentFor(const Case& c) {
+    return {c.pixel_constants ? 0xD72B5CF469E02C54ull : c.texture ? 0xB9589DA9F4B1770Full :
+        0x949ED69300FB92B7ull,c.alpha_test};
   }
   id<MTLTexture> Color(NSUInteger samples = 1) {
     auto d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -105,12 +109,27 @@ struct Probe {
     }
     return {Buffer(vs,true),Buffer(ps,true),Buffer(shared,true)};
   }
+  MTLVertexDescriptor* VertexDeclaration(bool instance_color=false) {
+    auto vertex=[MTLVertexDescriptor new];
+    for(auto [location,offset]: {std::pair{0u,0u}, {17u,16u}, {13u,32u}}){
+      vertex.attributes[location].format=MTLVertexFormatFloat4;
+      vertex.attributes[location].offset=offset;vertex.attributes[location].bufferIndex=8;
+    }
+    vertex.layouts[8].stride=sizeof(Vertex);vertex.layouts[8].stepRate=1;
+    vertex.layouts[8].stepFunction=MTLVertexStepFunctionPerVertex;
+    if(instance_color){
+      vertex.attributes[17].offset=0;vertex.attributes[17].bufferIndex=24;
+      vertex.layouts[24].stride=16;vertex.layouts[24].stepRate=1;
+      vertex.layouts[24].stepFunction=MTLVertexStepFunctionPerInstance;
+    }
+    return vertex;
+  }
   std::shared_ptr<const Pipeline> PipelineFor(const Case& c, NSUInteger samples,
-      MTLPixelFormat format=MTLPixelFormatRGBA8Unorm) {
-    auto vs = ShaderFor(c.transform ? "2668e8f9bb250542" : "048e49996734f6b5",true,false);
+      MTLPixelFormat format=MTLPixelFormatRGBA8Unorm,
+      MTLCompareFunction depth_function=MTLCompareFunctionLess) {
+    auto vs = ShaderFor({c.transform ? 0x2668E8F9BB250542ull : 0x048E49996734F6B5ull,false},Stage::Vertex);
     const uint32_t spec = c.alpha_test ? (2u | (6u << 8)) : 0;
-    auto ps = ShaderFor(c.pixel_constants ? "d72b5cf469e02c54" : c.texture ? "b9589da9f4b1770f" :
-        c.alpha_test ? "949ed69300fb92b7-late" : "949ed69300fb92b7",false,c.texture,spec);
+    auto ps = ShaderFor(FragmentFor(c),Stage::Fragment,spec);
     auto fixed = [MTLRenderPipelineDescriptor new];
     fixed.rasterSampleCount=samples; fixed.colorAttachments[0].pixelFormat=format;
     if(c.blend){
@@ -121,16 +140,9 @@ struct Probe {
       b.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
     }
     if(c.depth)fixed.depthAttachmentPixelFormat=MTLPixelFormatDepth32Float;
-    auto vertex=[MTLVertexDescriptor new];
-    for(auto [location,offset]: {std::pair{0u,0u}, {17u,16u}, {13u,32u}}){
-      vertex.attributes[location].format=MTLVertexFormatFloat4;
-      vertex.attributes[location].offset=offset;vertex.attributes[location].bufferIndex=8;
-    }
-    vertex.layouts[8].stride=sizeof(Vertex);vertex.layouts[8].stepRate=1;
-    vertex.layouts[8].stepFunction=MTLVertexStepFunctionPerVertex;
-    fixed.vertexDescriptor=vertex;
+    fixed.vertexDescriptor=VertexDeclaration();
     auto depth=[MTLDepthStencilDescriptor new];
-    depth.depthCompareFunction=c.depth ? MTLCompareFunctionLess : MTLCompareFunctionAlways;
+    depth.depthCompareFunction=c.depth ? depth_function : MTLCompareFunctionAlways;
     depth.depthWriteEnabled=c.depth;
     auto pipeline=renderer.MakePipeline(vs,ps,fixed,depth,error);Require(bool(pipeline));return pipeline;
   }
@@ -148,14 +160,16 @@ struct Probe {
       std::vector<uint32_t> index{0,1,2,0,2,3};d.indices=Buffer(Bytes(index),true);
       d.index_type=MTLIndexTypeUInt32;d.index_count=6;d.maximum_vertex=4;
     }
+    std::array<FetchResources,26> fetches{};
     if(c.texture){
-      d.textures.push_back({Stage::Fragment,0,SourceTexture(c.astc)});
+      fetches[0].images[0]=SourceTexture(c.astc);
       auto s=[MTLSamplerDescriptor new];s.minFilter=MTLSamplerMinMagFilterNearest;
       s.magFilter=MTLSamplerMinMagFilterNearest;s.sAddressMode=MTLSamplerAddressModeClampToEdge;
       s.tAddressMode=MTLSamplerAddressModeClampToEdge;
       auto sampler=[renderer.Device() newSamplerStateWithDescriptor:s];Require(sampler);
-      d.samplers.push_back({Stage::Fragment,0,sampler});
+      fetches[0].sampler=sampler;
     }
+    Require(shaders.Bind(FragmentFor(c),Stage::Fragment,fetches,d,error));
     d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};return d;
   }
   MTLRenderPassDescriptor* Pass(id<MTLTexture> target, id<MTLTexture> resolve,
@@ -265,6 +279,195 @@ struct Probe {
     [results addObject:@{@"case":@"bc_capability_gate",@"passed":@YES,
       @"bc_supported":@(renderer.Device().supportsBCTextureCompression)}];
   }
+  void CatalogAndCache() {
+    const auto loaded=shaders.LoadedFunctions();
+    auto first=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex);
+    auto reused=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex,UINT32_MAX);
+    Require(first.function==reused.function && shaders.LoadedFunctions()==loaded);
+    auto alpha=ShaderFor({0x949ED69300FB92B7ull,true},Stage::Fragment,0x602u);
+    auto alpha_reused=ShaderFor({0x949ED69300FB92B7ull,true},Stage::Fragment,0x80000602u);
+    Require(alpha.function==alpha_reused.function && shaders.LoadedFunctions()==loaded);
+    auto wrong=shaders.Resolve({0x048E49996734F6B5ull,false},Stage::Fragment,0,error);
+    Require(!wrong.function && shaders.LoadedFunctions()==loaded);
+    auto missing=shaders.Resolve({0x1111111111111111ull,false},Stage::Vertex,0,error);
+    Require(!missing.function && shaders.LoadedFunctions()==loaded);
+    const ShaderKey sparse{0xECA7E919FECAAD3Cull,false};
+    auto sparse_shader=ShaderFor(sparse,Stage::Fragment);
+    Require(sparse_shader.interface.textures==3 && sparse_shader.interface.samplers==3);
+    std::array<FetchResources,26> fetches{};
+    fetches[0].images[0]=SourceTexture(false);fetches[15].images[0]=SourceTexture(true);
+    auto sampler=[renderer.Device() newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+    Require(sampler);fetches[0].sampler=sampler;
+    Draw packet;Require(!shaders.Bind(sparse,Stage::Fragment,fetches,packet,error));
+    Require(packet.textures.empty() && packet.samplers.empty());
+    fetches[15].sampler=sampler;
+    Require(shaders.Bind(sparse,Stage::Fragment,fetches,packet,error));
+    Require(packet.textures.size()==2 && packet.samplers.size()==2 &&
+        packet.textures[0].index==0 && packet.textures[0].texture==fetches[0].images[0] &&
+        packet.textures[1].index==1 && packet.textures[1].texture==fetches[15].images[0]);
+    Require(!shaders.Bind(sparse,Stage::Fragment,fetches,packet,error));
+    Require(packet.textures.size()==2 && packet.samplers.size()==2);
+    error.clear();
+    [results addObject:@{@"case":@"game_shader_catalog_and_cache",@"passed":@YES,
+        @"catalog_entries":@(shaders.CatalogSize()),@"functions_loaded":@(shaders.LoadedFunctions()),
+        @"sparse_fetch_slots":@[@0,@15],@"metal_indices":@[@0,@1],
+        @"specialization_cache_reused":@YES,@"failed_binding_transaction_retained":@YES}];
+  }
+  void ResourceGenerations() {
+    ResourceCache cache(renderer);
+    auto vertices=std::make_shared<const std::vector<Vertex>>(Quad({1,1,1,1}));
+    ResourceVersion buffer_version{vertices,1,{}};
+    id<MTLBuffer> vertex_buffer=cache.Buffer(buffer_version,Bytes(*vertices),error);Require(vertex_buffer);
+    Require(cache.Buffer(buffer_version,Bytes(*vertices),error)==vertex_buffer);
+    Require(!cache.Buffer(buffer_version,Bytes(*vertices).first(1),error));
+    {auto next=buffer_version;next.generation=2;
+      Require(cache.Buffer(next,Bytes(*vertices),error)!=vertex_buffer);}
+    {auto converted=buffer_version;converted.conversion[0]=1;
+      Require(cache.Buffer(converted,Bytes(*vertices),error)!=vertex_buffer);}
+    const std::array<std::array<uint8_t,4>,4> colors{{{51,102,204,255},{204,51,102,255},
+        {102,204,51,255},{255,255,255,255}}};
+    auto rgba=std::make_shared<std::vector<uint8_t>>();std::vector<TextureUpload> rgba_uploads;
+    for(NSUInteger level=0;level<4;++level){
+      const NSUInteger size=8>>level,pitch=size*4+4;const size_t start=rgba->size();
+      rgba->resize(start+pitch*size,0xde);
+      for(NSUInteger y=0;y<size;++y)for(NSUInteger x=0;x<size;++x)
+        memcpy(rgba->data()+start+y*pitch+x*4,colors[level].data(),4);
+      rgba_uploads.push_back({level,0,size,size,1,pitch,0,start,pitch*size});
+    }
+    auto rgba_desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:8 height:8 mipmapped:YES];rgba_desc.storageMode=MTLStorageModeShared;
+    rgba_desc.usage=MTLTextureUsageShaderRead;ResourceVersion rgba_version{rgba,1,{}};
+    id<MTLTexture> rgba_texture=cache.Texture(rgba_version,rgba_desc,*rgba,rgba_uploads,error);Require(rgba_texture);
+    Require(cache.Texture(rgba_version,rgba_desc,*rgba,rgba_uploads,error)==rgba_texture);
+    MTLTextureDescriptor* wrong_shape=[rgba_desc copy];wrong_shape.pixelFormat=MTLPixelFormatRGBA8Unorm_sRGB;
+    Require(!cache.Texture(rgba_version,wrong_shape,*rgba,rgba_uploads,error));
+    {auto replacement=rgba_version;replacement.generation=2;
+      auto bad=rgba_uploads;bad[0].offset=rgba->size();
+      Require(!cache.Texture(replacement,rgba_desc,*rgba,bad,error));
+      bad=rgba_uploads;bad[1]=bad[0];Require(!cache.Texture(replacement,rgba_desc,*rgba,bad,error));
+      Require(!cache.Texture(replacement,rgba_desc,*rgba,std::span(rgba_uploads).first(3),error));
+      MTLTextureDescriptor* renderable=[rgba_desc copy];renderable.usage=MTLTextureUsageRenderTarget;
+      Require(!cache.Texture(replacement,renderable,*rgba,rgba_uploads,error));}
+    auto astc=std::make_shared<std::vector<uint8_t>>();std::vector<TextureUpload> astc_uploads;
+    for(NSUInteger level=0;level<3;++level){
+      const size_t start=astc->size();
+      const uint8_t extent[]{0xfc,0xfd,0xff,0xff,0xff,0xff,0xff,0xff};
+      astc->insert(astc->end(),std::begin(extent),std::end(extent));
+      for(uint8_t channel:colors[level]){astc->push_back(channel);astc->push_back(channel);}
+      astc_uploads.push_back({level,0,4u>>level,4u>>level,1,16,0,start,16});
+    }
+    auto astc_desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatASTC_4x4_LDR
+        width:4 height:4 mipmapped:YES];astc_desc.storageMode=MTLStorageModeShared;
+    astc_desc.usage=MTLTextureUsageShaderRead;ResourceVersion astc_version{astc,1,{}};
+    auto astc_texture=cache.Texture(astc_version,astc_desc,*astc,astc_uploads,error);Require(astc_texture);
+    // Upload all faces/layers/volume planes, then inspect them through GPU blits.
+    std::vector<std::shared_ptr<std::vector<uint8_t>>> dimensional_owners;
+    size_t dimensional_subresources=0;
+    for(MTLTextureType type:{MTLTextureTypeCube,MTLTextureType2DArray,MTLTextureType3D}){
+      auto data=std::make_shared<std::vector<uint8_t>>();std::vector<TextureUpload> uploads;
+      const NSUInteger slices=type==MTLTextureTypeCube ? 6 : type==MTLTextureType2DArray ? 2 : 1;
+      for(NSUInteger slice=0;slice<slices;++slice)for(NSUInteger level=0;level<2;++level){
+        const NSUInteger width=4>>level,depth=type==MTLTextureType3D ? 2>>level : 1;
+        const size_t start=data->size();
+        for(NSUInteger z=0;z<depth;++z)for(NSUInteger pixel=0;pixel<width*width;++pixel){
+          const uint8_t color[]{uint8_t(20+slice*10+level*3+z),40,60,255};
+          data->insert(data->end(),std::begin(color),std::end(color));
+        }
+        uploads.push_back({level,slice,width,width,depth,width*4,
+            type==MTLTextureType3D ? width*width*4 : 0,start,data->size()-start});
+      }
+      auto desc=[MTLTextureDescriptor new];desc.pixelFormat=MTLPixelFormatRGBA8Unorm;
+      desc.textureType=type;desc.width=desc.height=4;desc.depth=type==MTLTextureType3D ? 2 : 1;
+      desc.arrayLength=type==MTLTextureType2DArray ? 2 : 1;desc.mipmapLevelCount=2;
+      desc.storageMode=MTLStorageModeShared;desc.usage=MTLTextureUsageShaderRead;
+      auto texture=cache.Texture({data,1,{}},desc,*data,uploads,error);Require(texture);
+      for(const auto& u:uploads)for(NSUInteger z=0;z<u.depth;++z){
+        auto pixels=renderer.ReadRGBA8(texture,error,u.level,u.slice,z);
+        Require(pixels.size()==u.width*u.height*4);
+        const uint8_t color[]{uint8_t(20+u.slice*10+u.level*3+z),40,60,255};
+        for(size_t byte=0;byte<pixels.size();++byte)Require(pixels[byte]==color[byte%4]);
+        ++dimensional_subresources;
+      }
+      dimensional_owners.push_back(data);
+    }
+    Case sampled{};sampled.texture=true;auto pipeline=PipelineFor(sampled,1);
+    auto render=[&](id<MTLTexture> texture,NSUInteger level,bool retire){
+      auto target=Color();auto draw=Packet(sampled,pipeline,{1,1,1,1});
+      draw.vertices[0]={vertex_buffer,0,Bytes(*vertices).size()};draw.textures[0].texture=texture;
+      auto sampler=[MTLSamplerDescriptor new];sampler.minFilter=MTLSamplerMinMagFilterNearest;
+      sampler.magFilter=MTLSamplerMinMagFilterNearest;sampler.mipFilter=MTLSamplerMipFilterNearest;
+      sampler.lodMinClamp=sampler.lodMaxClamp=float(level);
+      draw.samplers[0].sampler=[renderer.Device() newSamplerStateWithDescriptor:sampler];
+      error.clear();auto frame=renderer.BeginFrame(error);Require(bool(frame));
+      Require(frame.BeginPass(Pass(target,nil,nil),error));Require(frame.Encode(draw,error));Require(frame.EndPass(error));
+      auto receipt=frame.Submit(error);Require(bool(receipt));draw={};
+      if(retire){
+        vertices.reset();buffer_version={};rgba.reset();rgba_version={};vertex_buffer=nil;rgba_texture=nil;
+        texture=nil;
+        Require(cache.SweepRetired()==4 && cache.BufferCount()==0 && cache.TextureCount()==4);
+      }
+      Require(receipt.Wait(error));auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+      for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(colors[level][byte%4]))<=1);
+    };
+    for(NSUInteger level=0;level<3;++level)render(astc_texture,level,false);
+    for(NSUInteger level=0;level<4;++level)render(rgba_texture,level,level==3);
+    const auto stats=cache.Stats();Require(stats.buffer_creates==3 && stats.texture_creates==5 &&
+        stats.buffer_hits==1 && stats.texture_hits==1 && stats.retired==4);
+    [results addObject:@{@"case":@"immutable_game_resource_generations",@"passed":@YES,
+        @"rgba_mips_sampled":@4,@"astc_mips_sampled":@3,@"cube_array_volume_planes_checked":@(dimensional_subresources),
+        @"buffer_creates":@(stats.buffer_creates),@"texture_creates":@(stats.texture_creates),
+        @"buffer_reuses":@(stats.buffer_hits),@"texture_reuses":@(stats.texture_hits),
+        @"gpu_retains_retired_resources":@YES,@"invalid_uploads_rejected":@5}];
+  }
+  void GamePipelineLayouts() {
+    auto vs=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex);
+    auto fixed=[MTLRenderPipelineDescriptor new];fixed.vertexDescriptor=VertexDeclaration();
+    fixed.depthAttachmentPixelFormat=MTLPixelFormatDepth32Float;
+    auto state=[MTLDepthStencilDescriptor new];state.depthCompareFunction=MTLCompareFunctionLess;
+    state.depthWriteEnabled=YES;
+    Require(!renderer.MakePipeline(vs,Shader{},fixed,state,error));
+    auto depth_pipeline=renderer.MakeDepthPipeline(vs,fixed,state,error);Require(bool(depth_pipeline));
+    MTLRenderPipelineDescriptor* incompatible=[fixed copy];
+    incompatible.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
+    Require(!renderer.MakeDepthPipeline(vs,incompatible,state,error));
+    auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+        width:W height:H mipmapped:NO];descriptor.storageMode=MTLStorageModePrivate;
+    descriptor.usage=MTLTextureUsageRenderTarget;auto depth=renderer.Texture(descriptor,error);Require(depth);
+    error.clear();auto frame=renderer.BeginFrame(error);Require(bool(frame));
+    auto pass=[MTLRenderPassDescriptor renderPassDescriptor];pass.depthAttachment.texture=depth;
+    pass.depthAttachment.loadAction=MTLLoadActionClear;pass.depthAttachment.clearDepth=1;
+    pass.depthAttachment.storeAction=MTLStoreActionStore;
+    Require(frame.BeginPass(pass,error));Case c{};
+    auto far=Packet(c,depth_pipeline,{0,0,1,1},0.75f),near=Packet(c,depth_pipeline,{1,0,0,1},0.25f);
+    Require(frame.Encode(far,error));Require(frame.Encode(near,error));Require(frame.EndPass(error));
+    auto target=Color();Case colored{};colored.depth=true;
+    auto color_pipeline=PipelineFor(colored,1,MTLPixelFormatRGBA8Unorm,MTLCompareFunctionEqual);
+    auto shade=Pass(target,nil,depth);shade.depthAttachment.loadAction=MTLLoadActionLoad;
+    Require(frame.BeginPass(shade,error));
+    near.pipeline=color_pipeline;far.pipeline=color_pipeline;
+    Require(frame.Encode(near,error));Require(frame.Encode(far,error));Require(frame.EndPass(error));
+    auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+    auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    const uint8_t red[]{255,0,0,255};
+    for(size_t byte=0;byte<pixels.size();++byte)Require(pixels[byte]==red[byte%4]);
+    [results addObject:@{@"case":@"game_depth_only_pipeline",@"passed":@YES,
+        @"fragment_shader_omitted":@YES,@"stored_depth_reused":@YES}];
+    frame={};
+    auto fragment=ShaderFor({0x949ED69300FB92B7ull,false},Stage::Fragment);
+    auto instanced=[MTLRenderPipelineDescriptor new];instanced.vertexDescriptor=VertexDeclaration(true);
+    instanced.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
+    auto pipeline=renderer.MakePipeline(vs,fragment,instanced,nil,error);Require(bool(pipeline));
+    auto draw=Packet(c,pipeline,{1,1,1,1});draw.instance_count=2;
+    const std::vector<float> instance_colors{1,0,0,1,0,0,1,1};draw.vertices[16]=Buffer(Bytes(instance_colors));
+    target=Color();frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(Pass(target,nil,nil),error));
+    auto too_small=draw;too_small.vertices[16].length=16;Require(!frame.Encode(too_small,error));error.clear();
+    Require(frame.Encode(draw,error));Require(frame.EndPass(error));receipt=frame.Submit(error);
+    Require(bool(receipt));Require(receipt.Wait(error));pixels=renderer.ReadRGBA8(target,error);
+    Require(pixels.size()==W*H*4);const uint8_t blue[]{0,0,255,255};
+    for(size_t byte=0;byte<pixels.size();++byte)Require(pixels[byte]==blue[byte%4]);
+    [results addObject:@{@"case":@"game_stream_16_per_instance",@"passed":@YES,
+        @"game_streams":@17,@"metal_buffer_slot":@24,@"instances":@2,@"short_instance_stream_rejected":@YES}];
+  }
 };
 }
 NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
@@ -290,10 +493,12 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
       ,{.name="pixel_constant_bank",.texture=true,.pixel_constants=true}
     };
     for(const auto& c:cases)probe.Run(c);
-    probe.AdmissionAndLifetime();passed=true;
+    probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
+    probe.GamePipelineLayouts();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
-  NSDictionary* report=@{@"schema":@1,@"passed":@(passed),@"failure":failure,@"cases":probe.results,
+  NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,
+    @"source_revision":@THEFT4_METAL_SOURCE_REVISION,
     @"device":device ? device.name : @"No Metal device",@"os":NSProcessInfo.processInfo.operatingSystemVersionString,
     @"supports_bc":@(device.supportsBCTextureCompression),@"apple7":@([device supportsFamily:MTLGPUFamilyApple7]),
     @"vulkan_linked":@NO,@"moltenvk_linked":@NO,@"game_started":@NO,

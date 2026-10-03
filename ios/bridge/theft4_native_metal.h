@@ -8,9 +8,10 @@
 #include <span>
 #include <string>
 #include <vector>
+#include "theft4_metal_shader_catalog.h"
 
 namespace theft4::metal {
-enum class Stage { Vertex, Fragment };
+inline constexpr NSUInteger kGameVertexStreamCount = 17;
 struct BufferView {
   id<MTLBuffer> buffer = nil;
   NSUInteger offset = 0, length = 0;
@@ -33,7 +34,8 @@ struct Pipeline {
   MTLPixelFormat depth = MTLPixelFormatInvalid, stencil = MTLPixelFormatInvalid;
   NSUInteger samples = 1;
   uint32_t vertex_streams = 0;
-  std::array<NSUInteger, 16> strides{}, attribute_extents{};
+  uint32_t instance_streams = 0;
+  std::array<NSUInteger, kGameVertexStreamCount> strides{}, attribute_extents{};
 };
 struct TextureBinding { Stage stage; NSUInteger index; id<MTLTexture> texture; };
 struct SamplerBinding { Stage stage; NSUInteger index; id<MTLSamplerState> sampler; };
@@ -41,8 +43,8 @@ struct Draw {
   std::shared_ptr<const Pipeline> pipeline;
   // ABI: VS=0 (4096 bytes), PS=1 (3584), shared=2 (1056).
   std::array<BufferView, 3> constants{};
-  // Game streams occupy Metal slots 8..23. They never alias constant slots.
-  std::array<BufferView, 16> vertices{};
+  // Game streams occupy Metal slots 8..24. They never alias constant slots.
+  std::array<BufferView, kGameVertexStreamCount> vertices{};
   std::vector<TextureBinding> textures;
   std::vector<SamplerBinding> samplers;
   MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
@@ -101,10 +103,18 @@ class Renderer {
       const Shader& vertex, const Shader& fragment,
       MTLRenderPipelineDescriptor* fixed,
       MTLDepthStencilDescriptor* depth, std::string& error);
+  std::shared_ptr<const Pipeline> MakeDepthPipeline(
+      const Shader& vertex, MTLRenderPipelineDescriptor* fixed,
+      MTLDepthStencilDescriptor* depth, std::string& error);
   Frame BeginFrame(std::string& error);
   // Readback is for validation/capture, never part of the normal draw path.
-  std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error);
+  std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error,
+                               NSUInteger level = 0, NSUInteger slice = 0,
+                               NSUInteger depth_plane = 0);
  private:
+  std::shared_ptr<const Pipeline> MakePipelineInternal(
+      const Shader& vertex, const Shader* fragment, MTLRenderPipelineDescriptor* fixed,
+      MTLDepthStencilDescriptor* depth, std::string& error);
   struct Impl;
   std::shared_ptr<Impl> impl_;
 };

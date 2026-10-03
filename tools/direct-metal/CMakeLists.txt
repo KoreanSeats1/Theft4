@@ -35,9 +35,22 @@ target_include_directories(metal_descriptor_contract_test PRIVATE
 target_link_libraries(metal_descriptor_contract_test PRIVATE spirv-cross-core libzstd_static)
 enable_testing()
 add_test(NAME metal_descriptor_contract COMMAND metal_descriptor_contract_test)
+add_library(metal_shader_catalog "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp")
+target_include_directories(metal_shader_catalog PUBLIC "${ROOT}/ios/bridge")
+add_executable(metal_shader_catalog_test shader_catalog_test.cpp $<TARGET_OBJECTS:metal_shader_corpus>)
+target_include_directories(metal_shader_catalog_test PRIVATE "${ROOT}/LibertyRecompLib/shader"
+  "${ROOT}/tools/XenosRecomp/thirdparty/smol-v/source" "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib")
+target_link_libraries(metal_shader_catalog_test PRIVATE metal_shader_catalog spirv-cross-core libzstd_static)
+set(METAL_CATALOG_MANIFEST "" CACHE FILEPATH "Exported full stock Metal manifest to validate")
+if(METAL_CATALOG_MANIFEST)
+  add_test(NAME metal_shader_catalog COMMAND metal_shader_catalog_test "${METAL_CATALOG_MANIFEST}")
+endif()
 add_executable(metal_probe probe_main.mm "${ROOT}/ios/tests/direct_metal_probe.mm"
-  "${ROOT}/ios/bridge/theft4_native_metal.mm")
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm")
 target_include_directories(metal_probe PRIVATE "${ROOT}/ios/bridge" "${ROOT}/ios/tests"
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_compile_options(metal_probe PRIVATE -fobjc-arc)
-target_link_libraries(metal_probe PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+set(METAL_SOURCE_REVISION "development" CACHE STRING "Source commit represented by the GPU validation")
+target_compile_definitions(metal_probe PRIVATE "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
+target_link_libraries(metal_probe PRIVATE metal_shader_catalog "-framework Foundation" "-framework Metal" "-framework QuartzCore")

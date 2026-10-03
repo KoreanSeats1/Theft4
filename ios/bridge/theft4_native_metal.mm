@@ -1,4 +1,5 @@
 #include "theft4_native_metal.h"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -96,12 +97,29 @@ Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
 std::shared_ptr<const Pipeline> Renderer::MakePipeline(const Shader& vs, const Shader& ps,
     MTLRenderPipelineDescriptor* fixed, MTLDepthStencilDescriptor* depth,
     std::string& error) {
-  if (!Ready() || !vs.function || !ps.function || !fixed ||
-      vs.stage != Stage::Vertex || ps.stage != Stage::Fragment) {
+  return MakePipelineInternal(vs,&ps,fixed,depth,error);
+}
+std::shared_ptr<const Pipeline> Renderer::MakeDepthPipeline(const Shader& vs,
+    MTLRenderPipelineDescriptor* fixed, MTLDepthStencilDescriptor* depth,std::string& error) {
+  if (!fixed || !depth || (fixed.depthAttachmentPixelFormat==MTLPixelFormatInvalid &&
+      fixed.stencilAttachmentPixelFormat==MTLPixelFormatInvalid)) {
+    error="A Metal depth-only pipeline requires a depth/stencil target and state";return {};
+  }
+  for (NSUInteger i=0;i<8;++i) if(fixed.colorAttachments[i].pixelFormat!=MTLPixelFormatInvalid) {
+    error="A Metal depth-only pipeline cannot have color targets";return {};
+  }
+  return MakePipelineInternal(vs,nullptr,fixed,depth,error);
+}
+std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs, const Shader* ps,
+    MTLRenderPipelineDescriptor* fixed, MTLDepthStencilDescriptor* depth,std::string& error) {
+  if (!Ready() || !vs.function || !fixed || vs.stage != Stage::Vertex ||
+      (ps && (!ps->function || ps->stage != Stage::Fragment))) {
     error = "Invalid direct Metal shader pair"; return {};
   }
-  MTLRenderPipelineDescriptor* desc = [fixed copy]; desc.vertexFunction = vs.function; desc.fragmentFunction = ps.function;
-  auto p = std::make_shared<Pipeline>(); p->vertex = vs.interface; p->fragment = ps.interface;
+  MTLRenderPipelineDescriptor* desc = [fixed copy]; desc.vertexFunction = vs.function;
+  desc.fragmentFunction = ps ? ps->function : nil;
+  auto p = std::make_shared<Pipeline>(); p->vertex = vs.interface;
+  if(ps)p->fragment = ps->interface;
   p->samples = desc.rasterSampleCount; p->depth = desc.depthAttachmentPixelFormat;
   p->stencil = desc.stencilAttachmentPixelFormat;
   for (NSUInteger i = 0; i < 4; ++i) p->colors[i] = desc.colorAttachments[i].pixelFormat;
@@ -112,17 +130,19 @@ std::shared_ptr<const Pipeline> Renderer::MakePipeline(const Shader& vs, const S
     auto a = desc.vertexDescriptor.attributes[i];
     if (a.format == MTLVertexFormatInvalid) continue;
     const NSUInteger size = FormatBytes(a.format);
-    if (!size || a.bufferIndex < 8 || a.bufferIndex > 23 ||
+    if (!size || a.bufferIndex < 8 || a.bufferIndex >= 8+kGameVertexStreamCount ||
         a.offset > std::numeric_limits<NSUInteger>::max() - size) {
       error = "Unsupported Metal vertex declaration"; return {};
     }
     const NSUInteger s = a.bufferIndex - 8;
     auto layout = desc.vertexDescriptor.layouts[a.bufferIndex];
-    if (!layout.stride || layout.stepFunction != MTLVertexStepFunctionPerVertex ||
+    if (!layout.stride || (layout.stepFunction != MTLVertexStepFunctionPerVertex &&
+        layout.stepFunction != MTLVertexStepFunctionPerInstance) ||
         layout.stepRate != 1 || a.offset + size > layout.stride) {
       error = "Unsupported Metal vertex stream layout"; return {};
     }
     p->vertex_streams |= 1u << s; p->strides[s] = layout.stride;
+    if(layout.stepFunction==MTLVertexStepFunctionPerInstance)p->instance_streams|=1u<<s;
     p->attribute_extents[s] = std::max(p->attribute_extents[s], a.offset + size);
   }
   NSError* e = nil;
@@ -207,9 +227,10 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       return Error(error, "Invalid Metal vertex range");
     maximum = d.first_vertex + d.vertex_count - 1;
   }
-  for (NSUInteger s = 0; s < 16; ++s) if (p.vertex_streams & (1u << s)) {
-    if (maximum > (std::numeric_limits<NSUInteger>::max() - p.attribute_extents[s]) / p.strides[s] ||
-        !ViewValid(d.vertices[s], maximum * p.strides[s] + p.attribute_extents[s]))
+  for (NSUInteger s = 0; s < kGameVertexStreamCount; ++s) if (p.vertex_streams & (1u << s)) {
+    const NSUInteger last=(p.instance_streams & (1u<<s)) ? d.instance_count-1 : maximum;
+    if (last > (std::numeric_limits<NSUInteger>::max() - p.attribute_extents[s]) / p.strides[s] ||
+        !ViewValid(d.vertices[s], last * p.strides[s] + p.attribute_extents[s]))
       return Error(error, "Invalid Metal vertex stream range");
   }
   uint32_t texture_masks[2]{}, sampler_masks[2]{};
@@ -242,7 +263,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     [e setVertexBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
     [e setFragmentBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
   }
-  for (NSUInteger s = 0; s < 16; ++s) if (p.vertex_streams & (1u << s))
+  for (NSUInteger s = 0; s < kGameVertexStreamCount; ++s) if (p.vertex_streams & (1u << s))
     [e setVertexBuffer:d.vertices[s].buffer offset:d.vertices[s].offset atIndex:s + 8];
   for (const auto& b : d.textures) {
     if (b.stage == Stage::Vertex) [e setVertexTexture:b.texture atIndex:b.index];
@@ -291,25 +312,34 @@ bool Receipt::Wait(std::string& error) const {
 }
 bool Receipt::Completed() const { return buffer_ && buffer_.status == MTLCommandBufferStatusCompleted; }
 double Receipt::GpuMilliseconds() const { return Completed() ? (buffer_.GPUEndTime - buffer_.GPUStartTime) * 1000 : 0; }
-std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error) {
-  if (!Ready() || !t || t.textureType != MTLTextureType2D || t.sampleCount != 1 ||
-      t.pixelFormat != MTLPixelFormatRGBA8Unorm || t.width > 16384 || t.height > 16384) {
+std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
+    NSUInteger level, NSUInteger slice, NSUInteger depth_plane) {
+  const auto type=t.textureType;
+  const bool cube=type==MTLTextureTypeCube || type==MTLTextureTypeCubeArray;
+  const bool array=type==MTLTextureType2DArray || type==MTLTextureTypeCubeArray;
+  const bool volume=type==MTLTextureType3D;
+  const NSUInteger slices=cube ? t.arrayLength*6 : array ? t.arrayLength : 1;
+  if (!Ready() || !t || (!cube && !array && !volume && type!=MTLTextureType2D) || t.sampleCount != 1 ||
+      t.pixelFormat != MTLPixelFormatRGBA8Unorm || t.width > 16384 || t.height > 16384 ||
+      level>=t.mipmapLevelCount || slice>=slices ||
+      depth_plane>=(volume ? std::max(NSUInteger(1),t.depth>>level) : 1)) {
     error = "Unsupported direct Metal validation readback"; return {};
   }
-  const NSUInteger stride = (t.width * 4 + 255) & ~NSUInteger(255);
-  auto out = [Device() newBufferWithLength:stride * t.height options:MTLResourceStorageModeShared];
+  const NSUInteger width=std::max(NSUInteger(1),t.width>>level),height=std::max(NSUInteger(1),t.height>>level);
+  const NSUInteger stride = (width * 4 + 255) & ~NSUInteger(255);
+  auto out = [Device() newBufferWithLength:stride * height options:MTLResourceStorageModeShared];
   auto command = [impl_->queue commandBuffer];
   if (!out || !command) { error = "Metal readback allocation failed"; return {}; }
   auto blit = [command blitCommandEncoder];
   if (!blit) { error = "Metal readback encoder failed"; return {}; }
-  [blit copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
-      sourceSize:MTLSizeMake(t.width,t.height,1) toBuffer:out destinationOffset:0
-      destinationBytesPerRow:stride destinationBytesPerImage:stride*t.height];
+  [blit copyFromTexture:t sourceSlice:slice sourceLevel:level sourceOrigin:MTLOriginMake(0,0,depth_plane)
+      sourceSize:MTLSizeMake(width,height,1) toBuffer:out destinationOffset:0
+      destinationBytesPerRow:stride destinationBytesPerImage:stride*height];
   [blit endEncoding]; [command commit]; [command waitUntilCompleted];
   if (command.status != MTLCommandBufferStatusCompleted) { error = Description(command.error); return {}; }
-  std::vector<uint8_t> bytes(t.width * t.height * 4);
-  for (NSUInteger y = 0; y < t.height; ++y)
-    memcpy(bytes.data() + y * t.width * 4, static_cast<const uint8_t*>(out.contents) + y * stride, t.width * 4);
+  std::vector<uint8_t> bytes(width * height * 4);
+  for (NSUInteger y = 0; y < height; ++y)
+    memcpy(bytes.data() + y * width * 4, static_cast<const uint8_t*>(out.contents) + y * stride, width * 4);
   return bytes;
 }
 }

@@ -8,8 +8,13 @@ if(NOT METAL_LIBRARIES OR NOT IS_DIRECTORY "${METAL_LIBRARIES}")
 endif()
 add_executable(Theft4MetalLab MACOSX_BUNDLE app.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm"
+  "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp"
+  "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm"
   "${ROOT}/ios/tests/direct_metal_probe.mm")
-target_compile_options(Theft4MetalLab PRIVATE -fobjc-arc)
+target_compile_options(Theft4MetalLab PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+set(METAL_SOURCE_REVISION "development" CACHE STRING "Source commit represented by this validation app")
+target_compile_definitions(Theft4MetalLab PRIVATE "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
 target_include_directories(Theft4MetalLab PRIVATE "${ROOT}/ios/bridge" "${ROOT}/ios/tests"
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_link_libraries(Theft4MetalLab PRIVATE "-framework UIKit" "-framework Foundation"
@@ -24,6 +29,10 @@ set_target_properties(Theft4MetalLab PROPERTIES
   XCODE_ATTRIBUTE_SKIP_INSTALL NO
   XCODE_ATTRIBUTE_INSTALL_PATH "/Applications"
   XCODE_ATTRIBUTE_ENABLE_BITCODE NO)
+if(NOT EXISTS "${METAL_LIBRARIES}/manifest.tsv")
+  message(FATAL_ERROR "The offline Metal manifest must accompany the libraries")
+endif()
 file(GLOB libraries CONFIGURE_DEPENDS "${METAL_LIBRARIES}/*.metallib")
+list(APPEND libraries "${METAL_LIBRARIES}/manifest.tsv")
 target_sources(Theft4MetalLab PRIVATE ${libraries})
 set_source_files_properties(${libraries} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/MetalShaders")

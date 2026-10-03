@@ -51,6 +51,7 @@
         self.text.text=[text stringByAppendingFormat:@"\nDirect Metal presentation: %@%@",
             shown ? @"Passed" : @"Failed",failure ? [@" — " stringByAppendingString:failure] : @""];
         NSMutableDictionary* final=[report mutableCopy];final[@"onscreen_metal_presentation"]=@(shown);
+        final[@"app_build"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
         final[@"presentation_failure"]=failure ?: @"";
         final[@"passed"]=@([report[@"passed"] boolValue] && shown);
         NSData* json=[NSJSONSerialization dataWithJSONObject:final options:NSJSONWritingPrettyPrinted error:nil];

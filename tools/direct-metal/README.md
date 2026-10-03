@@ -10,7 +10,8 @@ is linked into a separate **Theft4 Metal Lab**, with no Vulkan or MoltenVK runti
 Metal render passes and draws. It supports pipeline/vertex declarations, shader
 constants, textures and samplers, indexed and non-indexed draws, depth/blending,
 MSAA resolve, multiple passes, GPU completion receipts, bounded frame leases,
-and CAMetalLayer drawable presentation. Aborted and completed frames reclaim
+depth-only pipelines, all 17 game vertex streams, per-instance inputs, and
+CAMetalLayer drawable presentation. Aborted and completed frames reclaim
 their slots. Normal draws do not perform CPU readback.
 
 `metal_shader_export` translates the exact embedded stock SPIR-V corpus offline.
@@ -27,6 +28,21 @@ slots, Metal indices, stage inputs and shader variants. Shaders with unknown
 fetches, incompatible layouts or excessive bindings reject. Runtime argument
 buffers and global Vulkan descriptor heaps are not required.
 
+`theft4_metal_shader_catalog` and `theft4_metal_shader_store` provide the game's
+hash/stage/variant lookup and fetch-slot interface. The complete manifest is
+checked against the embedded stock cache, including masks and shader stages.
+Library reads and function creation happen on cache misses. Specialization
+values contain only bits used by the shader. Sparse fetch slots retain their
+ordering, and malformed metadata or incomplete binding transactions reject.
+
+`theft4_metal_resources` realizes CPU-converted, immutable source generations.
+Buffers and sampled textures reuse their Metal objects while the source owner,
+generation and conversion identity agree. Texture shape, swizzle and every
+mip/slice/pitch range are checked. Retirement uses weak CPU owners; submitted
+Metal command buffers keep their GPU resources alive. The cache does not own
+mutable render targets or resolve aliases. These initial immutable uploads use
+shared storage; private staging and upload batching belong in the frame adapter.
+
 The stock corpus contains 1,356 shaders and 706 additional late variants:
 **2,062 iOS Metal libraries compile successfully**, using Metal 2.4 with an iOS 16
 shader deployment target. Actual maximum sampler count is eight per stage.
@@ -35,19 +51,23 @@ validation. The test app itself uses the project's iOS 26 deployment target.
 
 ## Validation
 
-The Mac M1 Max passes 16 checks: vertex color, texture tint/orientation, 16/32-bit
+The Mac M1 Max passes 20 checks: vertex color, texture tint/orientation, 16/32-bit
 indexed draws and offsets, depth occlusion, blending, late alpha discard, output
 scaling/clamping order, MSAA resolve, Xenos alpha coverage, ASTC sampling,
 render-target sampling, VS/PS constant banks, packet admission/lifetimes and the
-device BC capability gate. Every pixel is compared to an independent CPU oracle
-with a one-byte UNORM tolerance. Old Vulkan descriptor fields are deliberately
+device BC capability gate. The additional checks cover runtime shader caching,
+immutable resource reuse, depth-only passes and per-instance stream 16. Rendering
+pixels are compared to independent CPU oracles with at most a one-byte UNORM
+tolerance. Cached RGBA/ASTC mip sampling and 19 cube/array/volume planes are
+verified through the GPU. Old Vulkan descriptor fields are deliberately
 poisoned. Real single-slot and sparse-slot 0/15 shader tests verify that only
 descriptor operands change and malformed/unreflected inputs reject.
 
 Metal Lab additionally renders a game-shader preview directly into its drawable,
 without a CPU image upload. Reports and raw pixel images are saved in its own
 Files container. M5 and A12Z installs are staged; hardware runs require the
-devices unlocked on Home. The existing game apps, saves and prepared ASTC cache
+devices unlocked on Home; the latest version 3 is not yet installed. The existing
+game apps, saves and prepared ASTC cache
 are separate. No gameplay FPS improvement has been established for this backend.
 
 ## Reproduce
@@ -60,6 +80,7 @@ python3 -m cmake -S tools/direct-metal -B out/direct-metal/build -DCMAKE_BUILD_T
 python3 -m cmake --build out/direct-metal/build --parallel 6
 out/direct-metal/build/metal_descriptor_contract_test
 out/direct-metal/build/metal_shader_export out/direct-metal/corpus
+out/direct-metal/build/metal_shader_catalog_test out/direct-metal/corpus/manifest.tsv
 python3 tools/direct-metal/compile_shaders.py out/direct-metal/corpus out/direct-metal/ios --platform ios
 ```
 
@@ -69,6 +90,10 @@ accepts `--compiler-directory`. For the small validation app, export with filter
 the iOS toolchain and `METAL_LIBRARIES` pointing to that directory. Mac GPU checks
 use the same exporter and `--platform macos` libraries, followed by `metal_probe
 libraries output`. The host sandbox may require GPU access for that command.
+Set `METAL_CATALOG_MANIFEST` when configuring to include the full-corpus metadata
+test in CTest. For provenance, `METAL_SOURCE_REVISION` records the source commit
+in GPU reports; device reports also record the app build. Bundled libraries must
+include their matching `manifest.tsv`.
 
 ## Next integration boundary
 
@@ -89,7 +114,8 @@ libraries output`. The host sandbox may require GPU access for that command.
    GPU time, memory and image correctness. Keep build 95 available for comparison.
 
 The renderer currently admits a conservative set of vertex formats and per-vertex
-streams, uses complete constant-bank bounds, and trusts the adapter's validated
+or per-instance streams with step rate one, uses complete constant-bank bounds,
+and trusts the adapter's validated
 index maximum. These boundaries must be expanded before enabling it for all game
 frames. Removing the API translator does not remove the game's CPU work or GPU
 shading workload; the gameplay gain needs measurement.

@@ -172,5 +172,5 @@ int main(int argc, char** argv) {
     convert(e.lateSpirvOffset, e.lateSpirvSize, "-late");
   }
   std::cout << "Metal sources accepted=" << accepted << " rejected=" << rejected << '\n';
-  return accepted ? 0 : 1;
+  return accepted && !rejected ? 0 : 1;
 }

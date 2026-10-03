@@ -43,6 +43,9 @@ struct Prepared {
 };
 
 std::string TextureCacheKey(const Input& input);
+// Read cache storage accounting before gameplay. No payloads are decoded or
+// converted; this avoids enumerating a prepared installation on its first miss.
+bool PrimeRuntimeCache(const std::filesystem::path& root, std::string* error);
 // Persistent, bounded budget for a prepared installation. No eviction occurs.
 bool SetPreparationCacheBudget(const std::filesystem::path& root, uint64_t bytes,
                                std::string* error);

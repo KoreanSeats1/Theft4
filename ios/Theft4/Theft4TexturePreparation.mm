@@ -60,6 +60,22 @@ NSDictionary *Dictionary(const Json& value) {
         std::chrono::steady_clock::now() - started).count();
     NSLog(@"[texture-preparation] saved cache verified: %lu textures in %lld ms; no conversion required",
           (unsigned long)index.size(), (long long)elapsed);
+    // The first new runtime texture must not enumerate tens of thousands of
+    // prepared files on the render thread. Start accounting while the launcher
+    // is visible. Cache writes/deletion share its lock, so racing Play is safe.
+    static dispatch_once_t primeOnce;
+    dispatch_once(&primeOnce, ^{
+      const auto root = Root(support);
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const auto begin = std::chrono::steady_clock::now();
+        std::string error;
+        const bool ready = theft4::astc::PrimeRuntimeCache(root, &error);
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - begin).count();
+        NSLog(@"[texture-preparation] runtime cache accounting ready=%d in %lld ms %s",
+              ready, (long long)milliseconds, error.c_str());
+      });
+    });
     return YES;
   } catch (...) { return NO; }
 }

@@ -115,6 +115,23 @@ explicit saved choice, and requires a full restart when changed. It is
 independent of ASTC conversion and does not invalidate the prepared cache.
 Whether it contributes to the A12Z's reported 8 FPS remains unmeasured.
 
+After successful completion verification, the ASTC launcher now primes cache
+storage accounting once per process on a utility queue. Previously the first
+new runtime texture could enumerate about 50,000 prepared files while saving
+its result on the renderer thread. The latest capture included three keys
+outside the static manifest; its first encode-and-save span was 4,761 ms,
+versus 7 and 18 ms for the next two. This is consistent with cold accounting,
+but the old observation log does not separate encoding from cache-write time.
+Priming reads file metadata only, preserves the cache budget, and performs no
+texture conversion. A racing cache write or confirmed deletion uses the same
+mutex. This work is reached only by the ASTC preparation flow, so ordinary
+BC-capable launches do not run it. No performance improvement is claimed until
+another runtime cache miss is observed on device.
+
+The user put integration with the main build on hold on 2026-10-02. Changes
+remain on the isolated ASTC branch; the main checkout and its ongoing renderer
+work must not be modified as part of this follow-up.
+
 ## Build and test
 
 Configure a Release iOS build from the isolated branch with the same headless

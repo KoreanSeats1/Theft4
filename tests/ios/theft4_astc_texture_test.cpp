@@ -147,6 +147,20 @@ int main() {
   Check(PrepareAstc4x4(input, root, after_delete, &error) &&
             !after_delete.cache_hit && after_delete.cache_persisted,
         "Deleted cache could not be prepared again");
+  // Existing prepared files must count against the storage bound even when
+  // accounting is primed in the launcher before the first runtime cache miss.
+  const auto primed_root = root / "prime-fixture";
+  Check(!PrimeRuntimeCache(primed_root, &error),
+        "Missing cache directory incorrectly reported accounting ready");
+  fs::create_directories(primed_root / "astc-v1");
+  const auto existing = primed_root / "astc-v1" / "existing.bin";
+  std::ofstream(existing) << "fixture";
+  fs::resize_file(existing, 1024ull * 1024 * 1024);
+  Check(PrimeRuntimeCache(primed_root, &error), "Launcher cache accounting failed");
+  Prepared over_budget;
+  Check(PrepareAstc4x4(input, primed_root, over_budget, &error) &&
+            !over_budget.cache_persisted && fs::file_size(existing) == 1024ull * 1024 * 1024,
+        "Primed cache ignored existing storage or modified prepared files");
   fs::remove_all(root);
   std::cout << "ASTC texture conversion and cache: PASS\n";
 }

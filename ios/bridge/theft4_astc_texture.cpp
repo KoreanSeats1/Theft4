@@ -317,6 +317,18 @@ bool WriteCache(const std::filesystem::path& path, const Input& input,
 
 std::string TextureCacheKey(const Input& input) { return CacheKey(input); }
 
+bool PrimeRuntimeCache(const std::filesystem::path& root, std::string* error) {
+  std::lock_guard lock(cache_mutex);
+  bool valid = false;
+  try {
+    valid = CacheAccounting(root / "astc-v1").valid;
+  } catch (const std::filesystem::filesystem_error&) {
+    cache_usage[(root / "astc-v1").string()].valid = false;
+  }
+  if (!valid) SetError(error, "Cannot inspect texture cache storage.");
+  return valid;
+}
+
 bool SetPreparationCacheBudget(const std::filesystem::path& root, uint64_t bytes,
                                std::string* error) {
   if (bytes < kMaxCacheBytes || bytes > kMaximumPreparationBudget) {

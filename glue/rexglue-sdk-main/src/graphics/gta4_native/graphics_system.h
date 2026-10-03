@@ -1725,6 +1725,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t maxVertexInputBindingStride = 0, maxVertexInputAttributeOffset = 0;
     uint32_t minVertexInputBindingStrideAlignment = 1;
     bool vertex_attribute_beyond_stride = false, constant_alpha_color_blend = false;
+    bool shader_clip_distance = false, depth_clamp = false, negative_depth_clip = false;
+    bool separate_stencil_mask_ref = false, fill_mode_non_solid = false;
+    bool independent_blend = false, triangle_fans = false, moltenvk_primitive_restart = false;
+    uint32_t attachmentless_samples = 0;
   };
   struct NativeShaderSelection {
     const NativeShader* shader = nullptr;
@@ -1732,6 +1736,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     uint32_t specialization_constants_mask = 0, used_texture_mask = 0;
     const char* filename = "<none>";
   };
+  bool PrepareNativePipelineKey(
+      const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
+      uint32_t primitive_type, const NativeRenderingTarget& target,
+      uint32_t user_pointer_stride, bool primitive_restart_enable,
+      const NativePipelineCapabilities& capabilities, const ShaderOverrideSelection& shader_selection,
+      NativePipelineKey& key, std::string& error) const;
   struct NativePipelineDescription;
   std::unique_ptr<NativePipelineDescription> PrepareNativePipelineDescription(
       const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,

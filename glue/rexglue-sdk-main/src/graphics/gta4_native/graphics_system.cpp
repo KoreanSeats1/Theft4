@@ -21894,6 +21894,245 @@ Gta4NativeGraphicsSystem::PrepareNativePipelineDescription(
   return description;
 }
 
+bool Gta4NativeGraphicsSystem::PrepareNativePipelineKey(
+    const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
+    uint32_t primitive_type, const NativeRenderingTarget& target,
+    uint32_t user_pointer_stride, bool primitive_restart_enable,
+    const NativePipelineCapabilities& capabilities, const ShaderOverrideSelection& shader_selection,
+    NativePipelineKey& key, std::string& error) const {
+  const auto reject = [&](const char* reason) { error = reason; return false; };
+  const bool has_color_target = target.color_attachment_mask != 0;
+  const bool intentional_depth_only = !state.pixel_shader_resource &&
+      NativeMissingPixelShaderIsIntentional(state.pixel_shader,
+          target.depth_stencil_attachment_active && target.depth_format != VK_FORMAT_UNDEFINED,
+          has_color_target && target.color_write_mask != 0);
+  if (!state.vertex_shader_resource || !state.vertex_declaration_resource ||
+      (!state.pixel_shader_resource && !intentional_depth_only)) return reject("missing-cpu-pipeline-state");
+  const NativeCullRasterState cull_state =
+      DecodeNativeCullRasterState(fixed_function_state.cull_mode);
+  if (!cull_state.valid()) {
+    return reject("unsupported-cull-mode");
+  }
+  if (fixed_function_state.polygon_mode == uint32_t(NativePolygonMode::kInvalid)) {
+    return reject("unsupported-polygon-mode");
+  }
+  if (!fixed_function_state.depth_bias_representable) {
+    return reject("two-sided-depth-bias-unrepresentable");
+  }
+  if (HasUnsupportedNativeUserClipPlanes(fixed_function_state.clip_control)) {
+    return reject("unsupported-user-clip-plane-state");
+  }
+  if (fixed_function_state.user_clip_plane_enable_mask &&
+      !capabilities.shader_clip_distance) {
+    return reject("shader-clip-distance-unsupported");
+  }
+  if (fixed_function_state.depth_clamp_enable && !capabilities.depth_clamp) {
+    return reject("depth-clamp-unsupported");
+  }
+  if (fixed_function_state.negative_one_to_one_clip_space &&
+      !capabilities.negative_depth_clip) {
+    return reject("negative-one-to-one-depth-clip-unsupported");
+  }
+  const NativeSampleMaskSelection sample_mask =
+      SelectNativePipelineSampleMask(fixed_function_state.sample_mask,
+                                     uint32_t(target.guest_samples), uint32_t(target.samples));
+  if (!sample_mask.representable) {
+    return reject("guest-sample-mask-or-topology-unrepresentable");
+  }
+  const NativeStencilMaskRefState front_stencil_mask_ref = {
+      fixed_function_state.stencil_reference,
+      fixed_function_state.stencil_mask,
+      fixed_function_state.stencil_write_mask,
+  };
+  const NativeStencilMaskRefState back_stencil_mask_ref = {
+      fixed_function_state.back_stencil_reference,
+      fixed_function_state.back_stencil_mask,
+      fixed_function_state.back_stencil_write_mask,
+  };
+  const NativeStencilMaskRefSelection stencil_mask_ref = SelectNativeStencilMaskRef(
+      fixed_function_state.two_sided_stencil != 0,
+      capabilities.separate_stencil_mask_ref,
+      fixed_function_state.cull_mode, front_stencil_mask_ref, back_stencil_mask_ref);
+  if (fixed_function_state.stencil_enable && !stencil_mask_ref.representable) {
+    return reject("stencil-mask-reference-unrepresentable");
+  }
+
+  NativePolygonMode effective_polygon_mode =
+      NativePolygonMode(fixed_function_state.polygon_mode);
+  if (effective_polygon_mode == NativePolygonMode::kLine &&
+      !capabilities.fill_mode_non_solid) {
+    static std::atomic<uint64_t> line_mode_fallback_count{0};
+    const uint64_t count = ++line_mode_fallback_count;
+    if (count <= 16 || !(count % 1024)) {
+      REXLOG_WARN(
+          "gta4-native: non-solid polygon mode unsupported; using fill count={} vs={:016X} "
+          "ps={:016X}",
+          count, state.vertex_shader_resource ? state.vertex_shader_resource->hash : 0,
+          state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0);
+    }
+    effective_polygon_mode = NativePolygonMode::kFill;
+  }
+
+  if (!capabilities.independent_blend) {
+    bool first_blend_found = false;
+    bool first_blend_enabled = false;
+    NativeBlendControlState first_blend{};
+    for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
+      if ((target.color_attachment_mask & (1u << target_index)) == 0) {
+        continue;
+      }
+      const NativeBlendControlState blend =
+          DecodeNativeBlendControl(fixed_function_state.blend_controls[target_index]);
+      const bool blend_enabled = blend != kNativeBlendControlIdentity;
+      if (!first_blend_found) {
+        first_blend = blend;
+        first_blend_enabled = blend_enabled;
+        first_blend_found = true;
+      } else if (blend_enabled != first_blend_enabled || (blend_enabled && blend != first_blend)) {
+        return reject("independent-blend-unsupported");
+      }
+    }
+  }
+
+  const bool user_pointer = user_pointer_stride != 0;
+  const VkPrimitiveTopology topology = ConvertPrimitiveTopology(primitive_type);
+  if (topology == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) {
+    return reject("unsupported-topology");
+  }
+  // The cached vertex interface has no PointSize, and the native command
+  // stream does not yet capture Xenos point dimensions or sprite UV controls.
+  // A one-pixel substitute would be legal only with a different shader/device
+  // contract and would still lose the guest's point-sprite behavior.
+  if (topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST) {
+    return reject("missing-native-xenos-point-sprite-translation");
+  }
+  if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN &&
+      !capabilities.triangle_fans) {
+    return reject("triangle-fans-unsupported");
+  }
+  if (!target.color_attachment_mask && !target.depth_stencil_attachment_active &&
+      !(capabilities.attachmentless_samples & target.samples)) {
+    return reject("attachmentless-sample-count-unsupported");
+  }
+  key = {};
+  key.vertex_shader_hash = state.vertex_shader_resource->hash;
+  key.pixel_shader_hash = state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0;
+  key.shader_variant_key = shader_selection.variant_key;
+  key.vertex_declaration_hash = state.vertex_declaration_resource->content_hash;
+  key.topology = topology;
+  key.color_formats = {};
+  for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
+    if ((target.color_attachment_mask & (1u << target_index)) != 0) {
+      key.color_formats[target_index] = target.color_formats[target_index];
+    }
+  }
+  key.depth_format =
+      target.depth_stencil_attachment_active ? target.depth_format : VK_FORMAT_UNDEFINED;
+  key.samples = target.samples;
+  key.user_pointer = user_pointer;
+  key.indexed_descriptors = native_descriptor_backend_ == NativeDescriptorBackend::kIndexed;
+  key.depth_enable = fixed_function_state.depth_enable;
+  key.depth_function = fixed_function_state.depth_function;
+  key.depth_write_enable = fixed_function_state.depth_write_enable;
+  key.depth_clamp_enable = fixed_function_state.depth_clamp_enable;
+  key.negative_one_to_one_clip_space = fixed_function_state.negative_one_to_one_clip_space;
+  key.cull_mode = fixed_function_state.cull_mode;
+  key.polygon_mode = uint32_t(effective_polygon_mode);
+  key.blend_enable_mask = 0;
+  key.blend_controls = fixed_function_state.blend_controls;
+  key.source_blend = fixed_function_state.source_blend;
+  key.destination_blend = fixed_function_state.destination_blend;
+  key.blend_operation = fixed_function_state.blend_operation;
+  key.source_blend_alpha = fixed_function_state.source_blend_alpha;
+  key.destination_blend_alpha = fixed_function_state.destination_blend_alpha;
+  key.blend_operation_alpha = fixed_function_state.blend_operation_alpha;
+  key.alpha_test_enable = fixed_function_state.alpha_test_enable;
+  key.alpha_function = fixed_function_state.alpha_function;
+  key.alpha_to_mask_enable = fixed_function_state.alpha_to_mask_enable;
+  key.stencil_enable = fixed_function_state.stencil_enable;
+  key.two_sided_stencil = fixed_function_state.two_sided_stencil;
+  key.stencil_fail = fixed_function_state.stencil_fail;
+  key.stencil_depth_fail = fixed_function_state.stencil_depth_fail;
+  key.stencil_pass = fixed_function_state.stencil_pass;
+  key.stencil_function = fixed_function_state.stencil_function;
+  key.stencil_mask = fixed_function_state.stencil_mask;
+  key.stencil_write_mask = fixed_function_state.stencil_write_mask;
+  key.ccw_stencil_fail = fixed_function_state.ccw_stencil_fail;
+  key.ccw_stencil_depth_fail = fixed_function_state.ccw_stencil_depth_fail;
+  key.ccw_stencil_pass = fixed_function_state.ccw_stencil_pass;
+  key.ccw_stencil_function = fixed_function_state.ccw_stencil_function;
+  key.color_write_mask = target.color_write_mask;
+  const uint32_t active_color_target_mask = target.color_attachment_mask;
+  for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
+    if ((active_color_target_mask & (1u << target_index)) == 0) {
+      key.blend_controls[target_index] = 0;
+    }
+  }
+  key.blend_enable_mask = NativeBlendEnableMask(key.blend_controls, active_color_target_mask);
+  const NativeBlendControlState keyed_primary_blend =
+      DecodeNativeBlendControl(key.blend_controls[0]);
+  key.source_blend = keyed_primary_blend.source_color;
+  key.destination_blend = keyed_primary_blend.destination_color;
+  key.blend_operation = keyed_primary_blend.color_operation;
+  key.source_blend_alpha = keyed_primary_blend.source_alpha;
+  key.destination_blend_alpha = keyed_primary_blend.destination_alpha;
+  key.blend_operation_alpha = keyed_primary_blend.alpha_operation;
+  key.sample_mask = sample_mask.host_mask;
+  if (!SelectNativeBlendConstants(
+          key.blend_controls, NativeBlendWriteMask(key.color_write_mask, key.color_formats),
+          fixed_function_state.blend_constants,
+          capabilities.constant_alpha_color_blend).representable) {
+    return reject("constant-alpha-color-blend-unrepresentable");
+  }
+  key.depth_bias_enable = fixed_function_state.depth_bias_enable;
+  key.primitive_restart_enable = NativeEffectivePrimitiveRestart(
+      topology, primitive_restart_enable,
+      capabilities.moltenvk_primitive_restart);
+  if (user_pointer) {
+    key.vertex_strides[0] = user_pointer_stride;
+  } else {
+    std::array<bool, kVertexStreamCount> required_streams{};
+    if (!GetRequiredVertexStreams(state, required_streams)) {
+      return reject("vertex-stream-requirements");
+    }
+    for (uint32_t stream = 0; stream < kVertexStreamCount; ++stream) {
+      if (required_streams[stream]) {
+        key.vertex_strides[stream] = state.vertex_streams[stream].stride;
+      }
+    }
+  }
+  // These masks are set dynamically before every draw and must not multiply
+  // otherwise identical PSOs. State disabled by its controlling enable bit is
+  // likewise semantically irrelevant to the created pipeline.
+  key.stencil_mask = 0;
+  key.stencil_write_mask = 0;
+  if (!key.depth_enable) {
+    key.depth_function = 0;
+    key.depth_write_enable = 0;
+  }
+  if (!key.alpha_test_enable) {
+    key.alpha_function = 0;
+  }
+  if (!key.stencil_enable) {
+    key.two_sided_stencil = 0;
+    key.stencil_fail = 0;
+    key.stencil_depth_fail = 0;
+    key.stencil_pass = 0;
+    key.stencil_function = 0;
+    key.ccw_stencil_fail = 0;
+    key.ccw_stencil_depth_fail = 0;
+    key.ccw_stencil_pass = 0;
+    key.ccw_stencil_function = 0;
+  } else if (!key.two_sided_stencil) {
+    key.ccw_stencil_fail = 0;
+    key.ccw_stencil_depth_fail = 0;
+    key.ccw_stencil_pass = 0;
+    key.ccw_stencil_function = 0;
+  }
+  error.clear();
+  return true;
+}
+
 VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
     uint32_t primitive_type, const NativeRenderingTarget& target, uint32_t user_pointer_stride,
@@ -21975,229 +22214,29 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   if (!vulkan_device) {
     return reject("missing-vulkan-device");
   }
-  const NativeCullRasterState cull_state =
-      DecodeNativeCullRasterState(fixed_function_state.cull_mode);
-  if (!cull_state.valid()) {
-    return reject("unsupported-cull-mode");
-  }
-  if (fixed_function_state.polygon_mode == uint32_t(NativePolygonMode::kInvalid)) {
-    return reject("unsupported-polygon-mode");
-  }
-  if (!fixed_function_state.depth_bias_representable) {
-    return reject("two-sided-depth-bias-unrepresentable");
-  }
-  if (HasUnsupportedNativeUserClipPlanes(fixed_function_state.clip_control)) {
-    return reject("unsupported-user-clip-plane-state");
-  }
-  if (fixed_function_state.user_clip_plane_enable_mask &&
-      !vulkan_device->properties().shaderClipDistance) {
-    return reject("shader-clip-distance-unsupported");
-  }
-  if (fixed_function_state.depth_clamp_enable && !vulkan_device->properties().depthClamp) {
-    return reject("depth-clamp-unsupported");
-  }
-  if (fixed_function_state.negative_one_to_one_clip_space &&
-      !vulkan_device->properties().depthClipControl) {
-    return reject("negative-one-to-one-depth-clip-unsupported");
-  }
-  const NativeSampleMaskSelection sample_mask =
-      SelectNativePipelineSampleMask(fixed_function_state.sample_mask,
-                                     uint32_t(target.guest_samples), uint32_t(target.samples));
-  if (!sample_mask.representable) {
-    return reject("guest-sample-mask-or-topology-unrepresentable");
-  }
-  const NativeStencilMaskRefState front_stencil_mask_ref = {
-      fixed_function_state.stencil_reference,
-      fixed_function_state.stencil_mask,
-      fixed_function_state.stencil_write_mask,
-  };
-  const NativeStencilMaskRefState back_stencil_mask_ref = {
-      fixed_function_state.back_stencil_reference,
-      fixed_function_state.back_stencil_mask,
-      fixed_function_state.back_stencil_write_mask,
-  };
-  const NativeStencilMaskRefSelection stencil_mask_ref = SelectNativeStencilMaskRef(
-      fixed_function_state.two_sided_stencil != 0,
-      vulkan_device->properties().separateStencilMaskRef,
-      fixed_function_state.cull_mode, front_stencil_mask_ref, back_stencil_mask_ref);
-  if (fixed_function_state.stencil_enable && !stencil_mask_ref.representable) {
-    return reject("stencil-mask-reference-unrepresentable");
-  }
-
-  NativePolygonMode effective_polygon_mode =
-      NativePolygonMode(fixed_function_state.polygon_mode);
-  if (effective_polygon_mode == NativePolygonMode::kLine &&
-      !vulkan_device->properties().fillModeNonSolid) {
-    static std::atomic<uint64_t> line_mode_fallback_count{0};
-    const uint64_t count = ++line_mode_fallback_count;
-    if (count <= 16 || !(count % 1024)) {
-      REXLOG_WARN(
-          "gta4-native: non-solid polygon mode unsupported; using fill count={} vs={:016X} "
-          "ps={:016X}",
-          count, state.vertex_shader_resource ? state.vertex_shader_resource->hash : 0,
-          state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0);
-    }
-    effective_polygon_mode = NativePolygonMode::kFill;
-  }
-
-  if (!vulkan_device->properties().independentBlend) {
-    bool first_blend_found = false;
-    bool first_blend_enabled = false;
-    NativeBlendControlState first_blend{};
-    for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
-      if ((target.color_attachment_mask & (1u << target_index)) == 0) {
-        continue;
-      }
-      const NativeBlendControlState blend =
-          DecodeNativeBlendControl(fixed_function_state.blend_controls[target_index]);
-      const bool blend_enabled = blend != kNativeBlendControlIdentity;
-      if (!first_blend_found) {
-        first_blend = blend;
-        first_blend_enabled = blend_enabled;
-        first_blend_found = true;
-      } else if (blend_enabled != first_blend_enabled || (blend_enabled && blend != first_blend)) {
-        return reject("independent-blend-unsupported");
-      }
-    }
-  }
-
-  const bool user_pointer = user_pointer_stride != 0;
-  const VkPrimitiveTopology topology = ConvertPrimitiveTopology(primitive_type);
-  if (topology == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) {
-    return reject("unsupported-topology");
-  }
-  // The cached vertex interface has no PointSize, and the native command
-  // stream does not yet capture Xenos point dimensions or sprite UV controls.
-  // A one-pixel substitute would be legal only with a different shader/device
-  // contract and would still lose the guest's point-sprite behavior.
-  if (topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST) {
-    return reject("missing-native-xenos-point-sprite-translation");
-  }
-  if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN &&
-      vulkan_device->properties().portabilitySubset &&
-      !vulkan_device->properties().triangleFans) {
-    return reject("triangle-fans-unsupported");
-  }
-  if (!target.color_attachment_mask && !target.depth_stencil_attachment_active &&
-      !(vulkan_device->properties().framebufferNoAttachmentsSampleCounts & target.samples)) {
-    return reject("attachmentless-sample-count-unsupported");
-  }
-  NativePipelineKey key{};
-  key.vertex_shader_hash = state.vertex_shader_resource->hash;
-  key.pixel_shader_hash = state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0;
-  key.shader_variant_key = shader_override_selection.variant_key;
-  key.vertex_declaration_hash = state.vertex_declaration_resource->content_hash;
-  key.topology = topology;
-  key.color_formats = {};
-  for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
-    if ((target.color_attachment_mask & (1u << target_index)) != 0) {
-      key.color_formats[target_index] = target.color_formats[target_index];
-    }
-  }
-  key.depth_format =
-      target.depth_stencil_attachment_active ? target.depth_format : VK_FORMAT_UNDEFINED;
-  key.samples = target.samples;
-  key.user_pointer = user_pointer;
-  key.indexed_descriptors = native_descriptor_backend_ == NativeDescriptorBackend::kIndexed;
-  key.depth_enable = fixed_function_state.depth_enable;
-  key.depth_function = fixed_function_state.depth_function;
-  key.depth_write_enable = fixed_function_state.depth_write_enable;
-  key.depth_clamp_enable = fixed_function_state.depth_clamp_enable;
-  key.negative_one_to_one_clip_space = fixed_function_state.negative_one_to_one_clip_space;
-  key.cull_mode = fixed_function_state.cull_mode;
-  key.polygon_mode = uint32_t(effective_polygon_mode);
-  key.blend_enable_mask = 0;
-  key.blend_controls = fixed_function_state.blend_controls;
-  key.source_blend = fixed_function_state.source_blend;
-  key.destination_blend = fixed_function_state.destination_blend;
-  key.blend_operation = fixed_function_state.blend_operation;
-  key.source_blend_alpha = fixed_function_state.source_blend_alpha;
-  key.destination_blend_alpha = fixed_function_state.destination_blend_alpha;
-  key.blend_operation_alpha = fixed_function_state.blend_operation_alpha;
-  key.alpha_test_enable = fixed_function_state.alpha_test_enable;
-  key.alpha_function = fixed_function_state.alpha_function;
-  key.alpha_to_mask_enable = fixed_function_state.alpha_to_mask_enable;
-  key.stencil_enable = fixed_function_state.stencil_enable;
-  key.two_sided_stencil = fixed_function_state.two_sided_stencil;
-  key.stencil_fail = fixed_function_state.stencil_fail;
-  key.stencil_depth_fail = fixed_function_state.stencil_depth_fail;
-  key.stencil_pass = fixed_function_state.stencil_pass;
-  key.stencil_function = fixed_function_state.stencil_function;
-  key.stencil_mask = fixed_function_state.stencil_mask;
-  key.stencil_write_mask = fixed_function_state.stencil_write_mask;
-  key.ccw_stencil_fail = fixed_function_state.ccw_stencil_fail;
-  key.ccw_stencil_depth_fail = fixed_function_state.ccw_stencil_depth_fail;
-  key.ccw_stencil_pass = fixed_function_state.ccw_stencil_pass;
-  key.ccw_stencil_function = fixed_function_state.ccw_stencil_function;
-  key.color_write_mask = target.color_write_mask;
-  const uint32_t active_color_target_mask = target.color_attachment_mask;
-  for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
-    if ((active_color_target_mask & (1u << target_index)) == 0) {
-      key.blend_controls[target_index] = 0;
-    }
-  }
-  key.blend_enable_mask = NativeBlendEnableMask(key.blend_controls, active_color_target_mask);
-  const NativeBlendControlState keyed_primary_blend =
-      DecodeNativeBlendControl(key.blend_controls[0]);
-  key.source_blend = keyed_primary_blend.source_color;
-  key.destination_blend = keyed_primary_blend.destination_color;
-  key.blend_operation = keyed_primary_blend.color_operation;
-  key.source_blend_alpha = keyed_primary_blend.source_alpha;
-  key.destination_blend_alpha = keyed_primary_blend.destination_alpha;
-  key.blend_operation_alpha = keyed_primary_blend.alpha_operation;
-  key.sample_mask = sample_mask.host_mask;
-  if (!SelectNativeBlendConstants(
-          key.blend_controls, NativeBlendWriteMask(key.color_write_mask, key.color_formats),
-          fixed_function_state.blend_constants,
-          !vulkan_device->properties().portabilitySubset ||
-              vulkan_device->properties().constantAlphaColorBlendFactors).representable) {
-    return reject("constant-alpha-color-blend-unrepresentable");
-  }
-  key.depth_bias_enable = fixed_function_state.depth_bias_enable;
-  key.primitive_restart_enable = NativeEffectivePrimitiveRestart(
-      topology, primitive_restart_enable,
-      vulkan_device->properties().driverID == VK_DRIVER_ID_MOLTENVK);
-  if (user_pointer) {
-    key.vertex_strides[0] = user_pointer_stride;
-  } else {
-    std::array<bool, kVertexStreamCount> required_streams{};
-    if (!GetRequiredVertexStreams(state, required_streams)) {
-      return reject("vertex-stream-requirements");
-    }
-    for (uint32_t stream = 0; stream < kVertexStreamCount; ++stream) {
-      if (required_streams[stream]) {
-        key.vertex_strides[stream] = state.vertex_streams[stream].stride;
-      }
-    }
-  }
-  // These masks are set dynamically before every draw and must not multiply
-  // otherwise identical PSOs. State disabled by its controlling enable bit is
-  // likewise semantically irrelevant to the created pipeline.
-  key.stencil_mask = 0;
-  key.stencil_write_mask = 0;
-  if (!key.depth_enable) {
-    key.depth_function = 0;
-    key.depth_write_enable = 0;
-  }
-  if (!key.alpha_test_enable) {
-    key.alpha_function = 0;
-  }
-  if (!key.stencil_enable) {
-    key.two_sided_stencil = 0;
-    key.stencil_fail = 0;
-    key.stencil_depth_fail = 0;
-    key.stencil_pass = 0;
-    key.stencil_function = 0;
-    key.ccw_stencil_fail = 0;
-    key.ccw_stencil_depth_fail = 0;
-    key.ccw_stencil_pass = 0;
-    key.ccw_stencil_function = 0;
-  } else if (!key.two_sided_stencil) {
-    key.ccw_stencil_fail = 0;
-    key.ccw_stencil_depth_fail = 0;
-    key.ccw_stencil_pass = 0;
-    key.ccw_stencil_function = 0;
-  }
+  const auto& properties = vulkan_device->properties();
+  NativePipelineCapabilities capabilities;
+  capabilities.maxVertexInputAttributes = properties.maxVertexInputAttributes;
+  capabilities.maxVertexInputBindings = properties.maxVertexInputBindings;
+  capabilities.maxVertexInputBindingStride = properties.maxVertexInputBindingStride;
+  capabilities.maxVertexInputAttributeOffset = properties.maxVertexInputAttributeOffset;
+  capabilities.minVertexInputBindingStrideAlignment = properties.minVertexInputBindingStrideAlignment;
+  capabilities.vertex_attribute_beyond_stride = !properties.portabilitySubset || properties.vertexAttributeAccessBeyondStride;
+  capabilities.constant_alpha_color_blend = !properties.portabilitySubset || properties.constantAlphaColorBlendFactors;
+  capabilities.shader_clip_distance = properties.shaderClipDistance;
+  capabilities.depth_clamp = properties.depthClamp;
+  capabilities.negative_depth_clip = properties.depthClipControl;
+  capabilities.separate_stencil_mask_ref = properties.separateStencilMaskRef;
+  capabilities.fill_mode_non_solid = properties.fillModeNonSolid;
+  capabilities.independent_blend = properties.independentBlend;
+  capabilities.triangle_fans = !properties.portabilitySubset || properties.triangleFans;
+  capabilities.attachmentless_samples = properties.framebufferNoAttachmentsSampleCounts;
+  capabilities.moltenvk_primitive_restart = properties.driverID == VK_DRIVER_ID_MOLTENVK;
+  NativePipelineKey key;
+  std::string preparation_error;
+  if (!PrepareNativePipelineKey(state, fixed_function_state, primitive_type, target,
+                               user_pointer_stride, primitive_restart_enable, capabilities,
+                               shader_override_selection, key, preparation_error)) return reject(preparation_error.c_str());
   AddNativeGpuProfileCounter(performance::Counter::kPipelineLookups);
   const auto existing_pipeline = native_pipelines_.find(key);
   const bool pipeline_cache_hit = existing_pipeline != native_pipelines_.end();
@@ -22301,14 +22340,6 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   }
   AddNativeGpuProfileCounter(performance::Counter::kPipelineMisses);
 
-  const auto& properties = vulkan_device->properties();
-  const NativePipelineCapabilities capabilities{
-      properties.maxVertexInputAttributes, properties.maxVertexInputBindings,
-      properties.maxVertexInputBindingStride, properties.maxVertexInputAttributeOffset,
-      properties.minVertexInputBindingStrideAlignment,
-      !properties.portabilitySubset || properties.vertexAttributeAccessBeyondStride,
-      !properties.portabilitySubset || properties.constantAlphaColorBlendFactors};
-  std::string preparation_error;
   auto description = PrepareNativePipelineDescription(
       state, fixed_function_state, key, capabilities, selected_vertex, selected_pixel,
       preparation_error);
@@ -22429,7 +22460,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     REXLOG_INFO(
         "gta4-native-diag: pipeline-create index={} handle={} primitive={} topology={} driver={} "
         "restart={}",
-        native_pipelines_.size(), fmt::ptr(pipeline), primitive_type, uint32_t(topology),
+        native_pipelines_.size(), fmt::ptr(pipeline), primitive_type, uint32_t(key.topology),
         uint32_t(vulkan_device->properties().driverID),
         input_assembly.primitiveRestartEnable == VK_TRUE);
   }

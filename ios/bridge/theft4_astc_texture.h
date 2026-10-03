@@ -42,6 +42,32 @@ struct Prepared {
   bool cache_persisted = false;
 };
 
+// A renderer supplies capabilities and settings. Preparation never queries a
+// graphics device or creates an image, sampler, descriptor or command buffer.
+struct BackendPolicy {
+  bool source_bc_supported = false;
+  bool astc_enabled = false;
+  bool astc_supported = false;
+  bool rgba8_supported = true;
+  std::filesystem::path preparation_root;
+};
+enum class PayloadStorage { OriginalBc, Astc4x4, Rgba8 };
+enum class PreparationOutcome { BcDirect, AstcCacheHit, AstcEncoded, RgbaControl, RgbaFallback };
+struct BackendPayload {
+  PayloadStorage storage = PayloadStorage::OriginalBc;
+  PreparationOutcome outcome = PreparationOutcome::BcDirect;
+  // OriginalBc borrows no pointers and owns no duplicate payload. The caller
+  // retains its immutable source generation; converted data is owned here.
+  Prepared converted;
+  uint64_t elapsed_ms = 0;
+  std::string fallback_reason;
+};
+// Transactional: failure leaves the preceding payload untouched. BC-supported
+// devices with preparation disabled reuse their source without conversion or I/O.
+bool PrepareForBackend(const Input& input, const BackendPolicy& policy,
+                       BackendPayload& output, std::string* error);
+const char* OutcomeName(PreparationOutcome outcome);
+
 std::string TextureCacheKey(const Input& input);
 // Read cache storage accounting before gameplay. No payloads are decoded or
 // converted; this avoids enumerating a prepared installation on its first miss.

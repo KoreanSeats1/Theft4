@@ -103,6 +103,82 @@ int main() {
   Check(!PrepareAstc4x4(volume, root, volume_astc, &error),
         "3D BC texture was incorrectly sent to the 2D ASTC encoder");
 
+  {
+    const auto policy_root = root / "backend-policy";
+    BackendPayload route;
+    BackendPolicy direct{true, false, false, false, policy_root};
+    Check(PrepareForBackend(input, direct, route, &error) && error.empty() &&
+              route.storage == PayloadStorage::OriginalBc && route.converted.payload.empty() &&
+              route.converted.mips.empty() && route.elapsed_ms == 0 && !fs::exists(policy_root),
+          "BC-supported backend converted, copied or touched cache storage");
+    BackendPolicy astc{false, true, true, true, policy_root};
+    Check(PrepareForBackend(input, astc, route, &error) && error.empty() &&
+              route.storage == PayloadStorage::Astc4x4 && route.outcome == PreparationOutcome::AstcEncoded &&
+              route.converted.payload.size() == 32 && route.converted.cache_persisted,
+          "Backend preparation failed to encode the original mip chain");
+    const auto encoded_payload = route.converted.payload;
+    Check(PrepareForBackend(input, astc, route, &error) &&
+              route.outcome == PreparationOutcome::AstcCacheHit && route.converted.cache_hit &&
+              route.converted.payload == encoded_payload,
+          "Backend preparation did not reuse its persisted cache");
+    astc.rgba8_supported = false;
+    Check(PrepareForBackend(input, astc, route, &error) && route.storage == PayloadStorage::Astc4x4 &&
+              route.outcome == PreparationOutcome::AstcCacheHit,
+          "Supported ASTC route incorrectly requires RGBA capability");
+    astc.rgba8_supported = true;
+    const auto cache_file = policy_root / "astc-v1" / (TextureCacheKey(input) + ".bin");
+    const auto persisted_bytes = fs::file_size(cache_file);
+    BackendPolicy unsupported_astc{false, true, false, true, policy_root};
+    Check(PrepareForBackend(input, unsupported_astc, route, &error) &&
+              route.storage == PayloadStorage::Rgba8 && route.outcome == PreparationOutcome::RgbaFallback &&
+              route.converted.payload == decoded.payload && fs::file_size(cache_file) == persisted_bytes,
+          "Unsupported ASTC backend exposed encoded data or modified its cache");
+    BackendPolicy missing_root{false, true, true, true, {}};
+    Check(PrepareForBackend(input, missing_root, route, &error) &&
+              route.outcome == PreparationOutcome::RgbaFallback && route.converted.payload == decoded.payload,
+          "Backend with no preparation root did not use its supported RGBA route");
+    Check(PrepareForBackend(volume, astc, route, &error) && error.empty() &&
+              route.outcome == PreparationOutcome::RgbaFallback && !route.fallback_reason.empty() &&
+              route.converted.payload == volume_decoded.payload && route.converted.mips[0].depth == 2,
+          "Volume fallback lost its source depth or RGBA contents");
+    BackendPolicy control{false, false, true, true, policy_root};
+    Check(PrepareForBackend(input, control, route, &error) &&
+              route.outcome == PreparationOutcome::RgbaControl && route.converted.payload == decoded.payload,
+          "Disabled ASTC did not preserve the RGBA control route");
+    for (const auto& source : {Input{BcFormat::kBc2, 2, 4, 4, bc2, one_mip},
+                               Input{BcFormat::kBc3, 3, 4, 4, bc3, one_mip}}) {
+      Check(PrepareForBackend(source, control, route, &error) && route.storage == PayloadStorage::Rgba8,
+            "BC2/BC3 backend preparation failed");
+      const auto& expected = source.format == BcFormat::kBc2 ? bc2_decoded.payload : bc3_decoded.payload;
+      Check(route.converted.payload == expected, "Backend policy changed BC2/BC3 alpha decode");
+    }
+    const auto unchanged_payload = route.converted.payload;
+    const auto unchanged_outcome = route.outcome;
+    const auto unchanged_storage = route.storage;
+    BackendPolicy no_route{false, true, false, false, policy_root};
+    Check(!PrepareForBackend(input, no_route, route, &error) && !error.empty() &&
+              route.converted.payload == unchanged_payload && route.outcome == unchanged_outcome &&
+              route.storage == unchanged_storage,
+          "Unsupported backend replaced the preceding immutable payload");
+    auto truncated = input; truncated.payload = std::span<const uint8_t>(bc1.data(), 3);
+    Check(!PrepareForBackend(truncated, astc, route, &error) && !error.empty() &&
+              route.converted.payload == unchanged_payload && route.outcome == unchanged_outcome &&
+              route.storage == unchanged_storage,
+          "Malformed source replaced the preceding payload");
+    // Explicit preparation still runs when a user deliberately enables it on
+    // a BC-capable test device; ordinary BC-capable launches use direct above.
+    astc.source_bc_supported = true;
+    Check(PrepareForBackend(input, astc, route, &error) &&
+              route.storage == PayloadStorage::Astc4x4 && route.outcome == PreparationOutcome::AstcCacheHit,
+          "Explicit ASTC test setting on a BC-supported backend was ignored");
+    Check(std::string(OutcomeName(PreparationOutcome::BcDirect)) == "bc-direct" &&
+              std::string(OutcomeName(PreparationOutcome::AstcCacheHit)) == "astc-cache-hit" &&
+              std::string(OutcomeName(PreparationOutcome::AstcEncoded)) == "astc-encoded" &&
+              std::string(OutcomeName(PreparationOutcome::RgbaControl)) == "rgba8-control" &&
+              std::string(OutcomeName(PreparationOutcome::RgbaFallback)) == "rgba8-fallback",
+          "Backend telemetry no longer matches prepared installation reports");
+  }
+
   const auto cache_path = root / "astc-v1" /
       "0123456789abcdef-1-4x4-2.bin";
   Check(fs::exists(cache_path), "ASTC cache file was not saved");

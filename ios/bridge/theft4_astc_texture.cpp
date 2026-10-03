@@ -448,6 +448,52 @@ bool PrepareAstc4x4(const Input& input, const std::filesystem::path& preparation
   return true;
 }
 
+bool PrepareForBackend(const Input& input, const BackendPolicy& policy,
+                       BackendPayload& output, std::string* error) {
+  BackendPayload candidate;
+  if (policy.source_bc_supported && !policy.astc_enabled) {
+    output = std::move(candidate);
+    if (error) error->clear();
+    return true;
+  }
+  const auto started = std::chrono::steady_clock::now();
+  std::string preparation_error;
+  const bool use_astc = policy.astc_enabled && policy.astc_supported &&
+      !policy.preparation_root.empty() &&
+      PrepareAstc4x4(input, policy.preparation_root, candidate.converted, &preparation_error);
+  if (use_astc) {
+    candidate.storage = PayloadStorage::Astc4x4;
+    candidate.outcome = candidate.converted.cache_hit ? PreparationOutcome::AstcCacheHit
+                                                   : PreparationOutcome::AstcEncoded;
+  } else {
+    if (!policy.rgba8_supported) {
+      SetError(error, "No supported BC, ASTC or RGBA8 payload route.");
+      return false;
+    }
+    candidate.fallback_reason = std::move(preparation_error);
+    if (!DecodeToRgba8(input, candidate.converted, error)) return false;
+    candidate.storage = PayloadStorage::Rgba8;
+    candidate.outcome = policy.astc_enabled ? PreparationOutcome::RgbaFallback
+                                          : PreparationOutcome::RgbaControl;
+  }
+  candidate.elapsed_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - started).count());
+  output = std::move(candidate);
+  if (error) error->clear();
+  return true;
+}
+
+const char* OutcomeName(PreparationOutcome outcome) {
+  switch (outcome) {
+    case PreparationOutcome::BcDirect: return "bc-direct";
+    case PreparationOutcome::AstcCacheHit: return "astc-cache-hit";
+    case PreparationOutcome::AstcEncoded: return "astc-encoded";
+    case PreparationOutcome::RgbaControl: return "rgba8-control";
+    case PreparationOutcome::RgbaFallback: return "rgba8-fallback";
+  }
+  return "unknown";
+}
+
 void RecordObservedTexture(const std::filesystem::path& preparation_root,
                            const Input& input, const Prepared* result,
                            const char* outcome, uint64_t elapsed_ms) {

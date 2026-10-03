@@ -252,3 +252,28 @@ rendering, and a non-default viewport depth interval. Stored depth is checked
 by a separate stock zero-to-one shader with an Equal comparison. This is shader
 and draw-state validation; the full game still requires live ordered frame
 production, backend selection and direct Metal presentation.
+
+## Texture preparation in the live frontend
+
+`theft4::astc::PrepareForBackend` accepts immutable untiled BC bytes/mips and an
+explicit backend policy. It has no graphics API calls. BC-supported devices with
+preparation disabled keep their original source, without duplicate payloads or
+cache I/O. Unsupported BC devices retain the prepared ASTC cache, with RGBA control
+or fallback when selected/required. Returned converted payloads own their bytes
+and mip descriptions; rejected input leaves the previous output intact.
+
+`PrepareNativeTextureDescription` prepares the real frontend's logical/physical
+extent, virtual/reflection storage, guest mip count, format/aspect, usage and
+sampled-view swizzle/range from explicit capabilities. Its allocation/view metadata
+has no driver handles or pointer chains. The existing Vulkan consumer then creates
+its allocation and attaches the real image handle. Optional diagnostic texture
+packets are now prepared before that allocation or Vulkan upload; exceptional
+reflection allocation recovery regenerates them against the accepted extent.
+
+`source::DecodeImageUpload` lowers the prepared sampled metadata and per-mip
+upload layout into the API-free immutable image contract. It preserves cube/array
+planes, volume depth pitch, compressed block footprints, padded rows and the tight
+last row; checks every mip/slice and rejects duplicate/missing or truncated inputs.
+It returns layout only; the caller attaches the shared immutable byte generation
+after validation. These are the actual game frontend preparation boundaries.
+Full ordered Metal game-frame production and backend selection are still required.

@@ -26,41 +26,18 @@ void Gta4NativeGraphicsSystem::CaptureMetalTexture(
   auto& capture = MetalCapture();
   if (!capture.recorder.Active() || !image.source || image.source->gpu_produced ||
       image.aspect != VK_IMAGE_ASPECT_COLOR_BIT || payload.size() > 8 * 1024 * 1024) return;
-  auto out = std::make_shared<Image>();
-  out->format = source::PixelFormat(image.format);
-  const auto block = source::TextureBlock(out->format);
-  if (!block.bytes) { capture.recorder.Reject("sampled image format needs lowering"); return; }
-  switch (image.view_type) {
-    case VK_IMAGE_VIEW_TYPE_2D: out->kind = ImageKind::Texture2D; break;
-    case VK_IMAGE_VIEW_TYPE_2D_ARRAY: out->kind = ImageKind::Texture2DArray; break;
-    case VK_IMAGE_VIEW_TYPE_3D: out->kind = ImageKind::Texture3D; break;
-    case VK_IMAGE_VIEW_TYPE_CUBE: out->kind = ImageKind::TextureCube; break;
-    default: capture.recorder.Reject("sampled image view needs lowering"); return;
-  }
-  out->width = image.width; out->height = image.height;
-  out->levels = image.mip_levels;
-  out->depth = out->kind == ImageKind::Texture3D ? image.source->info.depth + 1 : 1;
-  out->layers = out->kind == ImageKind::Texture2DArray ? image.source->info.depth + 1 : 1;
-  const std::array components{image.view_components.r, image.view_components.g,
-                              image.view_components.b, image.view_components.a};
-  for (size_t i = 0; i < 4; ++i)
-    out->swizzle[i] = components[i] == VK_COMPONENT_SWIZZLE_IDENTITY ? Swizzle(uint32_t(Swizzle::Red) + i)
-                           : Swizzle(uint32_t(components[i]) - 1);
-  for (const auto& m : mips) {
-    const uint64_t row = (uint64_t(m.buffer_row_length ? m.buffer_row_length : m.width) + block.width - 1) /
-                         block.width * block.bytes;
-    const uint64_t plane = row * ((uint64_t(m.buffer_image_height ? m.buffer_image_height : m.height) +
-                                  block.height - 1) / block.height);
-    const uint64_t slice = plane * m.depth;
-    for (uint32_t layer = 0; layer < m.layer_count; ++layer) {
-      const uint64_t offset = m.payload_offset + layer * slice;
-      if (offset > payload.size() || slice > payload.size() - offset ||
-          uint64_t(layer + 1) * slice > m.payload_size) {
-        capture.recorder.Reject("sampled image upload bounds"); return;
-      }
-      out->mips.push_back({m.level, m.base_array_layer + layer, m.width, m.height, m.depth,
-                           row, plane, offset, slice});
-    }
+  source::SampledImageDescription description;
+  description.format=image.format;description.kind=image.view_type;
+  description.components=image.view_components;description.width=image.width;description.height=image.height;
+  description.levels=image.mip_levels;
+  description.depth=image.view_type==VK_IMAGE_VIEW_TYPE_3D ? image.source->info.depth+1 : 1;
+  description.layers=image.view_type==VK_IMAGE_VIEW_TYPE_2D_ARRAY ? image.source->info.depth+1 : 1;
+  std::vector<source::TextureUploadMip> uploads;uploads.reserve(mips.size());
+  for(const auto& m:mips)uploads.push_back({m.level,m.width,m.height,m.depth,
+      m.base_array_layer,m.layer_count,m.buffer_row_length,m.buffer_image_height,m.payload_offset,m.payload_size});
+  auto out=std::make_shared<Image>();std::string error;
+  if(!source::DecodeImageUpload(description,uploads,payload.size(),*out,error)) {
+    capture.recorder.Reject(error);return;
   }
   out->source = capture.recorder.Copy(payload, image.source->generation,
       {uint64_t(image.format), image.width, image.height, image.mip_levels});

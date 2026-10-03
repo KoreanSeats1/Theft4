@@ -18027,6 +18027,171 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
   }
 }
 
+bool Gta4NativeGraphicsSystem::PrepareNativeTextureDescription(
+    NativeResourceView<NativeTextureResource> texture, VkFormat format,
+    const NativeTextureImage* packed_source, const NativeTextureCapabilities& capabilities,
+    PreparedNativeTextureDescription& description, std::string& error) {
+  const auto reject = [&](const char* reason) { error = reason; return false; };
+  constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                          VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if (!texture || format == VK_FORMAT_UNDEFINED || !capabilities.maximum_dimension_2d ||
+      (capabilities.format_features & required) != required) return reject("texture-description-capabilities");
+  auto image = std::make_unique<NativeTextureImage>();
+  image->source = texture.Share();
+  image->format = format;
+  image->logical_width = texture->info.width + 1;
+  image->logical_height = texture->info.height + 1;
+  image->width = image->logical_width;
+  image->height = image->logical_height;
+  NativeVirtualResourceRecord virtual_registration{};
+  bool has_virtual_registration = false;
+  {
+    std::lock_guard lock(texture_resource_mutex_);
+    const NativeVirtualResourceRecord* registered =
+        virtual_resource_registry_.Find(texture->handle);
+    if (registered && registered->kind == VirtualResourceKind::kTexture &&
+        registered->logical_width == image->logical_width &&
+        registered->logical_height == image->logical_height) {
+      virtual_registration = *registered;
+      has_virtual_registration = true;
+    }
+  }
+  if (has_virtual_registration) {
+    image->width = virtual_registration.physical_width;
+    image->height = virtual_registration.physical_height;
+  }
+  if (packed_source) {
+    image->width = packed_source->width;
+    image->height = packed_source->height;
+  }
+  const NativeReflectionTarget* reflection_entry = FindNativeReflectionTexture(
+      reflection_resources_, texture->handle, image->logical_width, image->logical_height);
+  if (reflection_entry) {
+    image->reflection = *reflection_entry;
+    image->is_reflection = true;
+    image->logical_width = reflection_entry->logical_width;
+    image->logical_height = reflection_entry->logical_height;
+    const uint32_t maximum_extent = capabilities.maximum_dimension_2d;
+    if (reflection_entry->physical_width <= maximum_extent &&
+        reflection_entry->physical_height <= maximum_extent) {
+      image->width = reflection_entry->physical_width;
+      image->height = reflection_entry->physical_height;
+    } else {
+      REXLOG_WARN(
+          "gta4-native-reflection: texture {:08X} requested {}x{} exceeds device limit {}; "
+          "using original {}x{}",
+          texture->handle, reflection_entry->physical_width, reflection_entry->physical_height,
+          maximum_extent, image->logical_width, image->logical_height);
+    }
+  }
+  const bool is_3d = texture->info.dimension == xenos::DataDimension::k3D;
+  const bool is_cube = texture->info.dimension == xenos::DataDimension::kCube;
+  const bool is_2d_array =
+      texture->info.dimension == xenos::DataDimension::k2DOrStacked && texture->info.is_stacked;
+  const uint32_t array_layer_count = is_cube ? 6 : is_2d_array ? texture->info.depth + 1 : 1;
+  if (format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+    image->aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+  }
+  if (texture->gpu_produced) {
+    // MoltenVK implements optimal-image clears with a Metal render encoder and
+    // requires the corresponding attachment capability. Reject unsupported
+    // formats before allocation instead of recording a clear that MoltenVK
+    // must fail later. GTA resolve outputs are renderable, uncompressed color
+    // or depth/stencil formats, so this also catches an invalid descriptor.
+    const VkFormatFeatureFlags clear_attachment_feature =
+        image->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+                                                   : VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (!(capabilities.format_features & clear_attachment_feature)) {
+      return reject("resolve-clear-format-capabilities");
+    }
+  }
+  image->guest_mip_levels = texture->info.mip_max_level + 1;
+  // Preserve the title's exact environment-map LOD contract. Native
+  // resolution changes texel density, not the number of title-authored mip
+  // levels that stock GTA shaders are permitted to sample.
+  image->mip_levels = image->is_reflection ? GetNativeReflectionStorageMipLevelCount(
+                                                 image->reflection, image->guest_mip_levels)
+                                           : image->guest_mip_levels;
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.flags = is_cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+  image_info.imageType = is_3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+  image_info.format = format;
+  image_info.extent = {image->width, image->height, is_3d ? texture->info.depth + 1 : 1};
+  image_info.mipLevels = image->mip_levels;
+  image_info.arrayLayers = array_layer_count;
+  image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+  image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  if (capabilities.format_features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) {
+    image_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  }
+  if (image->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
+      (capabilities.format_features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+    image_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  } else if ((image->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+             (capabilities.format_features &
+              VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+    image_info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  }
+  image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VkImageViewCreateInfo view_info{};
+  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  view_info.viewType = is_3d         ? VK_IMAGE_VIEW_TYPE_3D
+                       : is_cube     ? VK_IMAGE_VIEW_TYPE_CUBE
+                       : is_2d_array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                     : VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = format;
+  uint32_t host_swizzle = GuestToNativeHostSwizzle(
+      texture->fetch.swizzle, GetNativeHostFormatSwizzle(texture->info.format));
+  if (texture->packed_depth_source) {
+    // The packed conversion applies the guest swizzle on every host.
+    view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+  } else if (texture->vector_font_replacement) {
+    if (!capabilities.image_view_format_swizzle) {
+      return reject("font-view-swizzle-feature");
+    }
+    view_info.components.r = VK_COMPONENT_SWIZZLE_ONE;
+    view_info.components.g = VK_COMPONENT_SWIZZLE_ONE;
+    view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
+    view_info.components.a = VK_COMPONENT_SWIZZLE_R;
+  } else if (capabilities.portability_subset ||
+             !capabilities.image_view_format_swizzle) {
+    // Ordinary native portability views deliberately retain the established
+    // identity policy even when font-only swizzle support is enabled.
+    host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+    view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+  } else {
+    view_info.components.r = GetNativeComponentSwizzle(host_swizzle, 0);
+    view_info.components.g = GetNativeComponentSwizzle(host_swizzle, 1);
+    view_info.components.b = GetNativeComponentSwizzle(host_swizzle, 2);
+    view_info.components.a = GetNativeComponentSwizzle(host_swizzle, 3);
+  }
+  view_info.subresourceRange = ui::vulkan::util::InitializeSubresourceRange(
+      VK_IMAGE_ASPECT_COLOR_BIT, 0, image->mip_levels, 0, array_layer_count);
+  // A depth/stencil image may use both aspects for transfers and layout
+  // transitions, but Vulkan requires a view installed in a sampled-image
+  // descriptor to select exactly one aspect. GTA IV samples these resources as
+  // floating-point depth textures, so expose only depth to the shader.
+  view_info.subresourceRange.aspectMask =
+      image->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : image->aspect;
+  image->usage = image_info.usage;
+  image->samples = image_info.samples;
+  image->view_components = view_info.components;
+  image->view_range = view_info.subresourceRange;
+  image->view_type = view_info.viewType;
+  PreparedNativeTextureDescription prepared;
+  prepared.image = std::move(image);
+  prepared.allocation = image_info;
+  prepared.sampled_view = view_info;
+  description = std::move(prepared);
+  error.clear();
+  return true;
+}
+
 Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCreateTextureImage(
     VkCommandBuffer command_buffer, NativeResourceView<NativeTextureResource> texture) {
   const profile::CpuScope profile_scope(profile::CpuOp::kTextureLookup);
@@ -18089,9 +18254,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   const ui::vulkan::VulkanDevice* vulkan_device = vulkan_provider->vulkan_device();
   const auto& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
-  VkFormatProperties format_properties{};
-  vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
-      vulkan_device->physical_device(), format, &format_properties);
+  VkFormatProperties format_properties = GetNativeFormatProperties(format);
   constexpr VkFormatFeatureFlags kRequiredTextureFeatures =
       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
@@ -18135,13 +18298,38 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
                   "sampler-limit={}", astc_enabled, source_supported, !root.empty(),
                   native_sampler_descriptor_capacity_);
     }
-    auto use_prepared = [&](theft4::astc::Prepared& prepared, VkFormat target_format) {
-      format = target_format;
-      vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
-          vulkan_device->physical_device(), format, &format_properties);
-      converted_payload = std::move(prepared.payload);
-      converted_mips.reserve(prepared.mips.size());
-      for (const auto& mip : prepared.mips) {
+    const auto supports_upload = [&](VkFormat candidate) {
+      return (GetNativeFormatProperties(candidate).optimalTilingFeatures & kRequiredTextureFeatures) ==
+             kRequiredTextureFeatures;
+    };
+    // Device capabilities belong to the backend. The CPU preparer consumes
+    // immutable bytes/mips and explicit capabilities, with no Vulkan objects.
+    theft4::astc::BackendPolicy policy{source_supported, astc_enabled,
+        astc_enabled && supports_upload(VK_FORMAT_ASTC_4x4_UNORM_BLOCK),
+        supports_upload(VK_FORMAT_R8G8B8A8_UNORM), root};
+    theft4::astc::BackendPayload prepared;
+    std::string preparation_error;
+    if (!theft4::astc::PrepareForBackend(input, policy, prepared, &preparation_error)) {
+      theft4::astc::RecordObservedTexture(root, input, nullptr,
+          astc_enabled ? "conversion-failed" : "rgba8-control-failed", 0);
+      REXLOG_WARN("gta4-native-astc: conversion failed for {:016X}: {}",
+                  texture->content_hash, preparation_error);
+      return reject(astc_enabled ? "astc-and-rgba-fallback-failed" : "rgba8-control-failed");
+    }
+    theft4::astc::RecordObservedTexture(root, input, &prepared.converted,
+        theft4::astc::OutcomeName(prepared.outcome),
+        astc_enabled ? prepared.elapsed_ms : 0);
+    if (prepared.outcome == theft4::astc::PreparationOutcome::RgbaFallback) {
+      REXLOG_WARN("gta4-native-astc: {:016X} used RGBA8 fallback: {}",
+                  texture->content_hash, prepared.fallback_reason);
+    }
+    if (prepared.storage != theft4::astc::PayloadStorage::OriginalBc) {
+      format = prepared.storage == theft4::astc::PayloadStorage::Astc4x4
+                   ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK : VK_FORMAT_R8G8B8A8_UNORM;
+      format_properties = GetNativeFormatProperties(format);
+      converted_payload = std::move(prepared.converted.payload);
+      converted_mips.reserve(prepared.converted.mips.size());
+      for (const auto& mip : prepared.converted.mips) {
         NativeTextureResource::MipLevel copy{};
         copy.level = mip.level;
         copy.width = mip.width;
@@ -18157,54 +18345,6 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
       }
       upload_payload = &converted_payload;
       upload_mips = &converted_mips;
-    };
-    if (!astc_enabled) {
-      if (source_supported) {
-        theft4::astc::RecordObservedTexture(root, input, nullptr, "bc-direct", 0);
-      } else {
-        theft4::astc::Prepared prepared;
-        std::string decode_error;
-        if (!theft4::astc::DecodeToRgba8(input, prepared, &decode_error)) {
-          theft4::astc::RecordObservedTexture(root, input, nullptr, "rgba8-control-failed", 0);
-          REXLOG_WARN("gta4-native-astc: RGBA8 control decode failed for {:016X}: {}",
-                      texture->content_hash, decode_error);
-          return reject("rgba8-control-failed");
-        }
-        theft4::astc::RecordObservedTexture(root, input, &prepared, "rgba8-control", 0);
-        use_prepared(prepared, VK_FORMAT_R8G8B8A8_UNORM);
-      }
-    } else {
-    theft4::astc::Prepared prepared;
-    std::string preparation_error;
-    const auto started = std::chrono::steady_clock::now();
-    VkFormatProperties astc_properties{};
-    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
-        vulkan_device->physical_device(), VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
-        &astc_properties);
-    const bool astc_supported =
-        (astc_properties.optimalTilingFeatures & kRequiredTextureFeatures) ==
-        kRequiredTextureFeatures;
-    bool prepared_astc = astc_supported && !root.empty() &&
-        theft4::astc::PrepareAstc4x4(input, root, prepared, &preparation_error);
-    if (!prepared_astc &&
-        !theft4::astc::DecodeToRgba8(input, prepared, &preparation_error)) {
-      theft4::astc::RecordObservedTexture(root, input, nullptr, "conversion-failed", 0);
-      REXLOG_WARN("gta4-native-astc: conversion failed for {:016X}: {}",
-                  texture->content_hash, preparation_error);
-      return reject("astc-and-rgba-fallback-failed");
-    }
-    const uint64_t elapsed_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - started).count());
-    theft4::astc::RecordObservedTexture(
-        root, input, &prepared,
-        prepared_astc ? (prepared.cache_hit ? "astc-cache-hit" : "astc-encoded")
-                      : "rgba8-fallback", elapsed_ms);
-    if (!prepared_astc) {
-      REXLOG_WARN("gta4-native-astc: {:016X} used RGBA8 fallback: {}",
-                  texture->content_hash, preparation_error);
-    }
-    use_prepared(prepared, prepared_astc ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
-                                         : VK_FORMAT_R8G8B8A8_UNORM);
     }
   }
 #endif
@@ -18213,106 +18353,36 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     return reject("format-capabilities");
   }
 
-  auto image = std::make_unique<NativeTextureImage>();
-  image->source = texture.Share();
-  image->format = format;
-  image->logical_width = texture->info.width + 1;
-  image->logical_height = texture->info.height + 1;
-  image->width = image->logical_width;
-  image->height = image->logical_height;
-  NativeVirtualResourceRecord virtual_registration{};
-  bool has_virtual_registration = false;
-  {
-    std::lock_guard lock(texture_resource_mutex_);
-    const NativeVirtualResourceRecord* registered =
-        virtual_resource_registry_.Find(texture->handle);
-    if (registered && registered->kind == VirtualResourceKind::kTexture &&
-        registered->logical_width == image->logical_width &&
-        registered->logical_height == image->logical_height) {
-      virtual_registration = *registered;
-      has_virtual_registration = true;
-    }
+  const auto& texture_properties = vulkan_device->properties();
+  const NativeTextureCapabilities capabilities{texture_properties.maxImageDimension2D,
+      texture_properties.portabilitySubset, texture_properties.imageViewFormatSwizzle,
+      format_properties.optimalTilingFeatures};
+  PreparedNativeTextureDescription description;
+  std::string description_error;
+  if (!PrepareNativeTextureDescription(texture, format, packed_source, capabilities,
+                                       description, description_error)) {
+    return reject(description_error.c_str());
   }
-  if (has_virtual_registration) {
-    image->width = virtual_registration.physical_width;
-    image->height = virtual_registration.physical_height;
-  }
-  if (packed_source) {
-    image->width = packed_source->width;
-    image->height = packed_source->height;
-  }
-  const NativeReflectionTarget* reflection_entry = FindNativeReflectionTexture(
-      reflection_resources_, texture->handle, image->logical_width, image->logical_height);
-  if (reflection_entry) {
-    image->reflection = *reflection_entry;
-    image->is_reflection = true;
-    image->logical_width = reflection_entry->logical_width;
-    image->logical_height = reflection_entry->logical_height;
-    const uint32_t maximum_extent = vulkan_device->properties().maxImageDimension2D;
-    if (reflection_entry->physical_width <= maximum_extent &&
-        reflection_entry->physical_height <= maximum_extent) {
-      image->width = reflection_entry->physical_width;
-      image->height = reflection_entry->physical_height;
-    } else {
-      REXLOG_WARN(
-          "gta4-native-reflection: texture {:08X} requested {}x{} exceeds device limit {}; "
-          "using original {}x{}",
-          texture->handle, reflection_entry->physical_width, reflection_entry->physical_height,
-          maximum_extent, image->logical_width, image->logical_height);
-    }
-  }
-  const bool is_3d = texture->info.dimension == xenos::DataDimension::k3D;
-  const bool is_cube = texture->info.dimension == xenos::DataDimension::kCube;
-  const bool is_2d_array =
-      texture->info.dimension == xenos::DataDimension::k2DOrStacked && texture->info.is_stacked;
-  const uint32_t array_layer_count = is_cube ? 6 : is_2d_array ? texture->info.depth + 1 : 1;
-  if (format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
-    image->aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-  }
-  if (texture->gpu_produced) {
-    // MoltenVK implements optimal-image clears with a Metal render encoder and
-    // requires the corresponding attachment capability. Reject unsupported
-    // formats before allocation instead of recording a clear that MoltenVK
-    // must fail later. GTA resolve outputs are renderable, uncompressed color
-    // or depth/stencil formats, so this also catches an invalid descriptor.
-    const VkFormatFeatureFlags clear_attachment_feature =
-        image->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
-                                                   : VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    if (!(format_properties.optimalTilingFeatures & clear_attachment_feature)) {
-      return reject("resolve-clear-format-capabilities");
-    }
-  }
-  image->guest_mip_levels = texture->info.mip_max_level + 1;
-  // Preserve the title's exact environment-map LOD contract. Native
-  // resolution changes texel density, not the number of title-authored mip
-  // levels that stock GTA shaders are permitted to sample.
-  image->mip_levels = image->is_reflection ? GetNativeReflectionStorageMipLevelCount(
-                                                 image->reflection, image->guest_mip_levels)
-                                           : image->guest_mip_levels;
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.flags = is_cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-  image_info.imageType = is_3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
-  image_info.format = format;
-  image_info.extent = {image->width, image->height, is_3d ? texture->info.depth + 1 : 1};
-  image_info.mipLevels = image->mip_levels;
-  image_info.arrayLayers = array_layer_count;
-  image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-  image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  if (format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) {
-    image_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-  }
-  if (image->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
-      (format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
-    image_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-  } else if ((image->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-             (format_properties.optimalTilingFeatures &
-              VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
-    image_info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-  }
-  image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  auto image = std::move(description.image);
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  // The Metal packet consumes CPU-prepared shape and bytes. No Vulkan image,
+  // image view or upload allocation exists at this boundary.
+  const auto capture_prepared_texture = [&] {
+    if (texture->gpu_produced) return;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    CaptureMetalTexture(*image, *upload_payload, *upload_mips);
+#else
+    CaptureMetalTexture(*image, texture->payload, texture->mip_levels);
+#endif
+  };
+  capture_prepared_texture();
+#endif
+  VkImageCreateInfo image_info = description.allocation;
+  VkImageViewCreateInfo view_info = description.sampled_view;
+  const bool is_3d = image_info.imageType == VK_IMAGE_TYPE_3D;
+  const bool is_cube = view_info.viewType == VK_IMAGE_VIEW_TYPE_CUBE;
+  const bool is_2d_array = view_info.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  const uint32_t array_layer_count = image_info.arrayLayers;
   std::array<VkFormat, 2> smaa_view_formats{format, NativeSmaaSrgbFormat(format)};
   VkImageFormatListCreateInfo smaa_format_list{};
   smaa_format_list.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
@@ -18377,50 +18447,20 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     }
   }
 
-  VkImageViewCreateInfo view_info{};
-  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  view_info.image = image->resource.image;
-  view_info.viewType = is_3d         ? VK_IMAGE_VIEW_TYPE_3D
-                       : is_cube     ? VK_IMAGE_VIEW_TYPE_CUBE
-                       : is_2d_array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                     : VK_IMAGE_VIEW_TYPE_2D;
-  view_info.format = format;
-  uint32_t host_swizzle = GuestToNativeHostSwizzle(
-      texture->fetch.swizzle, GetNativeHostFormatSwizzle(texture->info.format));
-  if (texture->packed_depth_source) {
-    // The packed conversion applies the guest swizzle on every host.
-    view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-  } else if (texture->vector_font_replacement) {
-    if (!vulkan_device->properties().imageViewFormatSwizzle) {
-      DestroyNativeTextureImage(*image);
-      return reject("font-view-swizzle-feature");
-    }
-    view_info.components.r = VK_COMPONENT_SWIZZLE_ONE;
-    view_info.components.g = VK_COMPONENT_SWIZZLE_ONE;
-    view_info.components.b = VK_COMPONENT_SWIZZLE_ONE;
-    view_info.components.a = VK_COMPONENT_SWIZZLE_R;
-  } else if (vulkan_device->properties().portabilitySubset ||
-             !vulkan_device->properties().imageViewFormatSwizzle) {
-    // Ordinary native portability views deliberately retain the established
-    // identity policy even when font-only swizzle support is enabled.
-    host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
-    view_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-  } else {
-    view_info.components.r = GetNativeComponentSwizzle(host_swizzle, 0);
-    view_info.components.g = GetNativeComponentSwizzle(host_swizzle, 1);
-    view_info.components.b = GetNativeComponentSwizzle(host_swizzle, 2);
-    view_info.components.a = GetNativeComponentSwizzle(host_swizzle, 3);
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  if (image->width != description.allocation.extent.width ||
+      image->height != description.allocation.extent.height ||
+      image->mip_levels != description.allocation.mipLevels) {
+    // Exceptional reflection allocation recovery may change storage extent.
+    // Rebuild the CPU packet against the accepted shape, without any handles.
+    image->metal_capture_image.reset();
+    capture_prepared_texture();
   }
-  view_info.subresourceRange = ui::vulkan::util::InitializeSubresourceRange(
-      VK_IMAGE_ASPECT_COLOR_BIT, 0, image->mip_levels, 0, array_layer_count);
-  // A depth/stencil image may use both aspects for transfers and layout
-  // transitions, but Vulkan requires a view installed in a sampled-image
-  // descriptor to select exactly one aspect. GTA IV samples these resources as
-  // floating-point depth textures, so expose only depth to the shader.
-  view_info.subresourceRange.aspectMask =
-      image->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : image->aspect;
+#endif
+  // Allocation is the Vulkan consumer's responsibility. The prepared sampled
+  // view deliberately carried no image handle.
+  view_info.image = image->resource.image;
+  view_info.subresourceRange.levelCount = image->mip_levels;
   if (profile::CpuCall(profile::CpuOp::kDriverAllocation, [&] { return dfn.vkCreateImageView(device, &view_info, nullptr, &image->resource.view); }) != VK_SUCCESS) {
     DestroyNativeTextureImage(*image);
     return reject("create-view");
@@ -18450,9 +18490,6 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
       return reject("upload-allocation");
     }
     std::memcpy(upload.mapping, payload_to_upload.data(), payload_to_upload.size());
-#ifdef THEFT4_NATIVE_METAL_CAPTURE
-    CaptureMetalTexture(*image, payload_to_upload, mips_to_upload);
-#endif
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

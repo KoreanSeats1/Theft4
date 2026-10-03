@@ -1,6 +1,8 @@
 #include "theft4_draw_capture.h"
 #include "theft4_render_plan_source.h"
 #include <bit>
+#include <algorithm>
+#include <tuple>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -196,6 +198,69 @@ int main(int argc, char** argv) {
       s.borderColor=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
       Require(source::DecodeSampler(s,decoded,error)&&decoded.anisotropy==1&&!decoded.opaque_white_border,
               "Disabled anisotropy incorrectly requires a populated driver limit");
+    }
+    {
+      source::SampledImageDescription d;d.format=VK_FORMAT_R8G8B8A8_UNORM;d.width=d.height=2;
+      d.components={VK_COMPONENT_SWIZZLE_B,VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_R,VK_COMPONENT_SWIZZLE_ONE};
+      std::vector<source::TextureUploadMip> m{{0,2,2,1,0,1,4,2,4,24}};
+      Image image;Require(source::DecodeImageUpload(d,m,28,image,error),error);
+      Require(!image.source&&image.kind==ImageKind::Texture2D&&image.mips.size()==1&&
+              image.mips[0].offset==4&&image.mips[0].row_bytes==16&&image.mips[0].image_bytes==32&&
+              image.mips[0].size==24&&image.swizzle==std::array{Swizzle::Blue,Swizzle::Green,Swizzle::Red,Swizzle::One},
+              "CPU upload lowering lost padded rows, tight final row, offset or channel mapping");
+      d.kind=VK_IMAGE_VIEW_TYPE_2D_ARRAY;d.layers=2;m={{0,2,2,1,0,2,4,4,0,88}};
+      Require(source::DecodeImageUpload(d,m,88,image,error)&&image.mips.size()==2&&
+              image.mips[0].offset==0&&image.mips[1].offset==64&&image.mips[1].slice==1&&
+              image.mips[0].size==24&&image.mips[1].size==24&&image.mips[1].image_bytes==64,
+              "Array upload lost its inter-layer plane padding or tight final row");
+      d.kind=VK_IMAGE_VIEW_TYPE_3D;d.layers=1;d.depth=2;m={{0,2,2,2,0,1,4,4,0,88}};
+      Require(source::DecodeImageUpload(d,m,88,image,error)&&image.mips.size()==1&&image.kind==ImageKind::Texture3D&&
+              image.mips[0].depth==2&&image.mips[0].size==88&&image.mips[0].image_bytes==64,
+              "Volume upload lost its padded depth-plane stride");
+      d.kind=VK_IMAGE_VIEW_TYPE_CUBE;d.width=d.height=4;d.depth=1;m={{0,4,4,1,0,6,0,0,0,384}};
+      Require(source::DecodeImageUpload(d,m,384,image,error)&&image.mips.size()==6&&image.layers==1,
+              "Cube upload did not expand every source face");
+      for(size_t face=0;face<6;++face)Require(image.mips[face].slice==face&&image.mips[face].offset==face*64&&
+              image.mips[face].size==64,"Cube face byte/layer correspondence changed");
+      d.kind=VK_IMAGE_VIEW_TYPE_2D;d.format=VK_FORMAT_BC1_RGBA_UNORM_BLOCK;d.width=7;d.height=5;d.levels=3;
+      m={{0,7,5,1,0,1,0,0,0,32},{1,3,2,1,0,1,0,0,32,8},{2,1,1,1,0,1,0,0,40,8}};
+      Require(source::DecodeImageUpload(d,m,48,image,error)&&image.mips.size()==3&&image.mips[0].row_bytes==16&&
+              image.mips[0].image_bytes==32&&image.mips[1].size==8&&image.mips[2].offset==40,
+              "BC mip chain did not use block-rounded texel extents");
+      d.format=VK_FORMAT_ASTC_4x4_UNORM_BLOCK;d.width=d.height=4;d.levels=2;
+      m={{0,4,4,1,0,1,0,0,0,16},{1,2,2,1,0,1,0,0,16,16}};
+      Require(source::DecodeImageUpload(d,m,32,image,error)&&image.format==Format::ASTC4x4&&
+              image.mips[0].row_bytes==16&&image.mips[1].size==16,
+              "Prepared ASTC mip chain changed in upload lowering");
+      image.source=std::make_shared<Bytes>();const auto preceding_owner=image.source;
+      const auto preceding_mips=image.mips;
+      const auto rejects=[&](source::SampledImageDescription bad,std::vector<source::TextureUploadMip> uploads,uint64_t bytes) {
+        Require(!source::DecodeImageUpload(bad,uploads,bytes,image,error)&&image.source==preceding_owner&&
+                image.mips.size()==preceding_mips.size()&&std::equal(image.mips.begin(),image.mips.end(),preceding_mips.begin(),
+                  [](const Mip& a,const Mip& b){return std::tie(a.level,a.slice,a.width,a.height,a.depth,a.row_bytes,a.image_bytes,a.offset,a.size)==
+                                                      std::tie(b.level,b.slice,b.width,b.height,b.depth,b.row_bytes,b.image_bytes,b.offset,b.size);})&&
+                image.format==Format::ASTC4x4,
+                "Invalid CPU image upload replaced the preceding immutable plan");
+      };
+      auto bad=d;bad.kind=VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;rejects(bad,m,32);
+      bad=d;bad.format=VK_FORMAT_D32_SFLOAT_S8_UINT;rejects(bad,m,32);
+      bad=d;bad.components.r=VK_COMPONENT_SWIZZLE_MAX_ENUM;rejects(bad,m,32);
+      bad=d;bad.levels=4;rejects(bad,m,32);
+      bad=d;bad.width=0;rejects(bad,m,32);
+      bad=d;bad.depth=2;rejects(bad,m,32);
+      auto uploads=m;uploads[0].buffer_row_length=3;rejects(d,uploads,32);
+      uploads=m;uploads[0].buffer_image_height=3;rejects(d,uploads,32);
+      uploads=m;uploads[1].payload_size=15;rejects(d,uploads,32);
+      uploads=m;uploads[1].payload_offset=UINT64_MAX;rejects(d,uploads,32);
+      uploads=m;uploads[1].layer_count=UINT32_MAX;rejects(d,uploads,32);
+      uploads=m;uploads[1].base_array_layer=UINT32_MAX;rejects(d,uploads,32);
+      uploads=m;uploads[1].width=4;rejects(d,uploads,32);
+      uploads=m;uploads.pop_back();rejects(d,uploads,32);
+      uploads=m;uploads.push_back(m[0]);rejects(d,uploads,32);
+      rejects(d,m,31);
+      bad=d;bad.kind=VK_IMAGE_VIEW_TYPE_CUBE;bad.height=2;rejects(bad,m,32);
+      bad=d;bad.kind=VK_IMAGE_VIEW_TYPE_3D;bad.depth=2;rejects(bad,m,32);
     }
     {
       DrawCaptureRecorder recorder((root / "writer").string());

@@ -1643,6 +1643,21 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::unordered_set<uint64_t> CollectProtectedTextureGenerations(
       const std::shared_ptr<const NativeTextureResource>& present_source);
   NativeTextureHeapBudgets QueryNativeTextureHeapBudgets() const;
+  struct NativeTextureCapabilities {
+    uint32_t maximum_dimension_2d = 0;
+    bool portability_subset = false, image_view_format_swizzle = true;
+    VkFormatFeatureFlags format_features = 0;
+  };
+  struct PreparedNativeTextureDescription {
+    std::unique_ptr<NativeTextureImage> image;
+    // CPU enum/shape metadata only. No driver objects or pointer chains.
+    VkImageCreateInfo allocation{};
+    VkImageViewCreateInfo sampled_view{};
+  };
+  bool PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource> texture,
+      VkFormat format, const NativeTextureImage* packed_source,
+      const NativeTextureCapabilities& capabilities,
+      PreparedNativeTextureDescription& description, std::string& error);
   bool AllocateNativeTextureImage(const VkImageCreateInfo& image_info, NativeTextureImage& image);
   void EvictNativeTextureImages(uint32_t submitted_frame, bool allocation_recovery);
   void RetireNativeTextureImage(std::unique_ptr<NativeTextureImage> image);

@@ -1,6 +1,8 @@
 #include "theft4_render_plan_source.h"
 #include <bit>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace theft4::render::source {
 bool DecodeSampler(const VkSamplerCreateInfo& s,render::Sampler& output,std::string& error) {
@@ -35,6 +37,84 @@ bool DecodeSampler(const VkSamplerCreateInfo& s,render::Sampler& output,std::str
   result.opaque_white_border=s.borderColor==VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
   if(!ValidateSampler(result,error))return false;
   output=result;error.clear();return true;
+}
+bool DecodeImageUpload(const SampledImageDescription& description,
+    std::span<const TextureUploadMip> uploads,uint64_t payload_bytes,render::Image& output,std::string& error) {
+  const auto reject=[&](const char* reason){error=reason;return false;};
+  Image image;image.format=PixelFormat(description.format);
+  const auto block=TextureBlock(image.format);
+  if(!block.bytes||!payload_bytes||!description.width||!description.height||!description.depth||
+     !description.layers||!description.levels||description.width>16384||description.height>16384||
+     description.depth>2048||description.layers>2048||description.levels>15||uploads.empty()||uploads.size()>2048)
+    return reject("Unsupported sampled image upload description");
+  switch(description.kind) {
+    case VK_IMAGE_VIEW_TYPE_2D:image.kind=ImageKind::Texture2D;break;
+    case VK_IMAGE_VIEW_TYPE_2D_ARRAY:image.kind=ImageKind::Texture2DArray;break;
+    case VK_IMAGE_VIEW_TYPE_3D:image.kind=ImageKind::Texture3D;break;
+    case VK_IMAGE_VIEW_TYPE_CUBE:image.kind=ImageKind::TextureCube;break;
+    default:return reject("Sampled image view needs explicit Metal lowering");
+  }
+  const bool volume=image.kind==ImageKind::Texture3D;
+  const bool array=image.kind==ImageKind::Texture2DArray;
+  const bool cube=image.kind==ImageKind::TextureCube;
+  if((!volume&&description.depth!=1)||(!array&&description.layers!=1)||
+     (cube&&description.width!=description.height)||
+     (volume&&(description.width>2048||description.height>2048||block.width!=1)))
+    return reject("Unsupported sampled image upload dimensions");
+  if(description.levels>std::bit_width(std::max({description.width,description.height,description.depth})))
+    return reject("Sampled image has more mip levels than its dimensions");
+  image.width=description.width;image.height=description.height;image.depth=description.depth;
+  image.layers=description.layers;image.levels=description.levels;
+  const auto& c=description.components;
+  const std::array components{c.r,c.g,c.b,c.a};
+  for(size_t i=0;i<4;++i) {
+    if(components[i]<VK_COMPONENT_SWIZZLE_IDENTITY||components[i]>VK_COMPONENT_SWIZZLE_A)
+      return reject("Unsupported sampled image channel swizzle");
+    image.swizzle[i]=components[i]==VK_COMPONENT_SWIZZLE_IDENTITY ? Swizzle(uint32_t(Swizzle::Red)+i)
+                                                                : Swizzle(uint32_t(components[i])-1);
+  }
+  const uint32_t slices=cube ? 6 : array ? description.layers : 1;
+  if(uint64_t(slices)*description.levels>2048)return reject("Too many sampled image upload subresources");
+  std::vector<bool> seen(size_t(slices)*description.levels);
+  const auto multiply=[](uint64_t a,uint64_t b,uint64_t& result) {
+    if(b&&a>std::numeric_limits<uint64_t>::max()/b)return false;
+    result=a*b;return true;
+  };
+  for(const auto& m:uploads) {
+    if(m.level>=description.levels||m.width!=std::max(1u,description.width>>m.level)||
+       m.height!=std::max(1u,description.height>>m.level)||
+       m.depth!=(volume ? std::max(1u,description.depth>>m.level) : 1)||!m.layer_count||
+       m.base_array_layer>=slices||m.layer_count>slices-m.base_array_layer||
+       m.payload_offset>payload_bytes||!m.payload_size||m.payload_size>payload_bytes-m.payload_offset||
+       (m.buffer_row_length&&(m.buffer_row_length<m.width||m.buffer_row_length%block.width))||
+       (m.buffer_image_height&&(m.buffer_image_height<m.height||m.buffer_image_height%block.height)))
+      return reject("Invalid sampled image upload mip/plane range");
+    const uint64_t columns=(uint64_t(m.width)+block.width-1)/block.width;
+    const uint64_t rows=(uint64_t(m.height)+block.height-1)/block.height;
+    const uint64_t row_columns=(uint64_t(m.buffer_row_length ? m.buffer_row_length : m.width)+block.width-1)/block.width;
+    const uint64_t image_rows=(uint64_t(m.buffer_image_height ? m.buffer_image_height : m.height)+block.height-1)/block.height;
+    uint64_t row=0,plane=0,stride=0,previous_images=0,previous_rows=0,last_row=0;
+    if(!multiply(row_columns,block.bytes,row)||!multiply(row,image_rows,plane)||!multiply(plane,m.depth,stride)||
+       !multiply(plane,m.depth-1,previous_images)||!multiply(row,rows-1,previous_rows)||
+       !multiply(columns,block.bytes,last_row)||previous_images>UINT64_MAX-previous_rows||
+       previous_images+previous_rows>UINT64_MAX-last_row)
+      return reject("Sampled image upload pitch overflows");
+    const uint64_t required=previous_images+previous_rows+last_row;
+    for(uint32_t layer=0;layer<m.layer_count;++layer) {
+      uint64_t relative=0;
+      if(!multiply(layer,stride,relative)||relative>m.payload_size||required>m.payload_size-relative||
+         relative>payload_bytes-m.payload_offset||required>payload_bytes-m.payload_offset-relative)
+        return reject("Sampled image upload payload is truncated");
+      const auto slice=m.base_array_layer+layer;
+      const auto index=size_t(slice)*description.levels+m.level;
+      if(seen[index])return reject("Sampled image upload repeats a mip/slice");
+      seen[index]=true;
+      image.mips.push_back({m.level,slice,m.width,m.height,m.depth,row,plane,m.payload_offset+relative,required});
+    }
+  }
+  if(std::find(seen.begin(),seen.end(),false)!=seen.end())
+    return reject("Sampled image upload omits a mip/slice");
+  output=std::move(image);error.clear();return true;
 }
 Format PixelFormat(VkFormat format) {
   switch(format) {

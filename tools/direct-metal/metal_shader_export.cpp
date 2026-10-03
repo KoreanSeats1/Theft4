@@ -34,11 +34,13 @@ struct Export {
   std::vector<Binding> bindings;
   bool vertex = false;
 };
-Export Convert(std::vector<uint32_t> code, uint32_t used_mask) {
+Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one_to_one = false) {
   spirv_cross::CompilerMSL probe(code);
   const auto stage = probe.get_execution_model();
   if (stage != spv::ExecutionModelVertex && stage != spv::ExecutionModelFragment)
     throw std::runtime_error("unsupported shader stage");
+  if (negative_one_to_one && stage != spv::ExecutionModelVertex)
+    throw std::runtime_error("clip conversion requires a vertex shader");
   auto original_resources = probe.get_shader_resources();
   std::map<uint32_t,uint32_t> descriptor_resources;
   for (const auto& resource : original_resources.separate_images)
@@ -78,6 +80,9 @@ Export Convert(std::vector<uint32_t> code, uint32_t used_mask) {
   // DXC's Vulkan shaders invert Y. Metal's viewport uses the original game
   // clip-space convention, so undo that conversion at the vertex entry point.
   common.vertex.flip_vert_y = true;
+  // CompilerMSL::emit_fixup converts [-w,w] to [0,w] as (z+w)/2,
+  // preserving homogeneous W. CompilerGLSL uses the opposite conversion.
+  common.vertex.fixup_clipspace = negative_one_to_one;
   compiler.set_common_options(common);
   const uint32_t count = std::popcount(used_mask);
   if (count > 16) throw std::runtime_error("more than 16 samplers in one stage");
@@ -157,13 +162,18 @@ int main(int argc, char** argv) {
         if (!bytes || bytes % 4) throw std::runtime_error("module size");
         std::vector<uint32_t> code(bytes / 4);
         if (!smolv::Decode(cache.data() + offset, size, code.data(), bytes)) throw std::runtime_error("module decode");
-        auto result = Convert(std::move(code), e.usedTextureMask);
-        std::ofstream(root / (name + ".metal")) << result.source;
-        manifest << name << '\t' << (result.vertex ? "vertex" : "fragment") << '\t'
-          << e.usedTextureMask << '\t' << e.specConstantsMask << '\t' << e.filename << '\t'
-          << result.inputs << '\t';
-        for (auto b : result.bindings) manifest << b.kind << ':' << b.slot << ':' << b.index << ',';
-        manifest << '\n'; ++accepted;
+        const auto result = Convert(code, e.usedTextureMask);
+        const auto write = [&](const Export& output, const std::string& identity) {
+          std::ofstream source(root / (identity + ".metal"));
+          if (!(source << output.source)) throw std::runtime_error("source write");
+          manifest << identity << '\t' << (output.vertex ? "vertex" : "fragment") << '\t'
+            << e.usedTextureMask << '\t' << e.specConstantsMask << '\t' << e.filename << '\t'
+            << output.inputs << '\t';
+          for (auto b : output.bindings) manifest << b.kind << ':' << b.slot << ':' << b.index << ',';
+          manifest << '\n'; ++accepted;
+        };
+        write(result, name);
+        if (result.vertex) write(Convert(std::move(code), e.usedTextureMask, true), name + "-clip-neg");
       } catch (const std::exception& error) {
         errors << name << '\t' << e.filename << '\t' << error.what() << '\n'; ++rejected;
       }

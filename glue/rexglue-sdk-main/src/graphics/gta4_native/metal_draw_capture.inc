@@ -98,7 +98,7 @@ void Gta4NativeGraphicsSystem::BeginMetalCapture(
     }
     r::Draw draw; std::string error;
     if (!r::source::Pipeline(recipe, draw, error) || draw.pipeline.vertex.variant > 1 ||
-        draw.pipeline.fragment.variant > 1 || draw.pipeline.negative_one_to_one) {
+        draw.pipeline.fragment.variant > 1) {
       state.recorder.Reject(error.empty() ? "shader variant needs Metal lowering" : error);
       state.unsupported.insert(pipeline); return;
     }

@@ -113,16 +113,15 @@ std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer& renderer,const rend
 }
 std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,render::Primitive primitive,std::string& error) {
   if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
-  if(p.negative_one_to_one){error="This game draw requires explicit negative-one-to-one clip-space shader lowering";return {};}
   const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
   if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
-  const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1},Stage::Vertex);
+  const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex);
   const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
   if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
   p.vertex.specialization=vs_meta->Specialization(p.vertex.specialization);
   if(ps_meta)p.fragment.specialization=ps_meta->Specialization(p.fragment.specialization);
   auto key=std::pair{p,primitive};if(auto it=pipelines_.find(key);it!=pipelines_.end()){error.clear();return it->second;}
-  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1},Stage::Vertex,p.vertex.specialization,error);
+  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex,p.vertex.specialization,error);
   if(!vertex.function)return {};
   Shader pixel{};
   if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,p.fragment.specialization,error);if(!pixel.function)return {};}
@@ -206,7 +205,7 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
   }
   if((result.pipeline->vertex.textures||result.pipeline->fragment.textures)&&!EnsureDummyImages(error))return false;
   std::array<FetchResources,26> fetches{};
-  const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1},Stage::Vertex);
+  const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex);
   const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
   const auto used=(vm ? vm->used_texture_mask : 0)|(pm ? pm->used_texture_mask : 0);
   for(size_t i=0;i<fetches.size();++i) {
@@ -219,7 +218,7 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
     }
     if(f.sampler){fetches[i].sampler=SamplerFor(*f.sampler,error);if(!fetches[i].sampler)return false;}
   }
-  if(!shaders_.Bind({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1},Stage::Vertex,fetches,result,error))return false;
+  if(!shaders_.Bind({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex,fetches,result,error))return false;
   if(source.pipeline.fragment.hash&&!shaders_.Bind({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment,fetches,result,error))return false;
   const auto& v=source.viewport;result.viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
   const auto& s=source.scissor;result.scissor={s[0],s[1],s[2],s[3]};
@@ -258,7 +257,7 @@ bool PlanAdapter::BindProduced(const render::Capture& capture,
   for(auto stage:{Stage::Vertex,Stage::Fragment}) {
     const auto& shader=stage==Stage::Vertex ? capture.draw.pipeline.vertex : capture.draw.pipeline.fragment;
     if(!shader.hash)continue;
-    const auto* metadata=shaders_.Metadata({shader.hash,shader.variant==1},stage);
+    const auto* metadata=shaders_.Metadata({shader.hash,shader.variant==1,stage==Stage::Vertex&&capture.draw.pipeline.negative_one_to_one},stage);
     if(!metadata)return Error(error,"Missing produced-input shader metadata");
     for(const auto& binding:metadata->bindings) {
       auto texture=produced[binding.slot];const auto kind=size_t(binding.kind);

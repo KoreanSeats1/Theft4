@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> cache(g_spirvCacheDecompressedSize);
   Check(ZSTD_decompress(cache.data(),cache.size(),g_compressedSpirvCache,
       g_spirvCacheCompressedSize)==cache.size(), "Stock shader cache decode failed");
-  size_t checked=0, early=0, late=0;
+  size_t checked=0, early=0, late=0, clip=0;
   for (size_t i=0;i<g_shaderCacheEntryCount;++i) {
     const auto& entry=g_shaderCacheEntries[i];
     const auto bytes=smolv::GetDecodedBufferSize(cache.data()+entry.spirvOffset,entry.spirvSize);
@@ -36,6 +36,16 @@ int main(int argc, char** argv) {
             "Shader lookup admitted the wrong stage");
       Check(metadata->Specialization(UINT32_MAX)==entry.specConstantsMask,"Specialization contains unused bits");
       variant ? ++late : ++early; ++checked;
+      if (stage==Stage::Vertex) {
+        const auto* converted=catalog.Find({entry.hash,false,true},stage);
+        Check(converted && converted->filename==metadata->filename &&
+            converted->used_texture_mask==metadata->used_texture_mask &&
+            converted->specialization_mask==metadata->specialization_mask &&
+            converted->inputs==metadata->inputs && converted->bindings==metadata->bindings,
+            "Clip conversion changed the stock vertex interface");
+        Check(!catalog.Find({entry.hash,false,true},Stage::Fragment),"Vertex clip variant admitted as a fragment shader");
+        ++clip;++checked;
+      }
     }
   }
   Check(checked==catalog.Size() && early==g_shaderCacheEntryCount,"Unexpected stock catalog entries");
@@ -49,6 +59,9 @@ int main(int argc, char** argv) {
   const std::string corrupt[]{"", row+row,
     "../shader\tfragment\t0\t0\tfixture.bin\t\t\n",
     "0000000000000001-late\tfragment\t0\t0\tfixture.bin\t\t\n",
+    "0000000000000001-clip-neg\tvertex\t0\t0\tfixture.bin\t\t\n",
+    "0000000000000001-clip-neg\tfragment\t0\t0\tfixture.bin\t\t\n",
+    "0000000000000001-late-clip-neg\tvertex\t0\t0\tfixture.bin\t\t\n",
     "0000000000000001\tfragment\t32769\t1794\tfixture.bin\t\t0:0:1,0:15:0,4:0:0,4:15:1,\n",
     "0000000000000001\tfragment\t32769\t1794\tfixture.bin\t\t0:0:0,0:15:1,4:0:0,\n",
     "0000000000000001\tfragment\t32769\t1794\tfixture.bin\t\t0:0:1,0:15:2,4:0:0,4:15:1,\n",
@@ -57,6 +70,13 @@ int main(int argc, char** argv) {
     Check(!fixture.Parse(bad,error),"Malformed catalog was admitted");
     Check(fixture.Size()==1 && fixture.Find({1,false},Stage::Fragment),"Failed parse replaced valid catalog");
   }
-  std::cout<<"PASS: "<<early<<" stock shaders and "<<late<<" late variants match the runtime catalog; "
+  const std::string vertex="0000000000000002\tvertex\t0\t0\tfixture.bin\t0:13:4,\t\n";
+  const std::string converted="0000000000000002-clip-neg\tvertex\t0\t0\tfixture.bin\t0:13:4,\t\n";
+  Check(fixture.Parse(vertex+converted,error) && fixture.Size()==2,error.c_str());
+  Check(fixture.Find({2,false,true},Stage::Vertex) && ShaderKey{2,false,true}.Name()=="0000000000000002-clip-neg",
+        "Clip variant identity is not canonical");
+  Check(!fixture.Parse(vertex+"0000000000000002-clip-neg\tvertex\t0\t0\tfixture.bin\t0:13:3,\t\n",error) && fixture.Size()==2,
+        "Incompatible clip variant replaced the valid catalog");
+  std::cout<<"PASS: "<<early<<" stock shaders and "<<late<<" late variants and "<<clip<<" depth-clip variants match the runtime catalog; "
       "sparse binding order, stage checks, specialization, and transactional rejection verified\n";
 }

@@ -424,6 +424,69 @@ struct Probe {
         @"buffer_reuses":@(stats.buffer_hits),@"texture_reuses":@(stats.texture_hits),
         @"gpu_retains_retired_resources":@YES,@"invalid_uploads_rejected":@5}];
   }
+  void GameDepthClip() {
+    namespace r=theft4::render;
+    PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    const auto copy=[](std::span<const uint8_t> bytes) {
+      auto source=std::make_shared<r::Bytes>();source->generation=1;
+      source->value.assign(bytes.begin(),bytes.end());return r::Buffer{source,0,bytes.size()};
+    };
+    const auto capture=[&](float z,float w,bool negative,bool depth_only,r::Compare compare,
+                           double minimum,double maximum) {
+      auto result=std::make_shared<r::Capture>();result->width=W;result->height=H;
+      auto& d=result->draw;auto& p=d.pipeline;
+      p.vertex.hash=0x048E49996734F6B5ull;p.negative_one_to_one=negative;
+      if(!depth_only){p.fragment.hash=0x949ED69300FB92B7ull;p.colors[0]=r::Format::RGBA8Unorm;}
+      p.depth=r::Format::Depth32Float;p.depth_test=true;p.depth_write=true;p.depth_compare=compare;
+      p.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},
+                    {13,0,32,r::VertexFormat::Float4}};p.streams[0]={sizeof(Vertex),false};
+      d.viewport={0,0,double(W),double(H),minimum,maximum};d.scissor={0,0,W,H};d.vertex_count=6;
+      const Case c{};auto banks=Constants(c,1);
+      for(size_t i=0;i<3;++i)d.constants[i]=copy({
+        static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+      auto vertices=Quad({1,0,0,1},z);
+      for(auto& vertex:vertices){vertex.position[0]*=w;vertex.position[1]*=w;vertex.position[3]=w;}
+      d.vertices[0]=copy(Bytes(vertices));return result;
+    };
+    struct Input {float z,w;bool negative,depth_only,visible;double minimum,maximum;};
+    const Input inputs[]{
+      {-0.5f,1,true,false,true,0,1},{-1,2,true,false,true,0,1},
+      {-0.25f,0.5f,true,false,true,0,1},{0,2,true,false,true,0,1},
+      {-1,1,true,false,true,0,1},{1,1,true,false,true,0,1},
+      {-1.25f,1,true,false,false,0,1},{1.25f,1,true,false,false,0,1},
+      {-0.5f,1,false,false,false,0,1},{0.25f,1,false,false,true,0,1},
+      {-0.5f,1,true,true,true,0,1},{-1,2,true,true,true,0.25,0.75}};
+    size_t checked=0;
+    for(const auto& input:inputs) {
+      auto original=capture(input.z,input.w,input.negative,input.depth_only,r::Compare::Always,input.minimum,input.maximum);
+      auto draw=adapter.Realize(original,error);Require(bool(draw));
+      Require(adapter.Realize(original,error)==draw);
+      auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+          width:W height:H mipmapped:NO];descriptor.storageMode=MTLStorageModePrivate;
+      descriptor.usage=MTLTextureUsageRenderTarget;auto depth=renderer.Texture(descriptor,error);Require(depth);
+      auto first=Color(),second=Color();auto pass=Pass(first,nil,depth);
+      pass.depthAttachment.storeAction=MTLStoreActionStore;
+      if(input.depth_only)pass.colorAttachments[0].texture=nil;
+      auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(pass,error));
+      Require(frame.Encode(*draw,error));Require(frame.EndPass(error));
+      // The stock positive-depth shader is an independent oracle. Equal must
+      // pass only at the remapped depth, including the viewport depth interval.
+      const float expected=input.negative ? (input.z/input.w+1)*0.5f : input.z/input.w;
+      auto probe=capture(input.visible ? expected : 0.25f,1,false,false,r::Compare::Equal,input.minimum,input.maximum);
+      auto probe_draw=adapter.Realize(probe,error);Require(bool(probe_draw));
+      auto shade=Pass(second,nil,depth);shade.depthAttachment.loadAction=MTLLoadActionLoad;
+      Require(frame.BeginPass(shade,error));Require(frame.Encode(*probe_draw,error));Require(frame.EndPass(error));
+      auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+      auto pixels=renderer.ReadRGBA8(second,error);Require(pixels.size()==W*H*4);
+      const uint8_t red[]{255,0,0,255},black[]{0,0,0,255};
+      for(size_t byte=0;byte<pixels.size();++byte)
+        Require(pixels[byte]==(input.visible ? red[byte%4] : black[byte%4]));
+      ++checked;
+    }
+    [results addObject:@{@"case":@"game_negative_depth_clip",@"passed":@YES,@"projection_cases":@(checked),
+      @"homogeneous_w_preserved":@YES,@"near_and_far_clip":@YES,@"stock_positive_depth_unchanged":@YES,
+      @"stored_depth_matches_positive_shader":@YES,@"depth_only_and_viewport_range":@YES}];
+  }
   void GamePipelineLayouts() {
     auto vs=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex);
     auto fixed=[MTLRenderPipelineDescriptor new];fixed.vertexDescriptor=VertexDeclaration();
@@ -960,7 +1023,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

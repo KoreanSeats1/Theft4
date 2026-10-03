@@ -16,7 +16,10 @@ their slots. Normal draws do not perform CPU readback.
 
 `metal_shader_export` translates the exact embedded stock SPIR-V corpus offline.
 It retains the native color-output epilogue, alpha testing and Xenos sample-mask
-generation. Vertex Y conversion follows Metal's viewport convention. The three
+generation. Vertex Y conversion follows Metal's viewport convention. Every stock vertex shader
+also has a separate negative-one-to-one depth variant; the MSL exporter maps
+`z` to `(z + w) / 2` while preserving homogeneous `w`. The effective draw state
+selects this variant, leaving ordinary zero-to-one shaders unchanged. The three
 guest constant banks become ordinary Metal buffer slots 0/1/2; pointer arithmetic
 is derived from these parameters inside the shader. The host does not provide
 Vulkan buffer-device addresses.
@@ -44,7 +47,7 @@ mutable render targets or resolve aliases. These initial immutable uploads use
 shared storage; private staging and upload batching belong in the frame adapter.
 
 The stock corpus contains 1,356 shaders and 706 additional late variants:
-**2,062 iOS Metal libraries compile successfully**, using Metal 2.4 with an iOS 16
+plus 650 vertex depth-convention variants: **2,712 iOS Metal libraries compile successfully**, using Metal 2.4 with an iOS 16
 shader deployment target. Actual maximum sampler count is eight per stage.
 This is compilation coverage; every game pipeline/pass combination still needs
 validation. The test app itself uses the project's iOS 26 deployment target.
@@ -56,7 +59,7 @@ sampled images, shaders, and effective pipeline/draw state. The Metal adapter
 realizes and caches those packets. Its diagnostic CBOR codec preserves shared
 resource ownership and rejects malformed references, integer overflow, invalid
 index/instance ranges, and attachment-role mismatches. Unsupported override
-shaders, clip conventions, sample masks, fans, and GPU-produced inputs reject
+shaders, partial sample masks, fans, and missing GPU-produced inputs reject
 explicitly rather than approximating their effects.
 
 An optional `THEFT4_NATIVE_METAL_CAPTURE` lab build records the exact bytes after
@@ -232,3 +235,20 @@ claim. Metal Lab's captured-draw preview now uses two ordered passes and one
 submission: the exact private game draw on seeded attachments, followed by the
 actual host presentation shader into the drawable. This remains an isolated
 slice, not a complete original game frame.
+
+## Negative depth clip integration
+
+The runtime shader key contains the original hash, late-alpha variant, and
+vertex depth convention. A `-clip-neg` catalog entry must be a vertex shader,
+have a stock base, and preserve its reflected inputs, specialization mask and
+fetch bindings. Stock and converted PSOs, functions and bindings cache separately.
+The game comparison capture frontend now admits this effective pipeline state
+without approximating it. The capture remains an isolated draw mechanism.
+
+The Mac GPU contract uses an actual stock game vertex/pixel shader through the
+neutral draw adapter. Twelve cases verify negative depth, non-unit homogeneous W,
+near/far endpoints and clipping, unchanged ordinary positive depth, depth-only
+rendering, and a non-default viewport depth interval. Stored depth is checked
+by a separate stock zero-to-one shader with an Equal comparison. This is shader
+and draw-state validation; the full game still requires live ordered frame
+production, backend selection and direct Metal presentation.

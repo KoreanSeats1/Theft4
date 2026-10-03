@@ -13,6 +13,7 @@ enum class FetchKind : uint32_t { Texture2D, Texture2DArray, Texture3D, TextureC
 struct ShaderKey {
   uint64_t hash = 0;
   bool late = false;
+  bool negative_one_to_one = false;
   bool operator==(const ShaderKey&) const = default;
   std::string Name() const;
 };

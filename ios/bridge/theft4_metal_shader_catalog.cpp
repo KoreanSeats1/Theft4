@@ -42,6 +42,8 @@ ShaderMetadata ParseRow(std::string_view line) {
   Require(fields.size() == 7, "Unexpected Metal shader manifest schema");
   ShaderMetadata result;
   auto key = fields[0];
+  result.key.negative_one_to_one = key.ends_with("-clip-neg");
+  if (result.key.negative_one_to_one) key.remove_suffix(9);
   result.key.late = key.ends_with("-late");
   if (result.key.late) key.remove_suffix(5);
   Require(key.size() == 16, "Invalid Metal shader key");
@@ -50,6 +52,7 @@ ShaderMetadata ParseRow(std::string_view line) {
   Require(fields[1] == "vertex" || fields[1] == "fragment", "Invalid Metal shader stage");
   result.stage = fields[1] == "vertex" ? Stage::Vertex : Stage::Fragment;
   Require(!result.key.late || result.stage == Stage::Fragment, "Late vertex shader is invalid");
+  Require(!result.key.negative_one_to_one || result.stage == Stage::Vertex, "Clip conversion is valid only for vertex shaders");
   result.used_texture_mask = Number<uint32_t>(fields[2]);
   result.specialization_mask = Number<uint32_t>(fields[3]);
   Require(!(result.used_texture_mask & ~0x03ffffffu) &&
@@ -109,10 +112,12 @@ std::string ShaderKey::Name() const {
   std::ostringstream text;
   text << std::hex << std::setw(16) << std::setfill('0') << hash;
   if (late) text << "-late";
+  if (negative_one_to_one) text << "-clip-neg";
   return text.str();
 }
 size_t ShaderKeyHash::operator()(const ShaderKey& key) const noexcept {
-  uint64_t value = key.hash ^ (key.late ? 0x9e3779b97f4a7c15ull : 0);
+  uint64_t value = key.hash ^ (key.late ? 0x9e3779b97f4a7c15ull : 0) ^
+      (key.negative_one_to_one ? 0xd6e8feb86659fd93ull : 0);
   value ^= value >> 33; value *= 0xff51afd7ed558ccdull; value ^= value >> 33;
   return size_t(value);
 }
@@ -128,9 +133,9 @@ bool ShaderCatalog::Parse(std::string_view manifest, std::string& error) {
       Require(parsed.size() <= 65536, "Too many Metal shader manifest entries");
     }
     Require(!parsed.empty(), "Empty Metal shader catalog");
-    for (const auto& [key, entry] : parsed) if (key.late) {
+    for (const auto& [key, entry] : parsed) if (key.late || key.negative_one_to_one) {
       const auto early = parsed.find({key.hash, false});
-      Require(early != parsed.end(), "Late Metal shader has no early variant");
+      Require(early != parsed.end(), "Metal shader variant has no stock base");
       const auto& base = early->second;
       Require(base.stage == entry.stage && base.filename == entry.filename &&
               base.specialization_mask == entry.specialization_mask &&

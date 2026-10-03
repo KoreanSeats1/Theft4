@@ -221,3 +221,14 @@ scene color, a depth handoff between passes, cached host pipelines/constants,
 and presentation from an immutable prepared ASTC image. Short constants reject
 without changing stored output. Utility compilation coverage does not establish
 SMAA, sun-shaft or split-postfx gameplay parity; those need real scene frames.
+
+The ordered adapter also accepts a CAMetalLayer output allocation and presents
+it in the same command buffer. Drawable loads, sampled drawable feedback and
+blit/readback access to framebuffer-only textures reject explicitly. The final
+host presentation program proves complete color coverage with full scissor,
+no blend/depth/stencil tests and all channels enabled, allowing a DontCare load
+instead of an extra clear. Partial or masked presentation cannot make that
+claim. Metal Lab's captured-draw preview now uses two ordered passes and one
+submission: the exact private game draw on seeded attachments, followed by the
+actual host presentation shader into the drawable. This remains an isolated
+slice, not a complete original game frame.

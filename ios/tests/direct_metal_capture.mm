@@ -1,5 +1,7 @@
 #include "direct_metal_capture.h"
 #include "theft4_metal_plan.h"
+#include "theft4_metal_frame.h"
+#include "present_constants.h"
 #include "native_color_output.h"
 #import <ImageIO/ImageIO.h>
 #include <algorithm>
@@ -187,10 +189,55 @@ NSDictionary* ReplayDirectMetalCaptures(NSString* libraries,NSString* captures,N
 }
 bool PresentDirectMetalCapture(CAMetalLayer* layer,NSString* libraries,NSString* path,NSString** failure) {
   try {
-    Replay replay;replay.Open(libraries);auto capture=replay.Read(path);auto targets=replay.MakeTargets(*capture);replay.RunDraw(capture,targets);
-    id<MTLTexture> color=nil;for(auto t:targets.readable)if(t){color=t;break;}
-    replay.Require(color);layer.device=replay.renderer.Device();layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+    namespace r=theft4::render;
+    Replay replay;auto capture=replay.Read(path);FrameAdapter adapter(replay.renderer);
+    replay.Require(adapter.Open(libraries.UTF8String,replay.error));
+    layer.device=replay.renderer.Device();layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly=YES;layer.drawableSize=CGSizeMake(512,512.0*capture->height/capture->width);
-    auto drawable=[layer nextDrawable];replay.Require(drawable);replay.Copy(color,drawable.texture,drawable);return true;
+    auto drawable=[layer nextDrawable];replay.Require(drawable);
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=1;uint64_t identity=0;
+    const auto surface=[&](r::Format format,uint32_t samples,uint32_t width,uint32_t height) {
+      auto s=std::make_shared<r::Surface>();s->key={++identity,1};s->format=format;s->samples=samples;s->width=width;s->height=height;
+      plan->surfaces.push_back(s);return s;
+    };
+    const auto attachment=[](const std::shared_ptr<const r::Surface>& s,r::Aspect aspect) {
+      r::Attachment a;a.view={s->key,0,0,aspect};a.load=r::Load::Clear;a.store=r::Store::Store;return a;
+    };
+    r::Pass game;const auto& pipeline=capture->draw.pipeline;std::optional<r::SurfaceView> source;
+    for(size_t i=0;i<4;++i)if(pipeline.colors[i]!=r::Format::Invalid) {
+      auto s=surface(pipeline.colors[i],pipeline.samples,capture->width,capture->height);
+      auto a=attachment(s,r::Aspect::Color);a.clear_color={0.03125,0.0625,0.125,0};
+      auto sampled=a.view;
+      if(pipeline.samples>1) {
+        auto resolved=surface(s->format,1,s->width,s->height);sampled={resolved->key,0,0,r::Aspect::Color};
+        a.resolve=sampled;a.store=r::Store::Resolve;
+      }
+      game.colors[i]=a;if(!source)source=sampled;
+    }
+    std::shared_ptr<const r::Surface> depth;
+    if(pipeline.depth!=r::Format::Invalid) {
+      depth=surface(pipeline.depth,pipeline.samples,capture->width,capture->height);game.depth=attachment(depth,r::Aspect::Depth);
+      game.depth->clear_depth=(pipeline.depth_compare==r::Compare::Greater||pipeline.depth_compare==r::Compare::GreaterEqual) ? 0 : 1;
+    }
+    if(pipeline.stencil!=r::Format::Invalid) {
+      auto stencil=pipeline.stencil==pipeline.depth ? depth : surface(pipeline.stencil,pipeline.samples,capture->width,capture->height);
+      game.stencil=attachment(stencil,r::Aspect::Stencil);
+    }
+    replay.Require(bool(source));game.commands.push_back(r::FrameDraw{capture,{}});
+    auto output=surface(r::Format::BGRA8Unorm,1,uint32_t(drawable.texture.width),uint32_t(drawable.texture.height));
+    r::Pass present;present.colors[0]=attachment(output,r::Aspect::Color);present.colors[0]->load=r::Load::Discard;
+    r::HostDraw display;
+    display.pipeline.colors[0]=output->format;display.scissor={0,0,output->width,output->height};
+    display.fetches[0].produced=*source;display.fetches[0].sampler=std::make_shared<r::Sampler>();
+    rex::graphics::gta4_native::NativePresentConstants constants;
+    constants.source_width=capture->width;constants.source_height=capture->height;
+    constants.destination_width=output->width;constants.destination_height=output->height;
+    const auto format=r::FindSurface(*plan,source->surface)->format;
+    constants.output_mode=(format==r::Format::RGBA8Unorm||format==r::Format::BGRA8Unorm) ? 4 : 0;
+    auto bank=std::make_shared<r::Bytes>();bank->generation=1;bank->value.resize(sizeof(constants));
+    memcpy(bank->value.data(),&constants,sizeof(constants));display.constants={bank,0,sizeof(constants)};
+    present.commands.push_back(display);plan->commands={game,present};plan->output=present.colors[0]->view;
+    auto receipt=adapter.SubmitAndPresent(plan,output->key,drawable,replay.error);replay.Require(bool(receipt));
+    replay.Require(receipt.Wait(replay.error));return true;
   }catch(const std::exception& e){if(failure)*failure=[NSString stringWithUTF8String:e.what()];return false;}
 }

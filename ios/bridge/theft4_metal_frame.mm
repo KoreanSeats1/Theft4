@@ -42,6 +42,7 @@ struct FrameAdapter::Impl {
     std::weak_ptr<const render::Surface> owner;
     render::Surface descriptor;
     id<MTLTexture> texture=nil;
+    bool external=false;
     std::map<render::SurfaceView,id<MTLTexture>> views;
     std::map<render::SurfaceView,id<MTLTexture>> sampled_views;
   };
@@ -58,16 +59,26 @@ struct FrameAdapter::Impl {
       if(it->surface==key)it=contents.erase(it);else ++it;
     }
   }
-  bool Ensure(const std::shared_ptr<const render::Surface>& s,std::string& error) {
+  bool Ensure(const std::shared_ptr<const render::Surface>& s,id<MTLTexture> external,std::string& error) {
     if(auto it=surfaces.find(s->key);it!=surfaces.end()) {
       const auto owner=it->second.owner.lock();
       if(owner) {
-        if(owner.owner_before(s)||s.owner_before(owner)||it->second.descriptor!=*s) {
+        if(owner.owner_before(s)||s.owner_before(owner)||it->second.descriptor!=*s||
+           it->second.external!=bool(external)||(external&&it->second.texture!=external)) {
           error="Mutable Metal surface generation changed identity";return false;
         }
         return true;
       }
-      stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);surfaces.erase(it);Forget(s->key);
+      if(!it->second.external)stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);
+      surfaces.erase(it);Forget(s->key);
+    }
+    if(external) {
+      if(external.device!=renderer.Device()||external.textureType!=MTLTextureType2D||external.sampleCount!=1||
+         external.width!=s->width||external.height!=s->height||external.pixelFormat!=PlanAdapter::PixelFormat(s->format)||
+         s->kind!=render::ImageKind::Texture2D||s->levels!=1||s->layers!=1||s->samples!=1) {
+        error="Drawable allocation differs from the declared Metal frame output";return false;
+      }
+      surfaces.emplace(s->key,Entry{s,*s,external,true,{},{}});++stats.surface_creates;return true;
     }
     const auto bytes=SurfaceBytes(*s);
     if(bytes>kSurfaceBudget||stats.allocated_bytes>kSurfaceBudget-bytes) {
@@ -82,7 +93,7 @@ struct FrameAdapter::Impl {
     d.storageMode=MTLStorageModePrivate;d.hazardTrackingMode=MTLHazardTrackingModeTracked;
     d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead|MTLTextureUsagePixelFormatView;
     auto texture=renderer.Texture(d,error);if(!texture)return false;
-    surfaces.emplace(s->key,Entry{s,*s,texture,{},{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
+    surfaces.emplace(s->key,Entry{s,*s,texture,false,{},{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
     return true;
   }
   id<MTLTexture> View(const render::SurfaceView& view,std::string& error) {
@@ -91,6 +102,7 @@ struct FrameAdapter::Impl {
       error="Missing mutable Metal surface owner";return nil;
     }
     auto& entry=it->second;
+    if(entry.external)return entry.texture;
     if(auto found=entry.views.find(view);found!=entry.views.end())return found->second;
     if(entry.descriptor.samples>1)return entry.texture;
     // Select the exact mip and layer for both attachment and sampled aliases.
@@ -176,10 +188,53 @@ bool FrameAdapter::Open(const std::string& libraries,std::string& error){
   impl_->host_pipelines.clear();return true;
 }
 Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error) {
+  return SubmitFrame(plan,{},nil,error);
+}
+Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::FramePlan>& plan,
+                                      render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error) {
+  if(!drawable||!target.id||!target.generation){error="Missing ordered Metal presentation target";return {};}
+  return SubmitFrame(plan,target,drawable,error);
+}
+Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
+                                 render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error) {
   if(!plan){error="Missing ordered Metal frame plan";return {};}
+  if(drawable) {
+    if(!plan->output||*plan->output!=render::SurfaceView{target,0,0,render::Aspect::Color}) {
+      error="Drawable must be the declared ordered frame output";return {};
+    }
+    const auto* final=plan->commands.empty() ? nullptr : std::get_if<render::Pass>(&plan->commands.back());
+    if(!final||!final->colors[0]||
+       (final->colors[0]->view.surface!=target&&
+        (!final->colors[0]->resolve||final->colors[0]->resolve->surface!=target))) {
+      error="Drawable must be stored by the final color-zero pass";return {};
+    }
+    for(const auto& command:plan->commands) {
+      if(const auto* copy=std::get_if<render::ImageCopy>(&command)) {
+        if(copy->source.surface==target||copy->destination.surface==target) {
+          error="Framebuffer-only drawable cannot participate in image copies";return {};
+        }
+        continue;
+      }
+      const auto& pass=std::get<render::Pass>(command);
+      for(const auto& a:pass.colors)if(a&&a->view.surface==target&&a->load==render::Load::Load) {
+        error="Drawable contents must be defined in their presentation pass";return {};
+      }
+      for(const auto& command:pass.commands) {
+        if(const auto* draw=std::get_if<render::FrameDraw>(&command))
+          for(const auto& v:draw->produced)if(v&&v->surface==target) {
+            error="Framebuffer-only drawable cannot be sampled";return {};
+          }
+        if(const auto* host=std::get_if<render::HostDraw>(&command))
+          for(const auto& input:host->fetches)if(input.produced&&input.produced->surface==target) {
+            error="Framebuffer-only drawable cannot be sampled by a host utility";return {};
+          }
+      }
+    }
+  }
   RetireResources();render::SurfaceContents final;
   if(!render::ValidateFrame(*plan,impl_->contents,final,error))return {};
-  for(const auto& surface:plan->surfaces)if(!impl_->Ensure(surface,error))return {};
+  for(const auto& surface:plan->surfaces)
+    if(!impl_->Ensure(surface,drawable&&surface->key==target ? drawable.texture : nil,error))return {};
   struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
   struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
@@ -230,6 +285,7 @@ Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& pla
     }
     if(!frame.EndPass(error))return {};
   }
+  if(drawable&&!frame.Present(drawable,error))return {};
   auto receipt=frame.Submit(error);if(!receipt)return {};
   for(const auto& surface:plan->surfaces)impl_->Forget(surface->key);
   impl_->contents.insert(final.begin(),final.end());
@@ -245,7 +301,7 @@ size_t FrameAdapter::RetireResources() {
   size_t retired=impl_->draws.RetireResources();
   for(auto it=impl_->surfaces.begin();it!=impl_->surfaces.end();) {
     if(it->second.owner.expired()) {
-      impl_->Forget(it->first);impl_->stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);
+      impl_->Forget(it->first);if(!it->second.external)impl_->stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);
       it=impl_->surfaces.erase(it);++retired;++impl_->stats.retired;
     }else ++it;
   }

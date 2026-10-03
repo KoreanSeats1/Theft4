@@ -82,6 +82,11 @@ int main() {
   host.fetches[0].sampler=std::make_shared<Sampler>();hostPass.commands.push_back(host);
   assert(ValidateFrame(utilities,{},result,error));
   const auto hostDraw=[](FramePlan& f)->HostDraw& {return std::get<HostDraw>(std::get<Pass>(f.commands[1]).commands[0]);};
+  auto fullscreen=utilities;std::get<Pass>(fullscreen.commands[1]).colors[0]->load=Load::Discard;
+  assert(ValidateFrame(fullscreen,{},result,error));
+  bad=fullscreen;hostDraw(bad).scissor={1,1,2,2};reject(bad);
+  bad=fullscreen;hostDraw(bad).pipeline.blends[0].write_mask=7;reject(bad);
+  bad=fullscreen;hostDraw(bad).pipeline.blends[0].enabled=true;reject(bad);
   bad=utilities;hostDraw(bad).constants.length=43;reject(bad);
   bad=utilities;hostDraw(bad).constants.offset=UINT64_MAX;reject(bad);
   bad=utilities;hostDraw(bad).program=HostProgram::Count;reject(bad);

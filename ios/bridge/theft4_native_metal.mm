@@ -266,7 +266,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   for (const auto& b : d.textures) {
     const unsigned s = b.stage == Stage::Vertex ? 0 : 1;
     const auto& abi = s ? p.fragment : p.vertex;
-    if (b.index >= 31 || !b.texture || !(abi.textures & (1u << b.index)) ||
+    if (b.index >= 31 || !b.texture || b.texture.framebufferOnly || !(abi.textures & (1u << b.index)) ||
         (texture_masks[s] & (1u << b.index)) || b.texture.textureType != abi.texture_types[b.index])
       return Error(error, "Invalid Metal texture binding");
     texture_masks[s] |= 1u << b.index;
@@ -395,7 +395,7 @@ bool Frame::ClearRectangle(const Clear& clear,std::string& error) {
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];return true;
 }
 bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrigin src,MTLOrigin dst,MTLSize size,std::string& error) {
-  if(!*this||impl_->encoder||!source||!destination||source==destination||
+  if(!*this||impl_->encoder||!source||!destination||source==destination||source.framebufferOnly||destination.framebufferOnly||
      source.textureType!=MTLTextureType2D||destination.textureType!=MTLTextureType2D||
      source.pixelFormat!=destination.pixelFormat||source.sampleCount!=1||destination.sampleCount!=1||
      source.pixelFormat==MTLPixelFormatDepth32Float_Stencil8||
@@ -440,7 +440,7 @@ std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
   const bool array=type==MTLTextureType2DArray || type==MTLTextureTypeCubeArray;
   const bool volume=type==MTLTextureType3D;
   const NSUInteger slices=cube ? t.arrayLength*6 : array ? t.arrayLength : 1;
-  if (!Ready() || !t || (!cube && !array && !volume && type!=MTLTextureType2D) || t.sampleCount != 1 ||
+  if (!Ready() || !t || t.framebufferOnly || (!cube && !array && !volume && type!=MTLTextureType2D) || t.sampleCount != 1 ||
       (t.pixelFormat != MTLPixelFormatRGBA8Unorm && t.pixelFormat != MTLPixelFormatBGRA8Unorm) ||
       t.width > 16384 || t.height > 16384 ||
       level>=t.mipmapLevelCount || slice>=slices ||

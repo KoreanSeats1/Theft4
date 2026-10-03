@@ -102,6 +102,9 @@
   NSMutableDictionary* final=[self.report mutableCopy];final[@"onscreen_metal_presentation"]=@(shown);
   final[@"app_build"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
   final[@"presentation_failure"]=failure ?: @"";
+  if(self.gameCapturePreview)final[@"ordered_game_draw_presentation"]=@{
+    @"passed":@(shown),@"render_passes":@2,@"submissions":@1,@"cpu_pixel_readback":@NO,
+    @"scope":@"One captured draw on seeded attachments followed by the actual host presentation shader; complete game frame is not yet integrated"};
   final[@"passed"]=@([self.report[@"passed"] boolValue] && shown);
   NSData* json=[NSJSONSerialization dataWithJSONObject:final options:NSJSONWritingPrettyPrinted error:nil];
   [json writeToFile:[output stringByAppendingPathComponent:@"DIRECT_METAL_VALIDATION.json"] atomically:YES];

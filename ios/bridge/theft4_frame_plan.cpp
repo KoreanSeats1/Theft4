@@ -202,6 +202,12 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
               return Reject(error,"Host utility samples its active attachment");
           }
         }
+        // This exact host program always writes color zero, with a generated
+        // fullscreen triangle and no discard path. Proven complete coverage
+        // permits DontCare instead of a redundant drawable clear/load.
+        if(host->program==HostProgram::Present&&p.samples==1&&pass.colors[0]&&
+           !p.depth_test&&!p.stencil_test&&!p.blends[0].enabled&&p.blends[0].write_mask==15&&
+           rect==std::array<uint32_t,4>{0,0,width,height})contents.insert(pass.colors[0]->view);
         continue;
       }
       const auto& item=std::get<FrameDraw>(command);

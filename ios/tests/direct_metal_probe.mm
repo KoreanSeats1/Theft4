@@ -652,7 +652,7 @@ struct Probe {
     copyDepth.program=r::HostProgram::DepthHandoff;copyDepth.pipeline.depth=r::Format::Depth32Float;copyDepth.pipeline.depth_write=true;
     copyDepth.scissor={0,0,W,H};copyDepth.fetches[0].produced=sceneDepth;copyDepth.fetches[0].sampler=std::make_shared<r::Sampler>();
     handoff.commands.push_back(copyDepth);
-    r::Pass present;present.colors[0]=attachment(dst);r::HostDraw display;
+    r::Pass present;present.colors[0]=attachment(dst);present.colors[0]->load=r::Load::Discard;r::HostDraw display;
     display.pipeline.colors[0]=r::Format::BGRA8Unorm;display.scissor={0,0,W,H};display.fetches[0].produced=src;
     display.fetches[0].sampler=std::make_shared<r::Sampler>();
     rex::graphics::gta4_native::NativePresentConstants constants;constants.source_width=W;constants.source_height=H;

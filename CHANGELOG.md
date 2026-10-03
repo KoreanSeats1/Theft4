@@ -1,5 +1,22 @@
 # Theft4 engineering changelog
 
+## Build 94 — BC texture compatibility integration — 2026-10-02
+
+- GPUs without direct BC support prepare static BC1/BC2/BC3 textures as saved
+  ASTC copies before Play. Setup explains the storage and time requirement,
+  shows progress and an estimate, and supports pause/resume. Later launches
+  reuse completion; System offers cache deletion with confirmation.
+- BC-incompatible older GPUs use the tested sampler and SDR presentation fixes
+  plus conservative renderer defaults in the limited-memory tier. BC-capable
+  GPUs retain build 94's existing renderer and performance settings.
+- Build 94's consolidated defaults, save import/export, installer routing and
+  session capture reset are retained. Runtime Wait Improvements stays Off.
+- After copying an already-updated game, Check Game Files verifies it and
+  continues to setup or Ready without requesting an unnecessary update file.
+- Compatibility restores texture support; A12Z gameplay remains slow and can
+  stutter. Runtime textures outside the static inventory can still convert on
+  first encounter.
+
 ## 0.2.1 — important iPhone and iPad update — 2026-09-24
 
 - **Replacement release:** version 0.2.1 build 53 withdraws the native

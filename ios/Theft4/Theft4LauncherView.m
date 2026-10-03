@@ -1,4 +1,7 @@
 #import "Theft4LauncherView.h"
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+#import "Theft4TextureSources.h"
+#endif
 #import "Theft4CityView.h"
 #include "theft4_output_policy.h"
 #include <stdlib.h>
@@ -332,6 +335,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
     _restartButton = Action(@"RESTART CORE PROBE", NO);
     _restartButton.accessibilityIdentifier = @"core.restart";
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    _astcConversion = [UISwitch new];
+    _astcConversion.onTintColor = Ink(0x35CDD1);
+    _astcConversion.accessibilityIdentifier = @"settings.astcConversion";
+#endif
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xB6884D);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
@@ -344,7 +352,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _detailLabel = Copy(@"Waiting for runtime information…", 12, YES);
     _detailLabel.accessibilityIdentifier = @"core.details";
     NSString *displayName = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"Theft4";
-    _system = Column(@[
+    NSMutableArray<UIView *> *systemRows = [NSMutableArray arrayWithArray:@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
@@ -354,7 +362,33 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _exportSavesButton, _importSavesButton,
         _prepareButton, _restartButton, _detailLabel,
         Copy([NSString stringWithFormat:@"On first launch, %@ creates Files → On My iPhone/iPad → %@ → game. Copy the contents of the prepared game folder into game, then verify.", displayName, displayName], 13, NO)
-    ], 20);
+    ]];
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    UIStackView *astcRow = (UIStackView *)[self setting:@"ASTC TEXTURE COMPATIBILITY"
+        detail:@"Automatic one-time setup for this GPU. Saves compressed ASTC copies before Play to reduce texture-conversion pauses and GPU memory use. Later launches reuse them. Devices with direct BC support, such as iPhone 15 Pro (A17 Pro), iPhone 16 (A18), and M3/M4/M5 iPads, skip this requirement."
+        toggle:_astcConversion];
+    astcRow.backgroundColor = [Ink(0x35CDD1) colorWithAlphaComponent:.12];
+    astcRow.layer.borderColor = [Ink(0x35CDD1) colorWithAlphaComponent:.60].CGColor;
+    astcRow.layer.borderWidth = 1;
+    astcRow.layer.cornerRadius = 8;
+    astcRow.layoutMargins = UIEdgeInsetsMake(13, 13, 13, 13);
+    astcRow.layoutMarginsRelativeArrangement = YES;
+    UIStackView *astcText = (UIStackView *)astcRow.arrangedSubviews.firstObject;
+    UILabel *astcTitle = (UILabel *)astcText.arrangedSubviews.firstObject;
+    astcTitle.textColor = Ink(0x6BE5E7);
+    _deleteTextureCacheButton = Action(@"DELETE PREPARED TEXTURE CACHE", NO);
+    _deleteTextureCacheButton.accessibilityIdentifier = @"settings.deleteTextureCache";
+    BOOL showTextureCompatibility = Theft4DeviceNeedsBCTexturePreparation();
+#ifdef THEFT4_ASTC_EXPERIMENT
+    showTextureCompatibility = YES;
+#endif
+    if (showTextureCompatibility) {
+        [systemRows insertObject:astcRow atIndex:2];
+        [systemRows insertObject:Column(@[_deleteTextureCacheButton,
+            Copy(@"Free the storage used by prepared textures. Confirmation required. Your game files and saves are kept. Devices that need ASTC must prepare textures again before Play.", 12, NO)], 7) atIndex:3];
+    }
+#endif
+    _system = Column(systemRows, 20);
 
     _pages = @[_play, _graphics, _interfacePage, _system];
     _scroll = [UIScrollView new];

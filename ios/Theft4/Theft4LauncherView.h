@@ -27,6 +27,10 @@
 @property(nonatomic, readonly) UISegmentedControl *reflectionQuality;
 @property(nonatomic, readonly) UISegmentedControl *antiAliasing;
 @property(nonatomic, readonly) UISwitch *performanceCapture;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+@property(nonatomic, readonly) UISwitch *astcConversion;
+@property(nonatomic, readonly) UIButton *deleteTextureCacheButton;
+#endif
 @property(nonatomic, readonly) UIButton *downloadLogButton;
 @property(nonatomic, readonly) UIButton *exportSavesButton;
 @property(nonatomic, readonly) UIButton *importSavesButton;

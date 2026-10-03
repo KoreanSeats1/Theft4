@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include <stdint.h>
+#include <math.h>
 #include <mach-o/dyld.h>
 #include "../../glue/rexglue-sdk-main/include/rex/diagnostics/runtime_callers.h"
 #include "../../glue/rexglue-sdk-main/include/rex/diagnostics/frame_scheduling.h"
@@ -25,6 +26,12 @@ extern int rex_gta4_native_profile_start(void);
 extern int rex_gta4_native_profile_status(void);
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+#import "Theft4TextureSources.h"
+#endif
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+#import "Theft4TexturePreparation.h"
+#endif
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
@@ -55,6 +62,16 @@ typedef NS_ENUM(NSInteger, Theft4InstallationStep) {
     Theft4InstallationStepInstallingUpdate,
     Theft4InstallationStepUpdateFailed,
     Theft4InstallationStepReady,
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+    Theft4InstallationStepTextureSources,
+    Theft4InstallationStepTextureScanning,
+    Theft4InstallationStepTextureSourcesReviewed,
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    Theft4InstallationStepTexturePreparing,
+    Theft4InstallationStepTexturePaused,
+    Theft4InstallationStepTexturePrepared,
+#endif
+#endif
 };
 
 static NSString *Theft4DisplayName(void) {
@@ -77,6 +94,16 @@ static NSString *Theft4InstallationDirectoryCreatedDefaultsKey(void) {
     return @"Theft4InstallationDirectoryCreated";
 #endif
 }
+
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+static NSString *Theft4TextureSourcesReviewedDefaultsKey(void) {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    return @"Theft4AstcIntroReviewedV1";
+#else
+    return @"Theft4TextureSourcesReviewedV1";
+#endif
+}
+#endif
 
 static NSURL *Theft4GameDirectoryURL(NSURL *documents) {
 #ifdef THEFT4_INTRO_TEST_BUILD
@@ -494,6 +521,9 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     UISegmentedControl *_reflectionQuality;
     UISegmentedControl *_antiAliasing;
     UISwitch *_performanceCapture;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    UISwitch *_astcConversion;
+#endif
     NSURL *_schedulingURL;
     NSMutableString *_schedulingRows; // serial export queue owns capture storage
     NSUInteger _schedulingBytes;
@@ -528,6 +558,14 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     BOOL _baseGameChecked;
     BOOL _baseGameCheckAttempted;
     BOOL _setupValidated;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    Theft4TexturePreparation *_texturePreparation;
+    UIButton *_textureBack;
+    UIProgressView *_textureProgress;
+    UILabel *_textureProgressLabel;
+    BOOL _texturePreparationDeferred;
+    BOOL _textureCacheDeleting;
+#endif
 }
 - (void)record:(NSString *)event;
 - (void)activate;
@@ -545,6 +583,14 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)markSetupComplete;
 - (BOOL)completeSetupForInstalledGame;
 - (void)refreshInstallationFlow;
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+- (void)scanTextureSources;
+#endif
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+- (void)prepareStaticTextures;
+- (void)leaveTexturePreparation;
+- (void)confirmDeleteTextureCache;
+#endif
 - (void)presentInstallationFlowIfNeeded;
 - (void)routeInstallationFlow;
 - (void)checkBaseGame;
@@ -577,9 +623,38 @@ static void coreEvent(void *context, const char *event) {
     [controller record:[NSString stringWithUTF8String:event]];
 }
 
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+static void configureAstcCompatibilityDefaults(const char *profile) {
+    const uint64_t physicalMemory = NSProcessInfo.processInfo.physicalMemory;
+    const BOOL olderBCDevice = Theft4DeviceNeedsOlderBCPresentation();
+    setenv("THEFT4_ASTC_OLDER_GPU", olderBCDevice ? "1" : "0", 0);
+    if (!olderBCDevice || !physicalMemory ||
+        physicalMemory >= (UINT64_C(7) << 30))
+        return;
+    // BC-incompatible iPhones and iPads in the <=6 GiB memory tier use the
+    // stable one-frame renderer defaults measured on the A12Z. The native
+    // renderer independently selects direct presentation by its GPU limits.
+    const char *disabledSettings[] = {
+        "THEFT4_LAB_ASYNC_PIPELINES", "THEFT4_LAB_TEXTURE_CONTENT_CACHE",
+        "THEFT4_PIPELINE_SNAPSHOT_REUSE", "THEFT4_COMPONENT_SCOPE_REUSE",
+        "THEFT4_SPARSE_TEXTURE_WALKS"};
+    for (size_t index = 0; index < sizeof(disabledSettings) / sizeof(disabledSettings[0]); ++index)
+        setenv(disabledSettings[index], "0", 0);
+    setenv("THEFT4_NATIVE_FRAMES_IN_FLIGHT", "1", 0);
+    os_log(OS_LOG_DEFAULT,
+           "Theft4 ASTC stability defaults active for %{public}s (%{public}llu MiB)",
+           profile, (unsigned long long)(physicalMemory >> 20));
+}
+#endif
+
 static BOOL configureDeviceProfile(void) {
     const char *configured = getenv("THEFT4_DEVICE_PROFILE");
-    if (configured) return strcmp(configured, "legacy-ipad") == 0;
+    if (configured) {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        configureAstcCompatibilityDefaults(configured);
+#endif
+        return strcmp(configured, "legacy-ipad") == 0;
+    }
 
     struct utsname systemInfo = {};
     const char *machine = uname(&systemInfo) == 0 ? systemInfo.machine : "unknown";
@@ -591,6 +666,9 @@ static BOOL configureDeviceProfile(void) {
     const char *profile = theft4_device_profile_name(isIPad, physicalMemory, isA19);
     setenv("THEFT4_DEVICE_PROFILE", profile, 0);
     setenv("THEFT4_DEVICE_MODEL", machine, 0);
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    configureAstcCompatibilityDefaults(profile);
+#endif
     os_log(OS_LOG_DEFAULT,
            "Theft4 launch profile %{public}s for %{public}s (%{public}llu MiB)",
            profile, machine, (unsigned long long)(physicalMemory >> 20));
@@ -659,6 +737,11 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4ReflectionQuality": @0,
         @"Theft4AntiAliasing": @2,
     }];
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    [NSUserDefaults.standardUserDefaults registerDefaults:@{
+        @"Theft4AstcConversion": @(Theft4DeviceNeedsBCTexturePreparation())
+    }];
+#endif
     // Build 65 uses build 44's indices. Migrate those persisted choices once,
     // independently of the retired 0.2.1 migration markers. Never apply Auto here.
     NSUserDefaults *graphicsDefaults = NSUserDefaults.standardUserDefaults;
@@ -733,6 +816,21 @@ static void bootEvent(void *context, const char *event) {
                  forControlEvents:UIControlEventTouchUpInside];
     [_importSavesButton addTarget:self action:@selector(importSavesFromFiles)
                  forControlEvents:UIControlEventTouchUpInside];
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    _astcConversion = _bringupOverlay.astcConversion;
+#ifdef THEFT4_ASTC_EXPERIMENT
+    _astcConversion.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4AstcConversion"];
+    [_astcConversion addTarget:self action:@selector(astcConversionChanged:)
+        forControlEvents:UIControlEventValueChanged];
+#else
+    // Compatibility is capability-selected in the main app. Retired comparison
+    // choices cannot force conversion on BC-capable hardware or bypass setup.
+    _astcConversion.on = Theft4DeviceNeedsBCTexturePreparation();
+    _astcConversion.enabled = NO;
+#endif
+    [_bringupOverlay.deleteTextureCacheButton addTarget:self action:@selector(confirmDeleteTextureCache)
+        forControlEvents:UIControlEventTouchUpInside];
+#endif
     _downloadLogButton = _bringupOverlay.downloadLogButton;
     [_downloadLogButton addTarget:self action:@selector(downloadLatestLogCapture)
                  forControlEvents:UIControlEventTouchUpInside];
@@ -973,14 +1071,46 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (BOOL)completeSetupForInstalledGame {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running || _textureCacheDeleting) return NO;
+#endif
     if (_loading || _executionAttempted ||
         _installationStep == Theft4InstallationStepCheckingBaseGame ||
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+        _installationStep == Theft4InstallationStepTextureScanning ||
+#endif
         _installationStep == Theft4InstallationStepInstallingUpdate) return NO;
     if (![self isSetupComplete]) return NO;
     const BOOL newlyDetected = _installationStep != Theft4InstallationStepReady;
     [self markSetupComplete];
     _baseGameChecked = YES;
     _installationStep = Theft4InstallationStepReady;
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+    if (
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        !_texturePreparationDeferred && _astcConversion.on &&
+        ![Theft4TexturePreparation isCompleteForGame:_gameURL support:_supportURL]) {
+#else
+        Theft4DeviceNeedsBCTexturePreparation() &&
+        ![NSUserDefaults.standardUserDefaults boolForKey:Theft4TextureSourcesReviewedDefaultsKey()]) {
+#endif
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        NSString *capability = Theft4DeviceNeedsBCTexturePreparation()
+            ? @"Your GPU cannot read the game's BC-compressed textures directly. Theft4 prepares ASTC copies that your GPU can read. Keeping them compressed reduces GPU memory use, and preparing before Play moves this conversion work out of gameplay."
+            : @"Your GPU supports BC textures directly and does not require this step. ASTC is enabled for a manual comparison; turn it Off in Settings to skip preparation.";
+        [self showInstallationTitle:@"ONE-TIME TEXTURE SETUP"
+                             detail:[NSString stringWithFormat:@"%@\n\nOnce per installation. Later launches reuse the saved textures. Deleting the prepared cache or replacing game files may require preparation again.\n\nAllow a lengthy first run and about 2.4 GB of extra storage. Keep Theft4 open, preferably on power. Pause/resume keeps completed conversions.\n\nDevices with direct BC support—such as iPhone 15 Pro (A17 Pro), iPhone 16 (A18), and M3/M4/M5 iPads—skip this requirement automatically.", capability]
+                        actionTitle:@"PREPARE TEXTURES" spinner:NO
+                               step:Theft4InstallationStepTextureSources];
+#else
+        [self showInstallationTitle:@"TEXTURE COMPATIBILITY"
+                             detail:@"This device cannot read some Xbox texture formats directly. Theft4 can locate the game archives and texture dictionaries needed for a future ASTC preparation step. This preview scans file names only; it does not convert textures or change your game files."
+                        actionTitle:@"SCAN TEXTURE SOURCES" spinner:NO
+                               step:Theft4InstallationStepTextureSources];
+#endif
+        return YES;
+    }
+#endif
     _installationOverlay.hidden = YES;
     [_installationSpinner stopAnimating];
     _bootStatus = @"Game files and Title Update 8 verified. Ready to play.";
@@ -993,6 +1123,9 @@ static void bootEvent(void *context, const char *event) {
     // Returning from Files does not recreate the controller. Reconcile on
     // foreground/view appearance, but never race an import, validation, picker,
     // or a running game. This is not a timer or a gameplay file scan.
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running || _textureCacheDeleting) return;
+#endif
     if (_failure || !_gameURL || _loading || _executionAttempted ||
         _saveTransferBusy || self.presentedViewController ||
         _installationStep == Theft4InstallationStepCreatingDirectory ||
@@ -1047,13 +1180,65 @@ static void bootEvent(void *context, const char *event) {
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 20;
     stack.alignment = UIStackViewAlignmentFill;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    // Long first-run notes remain readable on a phone in landscape.
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+    [_installationOverlay addSubview:scroll];
+    UIView *body = [UIView new];
+    body.translatesAutoresizingMaskIntoConstraints = NO;
+    [scroll addSubview:body];
+    [body addSubview:stack];
+    NSLayoutConstraint *preferredBodyHeight = [body.heightAnchor
+        constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor];
+    preferredBodyHeight.priority = UILayoutPriorityDefaultLow;
+    preferredBodyHeight.active = YES;
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.trailingAnchor],
+        [body.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [body.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [body.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [body.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [body.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+        [body.heightAnchor constraintGreaterThanOrEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],
+        [stack.centerXAnchor constraintEqualToAnchor:body.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:body.centerYAnchor],
+        [stack.topAnchor constraintGreaterThanOrEqualToAnchor:body.topAnchor constant:24],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:body.bottomAnchor constant:-24],
+    ]];
+    _textureProgress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _textureProgress.progressTintColor = [UIColor colorWithRed:0.21 green:0.80 blue:0.82 alpha:1];
+    _textureProgress.trackTintColor = [UIColor colorWithWhite:1 alpha:0.15];
+    _textureProgress.accessibilityIdentifier = @"texturePreparation.progress";
+    _textureProgress.hidden = YES;
+    _textureProgressLabel = [UILabel new];
+    _textureProgressLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightSemibold];
+    _textureProgressLabel.textColor = _textureProgress.progressTintColor;
+    _textureProgressLabel.accessibilityIdentifier = @"texturePreparation.progressLabel";
+    _textureProgressLabel.hidden = YES;
+    [stack insertArrangedSubview:_textureProgress atIndex:3];
+    [stack insertArrangedSubview:_textureProgressLabel atIndex:4];
+    _textureBack = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_textureBack setTitle:@"BACK TO LAUNCHER" forState:UIControlStateNormal];
+    [_textureBack addTarget:self action:@selector(leaveTexturePreparation)
+          forControlEvents:UIControlEventTouchUpInside];
+    _textureBack.hidden = YES;
+    [stack addArrangedSubview:_textureBack];
+#else
     [_installationOverlay addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.centerXAnchor constraintEqualToAnchor:_installationOverlay.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:_installationOverlay.centerYAnchor],
+    ]];
+#endif
     NSLayoutConstraint *preferredWidth = [stack.widthAnchor
         constraintEqualToAnchor:_installationOverlay.safeAreaLayoutGuide.widthAnchor constant:-60];
     preferredWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [stack.centerXAnchor constraintEqualToAnchor:_installationOverlay.centerXAnchor],
-        [stack.centerYAnchor constraintEqualToAnchor:_installationOverlay.centerYAnchor],
         [stack.widthAnchor constraintLessThanOrEqualToConstant:480],
         preferredWidth,
         [_installationAction.heightAnchor constraintGreaterThanOrEqualToConstant:54],
@@ -1076,6 +1261,19 @@ static void bootEvent(void *context, const char *event) {
     UIButtonConfiguration *configuration = _installationAction.configuration;
     configuration.title = actionTitle;
     _installationAction.configuration = configuration;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    _textureBack.hidden = step != Theft4InstallationStepTextureSources &&
+                          step != Theft4InstallationStepTexturePaused;
+    const BOOL showProgress = step == Theft4InstallationStepTexturePreparing ||
+                              step == Theft4InstallationStepTexturePrepared ||
+                              step == Theft4InstallationStepTexturePaused;
+    _textureProgress.hidden = !showProgress;
+    _textureProgressLabel.hidden = !showProgress;
+    if (step == Theft4InstallationStepTexturePrepared) {
+        _textureProgress.progress = 1;
+        _textureProgressLabel.text = @"100% · ONE-TIME SETUP COMPLETE";
+    }
+#endif
 }
 
 - (void)presentInstallationFlowIfNeeded {
@@ -1102,6 +1300,9 @@ static void bootEvent(void *context, const char *event) {
 }
 
 - (void)routeInstallationFlow {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running || _textureCacheDeleting) return;
+#endif
     if (!_gameURL || _loading || _executionAttempted ||
         _installationStep == Theft4InstallationStepCheckingBaseGame ||
         _installationStep == Theft4InstallationStepInstallingUpdate) return;
@@ -1144,19 +1345,152 @@ static void bootEvent(void *context, const char *event) {
             [self chooseTitleUpdate];
             break;
         case Theft4InstallationStepReady:
-            [self markSetupComplete];
-            _installationOverlay.hidden = YES;
-            _bootStatus = @"Game files detected. Ready to play.";
+            [self completeSetupForInstalledGame];
             [self record:@"install.ready"];
-            [self refresh];
             break;
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+        case Theft4InstallationStepTextureSources:
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+            [self prepareStaticTextures];
+#else
+            [self scanTextureSources];
+#endif
+            break;
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        case Theft4InstallationStepTexturePreparing:
+            [_texturePreparation cancel];
+            _installationAction.enabled = NO;
+            _installationDetail.text = @"Pausing after the current texture. Completed textures are saved.";
+            break;
+        case Theft4InstallationStepTexturePaused:
+            [self prepareStaticTextures];
+            break;
+        case Theft4InstallationStepTexturePrepared:
+            [self completeSetupForInstalledGame];
+            break;
+#endif
+        case Theft4InstallationStepTextureSourcesReviewed:
+            [NSUserDefaults.standardUserDefaults setBool:YES
+                forKey:Theft4TextureSourcesReviewedDefaultsKey()];
+            [self completeSetupForInstalledGame];
+            break;
+#endif
         default:
             break;
     }
 }
 
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+- (void)leaveTexturePreparation {
+    if (_texturePreparation.running) return;
+    _texturePreparationDeferred = YES;
+    _installationOverlay.hidden = YES;
+    [self completeSetupForInstalledGame];
+}
+
+- (void)prepareStaticTextures {
+    if (_texturePreparation.running || _textureCacheDeleting || _executionAttempted ||
+        _loading || _saveTransferBusy || !_gameURL || !_supportURL) return;
+    _texturePreparation = [Theft4TexturePreparation new];
+    const BOOL priorIdleTimer = UIApplication.sharedApplication.idleTimerDisabled;
+    UIApplication.sharedApplication.idleTimerDisabled = YES;
+    [self showInstallationTitle:@"FINDING STATIC TEXTURES"
+                         detail:@"Reading game archives. This may take a few minutes. Keep Theft4 open; you can pause at any time."
+                    actionTitle:@"PAUSE" spinner:YES step:Theft4InstallationStepTexturePreparing];
+    _textureProgress.progress = 0;
+    _textureProgressLabel.text = @"STEP 1 OF 2 · CHECKING GAME FILES";
+    [self record:@"astc.preparation_started"];
+    [_texturePreparation startForGame:_gameURL support:_supportURL progress:^(NSDictionary *p) {
+        if (self->_installationStep != Theft4InstallationStepTexturePreparing ||
+            !self->_installationAction.enabled) return;
+        const BOOL indexing = [p[@"phase"] isEqualToString:@"indexing"];
+        NSString *counts = [NSString stringWithFormat:@"%@ of %@ %@", p[@"completed"] ?: @0,
+                            p[@"total"] ?: @0, indexing ? @"source files" : @"textures"];
+        NSString *estimate = @"Estimating time remaining…";
+        const double seconds = [p[@"remainingSeconds"] doubleValue];
+        if (seconds >= 0 && p[@"remainingSeconds"]) {
+            const NSInteger minutes = MAX(1, (NSInteger)ceil(seconds / 60.0));
+            NSString *duration = minutes >= 60
+                ? [NSString stringWithFormat:@"%ld h %ld min", (long)(minutes / 60), (long)(minutes % 60)]
+                : [NSString stringWithFormat:@"%ld min", (long)minutes];
+            estimate = [NSString stringWithFormat:@"About %@ left %@ (estimate).", duration,
+                        indexing ? @"to check files" : @"to finish preparation"];
+        }
+        const double total = [p[@"total"] doubleValue];
+        const float fraction = total > 0 ? (float)MIN(1, [p[@"completed"] doubleValue] / total) : 0;
+        [self->_textureProgress setProgress:fraction animated:YES];
+        self->_textureProgressLabel.text = [NSString stringWithFormat:@"STEP %d OF 2 · %.0f%% %@",
+            indexing ? 1 : 2, fraction * 100, indexing ? @"FILES CHECKED" : @"TEXTURES READY"];
+        self->_textureProgress.accessibilityValue = self->_textureProgressLabel.text;
+        self->_installationTitle.text = indexing ? @"FINDING STATIC TEXTURES" : @"PREPARING COMPATIBLE TEXTURES";
+        self->_installationDetail.text = indexing
+          ? [NSString stringWithFormat:@"%@ · %@ textures found\n%@\n\nOne-time setup: checking your game files, then converting textures. Gameplay is not running. Keep Theft4 open.\n\n%@", counts, p[@"textures"] ?: @0, estimate, p[@"current"] ?: @""]
+          : [NSString stringWithFormat:@"%@\n%@\n\n%@ reused · %@ newly converted\nOne-time setup. Later launches reuse the saved textures. Keep Theft4 open, or pause and resume later.\n\n%@", counts, estimate, p[@"reused"] ?: @0, p[@"encoded"] ?: @0, p[@"current"] ?: @""];
+    } completion:^(BOOL complete, NSDictionary *summary, NSString *error) {
+        UIApplication.sharedApplication.idleTimerDisabled = priorIdleTimer;
+        if (complete) {
+            [self record:@"astc.preparation_completed"];
+            [self showInstallationTitle:@"TEXTURES PREPARED"
+                                 detail:[NSString stringWithFormat:@"%@ static textures are ready. Their compressed copies use about %.2f GB. This one-time setup is complete; normal launches reuse them.\n\nYou can now play. New or unsupported textures may still need compatibility processing. Clearing this cache or replacing game files may require preparation again.", summary[@"total"], [summary[@"astcPayloadBytes"] doubleValue] / (1024.0 * 1024.0 * 1024.0)]
+                            actionTitle:@"OPEN MAIN SCREEN" spinner:NO step:Theft4InstallationStepTexturePrepared];
+        } else {
+            [self record:@"astc.preparation_paused_or_failed"];
+            [self showInstallationTitle:@"TEXTURE PREPARATION STOPPED"
+                                 detail:error ?: @"Completed textures are saved. Resume to continue."
+                            actionTitle:@"RESUME PREPARATION" spinner:NO step:Theft4InstallationStepTexturePaused];
+        }
+    }];
+}
+#endif
+- (void)scanTextureSources {
+    NSURL *game = [_gameURL copy];
+    NSURL *support = [_supportURL copy];
+    if (!game || !support) return;
+    [self showInstallationTitle:@"SCANNING TEXTURE SOURCES"
+                         detail:@"Checking file names in your game folder…"
+                    actionTitle:nil spinner:YES
+                           step:Theft4InstallationStepTextureScanning];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSError *error = nil;
+        NSDictionary *inventory = Theft4InventoryTextureSources(game, &error);
+        BOOL saved = inventory && Theft4SaveTextureSourceInventory(inventory, support, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (saved) {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+                NSString *detail = [NSString stringWithFormat:
+                    @"Found %@ texture dictionaries, %@ archives, and %@ other graphics resources. This lists source containers, not individual textures. Play a repeatable route to collect the observed-texture list. Use the cyan ASTC switch in System before Play to turn conversion on or off; first conversion may pause. Your game files stay unchanged.",
+                    inventory[@"textureDictionaries"], inventory[@"archives"],
+                    inventory[@"graphicsResources"]];
+                [self showInstallationTitle:@"READY FOR ASTC TEST"
+                                     detail:detail actionTitle:@"OPEN MAIN SCREEN" spinner:NO
+                                       step:Theft4InstallationStepTextureSourcesReviewed];
+#else
+                NSString *detail = [NSString stringWithFormat:
+                    @"Found %@ texture dictionaries, %@ archives, and %@ other graphics resources. The source list is saved in Application Support. Individual textures still need to be identified and converted in a future build; this scan makes no graphics changes.",
+                    inventory[@"textureDictionaries"], inventory[@"archives"],
+                    inventory[@"graphicsResources"]];
+                [self showInstallationTitle:@"TEXTURE SOURCES FOUND"
+                                     detail:detail actionTitle:@"OPEN MAIN SCREEN" spinner:NO
+                                       step:Theft4InstallationStepTextureSourcesReviewed];
+#endif
+            } else {
+                [self showInstallationTitle:@"TEXTURE SCAN UNAVAILABLE"
+                                     detail:error.localizedDescription ?: @"The source list could not be saved. Your game files were not changed."
+                                actionTitle:@"OPEN MAIN SCREEN" spinner:NO
+                                       step:Theft4InstallationStepTextureSourcesReviewed];
+            }
+        });
+    });
+}
+#endif
+
 - (void)checkBaseGame {
-    if (!_gameURL || _installationStep == Theft4InstallationStepCheckingBaseGame ||
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running || _textureCacheDeleting) return;
+#endif
+    if (!_gameURL || _loading || _executionAttempted || _saveTransferBusy ||
+        _installationStep == Theft4InstallationStepCheckingBaseGame ||
         _installationStep == Theft4InstallationStepInstallingUpdate) return;
     // Check the complete installation first, including an already-patched XEX
     // that the retail-base-only validator would otherwise reject.
@@ -1170,7 +1504,7 @@ static void bootEvent(void *context, const char *event) {
     }
 
     [self showInstallationTitle:@"CHECKING GAME FILES"
-                         detail:@"Validating the extracted GTA IV base game without changing it…"
+                         detail:@"Checking the copied game files and whether Title Update 8 is already installed…"
                     actionTitle:nil spinner:YES step:Theft4InstallationStepCheckingBaseGame];
     NSURL *game = _gameURL;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -1190,6 +1524,9 @@ static void bootEvent(void *context, const char *event) {
                 [self routeInstallationFlow];
                 return;
             }
+            // A transfer can finish while the base-only check is running.
+            // Recheck the full installation even if the old base was rejected.
+            if ([self completeSetupForInstalledGame]) return;
             [self showInstallationTitle:@"GAME FILES NOT READY"
                                  detail:detail.length ? detail : @"The extracted base game could not be verified."
                             actionTitle:@"CHECK AGAIN" spinner:NO
@@ -1498,6 +1835,46 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     });
 }
 
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+- (void)astcConversionChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4AstcConversion"];
+    [self record:sender.on ? @"astc.enabled_for_next_launch" : @"astc.disabled_for_next_launch"];
+}
+- (void)confirmDeleteTextureCache {
+    if (_texturePreparation.running || _textureCacheDeleting || _executionAttempted || _loading) {
+        UIAlertController *busy = [UIAlertController alertControllerWithTitle:@"Texture cache is in use"
+            message:@"Pause texture preparation, or close and reopen Theft4 after gameplay, before deleting the cache."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [busy addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:busy animated:YES completion:nil];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Delete prepared texture cache?"
+        message:@"This frees the storage used by prepared textures. Your game files and saves are kept.\n\nIf your device needs ASTC compatibility, the one-time preparation must run again before Play. This may take a long time."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Delete Cache" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        self->_textureCacheDeleting = YES;
+        self->_bringupOverlay.deleteTextureCacheButton.enabled = NO;
+        [self record:@"astc.cache_delete_confirmed"];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *error = nil;
+            BOOL removed = [Theft4TexturePreparation deletePreparedCacheAtSupport:self->_supportURL error:&error];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_textureCacheDeleting = NO;
+                self->_bringupOverlay.deleteTextureCacheButton.enabled = YES;
+                [self record:removed ? @"astc.cache_deleted" : @"astc.cache_delete_failed"];
+                UIAlertController *result = [UIAlertController alertControllerWithTitle:removed ? @"Texture cache deleted" : @"Could not delete texture cache"
+                    message:removed ? @"Game files and saves are kept. Devices that need ASTC will prepare textures again before the next Play." : error
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [result addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:result animated:YES completion:nil];
+            });
+        });
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+#endif
 - (void)displaySettingsChanged:(UIControl *)sender {
     if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
     if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4) _bringupOverlay.fsrUpscaling.on = NO;
@@ -1790,6 +2167,19 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         }
         success = success && Theft4AppendDiagnosticFile(stream, lifecycleURL,
             @"Theft4/lifecycle.jsonl", &budget, included, skipped);
+#ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"texture-preparation/source-inventory.json"],
+            @"Theft4/texture-preparation/source-inventory.json", &budget, included, skipped);
+#endif
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"texture-preparation/observed-textures.jsonl"],
+            @"Theft4/texture-preparation/observed-textures.jsonl", &budget, included, skipped);
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"texture-preparation/preparation-state.json"],
+            @"Theft4/texture-preparation/preparation-state.json", &budget, included, skipped);
+#endif
         success = success && Theft4AppendDiagnosticFile(stream,
             [supportURL URLByAppendingPathComponent:@"runtime.log"],
             @"Theft4/runtime.log", &budget, included, skipped);
@@ -2420,11 +2810,23 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [self resumeGameFromLauncher];
         return;
     }
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running || _textureCacheDeleting) return;
+    if (_astcConversion.on &&
+        ![Theft4TexturePreparation isCompleteForGame:_gameURL support:_supportURL]) {
+        _texturePreparationDeferred = NO;
+        [self completeSetupForInstalledGame];
+        return;
+    }
+#endif
     [self startGamePreparation:_gameURL execute:YES];
 }
 
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute {
 #ifdef THEFT4_HAS_GAME_LOADER
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_textureCacheDeleting || _texturePreparation.running) return;
+#endif
     if (_loading || _executionAttempted || _saveTransferBusy || !game || !_supportURL || _failure) return;
 #ifndef THEFT4_HAS_GAME_STARTUP
     if (execute) return;
@@ -2443,6 +2845,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
     if (execute) {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        NSString *preparationRoot = [_supportURL.path
+            stringByAppendingPathComponent:@"texture-preparation"];
+        setenv("THEFT4_ASTC_PREPARATION_ROOT", preparationRoot.fileSystemRepresentation, 1);
+        const BOOL astcEnabled = _astcConversion.on;
+        setenv("THEFT4_ASTC_ENABLED", astcEnabled ? "1" : "0", 1);
+        NSLog(@"Theft4 texture compatibility: enabled=%@",
+              astcEnabled ? @"yes" : @"no");
+#endif
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
         theft4_apply_performance_defaults();
@@ -2564,6 +2975,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 #endif
     [self record:@"scene.active"];
     [self refreshInstallationFlow];
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (!_bootRan && [NSProcessInfo.processInfo.arguments containsObject:@"--theft4-prepare-textures"]) {
+        _bootRan = YES;
+        [self prepareStaticTextures];
+    }
+#endif
 #ifdef THEFT4_HAS_GAME_STARTUP
     if (!_bootRan && [NSProcessInfo.processInfo.arguments containsObject:@"--theft4-start-game"]) {
         _bootRan = YES;
@@ -2592,6 +3009,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self refresh];
 }
 - (void)pause {
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    if (_texturePreparation.running) [_texturePreparation cancel];
+#endif
     [self drainPublicationCapture];
     if (_publicationCaptureActive) {
         const uint64_t now = (uint64_t)(CACurrentMediaTime() * 1e9);

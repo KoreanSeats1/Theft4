@@ -42,7 +42,7 @@ static NSString *Theft4InstallationDirectoryCreatedDefaultsKey(void) { return @"
 static NSString *Theft4FilesGamePath(void) { return @"Theft4/game"; }
 static NSString *Theft4DisplayName(void) { return @"Theft4"; }
 static int installedChecks, baseChecks;
-static BOOL patchArrivesDuringBaseCheck;
+static BOOL patchArrivesDuringBaseCheck, patchedXexArrivesDuringBaseCheck;
 static NSString *readFile(NSString *root, NSString *name) {
     return [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:name]
                                     encoding:NSUTF8StringEncoding error:nil];
@@ -63,6 +63,7 @@ static int theft4_validate_base_game(const char *path, char *message, size_t cap
     ++baseChecks;
     BOOL ready = [readFile(@(path), @"default.xex") isEqual:@"base"];
     if (patchArrivesDuringBaseCheck) writeFile(@(path), @"default.xexp", @"matching-update");
+    if (patchedXexArrivesDuringBaseCheck) writeFile(@(path), @"default.xex", @"patched");
     snprintf(message, capacity, "%s", ready ? "Base verified" : "Unsupported base");
     return ready ? 0 : 1;
 }
@@ -120,7 +121,8 @@ static Routing *fixture(NSString *root, NSString *base, NSString *patch) {
     preferences = [@{@"created": @YES} mutableCopy];
     Routing *r = [Routing new]; r->_gameURL = [NSURL fileURLWithPath:folder];
     r->_installationOverlay = [ViewDouble new]; r->_installationSpinner = [ViewDouble new];
-    installedChecks = baseChecks = 0; patchArrivesDuringBaseCheck = NO;
+    installedChecks = baseChecks = 0;
+    patchArrivesDuringBaseCheck = patchedXexArrivesDuringBaseCheck = NO;
     return r;
 }
 static void awaitCheck(Routing *r) {
@@ -151,6 +153,15 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(r->_installationStep == Theft4InstallationStepSelectingUpdate);
     writeFile(r->_gameURL.path, @"default.xexp", @"matching-update");
     [r refreshInstallationFlow]; assertReady(r);
+    // Explicit Check Game Files after the prompt must recognize copied TU8.
+    // This also covers prepatched installations with no separate update file.
+    for (int prepatched = 0; prepatched < 2; ++prepatched) {
+        r = fixture(root, nil, nil); [r refreshInstallationFlow];
+        assert(r->_installationStep == Theft4InstallationStepCopyBaseGame);
+        writeFile(r->_gameURL.path, @"default.xex", prepatched ? @"patched" : @"base");
+        if (!prepatched) writeFile(r->_gameURL.path, @"default.xexp", @"matching-update");
+        [r checkBaseGame]; assertReady(r); assert(baseChecks == 0);
+    }
     // Full installation copied after the initial empty-folder prompt.
     r = fixture(root, nil, nil); [r refreshInstallationFlow];
     assert(r->_installationStep == Theft4InstallationStepCopyBaseGame);
@@ -167,6 +178,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(r->_installationStep == Theft4InstallationStepCopyBaseGame); assert(installedChecks == 0);
     // An update arriving during the asynchronous base check is recognized on completion.
     r = fixture(root, @"base", nil); patchArrivesDuringBaseCheck = YES;
+    [r checkBaseGame]; awaitCheck(r); assertReady(r);
+    r = fixture(root, @"incomplete-copy", nil); patchedXexArrivesDuringBaseCheck = YES;
     [r checkBaseGame]; awaitCheck(r); assertReady(r);
     // Foreground must not perform validation or dismiss an in-flight operation.
     for (int guard = 0; guard < 8; ++guard) {
@@ -188,9 +201,69 @@ int main(int argc, char **argv) { @autoreleasepool {
 } return 0; }
 '''
 
+COMPATIBILITY_DOUBLES = r'''
+#define THEFT4_BC_TEXTURE_COMPATIBILITY 1
+#define THEFT4_TEXTURE_PREPARATION_PREVIEW 1
+static BOOL supportsBC = YES, cacheReady;
+static int cacheChecks;
+static BOOL Theft4DeviceNeedsBCTexturePreparation(void) { return !supportsBC; }
+static NSString *Theft4TextureSourcesReviewedDefaultsKey(void) { return @"reviewed"; }
+@interface SwitchDouble : NSObject
+@property BOOL on;
+@end
+@implementation SwitchDouble
+@end
+@interface Theft4TexturePreparation : NSObject
+@property BOOL running;
++ (BOOL)isCompleteForGame:(NSURL *)game support:(NSURL *)support;
+@end
+@implementation Theft4TexturePreparation
++ (BOOL)isCompleteForGame:(NSURL *)game support:(NSURL *)support {
+    ++cacheChecks; return cacheReady;
+}
+@end
+'''
+
+COMPATIBILITY_CASES = r'''
+    // Modern hardware must never consult the prepared cache or intercept Play.
+    supportsBC = YES; cacheReady = NO; cacheChecks = 0;
+    r = fixture(root, @"base", @"matching-update");
+    [r refreshInstallationFlow]; assertReady(r); assert(cacheChecks == 0);
+    [r startTransferredGame]; assert(r->_starts == 1); assert(cacheChecks == 0);
+    // Missing preparation on unsupported hardware blocks Play and shows the notes.
+    supportsBC = NO; cacheReady = NO; cacheChecks = 0;
+    r = fixture(root, @"base", @"matching-update");
+    [r refreshInstallationFlow]; assert(!r->_installationOverlay.hidden);
+    assert(r->_installationStep == Theft4InstallationStepTextureSources);
+    [r startTransferredGame]; assert(r->_starts == 0);
+    // Going back to the launcher is allowed, but cannot bypass preparation at Play.
+    r->_texturePreparationDeferred = YES;
+    [r completeSetupForInstalledGame]; assertReady(r);
+    [r startTransferredGame]; assert(r->_starts == 0);
+    assert(r->_installationStep == Theft4InstallationStepTextureSources);
+    // Completed preparation is reused and Play does not start another sweep.
+    cacheReady = YES; cacheChecks = 0;
+    r = fixture(root, @"base", @"matching-update");
+    [r refreshInstallationFlow]; assertReady(r); assert(cacheChecks == 1);
+    [r startTransferredGame]; assert(r->_starts == 1); assert(cacheChecks == 2);
+    // Foreground/direct routing cannot replace progress or race cache deletion.
+    for (int operation = 0; operation < 2; ++operation) {
+        r = fixture(root, @"base", @"matching-update");
+        r->_installationStep = Theft4InstallationStepTexturePreparing;
+        r->_texturePreparation.running = operation == 0;
+        r->_textureCacheDeleting = operation == 1;
+        int priorChecks = cacheChecks;
+        [r refreshInstallationFlow]; [r routeInstallationFlow]; [r checkBaseGame];
+        assert(![r completeSetupForInstalledGame]); [r startTransferredGame];
+        assert(r->_installationStep == Theft4InstallationStepTexturePreparing);
+        assert(installedChecks == 0 && cacheChecks == priorChecks && r->_starts == 0);
+    }
+    puts("PASS: BC-capable launch bypass, required preparation, deferred Play, cache reuse and foreground busy guards");
+'''
+
 
 class InstallationRoutingTests(unittest.TestCase):
-    def test_actual_routing_methods(self):
+    def run_routing_harness(self, compatibility=False):
         source = SOURCE.read_text()
         enum_start = source.index("typedef NS_ENUM(NSInteger, Theft4InstallationStep)")
         enum_end = source.index("\n};", enum_start) + 3
@@ -200,8 +273,26 @@ class InstallationRoutingTests(unittest.TestCase):
             "- (void)refreshInstallationFlow", "- (void)presentInstallationFlowIfNeeded",
             "- (void)routeInstallationFlow", "- (void)checkBaseGame",
         ]
-        harness = (PREAMBLE + source[enum_start:enum_end] + INTERFACE +
-                   "\n".join(method(source, s) for s in signatures) + TESTS)
+        interface, tests = INTERFACE, TESTS
+        if compatibility:
+            interface = interface.replace("NSURL *_gameURL;", """NSURL *_gameURL, *_supportURL;
+    SwitchDouble *_astcConversion;
+    Theft4TexturePreparation *_texturePreparation;
+    BOOL _texturePreparationDeferred, _textureCacheDeleting, _launcherDuringGame;
+    int _starts;""")
+            interface = interface.replace("- (void)refresh {}", """- (void)refresh {}
+- (void)resumeGameFromLauncher {}
+- (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute { if (execute) ++_starts; }""")
+            signatures.append("- (void)startTransferredGame")
+            tests = tests.replace("installedChecks = baseChecks = 0;", """r->_supportURL = r->_gameURL;
+    r->_astcConversion = [SwitchDouble new];
+    r->_astcConversion.on = Theft4DeviceNeedsBCTexturePreparation();
+    r->_texturePreparation = [Theft4TexturePreparation new];
+    installedChecks = baseChecks = 0;""")
+            tests = tests.replace('    puts("PASS: existing pair', COMPATIBILITY_CASES + '    puts("PASS: existing pair')
+        harness = (PREAMBLE + (COMPATIBILITY_DOUBLES if compatibility else "") +
+                   source[enum_start:enum_end] + interface +
+                   "\n".join(method(source, s) for s in signatures) + tests)
         with tempfile.TemporaryDirectory(prefix="theft4-install-routing-") as directory:
             path = Path(directory)
             (path / "routing.m").write_text(harness)
@@ -209,6 +300,12 @@ class InstallationRoutingTests(unittest.TestCase):
                             "-Wno-incompatible-pointer-types", "-framework", "Foundation",
                             str(path / "routing.m"), "-o", str(path / "routing")], check=True)
             subprocess.run([str(path / "routing"), directory], check=True, timeout=15)
+
+    def test_actual_routing_methods(self):
+        self.run_routing_harness()
+
+    def test_capability_gated_preparation_routing(self):
+        self.run_routing_harness(compatibility=True)
 
     def test_lifecycle_and_picker_are_connected(self):
         source = SOURCE.read_text()

@@ -58,7 +58,13 @@ class Replay {
     }
     if(p.depth!=theft4::render::Format::Invalid) {
       auto a=result.pass.depthAttachment;a.texture=texture(PlanAdapter::PixelFormat(p.depth),p.samples,false);
-      a.loadAction=MTLLoadActionClear;a.clearDepth=1;a.storeAction=MTLStoreActionStore;
+      a.loadAction=MTLLoadActionClear;
+      // The private draw capture has no preceding attachment contents. Seed
+      // an empty depth target according to its comparison direction, keeping
+      // the actual draw state unchanged. GTA IV uses reversed depth.
+      a.clearDepth=(p.depth_compare==theft4::render::Compare::Greater ||
+                    p.depth_compare==theft4::render::Compare::GreaterEqual) ? 0 : 1;
+      a.storeAction=MTLStoreActionStore;
     }
     if(p.stencil!=theft4::render::Format::Invalid) {
       auto a=result.pass.stencilAttachment;
@@ -162,6 +168,7 @@ NSDictionary* ReplayDirectMetalCaptures(NSString* libraries,NSString* captures,N
         if(changed){++visible;SavePNG([output stringByAppendingPathComponent:[path.lastPathComponent stringByAppendingString:@".png"]],a,capture->width,capture->height);}
         item[@"passed"]=@YES;item[@"visible_pixels"]=@(changed);item[@"width"]=@(capture->width);item[@"height"]=@(capture->height);
         item[@"indices"]=@(capture->draw.index_count);item[@"vertices"]=@(capture->draw.vertex_count);
+        item[@"isolated_depth_seed"]=targets.pass.depthAttachment.texture ? @(targets.pass.depthAttachment.clearDepth) : [NSNull null];
         item[@"vertex_shader"]=[NSString stringWithFormat:@"%016llx",(unsigned long long)capture->draw.pipeline.vertex.hash];
         item[@"fragment_shader"]=[NSString stringWithFormat:@"%016llx",(unsigned long long)capture->draw.pipeline.fragment.hash];
         item[@"first_gpu_ms"]=@(first);item[@"repeat_gpu_ms"]=@(second);item[@"warm_resource_and_pipeline_reuse"]=@YES;
@@ -174,7 +181,7 @@ NSDictionary* ReplayDirectMetalCaptures(NSString* libraries,NSString* captures,N
   NSDictionary* report=@{@"schema":@1,@"available":@(paths.count>0),@"passed":@(passed>0&&passed==results.count),
     @"visible_draws":@(visible),@"cases":results,@"source_revision":@THEFT4_METAL_SOURCE_REVISION,
     @"vulkan_linked":@NO,@"moltenvk_linked":@NO,
-    @"scope":@"Isolated real draw on cleared attachments. Preceding pass contents and GPU-produced aliases require ordered frame integration."};
+    @"scope":@"Isolated real draw on cleared attachments. Depth seed follows comparison direction; original attachment contents are unavailable. Preceding pass contents and GPU-produced aliases require ordered frame integration."};
   auto json=[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
   [json writeToFile:[output stringByAppendingPathComponent:@"GAME_DRAW_REPLAY.json"] atomically:YES];return report;
 }

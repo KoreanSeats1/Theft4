@@ -536,6 +536,13 @@ struct Probe {
     auto immutable=std::shared_ptr<const r::Capture>(source);source.reset();
     NSString* fixture=[output stringByAppendingPathComponent:@"PlanFixture/synthetic-plan.t4draw"];
     Require(r::WriteCapture(fixture.UTF8String,*immutable,error));
+    auto reversed=*immutable;
+    reversed.draw.pipeline.depth=r::Format::Depth32Float;
+    reversed.draw.pipeline.depth_test=true;reversed.draw.pipeline.depth_write=true;
+    reversed.draw.pipeline.depth_compare=r::Compare::GreaterEqual;
+    NSString* reversedFixture=[output stringByAppendingPathComponent:@"ReverseDepthFixture/reversed-depth.t4draw"];
+    Require(r::WriteCapture(reversedFixture.UTF8String,reversed,error));
+    reversed={};
     auto prepared=adapter.Realize(immutable,error);Require(bool(prepared));
     const auto resources=adapter.ResourceStats();
     Require(adapter.Realize(immutable,error)==prepared);
@@ -564,6 +571,14 @@ struct Probe {
     [results addObject:@{@"case":@"private_draw_serialization_replay",@"passed":@YES,
         @"synthetic_validation_geometry":@YES,@"repeat_pixels_identical":@YES,
         @"gpu_target_sampling":@YES}];
+    auto reversedReplay=ReplayDirectMetalCaptures(libraries,[output stringByAppendingPathComponent:@"ReverseDepthFixture"],
+        [output stringByAppendingPathComponent:@"ReverseDepthValidation"]);
+    Require([reversedReplay[@"passed"] boolValue]&&[reversedReplay[@"visible_draws"] unsignedIntegerValue]==1);
+    NSDictionary* reversedCase=[reversedReplay[@"cases"] firstObject];
+    Require([reversedCase[@"visible_pixels"] unsignedIntegerValue]==W*H&&
+            [reversedCase[@"isolated_depth_seed"] doubleValue]==0);
+    [results addObject:@{@"case":@"reversed_depth_capture_replay",@"passed":@YES,
+        @"full_target_visible":@YES,@"synthetic_validation_geometry":@YES}];
   }
 };
 }

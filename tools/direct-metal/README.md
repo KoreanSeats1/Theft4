@@ -163,3 +163,9 @@ cube uploads select each slice through its offset and slice index. Resource
 bounds checks remain unchanged. Metal Lab build 6 adds a GPU pixel oracle with
 padded rows and a nonzero payload offset to cover the actual capture contract.
 Private gameplay captures remain outside Git.
+
+The isolated replayer initializes an empty depth target to zero for Greater/
+GreaterEqual comparisons, and one otherwise. The original pass clear and
+attachment contents are not captured; this seed is explicit in each result.
+A reversed-depth regression verifies that a full-target draw is visible.
+Neither isolated visibility nor repeat identity establishes whole-frame parity.

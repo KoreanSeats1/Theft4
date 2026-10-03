@@ -1,6 +1,41 @@
 #include "theft4_render_plan_source.h"
+#include <bit>
+#include <cmath>
 
 namespace theft4::render::source {
+bool DecodeSampler(const VkSamplerCreateInfo& s,render::Sampler& output,std::string& error) {
+  const auto reject=[&](const char* reason){error=reason;return false;};
+  if(s.sType!=VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO||s.flags||s.pNext||s.mipLodBias!=0||
+     s.compareEnable||s.unnormalizedCoordinates||s.anisotropyEnable>VK_TRUE||
+     (s.minFilter!=VK_FILTER_NEAREST&&s.minFilter!=VK_FILTER_LINEAR)||
+     (s.magFilter!=VK_FILTER_NEAREST&&s.magFilter!=VK_FILTER_LINEAR)||
+     (s.mipmapMode!=VK_SAMPLER_MIPMAP_MODE_NEAREST&&s.mipmapMode!=VK_SAMPLER_MIPMAP_MODE_LINEAR)||
+     (s.borderColor!=VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE&&s.borderColor!=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK))
+    return reject("Sampler state needs explicit Metal lowering");
+  const auto address=[](VkSamplerAddressMode a,Address& result) {
+    switch(a) {
+      case VK_SAMPLER_ADDRESS_MODE_REPEAT:result=Address::Repeat;return true;
+      case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:result=Address::MirrorRepeat;return true;
+      case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:result=Address::ClampEdge;return true;
+      case VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:result=Address::MirrorClampEdge;return true;
+      case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:result=Address::ClampBorder;return true;
+      default:return false;
+    }
+  };
+  Sampler result;result.min_linear=s.minFilter==VK_FILTER_LINEAR;result.mag_linear=s.magFilter==VK_FILTER_LINEAR;
+  result.mip_linear=s.mipmapMode==VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  if(!address(s.addressModeU,result.address[0])||!address(s.addressModeV,result.address[1])||
+     !address(s.addressModeW,result.address[2]))return reject("Sampler address mode needs explicit Metal lowering");
+  if(s.anisotropyEnable) {
+    if(!std::isfinite(s.maxAnisotropy)||s.maxAnisotropy<1||s.maxAnisotropy>16||std::floor(s.maxAnisotropy)!=s.maxAnisotropy)
+      return reject("Sampler anisotropy cannot be represented exactly");
+    result.anisotropy=uint32_t(s.maxAnisotropy);
+  }
+  result.min_lod_bits=std::bit_cast<uint32_t>(s.minLod);result.max_lod_bits=std::bit_cast<uint32_t>(s.maxLod);
+  result.opaque_white_border=s.borderColor==VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+  if(!ValidateSampler(result,error))return false;
+  output=result;error.clear();return true;
+}
 Format PixelFormat(VkFormat format) {
   switch(format) {
 #define P(vk,name) case VK_FORMAT_##vk:return Format::name

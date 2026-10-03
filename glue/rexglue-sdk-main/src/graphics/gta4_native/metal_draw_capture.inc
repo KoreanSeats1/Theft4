@@ -123,24 +123,26 @@ void Gta4NativeGraphicsSystem::BeginMetalCapture(
       }
       image = it->second.get(); d.fetches[slot].image = image->metal_capture_image;
     }
-    auto* sampler = GetOrCreateSampler(command.texture_fetches[slot], image);
-    if (!sampler) { state.recorder.Reject("sampler realization unavailable"); return; }
-    const auto& s = sampler->creation_info;
-    const auto address = [](VkSamplerAddressMode a) {
-      switch (a) {
-        case VK_SAMPLER_ADDRESS_MODE_REPEAT: return r::Address::Repeat;
-        case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: return r::Address::MirrorRepeat;
-        case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: return r::Address::ClampEdge;
-        case VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE: return r::Address::MirrorClampEdge;
-        default: return r::Address::ClampBorder;
-      }
-    };
-    d.fetches[slot].sampler = std::make_shared<r::Sampler>(r::Sampler{
-      s.minFilter == VK_FILTER_LINEAR, s.magFilter == VK_FILTER_LINEAR,
-      s.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR,
-      {address(s.addressModeU), address(s.addressModeV), address(s.addressModeW)},
-      uint32_t(s.anisotropyEnable ? s.maxAnisotropy : 1), std::bit_cast<uint32_t>(s.minLod),
-      std::bit_cast<uint32_t>(s.maxLod), s.borderColor == VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE});
+    // Packet production consumes normalized CPU sampler state, without
+    // allocating a VkSampler or reserving a Vulkan descriptor for the capture.
+    const auto* provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
+    const auto* device = provider ? provider->vulkan_device() : nullptr;
+    if (!device) { state.recorder.Reject("sampler capabilities unavailable"); return; }
+    const auto& properties = device->properties();
+    const NativeSamplerCapabilities capabilities{properties.samplerMirrorClampToEdge,
+                                                properties.samplerAnisotropy,
+                                                properties.maxSamplerAnisotropy};
+    const auto format = image ? image->format : ConvertTextureFormat(command.texture_fetches[slot].format);
+    if (format == VK_FORMAT_UNDEFINED) { state.recorder.Reject("sampler image format unavailable"); return; }
+    const auto support = GetNativeFormatProperties(format);
+    NativeSamplerKey key; VkSamplerCreateInfo info{};
+    auto sampler = std::make_shared<r::Sampler>(); std::string error;
+    if (!PrepareNativeSampler(command.texture_fetches[slot], image, capabilities,
+        (support.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0,
+        key, info) || !r::source::DecodeSampler(info, *sampler, error)) {
+      state.recorder.Reject(error.empty() ? "sampler preparation unavailable" : error); return;
+    }
+    d.fetches[slot].sampler = std::move(sampler);
   }
   const auto* vertex = AuthoritativeConstantState::MaterializeView(command.shader_state->vertex_constants);
   const auto* pixel = AuthoritativeConstantState::MaterializeView(command.shader_state->pixel_constants);

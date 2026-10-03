@@ -165,6 +165,39 @@ int main(int argc, char** argv) {
     Require(source::TextureBlock(Format::ASTC4x4).bytes == 16 && source::TextureBlock(Format::BC1Unorm).bytes == 8,
             "Compressed upload footprint differs");
     {
+      VkSamplerCreateInfo s{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+      s.minFilter=VK_FILTER_LINEAR;s.magFilter=VK_FILTER_NEAREST;s.mipmapMode=VK_SAMPLER_MIPMAP_MODE_LINEAR;
+      s.addressModeU=VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+      s.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;s.addressModeW=VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+      s.anisotropyEnable=VK_TRUE;s.maxAnisotropy=8;s.minLod=2;s.maxLod=5;
+      s.borderColor=VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+      Sampler decoded;Require(source::DecodeSampler(s,decoded,error),error);
+      Require(decoded.min_linear&&!decoded.mag_linear&&decoded.mip_linear&&decoded.anisotropy==8&&
+              decoded.address==std::array{Address::MirrorClampEdge,Address::ClampBorder,Address::MirrorRepeat}&&
+              decoded.min_lod_bits==std::bit_cast<uint32_t>(2.f)&&decoded.max_lod_bits==std::bit_cast<uint32_t>(5.f)&&
+              decoded.opaque_white_border,"CPU sampler policy changed during neutral lowering");
+      const auto unchanged=decoded;
+      const auto rejects=[&](VkSamplerCreateInfo bad) {
+        Require(!source::DecodeSampler(bad,decoded,error)&&decoded==unchanged,
+                "Unsupported sampler changed the preceding neutral state");
+      };
+      auto bad=s;bad.compareEnable=VK_TRUE;rejects(bad);
+      bad=s;bad.unnormalizedCoordinates=VK_TRUE;rejects(bad);
+      bad=s;bad.mipLodBias=0.5f;rejects(bad);
+      bad=s;bad.maxAnisotropy=1.5f;rejects(bad);
+      bad=s;bad.maxAnisotropy=32;rejects(bad);
+      bad=s;bad.maxLod=1;rejects(bad);
+      bad=s;bad.minFilter=VK_FILTER_CUBIC_EXT;rejects(bad);
+      bad=s;bad.borderColor=VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;rejects(bad);
+      bad=s;bad.addressModeU=VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;rejects(bad);
+      bad=s;bad.pNext=&s;rejects(bad);
+      bad=s;bad.flags=1;rejects(bad);
+      s.anisotropyEnable=VK_FALSE;s.maxAnisotropy=0;
+      s.borderColor=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+      Require(source::DecodeSampler(s,decoded,error)&&decoded.anisotropy==1&&!decoded.opaque_white_border,
+              "Disabled anisotropy incorrectly requires a populated driver limit");
+    }
+    {
       DrawCaptureRecorder recorder((root / "writer").string());
       Require(recorder.Submit(c, true), "Bounded writer rejected valid packet");
       Require(!recorder.Submit(c, true), "Repeated pipeline family recorded twice");

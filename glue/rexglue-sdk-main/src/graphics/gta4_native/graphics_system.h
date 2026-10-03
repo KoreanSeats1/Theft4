@@ -1593,6 +1593,15 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkFormatProperties GetNativeFormatProperties(VkFormat format);
   bool PrepareFrameTextures(VkCommandBuffer command_buffer, bool prepare_present,
                             uint32_t submitted_frame, bool trace_reflections);
+  struct NativeSamplerCapabilities {
+    bool mirror_clamp_to_edge = false, anisotropy = false;
+    float maximum_anisotropy = 1;
+  };
+  // Decode/filter/LOD policy is CPU work; a backend supplies format capability.
+  bool PrepareNativeSampler(const xenos::xe_gpu_texture_fetch_t& fetch,
+                            const NativeTextureImage* image,
+                            const NativeSamplerCapabilities& capabilities, bool linear_filtering,
+                            NativeSamplerKey& key, VkSamplerCreateInfo& sampler_info);
   NativeSampler* GetOrCreateSampler(const xenos::xe_gpu_texture_fetch_t& fetch,
                                     const NativeTextureImage* image = nullptr,
                                     NativeSamplerKey* effective_key = nullptr);

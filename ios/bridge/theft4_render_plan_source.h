@@ -8,6 +8,7 @@ namespace theft4::render::source {
 Format PixelFormat(VkFormat format);
 bool Pipeline(const rex::graphics::gta4_native::NativePipelineRecipe::Snapshot& source,
               render::Draw& draw,std::string& error);
+bool DecodeSampler(const VkSamplerCreateInfo&,render::Sampler&,std::string& error);
 struct Block {uint32_t width=1,height=1,bytes=0;};
 Block TextureBlock(Format format);
 }

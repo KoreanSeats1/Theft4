@@ -18632,36 +18632,27 @@ VkFormatProperties Gta4NativeGraphicsSystem::GetNativeFormatProperties(VkFormat 
   return properties;
 }
 
-Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSampler(
+bool Gta4NativeGraphicsSystem::PrepareNativeSampler(
     const xenos::xe_gpu_texture_fetch_t& fetch, const NativeTextureImage* image,
-    NativeSamplerKey* effective_key) {
-  const profile::CpuScope profile_scope(profile::CpuOp::kSamplerLookup);
-
-  if (effective_key) {
-    *effective_key = {};
-  }
-  auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
-  const ui::vulkan::VulkanDevice* vulkan_device =
-      vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
-  if (!vulkan_device || !native_descriptor_capacity_) {
-    return nullptr;
-  }
-
-  auto normalize_clamp = [vulkan_device](xenos::ClampMode mode) {
+    const NativeSamplerCapabilities& capabilities, bool linear_filtering,
+    NativeSamplerKey& key, VkSamplerCreateInfo& sampler_info) {
+  if ((capabilities.anisotropy && (!std::isfinite(capabilities.maximum_anisotropy) || capabilities.maximum_anisotropy < 1)) ||
+      (image && !image->mip_levels)) return false;
+  auto normalize_clamp = [&capabilities](xenos::ClampMode mode) {
     if (mode == xenos::ClampMode::kClampToHalfway) {
       return xenos::ClampMode::kClampToEdge;
     }
     if (mode == xenos::ClampMode::kMirrorClampToEdge ||
         mode == xenos::ClampMode::kMirrorClampToHalfway ||
         mode == xenos::ClampMode::kMirrorClampToBorder) {
-      return vulkan_device->properties().samplerMirrorClampToEdge
+      return capabilities.mirror_clamp_to_edge
                  ? xenos::ClampMode::kMirrorClampToEdge
                  : xenos::ClampMode::kMirroredRepeat;
     }
     return mode;
   };
 
-  NativeSamplerKey key{};
+  key = {};
   texture_util::GetClampModesForDimension(fetch, key.clamp_u, key.clamp_v, key.clamp_w);
   key.clamp_u = normalize_clamp(key.clamp_u);
   key.clamp_v = normalize_clamp(key.clamp_v);
@@ -18693,11 +18684,6 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
     key.mip_max_level = key.mip_min_level;
   }
 
-  const VkFormat sampled_format = image ? image->format : ConvertTextureFormat(fetch.format);
-  if (sampled_format == VK_FORMAT_UNDEFINED) {
-    return nullptr;
-  }
-  const VkFormatProperties format_properties = GetNativeFormatProperties(sampled_format);
   if (image && image->source && image->source->vector_font_replacement) {
     key.min_filter = xenos::TextureFilter::kLinear;
     key.mag_filter = xenos::TextureFilter::kLinear;
@@ -18705,8 +18691,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
     key.mip_min_level = 0;
     key.mip_max_level = image->mip_levels - 1;
   }
-  if (!(format_properties.optimalTilingFeatures &
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+  if (!linear_filtering) {
     key.min_filter = xenos::TextureFilter::kPoint;
     key.mag_filter = xenos::TextureFilter::kPoint;
     key.mip_filter = key.mip_filter == xenos::TextureFilter::kBaseMap
@@ -18743,7 +18728,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
       image && image->aspect == VK_IMAGE_ASPECT_COLOR_BIT && image->mip_levels > 1 &&
       !image->is_reflection && image->source && !image->source->gpu_produced &&
       !image->source->vector_font_replacement && key.mip_filter != xenos::TextureFilter::kBaseMap &&
-      (format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+      linear_filtering;
   const std::string& texture_filtering = active_texture_filtering_;
 
   const MaterialTextureFilterState effective_texture_filtering =
@@ -18763,7 +18748,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
   key.mag_filter = effective_anisotropic_filtering.mag_filter;
   key.mip_filter = effective_anisotropic_filtering.mip_filter;
   key.aniso_filter = effective_anisotropic_filtering.aniso_filter;
-  if (!vulkan_device->properties().samplerAnisotropy) {
+  if (!capabilities.anisotropy) {
     if (key.aniso_filter != xenos::AnisoFilter::kDisabled) {
       static std::atomic<bool> logged_missing_anisotropy{false};
       if (!logged_missing_anisotropy.exchange(true)) {
@@ -18780,7 +18765,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
         "effective={} device-max={:.1f}x",
         anisotropic_filtering, active_texture_frame_, image->source->handle,
         image->source->generation, uint32_t(key.aniso_filter),
-        vulkan_device->properties().maxSamplerAnisotropy);
+        capabilities.maximum_anisotropy);
     anisotropic_filtering_trace_pending_ = false;
   }
   if (texture_filtering_trace_pending_ && material_filter_eligible) {
@@ -18793,17 +18778,13 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
     texture_filtering_trace_pending_ = false;
   }
 
-  if (effective_key) {
-    *effective_key = key;
-  }
-
   static const VkSamplerAddressMode kAddressModes[] = {
       VK_SAMPLER_ADDRESS_MODE_REPEAT,          VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,   VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE,
       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,   VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE,
       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE,
   };
-  VkSamplerCreateInfo sampler_info{};
+  sampler_info = {};
   sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
   sampler_info.minFilter =
       key.min_filter == xenos::TextureFilter::kLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
@@ -18823,7 +18804,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
     const float requested_anisotropy =
         std::ldexp(1.0f, int32_t(key.aniso_filter) - int32_t(xenos::AnisoFilter::kMax_1_1));
     sampler_info.maxAnisotropy =
-        std::min(requested_anisotropy, vulkan_device->properties().maxSamplerAnisotropy);
+        std::min(requested_anisotropy, capabilities.maximum_anisotropy);
     sampler_info.minFilter = VK_FILTER_LINEAR;
     sampler_info.magFilter = VK_FILTER_LINEAR;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
@@ -18831,6 +18812,38 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
   sampler_info.borderColor = key.border_color == xenos::BorderColor::k_ABGR_White
                                  ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
                                  : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+
+  return true;
+}
+
+Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSampler(
+    const xenos::xe_gpu_texture_fetch_t& fetch, const NativeTextureImage* image,
+    NativeSamplerKey* effective_key) {
+  const profile::CpuScope profile_scope(profile::CpuOp::kSamplerLookup);
+
+  if (effective_key) {
+    *effective_key = {};
+  }
+  auto* vulkan_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
+  const ui::vulkan::VulkanDevice* vulkan_device =
+      vulkan_provider ? vulkan_provider->vulkan_device() : nullptr;
+  if (!vulkan_device || !native_descriptor_capacity_) {
+    return nullptr;
+  }
+
+  const VkFormat sampled_format = image ? image->format : ConvertTextureFormat(fetch.format);
+  if (sampled_format == VK_FORMAT_UNDEFINED) return nullptr;
+  const auto format_properties = GetNativeFormatProperties(sampled_format);
+  const auto& properties = vulkan_device->properties();
+  const NativeSamplerCapabilities capabilities{properties.samplerMirrorClampToEdge,
+                                               properties.samplerAnisotropy,
+                                               properties.maxSamplerAnisotropy};
+  NativeSamplerKey key{};
+  VkSamplerCreateInfo sampler_info{};
+  if (!PrepareNativeSampler(fetch, image, capabilities,
+      (format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0,
+      key, sampler_info)) return nullptr;
+  if (effective_key) *effective_key = key;
 
   const NativeSamplerCacheKey cache_key = NativeSamplerCacheKey::FromCreateInfo(sampler_info);
   if (const auto existing = native_sampler_indices_.find(cache_key);

@@ -20,6 +20,7 @@ int main(int argc,char** argv) {
   @autoreleasepool {
     auto backend=metal::CreateFrameBackend(nullptr,argv[1],2);
     auto caps=backend->Capabilities();assert(caps.max_image_dimension_2d>=8192);
+    std::cout<<"GPU: "<<MTLCreateSystemDefaultDevice().name.UTF8String<<", sample mask="<<caps.sample_counts<<"\n";
     assert(caps.sample_counts&(1u<<1));assert(!backend->HasPresentation());
     std::string error;assert(!backend->Drain(error));assert(!error.empty());
     auto surface=std::make_shared<render::Surface>();surface->key={1,1};
@@ -103,6 +104,88 @@ int main(int argc,char** argv) {
         assert(pixels[i]==128&&pixels[i+1]==128&&pixels[i+2]==255&&pixels[i+3]==255);
       }
     }
+    const auto depth_surface=[&](uint64_t id,uint32_t samples=1) {
+      auto s=std::make_shared<render::Surface>(*surface);s->key={id,1};s->samples=samples;
+      s->format=render::Format::Depth32FloatStencil8;return s;
+    };
+    const auto depth_clear=[](const std::shared_ptr<render::Surface>& s,double depth,uint32_t stencil) {
+      render::Attachment a;a.view={s->key,0,0,render::Aspect::Depth};a.load=render::Load::Clear;
+      a.store=render::Store::Store;a.clear_depth=depth;render::Pass pass;pass.depth=a;
+      a.view.aspect=render::Aspect::Stencil;a.clear_stencil=stencil;pass.stencil=a;return pass;
+    };
+    const auto inspect_depth=[&](std::shared_ptr<render::FramePlan> f,const std::shared_ptr<render::Surface>& s,
+                                  const auto& expected,uint32_t mode=1,uint32_t swizzle=0x688) {
+      auto rgba=std::make_shared<render::Surface>(*surface);rgba->key={s->key.id+1000,1};f->surfaces.push_back(rgba);
+      auto clear=Clear(rgba,f->sequence,0);auto pass=std::get<render::Pass>(clear->commands[0]);
+      const std::array<uint32_t,16> constants{0,0,0,0,0,0,0,0,mode,0,0,swizzle,0,0,0,0};
+      auto bytes=std::make_shared<render::Bytes>();bytes->generation=f->sequence;bytes->value.resize(sizeof(constants));
+      std::memcpy(bytes->value.data(),constants.data(),sizeof(constants));
+      render::HostDraw pack;pack.program=render::HostProgram::PackedDepthAlias;
+      pack.pipeline.colors[0]=rgba->format;pack.constants={bytes,0,sizeof(constants)};pack.scissor={0,0,32,16};
+      pack.fetches[0].produced=render::SurfaceView{s->key,0,0,render::Aspect::Depth};
+      pack.fetches[1].produced=render::SurfaceView{s->key,0,0,render::Aspect::Stencil};
+      pack.fetches[0].sampler=pack.fetches[1].sampler=std::make_shared<render::Sampler>();
+      pass.commands={pack};f->commands.push_back(pass);f->output=pass.colors[0]->view;
+      assert(backend->Submit(f,false,error));assert(backend->ReadRGBA8(*f,*f->output,pixels,error));
+      for(size_t y=0;y<16;++y)for(size_t x=0;x<32;++x) {
+        const auto value=expected(x,y);for(size_t c=0;c<4;++c)assert(pixels[(y*32+x)*4+c]==value[c]);
+      }
+    };
+    auto input_depth=depth_surface(300),copied_depth=depth_surface(301);
+    auto ds=std::make_shared<render::FramePlan>();ds->sequence=50;ds->surfaces={input_depth,copied_depth};
+    ds->commands={depth_clear(input_depth,0.25,37),depth_clear(copied_depth,1,19)};
+    render::ImageCopy dsCopy{{input_depth->key,0,0,render::Aspect::Depth},
+        {copied_depth->key,0,0,render::Aspect::Depth},{0,0},{0,0},{16,16},true};ds->commands.push_back(dsCopy);
+    inspect_depth(ds,copied_depth,[](size_t x,size_t){return x<16?std::array<uint8_t,4>{37,0,0,208}:std::array<uint8_t,4>{19,0,0,240};});
+    // The title's 0x60A fetch swizzle places stencil in blue; UNORM24 packing
+    // must remain distinct from the float24 path above.
+    ds=std::make_shared<render::FramePlan>();ds->sequence=51;ds->surfaces={input_depth,copied_depth};
+    ds->commands={depth_clear(input_depth,0.25,37),depth_clear(copied_depth,1,19),dsCopy};
+    inspect_depth(ds,copied_depth,[](size_t x,size_t){return x<16?std::array<uint8_t,4>{0,0,37,64}:
+        std::array<uint8_t,4>{255,255,19,255};},0,0x60a);
+    for(uint32_t samples:{1u,4u}) {
+      if(!(caps.sample_counts&(1u<<samples)))continue;
+      auto scene=depth_surface(310+samples,samples),resolved=depth_surface(320+samples);
+      ds=std::make_shared<render::FramePlan>();ds->sequence=51+samples;ds->surfaces={scene,resolved};
+      auto producer=depth_clear(scene,0.25,37);
+      for(auto* aspect:{&*producer.depth,&*producer.stencil})if(samples>1) {
+        aspect->store=render::Store::StoreAndResolve;aspect->filter=render::ResolveFilter::Sample0;
+        aspect->resolve=render::SurfaceView{resolved->key,0,0,aspect->view.aspect};
+      }
+      ds->commands={producer};
+      if(samples==1)ds->commands.push_back(render::ImageCopy{{scene->key,0,0,render::Aspect::Depth},
+          {resolved->key,0,0,render::Aspect::Depth},{0,0},{0,0},{32,16},true});
+      inspect_depth(ds,resolved,[](size_t,size_t){return std::array<uint8_t,4>{37,0,0,208};});
+      for(bool rebuild:{false,true}) {
+        auto forward=depth_surface(400+samples*2+rebuild,samples),result=depth_surface(420+samples*2+rebuild);
+        ds=std::make_shared<render::FramePlan>();ds->sequence=60+samples*2+rebuild;ds->surfaces={resolved,forward,result};
+        ds->commands={depth_clear(resolved,0.25,37)};
+        render::Pass zero;zero.depth=depth_clear(resolved,0,0).depth;zero.depth->load=render::Load::Load;
+        render::RectClear rectangle;rectangle.depth=true;rectangle.rectangle={0,0,16,16};rectangle.depth_value=0;
+        zero.commands={rectangle};ds->commands.push_back(zero);
+        auto handoff=depth_clear(forward,rebuild?0:1,rebuild?128:19);
+        render::HostDraw transfer;transfer.program=rebuild?render::HostProgram::SceneDepthHandoff:render::HostProgram::DepthHandoff;
+        transfer.pipeline.depth=transfer.pipeline.stencil=forward->format;transfer.pipeline.samples=samples;
+        transfer.pipeline.depth_test=transfer.pipeline.depth_write=true;transfer.pipeline.depth_compare=render::Compare::Always;
+        transfer.scissor={0,0,32,16};transfer.fetches[0].produced=render::SurfaceView{resolved->key,0,0,render::Aspect::Depth};
+        transfer.fetches[0].sampler=std::make_shared<render::Sampler>();
+        if(rebuild) {
+          auto bytes=std::make_shared<render::Bytes>();bytes->generation=ds->sequence;bytes->value={1,0,0,0};
+          transfer.constants={bytes,0,4};transfer.pipeline.stencil_test=true;
+          transfer.pipeline.front.pass=transfer.pipeline.back.pass=render::StencilOp::Replace;
+          transfer.stencil_front_reference=transfer.stencil_back_reference=255;
+        }
+        handoff.commands={transfer};
+        if(samples>1)for(auto* aspect:{&*handoff.depth,&*handoff.stencil}) {
+          aspect->store=render::Store::StoreAndResolve;aspect->filter=render::ResolveFilter::Sample0;
+          aspect->resolve=render::SurfaceView{result->key,0,0,aspect->view.aspect};
+        }
+        ds->commands.push_back(handoff);
+        if(samples==1)ds->commands.push_back(render::ImageCopy{{forward->key,0,0,render::Aspect::Depth},
+            {result->key,0,0,render::Aspect::Depth},{0,0},{0,0},{32,16},true});
+        inspect_depth(ds,result,[&](size_t x,size_t){return std::array<uint8_t,4>{uint8_t(rebuild?(x<16?128:255):19),0,0,uint8_t(x<16?0:208)};});
+      }
+    }
     auto noncolor=*partial->output;noncolor.aspect=render::Aspect::Depth;
     const auto saved=pixels;assert(!backend->ReadRGBA8(*partial,noncolor,pixels,error));assert(pixels==saved);
     backend->Close();assert(!backend->Submit(first,false,error));assert(!backend->Open(error));
@@ -127,6 +210,6 @@ int main(int argc,char** argv) {
     layer.pixelFormat=MTLPixelFormatBGR10_XR;const auto target_saved=target;
     assert(!presentation->Target(target,error));assert(target.width==target_saved.width);
     presentation->Close();
-    std::cout<<"Metal worker admission, ownership, drain, joined passes, scaled color/MSAA resolve, readback and layer contracts passed\n";
+    std::cout<<"Metal worker admission, ownership, joined passes, color/MSAA resolves, combined depth/stencil copy, sample-zero resolve, preserved/rebuilt handoff coverage and readback passed\n";
   }
 }

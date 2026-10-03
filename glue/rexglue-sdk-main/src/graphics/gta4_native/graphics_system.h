@@ -1893,6 +1893,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::unique_ptr<NativeMetalFrameState> native_metal_frame_;
   uint64_t next_native_metal_allocation_ = 0;
   uint64_t next_native_metal_sequence_ = 0;
+  uint64_t next_native_metal_content_serial_ = 0;
   // Startup acknowledgement uses render_mutex_/render_condition_.
   bool native_metal_worker_open_complete_ = false;
   bool native_metal_worker_open_succeeded_ = false;

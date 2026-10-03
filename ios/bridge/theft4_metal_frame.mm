@@ -260,7 +260,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   for(const auto& surface:plan->surfaces)
     if(!impl_->Ensure(surface,drawable&&surface->key==target ? drawable.texture : nil,error))return {};
   struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
-  struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;};
+  struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;bool combined_depth_stencil;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
   for(const auto& command:plan->commands) {
     if(const auto* copy=std::get_if<render::ImageCopy>(&command)) {
@@ -269,7 +269,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       ready.push_back(ReadyCopy{source,destination,
         MTLOriginMake(copy->source_origin[0],copy->source_origin[1],0),
         MTLOriginMake(copy->destination_origin[0],copy->destination_origin[1],0),
-        MTLSizeMake(copy->extent[0],copy->extent[1],1)});continue;
+        MTLSizeMake(copy->extent[0],copy->extent[1],1),copy->combined_depth_stencil});continue;
     }
     const auto& pass=std::get<render::Pass>(command);
     ReadyPass prepared{impl_->Pass(pass,error),{}};if(!prepared.descriptor)return {};
@@ -298,7 +298,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   auto frame=impl_->renderer.BeginFrame(error);if(!frame)return {};
   for(const auto& command:ready) {
     if(const auto* copy=std::get_if<ReadyCopy>(&command)) {
-      if(!frame.CopyTexture(copy->source,copy->destination,copy->src,copy->dst,copy->size,error))return {};
+      if(!frame.CopyTexture(copy->source,copy->destination,copy->src,copy->dst,copy->size,error,copy->combined_depth_stencil))return {};
       continue;
     }
     const auto& pass=std::get<ReadyPass>(command);

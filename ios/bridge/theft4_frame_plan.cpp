@@ -131,8 +131,11 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         return Reject(error,"Image copy has an undefined source or aliased destination");
       const auto* src=FindSurface(f,copy->source.surface);
       const auto* dst=FindSurface(f,copy->destination.surface);
+      const bool combined=src->format==Format::Depth32FloatStencil8;
       if(src->format!=dst->format||src->samples!=1||dst->samples!=1||
-         src->format==Format::Depth32FloatStencil8)
+         combined!=copy->combined_depth_stencil||
+         (combined&&(copy->source.aspect!=Aspect::Depth||
+           !contents.contains({copy->source.surface,copy->source.level,copy->source.slice,Aspect::Stencil}))))
         return Reject(error,"Image copy requires exact unscaled single-aspect storage");
       const auto region=[&](const Surface& s,const SurfaceView& v,const std::array<uint32_t,2>& origin) {
         return copy->extent[0]&&copy->extent[1]&&origin[0]<=Width(s,v)&&origin[1]<=Height(s,v)&&
@@ -141,8 +144,10 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       if(!region(*src,copy->source,copy->source_origin)||!region(*dst,copy->destination,copy->destination_origin))
         return Reject(error,"Image copy region is outside its subresource");
       if(copy->destination_origin==std::array<uint32_t,2>{0,0}&&
-         copy->extent==std::array<uint32_t,2>{Width(*dst,copy->destination),Height(*dst,copy->destination)})
+         copy->extent==std::array<uint32_t,2>{Width(*dst,copy->destination),Height(*dst,copy->destination)}) {
         contents.insert(copy->destination);
+        if(combined)contents.insert({copy->destination.surface,copy->destination.level,copy->destination.slice,Aspect::Stencil});
+      }
       continue;
     }
     const auto& pass=std::get<Pass>(command);

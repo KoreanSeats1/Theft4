@@ -97,7 +97,7 @@ class Frame {
   bool ClearRectangle(const Clear&, std::string& error);
   bool CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,
                    MTLOrigin source_origin,MTLOrigin destination_origin,
-                   MTLSize extent,std::string& error);
+                   MTLSize extent,std::string& error,bool combined_depth_stencil=false);
   bool EndPass(std::string& error);
   bool Present(id<CAMetalDrawable> drawable, std::string& error);
   Receipt Submit(std::string& error);

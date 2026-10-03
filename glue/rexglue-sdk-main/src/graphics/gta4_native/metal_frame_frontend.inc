@@ -5,7 +5,9 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   struct SurfaceRecord {SurfaceDescriptor descriptor;std::shared_ptr<const theft4::render::Surface> owner;};
   struct TextureRecord {std::shared_ptr<const NativeTextureResource> resource;
                         std::shared_ptr<const theft4::render::Surface> owner;
-                        std::shared_ptr<NativeTextureImage> description;};
+                        std::shared_ptr<NativeTextureImage> description;
+                        bool depth_resolved=false;
+                        uint64_t content_serial=0,packed_source_serial=0;};
   std::map<std::pair<uint32_t,bool>,SurfaceRecord> surfaces;
   std::map<uint64_t,TextureRecord> textures;
   struct BytesRecord {
@@ -168,9 +170,12 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   const auto produced_texture=[&](const std::shared_ptr<const NativeTextureResource>& resource) {
     auto existing=next.textures.find(resource->generation);
     if(existing!=next.textures.end()) {retain(existing->second.owner);return true;}
-    if(!resource->gpu_produced||resource->packed_depth_source)
-      return reject("Metal packed-depth image requires its ordered conversion pass");
-    const VkFormat format=ConvertTextureFormat(resource->info.format);
+    if(!resource->gpu_produced)return reject("Metal produced texture has no GPU resource contract");
+    VkFormat format=ConvertTextureFormat(resource->info.format);
+    // Metal uses float32 depth storage. Packed-depth reconstruction retains the
+    // original encoding and explicitly quantizes to UNORM24 or float24, rather
+    // than treating the host storage bytes as guest depth/stencil bytes.
+    if(format==VK_FORMAT_D24_UNORM_S8_UINT)format=VK_FORMAT_D32_SFLOAT_S8_UINT;
     const auto lowered=r::source::PixelFormat(format);
     if(lowered==r::Format::Invalid||lowered>r::Format::Depth32FloatStencil8)
       return reject("Metal produced texture requires a renderable native format");
@@ -214,7 +219,38 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         r::AppendPass(*plan,std::move(pass));
       }
     auto cpu=std::shared_ptr<NativeTextureImage>(std::move(description.image));cpu->source.reset();
-    next.textures[resource->generation]={resource,surface,std::move(cpu)};return true;
+    auto& record=next.textures[resource->generation];record={resource,surface,std::move(cpu)};
+    record.content_serial=++next_native_metal_content_serial_;return true;
+  };
+  const auto produced_fetch=[&](const std::shared_ptr<const NativeTextureResource>& resource) {
+    if(!produced_texture(resource))return false;
+    if(!resource->packed_depth_source)return true;
+    const auto& parent=resource->packed_depth_source;
+    if(parent->packed_depth_source||!produced_texture(parent))
+      return reject("Metal packed alias source must be original resolved depth/stencil storage");
+    auto& input=next.textures.at(parent->generation);auto& destination=next.textures.at(resource->generation);
+    const auto& source_storage=*input.owner;const auto& storage=*destination.owner;
+    if(source_storage.format!=r::Format::Depth32FloatStencil8||source_storage.kind!=r::ImageKind::Texture2D||
+       source_storage.levels!=1||source_storage.samples!=1||storage.levels!=1||storage.kind!=r::ImageKind::Texture2D||
+       storage.format!=r::Format::RGBA8Unorm||storage.width!=source_storage.width||storage.height!=source_storage.height||
+       (parent->info.format!=xenos::TextureFormat::k_24_8&&parent->info.format!=xenos::TextureFormat::k_24_8_FLOAT))
+      return reject("Metal packed alias encoding or storage shape unsupported");
+    if(destination.packed_source_serial==input.content_serial)return true;
+    NativeResolveConversionConstants constants;constants.mode=parent->info.format==xenos::TextureFormat::k_24_8_FLOAT;
+    constants.flags=resource->fetch.swizzle;
+    auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
+    bytes->conversion={uint64_t(r::HostProgram::PackedDepthAlias),parent->generation,input.content_serial,constants.flags};
+    const auto* data=reinterpret_cast<const uint8_t*>(&constants);bytes->value.assign(data,data+sizeof(constants));
+    r::HostDraw draw;draw.program=r::HostProgram::PackedDepthAlias;draw.pipeline.colors[0]=storage.format;
+    draw.constants={bytes,0,sizeof(constants)};draw.scissor={0,0,storage.width,storage.height};
+    draw.fetches[0].produced=r::SurfaceView{source_storage.key,0,0,r::Aspect::Depth};
+    draw.fetches[1].produced=r::SurfaceView{source_storage.key,0,0,r::Aspect::Stencil};
+    draw.fetches[0].sampler=draw.fetches[1].sampler=std::make_shared<r::Sampler>();
+    r::Attachment attachment;attachment.view={storage.key,0,0,r::Aspect::Color};
+    attachment.load=r::Load::Load;attachment.store=r::Store::Store;
+    r::Pass pass;pass.colors[0]=attachment;pass.commands.push_back(std::move(draw));r::AppendPass(*plan,std::move(pass));
+    destination.packed_source_serial=input.content_serial;destination.content_serial=++next_native_metal_content_serial_;
+    return true;
   };
   size_t command_index=0;
   diagnostic_submitted_frame_=uint32_t(plan->sequence);
@@ -267,7 +303,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
           (command.pipeline_state->pixel_shader_resource?command.pipeline_state->pixel_shader_resource->used_texture_mask:0);
       for(uint32_t slot=0;slot<kTextureStageCount;++slot)if((fetch_mask&(1u<<slot))&&
           command.textures[slot]&&command.textures[slot]->gpu_produced) {
-        if(!produced_texture(NativeResourceView<NativeTextureResource>(command.textures[slot]).Share()))return false;
+        if(!produced_fetch(NativeResourceView<NativeTextureResource>(command.textures[slot]).Share()))return false;
       }
       r::FrameDraw draw;if(!PrepareNativeMetalDraw(command,target,next,draw,error))return false;
       if(draw.capture) {
@@ -279,28 +315,74 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
       continue;
     }
+    if(command.type==CommandType::kDepthSurfaceHandoff) {
+      if(command.bytes.size()!=sizeof(DepthSurfaceHandoffCommand)||!command.depth_handoff_source)
+        return reject("Metal depth handoff command or resolved source missing");
+      DepthSurfaceHandoffCommand handoff;std::memcpy(&handoff,command.bytes.data(),sizeof(handoff));
+      const auto resource=NativeResourceView<NativeTextureResource>(command.depth_handoff_source).Share();
+      if(!produced_texture(resource))return false;
+      const auto& input=next.textures.at(resource->generation);
+      if(!input.depth_resolved)return reject("Metal depth handoff source has no successful depth resolve");
+      auto destination=surface_for(handoff.destination,true);if(!destination)return false;
+      if(input.owner->format!=r::Format::Depth32FloatStencil8||destination->format!=input.owner->format||
+         input.owner->width!=destination->width||input.owner->height!=destination->height||
+         input.description->logical_width!=handoff.destination.width||
+         input.description->logical_height!=handoff.destination.height||input.owner->samples!=1||
+         input.description->is_reflection)
+        return reject("Metal depth handoff extent, encoding or sample contract mismatch");
+      const bool rebuild=handoff.stencil_policy==ForwardStencilHandoffPolicy::kRebuildSceneCoverage;
+      if(handoff.stencil_policy!=ForwardStencilHandoffPolicy::kPreserve&&!rebuild)
+        return reject("Metal depth handoff stencil policy unavailable");
+      if(rebuild&&resource->info.format!=xenos::TextureFormat::k_24_8&&
+         resource->info.format!=xenos::TextureFormat::k_24_8_FLOAT)
+        return reject("Metal scene coverage requires the original guest depth encoding");
+      r::Attachment depth;depth.view={destination->key,0,0,r::Aspect::Depth};
+      depth.store=r::Store::Store;depth.load=rebuild?r::Load::Clear:
+          next.contents.contains(depth.view)?r::Load::Load:r::Load::Clear;
+      depth.clear_depth=rebuild?0:1;
+      auto stencil=depth;stencil.view.aspect=r::Aspect::Stencil;
+      stencil.load=rebuild?r::Load::Clear:next.contents.contains(stencil.view)?r::Load::Load:r::Load::Clear;
+      stencil.clear_stencil=rebuild?kForwardEmptySceneStencil:0;
+      r::HostDraw draw;draw.program=rebuild?r::HostProgram::SceneDepthHandoff:r::HostProgram::DepthHandoff;
+      draw.pipeline.depth=draw.pipeline.stencil=destination->format;draw.pipeline.samples=destination->samples;
+      draw.pipeline.depth_test=draw.pipeline.depth_write=true;draw.pipeline.depth_compare=r::Compare::Always;
+      draw.fetches[0].produced=r::SurfaceView{input.owner->key,0,0,r::Aspect::Depth};
+      draw.fetches[0].sampler=std::make_shared<r::Sampler>();draw.scissor={0,0,destination->width,destination->height};
+      if(rebuild) {
+        const uint32_t float24=resource->info.format==xenos::TextureFormat::k_24_8_FLOAT;
+        auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
+        const auto* data=reinterpret_cast<const uint8_t*>(&float24);bytes->value.assign(data,data+sizeof(float24));
+        draw.constants={bytes,0,sizeof(float24)};draw.pipeline.stencil_test=true;
+        draw.pipeline.front.compare=draw.pipeline.back.compare=r::Compare::Always;
+        draw.pipeline.front.pass=draw.pipeline.back.pass=r::StencilOp::Replace;
+        draw.stencil_front_reference=draw.stencil_back_reference=kForwardCoveredSceneStencil;
+      }
+      r::Pass pass;pass.depth=depth;pass.stencil=stencil;pass.commands.push_back(std::move(draw));
+      r::AppendPass(*plan,std::move(pass));next.contents.insert(depth.view);next.contents.insert(stencil.view);
+      continue;
+    }
     if(command.type==CommandType::kResolve) {
       if(command.bytes.size()!=sizeof(ResolveCommand)||!command.resolve_destination)
         return reject("Metal resolve command or destination unavailable");
       ResolveCommand resolve;std::memcpy(&resolve,command.bytes.data(),sizeof(resolve));
       resolve.flags=NormalizeResolveSampleFlags(resolve.flags,resolve.source.sample_type);
       const bool depth=(resolve.flags&7u)==4;
-      if(depth)return reject("Metal depth resolve requires depth/stencil conversion lowering");
       if(resolve.parameters_valid&&(resolve.flags&0x300u))
         return reject("Metal resolve-clear packing overrides are unrepresentable");
-      auto source_surface=surface_for(resolve.source,false);if(!source_surface)return false;
-      const r::SurfaceView source_view{source_surface->key,0,0,r::Aspect::Color};
+      auto source_surface=surface_for(resolve.source,depth);if(!source_surface)return false;
+      const r::SurfaceView source_view{source_surface->key,0,0,depth?r::Aspect::Depth:r::Aspect::Color};
       if(!next.contents.contains(source_view))
         return reject("Metal resolve source placement has not been written");
       const auto resource=NativeResourceView<NativeTextureResource>(command.resolve_destination).Share();
+      if(resource->packed_depth_source)return reject("Metal resolve cannot overwrite a packed-depth view");
       if(!produced_texture(resource))return false;
-      const auto& destination=next.textures.at(resource->generation);
+      auto& destination=next.textures.at(resource->generation);
       const auto& storage=*destination.owner;const auto& metadata=*destination.description;
-      if(!r::SupportsAspect(storage.format,r::Aspect::Color)||resolve.destination_level>=storage.levels||
+      if(!r::SupportsAspect(storage.format,source_view.aspect)||resolve.destination_level>=storage.levels||
          resolve.destination_slice_or_face>=r::SurfaceSlices(storage))
         return reject("Metal color resolve destination subresource unavailable");
       GuestSurfaceView guest_view;
-      if(!DecodeGuestSurfaceView(resolve.source,false,guest_view))return reject("Metal resolve guest sample view invalid");
+      if(!DecodeGuestSurfaceView(resolve.source,depth,guest_view))return reject("Metal resolve guest sample view invalid");
       const int32_t logical_width=int32_t(resolve.source.width),logical_height=int32_t(resolve.source.height);
       const int32_t left=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.left:0,0,logical_width);
       const int32_t top=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.top:0,0,logical_height);
@@ -326,27 +408,43 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       constants.destination_y=ScaleCoordinateFloor(destination_y,logical_mip_height,mip_height);
       constants.destination_width=ScaleCoordinateCeil(destination_x+copy_width,logical_mip_width,mip_width)-constants.destination_x;
       constants.destination_height=ScaleCoordinateCeil(destination_y+copy_height,logical_mip_height,mip_height)-constants.destination_y;
-      auto select=SanitizeGuestCopySampleSelect(DecodeResolveSampleSelect(resolve.flags),guest_view.msaa_samples,false);
+      auto select=SanitizeGuestCopySampleSelect(DecodeResolveSampleSelect(resolve.flags),guest_view.msaa_samples,depth);
       const auto host_samples=ConvertHostSamplesToGuestSamples(VkSampleCountFlagBits(source_surface->samples));
       const auto mapping=NormalizeColorResolveSampleMapping(guest_view.msaa_samples,guest_view.msaa_samples,host_samples,select);
       constants.source_guest_sample_type=uint32_t(mapping.content_samples);
       constants.requested_guest_sample_type=uint32_t(mapping.requested_samples);
       constants.physical_source_sample_type=uint32_t(host_samples);constants.sample_select=uint32_t(mapping.sample_select);
-      const int32_t exponent=NativeResolveExponent(resolve.flags);
+      const int32_t exponent=depth?0:NativeResolveExponent(resolve.flags);
       constants.flags=(uint32_t(exponent)&63u)<<8;
       if(storage.format==r::Format::RGBA16Float)constants.flags|=kResolveConversionFlagXenosFloat16Pack;
       if(RequiresNativeResolveScaleConversion(constants.source_width,constants.source_height,
                                              constants.destination_width,constants.destination_height))
         constants.flags|=kResolveConversionFlagScaleConversion;
-      const r::SurfaceView destination_view{storage.key,resolve.destination_level,resolve.destination_slice_or_face,r::Aspect::Color};
+      const r::SurfaceView destination_view{storage.key,resolve.destination_level,resolve.destination_slice_or_face,source_view.aspect};
+      const bool combined_depth=depth&&storage.format==r::Format::Depth32FloatStencil8&&source_surface->format==storage.format;
+      if(depth&&(!combined_depth||!next.contents.contains({source_surface->key,0,0,r::Aspect::Stencil})||
+         (constants.flags&kResolveConversionFlagScaleConversion)))
+        return reject("Metal depth resolve requires matching defined depth/stencil and unscaled storage");
       const bool exact=source_surface->samples==1&&source_surface->format==storage.format&&
-          !(constants.flags&~kResolveConversionFlagXenosFloat16Pack)&&guest_view.msaa_samples==xenos::MsaaSamples::k1X;
+          !(constants.flags&~kResolveConversionFlagXenosFloat16Pack)&&
+          (depth||guest_view.msaa_samples==xenos::MsaaSamples::k1X);
       if(exact) {
         r::ImageCopy copy;copy.source=source_view;copy.destination=destination_view;
         copy.source_origin={uint32_t(constants.source_x),uint32_t(constants.source_y)};
         copy.destination_origin={uint32_t(constants.destination_x),uint32_t(constants.destination_y)};
         copy.extent={constants.destination_width,constants.destination_height};
+        copy.combined_depth_stencil=combined_depth;
         plan->commands.push_back(copy);
+      } else if(depth) {
+        if(select!=xenos::CopySampleSelect::k0||constants.source_x||constants.source_y||
+           constants.destination_x||constants.destination_y||source_surface->width!=mip_width||
+           source_surface->height!=mip_height||constants.destination_width!=mip_width||constants.destination_height!=mip_height)
+          return reject("Metal combined MSAA depth/stencil resolve requires full sample-zero storage");
+        r::Attachment attachment;attachment.view=source_view;attachment.load=r::Load::Load;
+        attachment.store=r::Store::StoreAndResolve;attachment.resolve=destination_view;attachment.filter=r::ResolveFilter::Sample0;
+        r::Pass pass;pass.depth=attachment;attachment.view.aspect=r::Aspect::Stencil;
+        attachment.resolve->aspect=r::Aspect::Stencil;pass.stencil=attachment;
+        r::AppendPass(*plan,std::move(pass));
       } else {
         auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
         bytes->conversion={uint64_t(r::HostProgram::Resolve),source_surface->samples,resource->generation};
@@ -362,6 +460,11 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       // Destination storage was explicitly initialized before this partial or
       // full resolve, so pixels outside the copied rectangle remain defined.
       next.contents.insert(destination_view);
+      destination.content_serial=++next_native_metal_content_serial_;
+      if(depth) {
+        next.contents.insert({storage.key,resolve.destination_level,resolve.destination_slice_or_face,r::Aspect::Stencil});
+        if(!resolve.destination_level&&!resolve.destination_slice_or_face)destination.depth_resolved=true;
+      }
       if(resolve.flags&0x300u) {
         ClearCommand clear;
         std::copy(std::begin(resolve.clear_color_bits),std::end(resolve.clear_color_bits),clear.color_bits);

@@ -394,11 +394,11 @@ bool Frame::ClearRectangle(const Clear& clear,std::string& error) {
   if(clear.colors||clear.depth)[e setFragmentBytes:data.data() length:sizeof(data) atIndex:0];
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];return true;
 }
-bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrigin src,MTLOrigin dst,MTLSize size,std::string& error) {
+bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrigin src,MTLOrigin dst,MTLSize size,std::string& error,bool combined_depth_stencil) {
   if(!*this||impl_->encoder||!source||!destination||source==destination||source.framebufferOnly||destination.framebufferOnly||
      source.textureType!=MTLTextureType2D||destination.textureType!=MTLTextureType2D||
      source.pixelFormat!=destination.pixelFormat||source.sampleCount!=1||destination.sampleCount!=1||
-     source.pixelFormat==MTLPixelFormatDepth32Float_Stencil8||
+     (source.pixelFormat==MTLPixelFormatDepth32Float_Stencil8)!=combined_depth_stencil||
      src.z||dst.z||size.depth!=1||!size.width||!size.height||src.x>source.width||src.y>source.height||
      dst.x>destination.width||dst.y>destination.height||size.width>source.width-src.x||
      size.height>source.height-src.y||size.width>destination.width-dst.x||size.height>destination.height-dst.y)

@@ -93,6 +93,21 @@ int main() {
   bad=copied;std::get<ImageCopy>(bad.commands.back()).source.surface={99,1};reject(bad);
   bad=copied;std::get<ImageCopy>(bad.commands.back()).destination=copy.source;reject(bad);
   bad=copied;std::get<ImageCopy>(bad.commands.back()).extent={2,2};reject(bad); // Partial copy never defines an entire new target.
+  FramePlan combined;combined.sequence=3;
+  auto ds1=SurfaceFor(110),ds2=SurfaceFor(111);ds1->format=ds2->format=Format::Depth32FloatStencil8;
+  combined.surfaces={ds1,ds2};Pass initialize;
+  initialize.depth=Color(110);initialize.depth->view.aspect=Aspect::Depth;
+  initialize.stencil=initialize.depth;initialize.stencil->view.aspect=Aspect::Stencil;
+  ImageCopy dsCopy{initialize.depth->view,{ds2->key,0,0,Aspect::Depth},{0,0},{0,0},{4,4},true};
+  combined.commands={initialize,dsCopy};assert(ValidateFrame(combined,{},result,error));
+  assert(result.contains(dsCopy.destination)&&result.contains({ds2->key,0,0,Aspect::Stencil}));
+  bad=combined;std::get<ImageCopy>(bad.commands[1]).combined_depth_stencil=false;reject(bad);
+  bad=combined;std::get<Pass>(bad.commands[0]).stencil.reset();reject(bad);
+  bad=combined;std::get<ImageCopy>(bad.commands[1]).source.aspect=Aspect::Stencil;reject(bad);
+  auto partialCombined=combined;std::get<ImageCopy>(partialCombined.commands[1]).extent={2,2};
+  assert(ValidateFrame(partialCombined,{},result,error));
+  assert(!result.contains(dsCopy.destination)&&!result.contains({ds2->key,0,0,Aspect::Stencil}));
+  bad=copied;std::get<ImageCopy>(bad.commands.back()).combined_depth_stencil=true;reject(bad);
   auto cleared=Plan();auto& pass=std::get<Pass>(cleared.commands[1]);
   pass.commands.clear();pass.colors[0]->load=Load::Discard;
   RectClear clear;clear.colors=1;clear.rectangle={0,0,4,4};pass.commands.push_back(clear);

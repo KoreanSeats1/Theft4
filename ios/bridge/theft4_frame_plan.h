@@ -93,6 +93,9 @@ struct ImageCopy {
   // explicit shader passes; they must not be approximated by a raw copy.
   SurfaceView source,destination;
   std::array<uint32_t,2> source_origin{},destination_origin{},extent{};
+  // Both aspects of a combined allocation move together, with defined source
+  // depth and stencil. A depth-only copy must use an explicit shader pass.
+  bool combined_depth_stencil=false;
 };
 using FrameCommand=std::variant<Pass,ImageCopy>;
 struct FramePlan {

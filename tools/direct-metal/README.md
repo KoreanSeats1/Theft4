@@ -65,10 +65,16 @@ descriptor operands change and malformed/unreflected inputs reject.
 
 Metal Lab additionally renders a game-shader preview directly into its drawable,
 without a CPU image upload. Reports and raw pixel images are saved in its own
-Files container. M5 and A12Z installs are staged; hardware runs require the
-devices unlocked on Home; the latest version 3 is not yet installed. The existing
-game apps, saves and prepared ASTC cache
-are separate. No gameplay FPS improvement has been established for this backend.
+Files container. Build 4 uses a `UIWindowSceneDelegate` and scene manifest;
+the window is created for its scene, checks begin after foreground activation,
+and drawable presentation waits for an active scene. Build 3's legacy window
+setup triggered `UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`
+on iPadOS 27 before any graphics checks ran. Apple requires the
+[scene-based lifecycle](https://developer.apple.com/documentation/uikit/transitioning-to-the-uikit-scene-based-life-cycle)
+for apps built with the latest SDK on that OS.
+Hardware checks require a reachable, unlocked device. The existing game apps,
+saves and prepared ASTC cache are separate. No gameplay FPS improvement has been
+established for this backend.
 
 ## Reproduce
 

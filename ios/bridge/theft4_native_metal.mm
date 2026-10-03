@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 
 namespace theft4::metal {
 namespace {
@@ -30,6 +31,15 @@ NSUInteger FormatBytes(MTLVertexFormat f) {
 }
 }
 struct Renderer::Impl {
+  struct ClearKey {
+    std::array<MTLPixelFormat,6> formats{};
+    NSUInteger samples=1;
+    uint32_t colors=0;
+    bool depth=false,stencil=false;
+    auto operator<=>(const ClearKey&) const = default;
+  };
+  struct ClearPipeline { id<MTLRenderPipelineState> pipeline;id<MTLDepthStencilState> depth; };
+  std::map<ClearKey,ClearPipeline> clears;
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   id<MTLCommandQueue> queue = nil;
   dispatch_semaphore_t slots;
@@ -38,6 +48,7 @@ struct Renderer::Impl {
   }
 };
 struct Frame::Impl {
+  std::shared_ptr<Renderer::Impl> renderer;
   id<MTLCommandBuffer> buffer = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
   MTLRenderPassDescriptor* pass = nil;
@@ -76,7 +87,7 @@ id<MTLTexture> Renderer::Texture(MTLTextureDescriptor* d, std::string& error) {
   return texture;
 }
 Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
-    ShaderInterface interface, uint32_t specialization, std::string& error) {
+    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry) {
   Shader result; result.stage = stage; result.interface = interface;
   if (!Ready() || bytes.empty() || (interface.textures & 0x80000000u) ||
       (interface.samplers & 0xffff0000u)) {
@@ -89,7 +100,12 @@ Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
   if (!library) { error = Description(e); return result; }
   MTLFunctionConstantValues* values = [MTLFunctionConstantValues new];
   [values setConstantValue:&specialization type:MTLDataTypeUInt atIndex:0];
-  result.function = [library newFunctionWithName:@"theft4_shader" constantValues:values error:&e];
+  if(!entry||(std::string(entry)!="theft4_shader"&&specialization)) {
+    error="Unsupported Metal entry point specialization";return result;
+  }
+  NSString* name=[NSString stringWithUTF8String:entry];
+  result.function=std::string(entry)=="theft4_shader" ?
+    [library newFunctionWithName:name constantValues:values error:&e] : [library newFunctionWithName:name];
   if (!result.function) { error = Description(e); return result; }
   const auto expected = stage == Stage::Vertex ? MTLFunctionTypeVertex : MTLFunctionTypeFragment;
   if (result.function.functionType != expected) {
@@ -123,6 +139,7 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
   desc.fragmentFunction = ps ? ps->function : nil;
   auto p = std::make_shared<Pipeline>(); p->vertex = vs.interface;
   if(ps)p->fragment = ps->interface;
+  for(size_t i=0;i<3;++i)p->constant_bytes[i]=std::max(vs.interface.constant_bytes[i],ps ? ps->interface.constant_bytes[i] : 0ul);
   p->samples = desc.rasterSampleCount; p->depth = desc.depthAttachmentPixelFormat;
   p->stencil = desc.stencilAttachmentPixelFormat;
   for (NSUInteger i = 0; i < 4; ++i) p->colors[i] = desc.colorAttachments[i].pixelFormat;
@@ -164,6 +181,7 @@ Frame Renderer::BeginFrame(std::string& error) {
     error = "All direct Metal frame slots are still in use"; return {};
   }
   auto p = std::make_unique<Frame::Impl>();
+  p->renderer=impl_;
   p->lease = std::shared_ptr<void>(impl_.get(), [owner = impl_](void*) {
     dispatch_semaphore_signal(owner->slots);
   });
@@ -225,8 +243,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     return Error(error,"Invalid direct Metal dynamic state");
   for(float value:d.blend_color)if(!std::isfinite(value))
     return Error(error,"Invalid direct Metal blend color");
-  constexpr NSUInteger sizes[]{4096, 3584, 1056};
-  for (size_t i = 0; i < 3; ++i) if (!ViewValid(d.constants[i], sizes[i]) || d.constants[i].offset % 16)
+  for (size_t i = 0; i < 3; ++i) if (p.constant_bytes[i]&&(!ViewValid(d.constants[i], p.constant_bytes[i]) || d.constants[i].offset % 16))
     return Error(error, "Invalid Metal game constant bank");
   NSUInteger maximum = d.maximum_vertex;
   if (d.index_count) {
@@ -275,7 +292,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   [e setDepthBias:d.depth_bias slopeScale:d.slope_bias clamp:0];
   [e setDepthClipMode:d.depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
   [e setTriangleFillMode:d.lines ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
-  for (NSUInteger i = 0; i < 3; ++i) {
+  for (NSUInteger i = 0; i < 3; ++i) if(p.constant_bytes[i]) {
     [e setVertexBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
     [e setFragmentBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
   }
@@ -303,6 +320,94 @@ bool Frame::EndPass(std::string& error) {
       (output.storeAction == MTLStoreActionMultisampleResolve ||
        output.storeAction == MTLStoreActionStoreAndMultisampleResolve) ? output.resolveTexture : nil;
   [impl_->encoder endEncoding]; impl_->encoder = nil; impl_->pass = nil; return true;
+}
+bool Frame::ClearRectangle(const Clear& clear,std::string& error) {
+  if(!*this||!impl_->encoder)return Error(error,"Rectangular clear requires an active Metal pass");
+  Renderer::Impl::ClearKey key;key.colors=clear.colors;key.depth=clear.depth;key.stencil=clear.stencil;
+  NSUInteger width=0,height=0;
+  const auto shape=[&](id<MTLTexture> t) {
+    if(!t)return true;
+    if(width&&(width!=t.width||height!=t.height||key.samples!=t.sampleCount))return false;
+    width=t.width;height=t.height;key.samples=t.sampleCount;return true;
+  };
+  for(size_t i=0;i<4;++i) {
+    auto t=impl_->pass.colorAttachments[i].texture;
+    key.formats[i]=t ? t.pixelFormat : MTLPixelFormatInvalid;
+    if(!shape(t)||((clear.colors&(1u<<i))&&!t))return Error(error,"Rectangular clear color attachment mismatch");
+  }
+  auto depth=impl_->pass.depthAttachment.texture,stencil=impl_->pass.stencilAttachment.texture;
+  key.formats[4]=depth ? depth.pixelFormat : MTLPixelFormatInvalid;
+  key.formats[5]=stencil ? stencil.pixelFormat : MTLPixelFormatInvalid;
+  const auto& r=clear.rectangle;
+  if(!shape(depth)||!shape(stencil)||!width||(clear.depth&&!depth)||(clear.stencil&&!stencil)||
+     (clear.colors&~15u)||(!clear.colors&&!clear.depth&&!clear.stencil)||
+     !r.width||!r.height||r.x>width||r.y>height||r.width>width-r.x||r.height>height-r.y||
+     !std::isfinite(clear.depth_value)||clear.depth_value<0||clear.depth_value>1||clear.stencil_value>255)
+    return Error(error,"Invalid Metal rectangular clear range or aspect");
+  for(float c:clear.color)if(!std::isfinite(c))return Error(error,"Nonfinite Metal rectangular clear color");
+  auto& cache=impl_->renderer->clears;
+  auto found=cache.find(key);
+  if(found==cache.end()) {
+    // This utility pipeline is cached by attachment shape and aspect mask.
+    // No guest constants, draw state, blend state or shaders participate.
+    std::string source="#include <metal_stdlib>\nusing namespace metal;\n"
+      "struct V { float4 p [[position]]; };\n"
+      "vertex V clear_vs(uint id [[vertex_id]]) { const float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return V{float4(p[id],0,1)}; }\n";
+    bool output=clear.depth;
+    for(size_t i=0;i<4;++i)output|=key.formats[i]!=MTLPixelFormatInvalid;
+    if(output) {
+      source+="struct O { ";
+      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
+        source+="float4 c"+std::to_string(i)+" [[color("+std::to_string(i)+")]]; ";
+      if(clear.depth)source+="float d [[depth(any)]]; ";
+      source+="};\nfragment O clear_fs(constant float4* data [[buffer(0)]]) { O o; ";
+      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
+        source+="o.c"+std::to_string(i)+"=data[0]; ";
+      if(clear.depth)source+="o.d=data[1].x; ";
+      source+="return o; }\n";
+    }else source+="fragment void clear_fs() {}\n";
+    NSError* e=nil;auto options=[MTLCompileOptions new];options.languageVersion=MTLLanguageVersion2_4;
+    auto library=[impl_->renderer->device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()] options:options error:&e];
+    if(!library){error=Description(e);return false;}
+    auto fixed=[MTLRenderPipelineDescriptor new];fixed.label=@"Theft4 Rectangular Attachment Clear";
+    fixed.vertexFunction=[library newFunctionWithName:@"clear_vs"];
+    fixed.fragmentFunction=[library newFunctionWithName:@"clear_fs"];fixed.rasterSampleCount=key.samples;
+    for(size_t i=0;i<4;++i){fixed.colorAttachments[i].pixelFormat=key.formats[i];
+      fixed.colorAttachments[i].writeMask=(clear.colors&(1u<<i)) ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;}
+    fixed.depthAttachmentPixelFormat=key.formats[4];fixed.stencilAttachmentPixelFormat=key.formats[5];
+    auto pipeline=[impl_->renderer->device newRenderPipelineStateWithDescriptor:fixed error:&e];
+    if(!pipeline){error=Description(e);return false;}
+    auto d=[MTLDepthStencilDescriptor new];d.depthCompareFunction=MTLCompareFunctionAlways;d.depthWriteEnabled=clear.depth;
+    if(clear.stencil){auto s=[MTLStencilDescriptor new];s.stencilCompareFunction=MTLCompareFunctionAlways;
+      s.stencilFailureOperation=s.depthFailureOperation=s.depthStencilPassOperation=MTLStencilOperationReplace;
+      s.readMask=s.writeMask=255;d.frontFaceStencil=d.backFaceStencil=s;}
+    auto ds=[impl_->renderer->device newDepthStencilStateWithDescriptor:d];
+    if(!ds)return Error(error,"Metal rectangular clear depth state creation failed");
+    found=cache.emplace(key,Renderer::Impl::ClearPipeline{pipeline,ds}).first;
+  }
+  auto e=impl_->encoder;[e setRenderPipelineState:found->second.pipeline];[e setDepthStencilState:found->second.depth];
+  [e setViewport:MTLViewport{0,0,double(width),double(height),0,1}];[e setScissorRect:r];
+  [e setCullMode:MTLCullModeNone];[e setFrontFacingWinding:MTLWindingCounterClockwise];
+  [e setDepthBias:0 slopeScale:0 clamp:0];[e setDepthClipMode:MTLDepthClipModeClip];[e setTriangleFillMode:MTLTriangleFillModeFill];
+  [e setStencilReferenceValue:clear.stencil_value];
+  const std::array<float,8> data{clear.color[0],clear.color[1],clear.color[2],clear.color[3],clear.depth_value,0,0,0};
+  if(clear.colors||clear.depth)[e setFragmentBytes:data.data() length:sizeof(data) atIndex:0];
+  [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];return true;
+}
+bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrigin src,MTLOrigin dst,MTLSize size,std::string& error) {
+  if(!*this||impl_->encoder||!source||!destination||source==destination||
+     source.textureType!=MTLTextureType2D||destination.textureType!=MTLTextureType2D||
+     source.pixelFormat!=destination.pixelFormat||source.sampleCount!=1||destination.sampleCount!=1||
+     source.pixelFormat==MTLPixelFormatDepth32Float_Stencil8||
+     src.z||dst.z||size.depth!=1||!size.width||!size.height||src.x>source.width||src.y>source.height||
+     dst.x>destination.width||dst.y>destination.height||size.width>source.width-src.x||
+     size.height>source.height-src.y||size.width>destination.width-dst.x||size.height>destination.height-dst.y)
+    return Error(error,"Invalid Metal image copy or pass transition");
+  auto e=[impl_->buffer blitCommandEncoder];if(!e)return Error(error,"Metal image-copy encoder allocation failed");
+  e.label=@"Theft4 Ordered Texture Copy";
+  [e copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:src sourceSize:size
+      toTexture:destination destinationSlice:0 destinationLevel:0 destinationOrigin:dst];
+  [e endEncoding];impl_->stored_color=destination;return true;
 }
 bool Frame::Present(id<CAMetalDrawable> drawable, std::string& error) {
   if (!*this || impl_->encoder || impl_->presented || !drawable ||

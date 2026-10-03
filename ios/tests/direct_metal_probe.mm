@@ -3,6 +3,9 @@
 #include "theft4_metal_shader_store.h"
 #include "theft4_metal_resources.h"
 #include "theft4_metal_plan.h"
+#include "theft4_metal_frame.h"
+#include "theft4_metal_host_shaders.h"
+#include "present_constants.h"
 #include "direct_metal_capture.h"
 #include "native_color_output.h"
 #include <algorithm>
@@ -470,6 +473,228 @@ struct Probe {
     [results addObject:@{@"case":@"game_stream_16_per_instance",@"passed":@YES,
         @"game_streams":@17,@"metal_buffer_slot":@24,@"instances":@2,@"short_instance_stream_rejected":@YES}];
   }
+  void OrderedGameFrame() {
+    namespace r=theft4::render;
+    FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    const auto surface=[&](uint64_t id,uint32_t samples,bool array=false) {
+      auto s=std::make_shared<r::Surface>();s->key={id,1};s->format=r::Format::RGBA8Unorm;
+      s->width=s->height=array ? W*2 : W;s->samples=samples;
+      if(array){s->kind=r::ImageKind::Texture2DArray;s->layers=2;s->levels=2;}
+      return s;
+    };
+    auto msaa=surface(1,4),resolved=surface(2,1),layered=surface(3,1,true);
+    const r::SurfaceView first{{1,1},0,0,r::Aspect::Color},second{{2,1},0,0,r::Aspect::Color},
+      outputView{{3,1},1,1,r::Aspect::Color};
+    const auto attachment=[](r::SurfaceView view,r::Load load=r::Load::Clear) {
+      r::Attachment a;a.view=view;a.load=load;a.store=r::Store::Store;return a;
+    };
+    const auto capture=[&](std::array<float,4> color,bool texture,bool blend,uint32_t samples) {
+      auto c=std::make_shared<r::Capture>();c->width=W;c->height=H;auto& d=c->draw;
+      d.pipeline.vertex.hash=0x048E49996734F6B5ull;
+      d.pipeline.fragment.hash=texture ? 0xB9589DA9F4B1770Full : 0x949ED69300FB92B7ull;
+      d.pipeline.colors[0]=r::Format::RGBA8Unorm;d.pipeline.samples=samples;
+      d.pipeline.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},
+                             {13,0,32,r::VertexFormat::Float4}};d.pipeline.streams[0]={sizeof(Vertex),false};
+      if(blend){auto& b=d.pipeline.blends[0];b.enabled=true;b.source_rgb=r::BlendFactor::SourceAlpha;
+        b.destination_rgb=b.destination_alpha=r::BlendFactor::OneMinusSourceAlpha;}
+      const auto copy=[](std::span<const uint8_t> bytes) {
+        auto b=std::make_shared<r::Bytes>();b->generation=1;b->value.assign(bytes.begin(),bytes.end());
+        return r::Buffer{b,0,bytes.size()};
+      };
+      Case test{};test.texture=texture;auto banks=Constants(test,samples);
+      for(size_t i=0;i<3;++i)d.constants[i]=copy({static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+      auto vertices=Quad(color);d.vertices[0]=copy(Bytes(vertices));d.vertex_count=vertices.size();
+      d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};
+      if(texture)d.fetches[0].sampler=std::make_shared<r::Sampler>();return c;
+    };
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=1;plan->surfaces={msaa,resolved,layered};plan->output=outputView;
+    r::Pass a;a.colors[0]=attachment(first);a.colors[0]->store=r::Store::StoreAndResolve;a.colors[0]->resolve=second;
+    a.commands.push_back(r::FrameDraw{capture({0.2f,0.4f,0.8f,1},false,false,4),{}});
+    r::Pass b;b.colors[0]=attachment(outputView);r::FrameDraw sample{capture({1,1,1,1},true,false,1),{}};
+    sample.produced[0]=second;b.commands.push_back(sample);
+    r::Pass c;c.colors[0]=attachment(outputView,r::Load::Load);
+    c.commands.push_back(r::FrameDraw{capture({1,0,0,0.5f},false,true,1),{}});plan->commands={a,b,c};
+    auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
+    auto target=adapter.Output(*plan,error);Require(target);
+    const auto oracle=[&](const uint8_t* expected) {
+      auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+      for(size_t i=0;i<pixels.size();++i)Require(std::abs(int(pixels[i])-int(expected[i%4]))<=1);
+    };
+    const uint8_t firstExpected[]{153,51,102,255};oracle(firstExpected);
+    const auto cold=adapter.Stats();const auto immutable=adapter.ImmutableStats();const auto pipelines=adapter.PipelineCount();
+    receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));oracle(firstExpected);
+    const auto warm=adapter.Stats();const auto warmImmutable=adapter.ImmutableStats();
+    Require(cold.surface_creates==3&&cold.surface_creates==warm.surface_creates&&cold.view_creates==warm.view_creates&&
+      immutable.buffer_creates==warmImmutable.buffer_creates&&immutable.uploaded_bytes==warmImmutable.uploaded_bytes&&
+      pipelines==adapter.PipelineCount());
+    auto next=std::make_shared<r::FramePlan>();next->sequence=2;next->surfaces={layered};next->output=outputView;
+    r::Pass continued;continued.colors[0]=attachment(outputView,r::Load::Load);
+    continued.commands.push_back(r::FrameDraw{capture({0,0,1,0.5f},false,true,1),{}});next->commands={continued};
+    receipt=adapter.Submit(next,error);Require(bool(receipt));
+    // Drop every CPU target declaration while its final GPU frame is in flight.
+    plan.reset();next.reset();msaa.reset();resolved.reset();layered.reset();
+    Require(adapter.RetireResources()>=3);Require(adapter.Stats().allocated_bytes==0);
+    Require(receipt.Wait(error));const uint8_t nextExpected[]{77,26,179,255};oracle(nextExpected);
+    [results addObject:@{@"case":@"ordered_game_frame_passes",@"passed":@YES,
+      @"msaa_store_and_resolve":@YES,@"gpu_produced_fetch":@YES,@"mip_and_array_slice":@YES,
+      @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
+      @"gpu_retains_retired_targets":@YES,@"synthetic_validation_geometry":@YES}];
+  }
+  void OrderedFrameOperations() {
+    namespace r=theft4::render;
+    FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    const auto surface=[](uint64_t id,r::Format format) {
+      auto s=std::make_shared<r::Surface>();s->key={id,1};s->width=W;s->height=H;s->format=format;return s;
+    };
+    auto color=surface(20,r::Format::RGBA8Unorm),other=surface(21,r::Format::RGBA8Unorm),
+      depth=surface(22,r::Format::Depth32FloatStencil8),copied=surface(23,r::Format::RGBA8Unorm);
+    const r::SurfaceView cv{{20,1},0,0,r::Aspect::Color},ov{{21,1},0,0,r::Aspect::Color},
+      dv{{22,1},0,0,r::Aspect::Depth},sv{{22,1},0,0,r::Aspect::Stencil},out{{23,1},0,0,r::Aspect::Color};
+    const auto attachment=[](r::SurfaceView view,std::array<double,4> color={}) {
+      r::Attachment a;a.view=view;a.load=r::Load::Clear;a.store=r::Store::Store;a.clear_color=color;return a;
+    };
+    auto c=std::make_shared<r::Capture>();c->width=W;c->height=H;auto& d=c->draw;
+    d.pipeline.vertex.hash=0x048E49996734F6B5ull;d.pipeline.fragment.hash=0x949ED69300FB92B7ull;
+    d.pipeline.colors[0]=d.pipeline.colors[1]=r::Format::RGBA8Unorm;d.pipeline.blends[1].write_mask=0;
+    d.pipeline.depth=d.pipeline.stencil=r::Format::Depth32FloatStencil8;
+    d.pipeline.depth_test=true;d.pipeline.depth_compare=r::Compare::Less;d.pipeline.stencil_test=true;
+    d.pipeline.front.compare=d.pipeline.back.compare=r::Compare::Equal;
+    d.pipeline.front.write_mask=d.pipeline.back.write_mask=0;d.stencil_front_reference=d.stencil_back_reference=7;
+    d.pipeline.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},
+                           {13,0,32,r::VertexFormat::Float4}};d.pipeline.streams[0]={sizeof(Vertex),false};
+    const auto copy=[](std::span<const uint8_t> data) {
+      auto b=std::make_shared<r::Bytes>();b->generation=1;b->value.assign(data.begin(),data.end());
+      return r::Buffer{b,0,data.size()};
+    };
+    Case test{};auto banks=Constants(test,1);
+    for(size_t i=0;i<3;++i)d.constants[i]=copy({static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+    auto vertices=Quad({1,1,0,1});d.vertices[0]=copy(Bytes(vertices));d.vertex_count=vertices.size();
+    d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};
+    r::Pass pass;pass.colors[0]=attachment(cv,{0,0,1,1});pass.colors[1]=attachment(ov,{0,1,0,1});
+    pass.depth=attachment(dv);pass.depth->clear_depth=0.1;pass.stencil=attachment(sv);
+    r::RectClear clear;clear.colors=1;clear.depth=clear.stencil=true;clear.rectangle={10,14,17,21};
+    clear.color={1,0,0,1};clear.depth_value=0.8;clear.stencil_value=7;pass.commands.push_back(clear);
+    // Depth-only clear must preserve stencil. The yellow draw fails depth in
+    // this hole and succeeds elsewhere inside the stencil rectangle.
+    clear.colors=0;clear.stencil=false;clear.rectangle={15,20,4,5};clear.depth_value=0.1;
+    pass.commands.push_back(clear);pass.commands.push_back(r::FrameDraw{c,{}});
+    // A clear after a masked draw must still write the selected MRT slot.
+    clear.colors=2;clear.depth=false;clear.rectangle={3,5,7,9};clear.color={1,0,1,1};pass.commands.push_back(clear);
+    r::Pass seed;seed.colors[0]=attachment(out,{1,1,1,1});
+    r::ImageCopy transfer{cv,out,{8,12},{22,28},{21,25}};
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=3;plan->surfaces={color,other,depth,copied};
+    plan->commands={pass,seed,transfer};plan->output=out;
+    const auto inside=[](size_t x,size_t y,size_t left,size_t top,size_t w,size_t h){return x>=left&&y>=top&&x-left<w&&y-top<h;};
+    const auto colorAt=[&](size_t x,size_t y) {
+      if(inside(x,y,15,20,4,5))return std::array<uint8_t,4>{255,0,0,255};
+      if(inside(x,y,10,14,17,21))return std::array<uint8_t,4>{255,255,0,255};
+      return std::array<uint8_t,4>{0,0,255,255};
+    };
+    const auto check=[&](r::SurfaceView view,int which) {
+      auto selected=*plan;selected.output=view;auto target=adapter.Output(selected,error);Require(target);
+      auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+      for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x) {
+        auto expected=which==0 ? colorAt(x,y) : which==1 ?
+          (inside(x,y,3,5,7,9) ? std::array<uint8_t,4>{255,0,255,255} : std::array<uint8_t,4>{0,255,0,255}) :
+          (inside(x,y,22,28,21,25) ? colorAt(x-22+8,y-28+12) : std::array<uint8_t,4>{255,255,255,255});
+        for(size_t channel=0;channel<4;++channel)Require(pixels[(y*W+x)*4+channel]==expected[channel]);
+      }
+    };
+    for(size_t repeat=0;repeat<2;++repeat) {
+      auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
+      check(cv,0);check(ov,1);check(out,2);
+    }
+    auto invalid=std::make_shared<r::FramePlan>(*plan);
+    std::get<r::ImageCopy>(invalid->commands.back()).extent={UINT32_MAX,25};
+    Require(!adapter.Submit(invalid,error));error.clear();check(cv,0);check(out,2);
+    // Exercise a stencil-only utility pipeline (no color or depth outputs),
+    // then independently test the stored stencil through a normal game draw.
+    auto onlyStencil=surface(24,r::Format::Stencil8);
+    const r::SurfaceView only{{24,1},0,0,r::Aspect::Stencil};
+    r::Pass stencilPass;stencilPass.stencil=attachment(only);
+    clear={};clear.stencil=true;clear.stencil_value=7;clear.rectangle={10,14,17,21};
+    stencilPass.commands.push_back(clear);
+    r::Pass stencilDraw;stencilDraw.colors[0]=attachment(cv,{0,0,1,1});stencilDraw.stencil=attachment(only);
+    stencilDraw.stencil->load=r::Load::Load;
+    auto noDepth=std::make_shared<r::Capture>(*c);noDepth->draw.pipeline.colors[1]=r::Format::Invalid;
+    noDepth->draw.pipeline.depth=r::Format::Invalid;noDepth->draw.pipeline.stencil=r::Format::Stencil8;
+    noDepth->draw.pipeline.depth_test=false;stencilDraw.commands.push_back(r::FrameDraw{noDepth,{}});
+    auto stencilPlan=std::make_shared<r::FramePlan>();stencilPlan->sequence=4;stencilPlan->surfaces={color,onlyStencil};
+    stencilPlan->commands={stencilPass,stencilDraw};stencilPlan->output=cv;
+    auto receipt=adapter.Submit(stencilPlan,error);Require(bool(receipt));Require(receipt.Wait(error));
+    auto pixels=renderer.ReadRGBA8(adapter.Output(*stencilPlan,error),error);Require(pixels.size()==W*H*4);
+    for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x) {
+      const auto expected=inside(x,y,10,14,17,21) ? std::array<uint8_t,4>{255,255,0,255} : std::array<uint8_t,4>{0,0,255,255};
+      for(size_t channel=0;channel<4;++channel)Require(pixels[(y*W+x)*4+channel]==expected[channel]);
+    }
+    [results addObject:@{@"case":@"ordered_rectangular_clears_and_copies",@"passed":@YES,
+      @"mrt_clear_ignores_draw_write_masks":@YES,@"depth_clear_preserves_stencil":@YES,
+      @"draw_state_restored_after_clear":@YES,@"offset_copy_preserves_outside_pixels":@YES,
+      @"stencil_only_pass_and_clear":@YES,
+      @"invalid_copy_rejected_before_encoding":@YES,@"synthetic_validation_geometry":@YES}];
+  }
+  void HostUtilityShaders() {
+    HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
+    Require(host.Size()==24);
+    const char* names[]{"fullscreen_cw_vs","gta4_native_depth_handoff_ps","gta4_native_scene_depth_handoff_ps",
+      "gta4_native_packed_depth_alias_ps","gta4_native_resolve_convert_ps","gta4_native_resolve_convert_msaa_ps",
+      "gta4_native_resolve_convert_hdr_ps","gta4_native_resolve_convert_hdr_msaa_ps","gta4_native_resolve_depth_msaa_ps",
+      "gta4_native_hdr_present_ps","gta4_native_split_postfx_ps","gta4_native_sun_shafts_ps",
+      "smaa_edge_low_ps","smaa_weight_low_ps","smaa_edge_medium_ps","smaa_weight_medium_ps","smaa_edge_high_ps",
+      "smaa_weight_high_ps","smaa_edge_ultra_ps","smaa_weight_ultra_ps","smaa_neighborhood_ps","smaa_present_ps",
+      "smaa_hardware_present_ps","smaa_hardware_neighborhood_ps"};
+    for(auto name:names)Require(host.Resolve(name,error).function);
+    auto vs=host.Resolve("fullscreen_cw_vs",error),ps=host.Resolve("gta4_native_hdr_present_ps",error);
+    auto fixed=[MTLRenderPipelineDescriptor new];fixed.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
+    auto pipeline=renderer.MakePipeline(vs,ps,fixed,nil,error);Require(bool(pipeline));
+    Require(pipeline->constant_bytes==std::array<NSUInteger,3>{44,0,0});
+    auto sampler=[renderer.Device() newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];Require(sampler);
+    auto source=SourceTexture(false);
+    rex::graphics::gta4_native::NativePresentConstants constants;constants.source_width=constants.source_height=2;
+    constants.destination_width=W;constants.destination_height=H;constants.output_mode=4;
+    auto bank=Buffer({reinterpret_cast<const uint8_t*>(&constants),sizeof(constants)},true);
+    Draw draw;draw.pipeline=pipeline;draw.vertex_count=3;draw.viewport={0,0,W,H,0,1};draw.scissor={0,0,W,H};
+    const HostInput input{0,source,sampler};Require(host.Bind("gta4_native_hdr_present_ps",{&input,1},bank,draw,error));
+    auto before=draw;auto shortBank=bank;shortBank.length=43;
+    Require(!host.Bind("gta4_native_hdr_present_ps",{&input,1},shortBank,draw,error));error.clear();
+    Require(draw.constants[0].length==before.constants[0].length&&draw.textures.size()==before.textures.size());
+    auto desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:W height:H mipmapped:NO];
+    desc.storageMode=MTLStorageModePrivate;desc.usage=MTLTextureUsageRenderTarget;
+    auto target=renderer.Texture(desc,error);Require(target);
+    auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(Pass(target,nil,nil),error));
+    Require(frame.Encode(draw,error));Require(frame.EndPass(error));auto receipt=frame.Submit(error);
+    Require(bool(receipt));Require(receipt.Wait(error));auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    const std::array<std::array<uint8_t,4>,4> colors{{{255,0,0,64},{0,255,0,128},{0,0,255,192},{255,255,0,255}}};
+    for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x)for(size_t ch=0;ch<4;++ch)
+      Require(pixels[(y*W+x)*4+ch]==colors[(y>=H/2?2:0)+(x>=W/2?1:0)][ch]);
+    // Copy an actual GPU depth attachment through the renderer's exact host
+    // shader, then test its stored values through a regular game depth draw.
+    auto depthDesc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:W height:H mipmapped:NO];
+    depthDesc.storageMode=MTLStorageModePrivate;depthDesc.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+    auto srcDepth=renderer.Texture(depthDesc,error),dstDepth=renderer.Texture(depthDesc,error);Require(srcDepth&&dstDepth);
+    auto seed=[MTLRenderPassDescriptor renderPassDescriptor];seed.depthAttachment.texture=srcDepth;
+    seed.depthAttachment.loadAction=MTLLoadActionClear;seed.depthAttachment.storeAction=MTLStoreActionStore;seed.depthAttachment.clearDepth=0.4;
+    frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(seed,error));Require(frame.EndPass(error));
+    MTLRenderPassDescriptor* depthPass=[seed copy];depthPass.depthAttachment.texture=dstDepth;depthPass.depthAttachment.clearDepth=1;
+    Require(frame.BeginPass(depthPass,error));fixed=[MTLRenderPipelineDescriptor new];fixed.depthAttachmentPixelFormat=MTLPixelFormatDepth32Float;
+    auto depthState=[MTLDepthStencilDescriptor new];depthState.depthCompareFunction=MTLCompareFunctionAlways;depthState.depthWriteEnabled=YES;
+    auto depthPipeline=renderer.MakePipeline(vs,host.Resolve("gta4_native_depth_handoff_ps",error),fixed,depthState,error);
+    Require(bool(depthPipeline));Draw handoff;handoff.pipeline=depthPipeline;handoff.vertex_count=3;
+    handoff.viewport={0,0,W,H,0,1};handoff.scissor={0,0,W,H};const HostInput depthInput{0,srcDepth,sampler};
+    Require(host.Bind("gta4_native_depth_handoff_ps",{&depthInput,1},{},handoff,error));Require(frame.Encode(handoff,error));Require(frame.EndPass(error));
+    auto color=Color();auto pass=Pass(color,nil,dstDepth);pass.depthAttachment.loadAction=MTLLoadActionLoad;
+    Require(frame.BeginPass(pass,error));Case test{};test.depth=true;auto gamePipeline=PipelineFor(test,1);
+    auto nearDraw=Packet(test,gamePipeline,{1,0,0,1},0.2f),farDraw=Packet(test,gamePipeline,{0,1,0,1},0.6f);
+    Require(frame.Encode(nearDraw,error));Require(frame.Encode(farDraw,error));Require(frame.EndPass(error));receipt=frame.Submit(error);
+    Require(bool(receipt));Require(receipt.Wait(error));pixels=renderer.ReadRGBA8(color,error);Require(pixels.size()==W*H*4);
+    const uint8_t red[]{255,0,0,255};for(size_t byte=0;byte<pixels.size();++byte)Require(pixels[byte]==red[byte%4]);
+    const auto loaded=host.LoadedFunctions();Require(host.Resolve("gta4_native_hdr_present_ps",error).function==ps.function);
+    Require(host.LoadedFunctions()==loaded&&loaded==24);
+    [results addObject:@{@"case":@"native_host_shader_programs",@"passed":@YES,@"compiled_host_programs":@24,
+      @"loaded_all_functions":@YES,@"present_orientation_color_and_alpha":@YES,@"gpu_depth_handoff":@YES,
+      @"host_constant_abi":@YES,@"failed_binding_preserves_draw":@YES,@"function_cache_reused":@YES,
+      @"synthetic_validation_geometry":@YES}];
+  }
   void GameTexturePitchPlan() {
     namespace r=theft4::render;
     PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -606,7 +831,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();passed=true;
+    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.OrderedFrameOperations();probe.HostUtilityShaders();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

@@ -6,7 +6,7 @@
   <key>CFBundleDisplayName</key><string>Theft4 Metal Lab</string>
   <key>CFBundleExecutable</key><string>Theft4MetalLab</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>6</string>
+  <key>CFBundleVersion</key><string>7</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UIApplicationSupportsIndirectInputEvents</key><true/>

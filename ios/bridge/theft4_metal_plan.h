@@ -14,6 +14,11 @@ class PlanAdapter {
   bool Open(const std::string& libraries, std::string& error);
   bool Prepare(const render::Capture& capture, Draw& draw, std::string& error);
   std::shared_ptr<const Draw> Realize(const std::shared_ptr<const render::Capture>& capture,std::string& error);
+  // Patch only reflected bindings of an already prepared immutable draw.
+  // GPU-produced textures remain owned by the ordered frame, never uploaded
+  // as static CPU images or retained in the immutable source cache.
+  bool BindProduced(const render::Capture&,const std::array<id<MTLTexture>,26>&,
+                    Draw&,std::string& error) const;
   size_t PipelineCount() const { return pipelines_.size(); }
   size_t SamplerCount() const { return samplers_.size(); }
   ResourceCacheStats ResourceStats() const { return resources_.Stats(); }

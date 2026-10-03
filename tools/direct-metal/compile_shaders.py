@@ -58,5 +58,8 @@ report = {"platform": args.platform, "target": target, "standard": standard,
 (args.output / "COMPILATION.json").write_text(json.dumps(report, indent=2) + "\n")
 if sources and not report["rejected"] and manifest.resolve() != (args.output / "manifest.tsv").resolve():
     shutil.copy2(manifest, args.output / "manifest.tsv")
+host_manifest = args.sources / "HOST_SHADER_MANIFEST.json"
+if sources and not report["rejected"] and host_manifest.is_file() and host_manifest.resolve() != (args.output / host_manifest.name).resolve():
+    shutil.copy2(host_manifest, args.output / host_manifest.name)
 print(json.dumps(report))
 raise SystemExit(0 if sources and not report["rejected"] else 1)

@@ -6,12 +6,18 @@ get_filename_component(ROOT "../../.." ABSOLUTE)
 if(NOT METAL_LIBRARIES OR NOT IS_DIRECTORY "${METAL_LIBRARIES}")
   message(FATAL_ERROR "METAL_LIBRARIES must name the tested iOS shader directory")
 endif()
+if(NOT HOST_METAL_LIBRARIES OR NOT EXISTS "${HOST_METAL_LIBRARIES}/HOST_SHADER_MANIFEST.json")
+  message(FATAL_ERROR "HOST_METAL_LIBRARIES must name the compiled host utility shader directory")
+endif()
 add_executable(Theft4MetalLab MACOSX_BUNDLE app.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm"
   "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp"
   "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
   "${ROOT}/ios/bridge/theft4_metal_resources.mm"
   "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_metal_frame.mm"
+  "${ROOT}/ios/bridge/theft4_metal_host_shaders.mm"
+  "${ROOT}/ios/bridge/theft4_frame_plan.cpp"
   "${ROOT}/ios/bridge/theft4_render_plan.cpp"
   "${ROOT}/ios/tests/direct_metal_capture.mm"
   "${ROOT}/ios/tests/direct_metal_probe.mm")
@@ -41,3 +47,7 @@ file(GLOB libraries CONFIGURE_DEPENDS "${METAL_LIBRARIES}/*.metallib")
 list(APPEND libraries "${METAL_LIBRARIES}/manifest.tsv")
 target_sources(Theft4MetalLab PRIVATE ${libraries})
 set_source_files_properties(${libraries} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/MetalShaders")
+file(GLOB host_libraries CONFIGURE_DEPENDS "${HOST_METAL_LIBRARIES}/*.metallib")
+list(APPEND host_libraries "${HOST_METAL_LIBRARIES}/HOST_SHADER_MANIFEST.json")
+target_sources(Theft4MetalLab PRIVATE ${host_libraries})
+set_source_files_properties(${host_libraries} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/MetalShaders/Host")

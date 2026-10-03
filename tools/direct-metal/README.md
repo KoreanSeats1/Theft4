@@ -169,3 +169,46 @@ GreaterEqual comparisons, and one otherwise. The original pass clear and
 attachment contents are not captured; this seed is explicit in each result.
 A reversed-depth regression verifies that a full-target draw is visible.
 Neither isolated visibility nor repeat identity establishes whole-frame parity.
+
+## Ordered frame execution and host utility programs
+
+The API-free `theft4_frame_plan` now preserves attachment generations,
+subresources, load/clear/store actions, MSAA resolves, ordered draws and
+rectangular clears, and exact-format texture copies. Mutable render targets
+persist across passes and frames. Draws sample GPU-produced inputs directly;
+static texture uploads retain the existing generation cache. Admission rejects
+undefined reads, feedback, mismatched resolves, and out-of-bounds copies before
+encoding. Partial clears/copies never imply that an entire new target is defined.
+The target budget is 1 GiB; expired source owners retire their CPU cache entries
+while submitted command buffers retain their GPU resources.
+
+The host shader exporter translates the comparison renderer's exact 24 utility
+programs, including depth handoffs, resolve conversion, SDR/HDR presentation,
+SMAA, split post-processing and sun shafts. Their reflected constants and
+texture slots use a separate ABI from guest draw shaders. All 24 compile for
+both iOS and macOS. This establishes compilation and library loading coverage;
+complete scene correctness still requires actual frame integration. GPU oracles
+currently verify ordinary presentation color/orientation/alpha and GPU depth
+handoff. Host shaders are not yet commands in the game frame producer.
+
+Metal Lab build 7 adds ordered-pass, rectangular-clear/copy, and host utility
+checks, for 27 controlled GPU checks. The rectangle oracle covers independent
+MRT clears, depth changes preserving stencil, stencil-only passes, restoration
+of game draw state, and partial copies preserving outside pixels. Cold
+rectangular-clear pipelines currently compile a small native MSL utility once
+per attachment/mask key; prewarming or offline utility variants are needed
+before measuring cold full-game startup. The regular shader libraries compile
+offline and function/pipeline hits perform no compiler work.
+
+Export and compile host utilities before configuring the Lab:
+
+```sh
+out/direct-metal/build/metal_host_shader_export out/direct-metal/host-source
+python3 tools/direct-metal/compile_shaders.py out/direct-metal/host-source out/direct-metal/host-ios --platform ios
+```
+
+Set `HOST_METAL_LIBRARIES` to the compiled host directory when configuring the
+iOS Lab. Host GPU checks expect those libraries and `HOST_SHADER_MANIFEST.json`
+in the stock library directory's `Host` subdirectory. The full game still uses
+the preserved comparison renderer; these checks do not establish gameplay FPS
+or full-frame parity.

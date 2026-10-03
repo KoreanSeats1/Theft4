@@ -27,6 +27,10 @@ target_include_directories(metal_shader_export PRIVATE
   "${ROOT}/glue/rexglue-sdk-main/thirdparty/spirv-headers/include")
 target_link_libraries(metal_shader_export PRIVATE spirv-cross-msl spirv-cross-glsl
   spirv-cross-core libzstd_static)
+add_executable(metal_host_shader_export host_shader_export.cpp)
+target_include_directories(metal_host_shader_export PRIVATE "${ROOT}/thirdparty/json/include"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_link_libraries(metal_host_shader_export PRIVATE spirv-cross-msl spirv-cross-glsl spirv-cross-core)
 add_executable(metal_descriptor_contract_test descriptor_contract_test.cpp shader_descriptor_contract.cpp
   $<TARGET_OBJECTS:metal_shader_corpus>)
 target_include_directories(metal_descriptor_contract_test PRIVATE
@@ -36,7 +40,7 @@ target_link_libraries(metal_descriptor_contract_test PRIVATE spirv-cross-core li
 enable_testing()
 add_test(NAME metal_descriptor_contract COMMAND metal_descriptor_contract_test)
 add_library(metal_shader_catalog "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp")
-add_library(render_plan "${ROOT}/ios/bridge/theft4_render_plan.cpp")
+add_library(render_plan "${ROOT}/ios/bridge/theft4_render_plan.cpp" "${ROOT}/ios/bridge/theft4_frame_plan.cpp")
 target_include_directories(render_plan PUBLIC "${ROOT}/ios/bridge" PRIVATE "${ROOT}/thirdparty/json/include")
 add_executable(render_plan_test render_plan_test.cpp
   "${ROOT}/ios/bridge/theft4_render_plan_source.cpp" "${ROOT}/ios/bridge/theft4_draw_capture.cpp")
@@ -46,6 +50,10 @@ target_include_directories(render_plan_test PRIVATE "${ROOT}/thirdparty/json/inc
   "${ROOT}/glue/rexglue-sdk-main/thirdparty/vulkan-headers/include")
 target_link_libraries(render_plan_test PRIVATE render_plan)
 add_test(NAME render_plan_contract COMMAND render_plan_test "${CMAKE_BINARY_DIR}/private-plan-test")
+add_executable(frame_plan_test frame_plan_test.cpp)
+target_link_libraries(frame_plan_test PRIVATE render_plan)
+target_compile_options(frame_plan_test PRIVATE -UNDEBUG)
+add_test(NAME frame_plan_contract COMMAND frame_plan_test)
 target_include_directories(metal_shader_catalog PUBLIC "${ROOT}/ios/bridge")
 add_executable(metal_shader_catalog_test shader_catalog_test.cpp $<TARGET_OBJECTS:metal_shader_corpus>)
 target_include_directories(metal_shader_catalog_test PRIVATE "${ROOT}/LibertyRecompLib/shader"
@@ -58,8 +66,10 @@ endif()
 add_executable(metal_probe probe_main.mm "${ROOT}/ios/tests/direct_metal_probe.mm"
   "${ROOT}/ios/tests/direct_metal_capture.mm"
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
-  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm")
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_metal_frame.mm" "${ROOT}/ios/bridge/theft4_metal_host_shaders.mm")
 target_include_directories(metal_probe PRIVATE "${ROOT}/ios/bridge" "${ROOT}/ios/tests"
+  "${ROOT}/thirdparty/json/include"
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_compile_options(metal_probe PRIVATE -fobjc-arc)
 set(METAL_SOURCE_REVISION "development" CACHE STRING "Source commit represented by the GPU validation")

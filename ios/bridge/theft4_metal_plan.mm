@@ -241,4 +241,32 @@ size_t PlanAdapter::RetireResources() {
   }
   return resources_.SweepRetired();
 }
+bool PlanAdapter::BindProduced(const render::Capture& capture,
+    const std::array<id<MTLTexture>,26>& produced,Draw& draw,std::string& error) const {
+  auto textures=draw.textures;
+  uint32_t matched=0,requested=0;
+  const MTLTextureType kinds[]{MTLTextureType2D,MTLTextureType2DArray,MTLTextureType3D,MTLTextureTypeCube};
+  for(size_t slot=0;slot<produced.size();++slot)if(produced[slot]) {
+    if(produced[slot].sampleCount!=1||capture.draw.fetches[slot].image)
+      return Error(error,"Invalid GPU-produced game fetch replacement");
+    requested|=1u<<slot;
+  }
+  for(auto stage:{Stage::Vertex,Stage::Fragment}) {
+    const auto& shader=stage==Stage::Vertex ? capture.draw.pipeline.vertex : capture.draw.pipeline.fragment;
+    if(!shader.hash)continue;
+    const auto* metadata=shaders_.Metadata({shader.hash,shader.variant==1},stage);
+    if(!metadata)return Error(error,"Missing produced-input shader metadata");
+    for(const auto& binding:metadata->bindings) {
+      auto texture=produced[binding.slot];const auto kind=size_t(binding.kind);
+      if(!texture||kind>=4||texture.textureType!=kinds[kind])continue;
+      const auto it=std::find_if(textures.begin(),textures.end(),[&](const auto& b){
+        return b.stage==stage&&b.index==binding.index;
+      });
+      if(it==textures.end())return Error(error,"Missing prepared GPU-produced texture binding");
+      it->texture=texture;matched|=1u<<binding.slot;
+    }
+  }
+  if(matched!=requested)return Error(error,"GPU-produced texture has no matching shader fetch kind");
+  draw.textures=std::move(textures);error.clear();return true;
+}
 }

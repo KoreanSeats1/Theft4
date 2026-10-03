@@ -20,6 +20,9 @@ struct ShaderInterface {
   // Exporter supplies exact Metal binding indices, independently per stage.
   uint32_t textures = 0, samplers = 0;
   std::array<MTLTextureType, 31> texture_types{};
+  // Guest shaders retain the three-bank ABI. Host utility shaders supply
+  // their reflected push-constant size, or zero for unused banks.
+  std::array<NSUInteger,3> constant_bytes{4096,3584,1056};
 };
 struct Shader {
   id<MTLFunction> function = nil;
@@ -36,6 +39,7 @@ struct Pipeline {
   uint32_t vertex_streams = 0;
   uint32_t instance_streams = 0;
   std::array<NSUInteger, kGameVertexStreamCount> strides{}, attribute_extents{};
+  std::array<NSUInteger,3> constant_bytes{};
 };
 struct TextureBinding { Stage stage; NSUInteger index; id<MTLTexture> texture; };
 struct SamplerBinding { Stage stage; NSUInteger index; id<MTLSamplerState> sampler; };
@@ -65,6 +69,14 @@ struct Draw {
   float depth_bias = 0, slope_bias = 0;
   bool depth_clamp = false, lines = false;
 };
+struct Clear {
+  uint32_t colors=0;
+  bool depth=false,stencil=false;
+  MTLScissorRect rectangle{};
+  std::array<float,4> color{};
+  float depth_value=1;
+  uint32_t stencil_value=0;
+};
 class Receipt {
  public:
   bool Wait(std::string& error) const;
@@ -82,6 +94,10 @@ class Frame {
   Frame(const Frame&) = delete; Frame& operator=(const Frame&) = delete;
   bool BeginPass(MTLRenderPassDescriptor* pass, std::string& error);
   bool Encode(const Draw& draw, std::string& error);
+  bool ClearRectangle(const Clear&, std::string& error);
+  bool CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,
+                   MTLOrigin source_origin,MTLOrigin destination_origin,
+                   MTLSize extent,std::string& error);
   bool EndPass(std::string& error);
   bool Present(id<CAMetalDrawable> drawable, std::string& error);
   Receipt Submit(std::string& error);
@@ -102,7 +118,7 @@ class Renderer {
   id<MTLTexture> Texture(MTLTextureDescriptor* descriptor, std::string& error);
   Shader LoadShader(std::span<const uint8_t> library, Stage stage,
                     ShaderInterface interface, uint32_t specialization,
-                    std::string& error);
+                    std::string& error,const char* entry="theft4_shader");
   std::shared_ptr<const Pipeline> MakePipeline(
       const Shader& vertex, const Shader& fragment,
       MTLRenderPipelineDescriptor* fixed,
@@ -116,6 +132,7 @@ class Renderer {
                                NSUInteger level = 0, NSUInteger slice = 0,
                                NSUInteger depth_plane = 0);
  private:
+  friend class Frame;
   std::shared_ptr<const Pipeline> MakePipelineInternal(
       const Shader& vertex, const Shader* fragment, MTLRenderPipelineDescriptor* fixed,
       MTLDepthStencilDescriptor* depth, std::string& error);

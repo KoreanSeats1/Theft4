@@ -1714,6 +1714,24 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool TransitionRenderingTarget(VkCommandBuffer command_buffer, NativeRenderingTarget& target);
   bool AllocateUpload(VkDeviceSize size, VkDeviceSize alignment, NativeUploadAllocation& allocation,
                       NativeUploadKind kind = NativeUploadKind::kOther);
+  struct NativePipelineCapabilities {
+    uint32_t maxVertexInputAttributes = 0, maxVertexInputBindings = 0;
+    uint32_t maxVertexInputBindingStride = 0, maxVertexInputAttributeOffset = 0;
+    uint32_t minVertexInputBindingStrideAlignment = 1;
+    bool vertex_attribute_beyond_stride = false, constant_alpha_color_blend = false;
+  };
+  struct NativeShaderSelection {
+    const NativeShader* shader = nullptr;
+    bool override_selected = false, has_early = false, has_late = false;
+    uint32_t specialization_constants_mask = 0, used_texture_mask = 0;
+    const char* filename = "<none>";
+  };
+  struct NativePipelineDescription;
+  std::unique_ptr<NativePipelineDescription> PrepareNativePipelineDescription(
+      const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
+      const NativePipelineKey& key, const NativePipelineCapabilities& capabilities,
+      const NativeShaderSelection& selected_vertex, const NativeShaderSelection& selected_pixel,
+      std::string& error);
   VkPipeline GetOrCreatePipeline(const NativePipelineState& state,
                                  const NativeFixedFunctionState& fixed_function_state,
                                  uint32_t primitive_type, const NativeRenderingTarget& target,
@@ -1726,6 +1744,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void TryPrewarmDrawPipeline(const NativeCommand& command);
   bool GetRequiredVertexStreams(const NativePipelineState& state,
                                 std::array<bool, kVertexStreamCount>& required_streams) const;
+  // CPU-only conversion shared by driver upload and direct-Metal packet production.
+  // The returned cache entry is borrowed until another conversion on this owner.
+  const NativeBufferResource::ConvertedVertexPayload* PrepareConvertedVertexPayload(
+      const NativeBufferResource* resource, const NativePipelineState& state,
+      uint32_t vertex_stream);
   bool UploadBufferResource(const NativeBufferResource* resource,
                             VkCommandBuffer command_buffer, bool index_buffer, bool index32,
                             const NativePipelineState* vertex_state, uint32_t vertex_stream,

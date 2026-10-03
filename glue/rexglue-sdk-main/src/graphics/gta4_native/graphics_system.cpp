@@ -21457,6 +21457,410 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateDrawPipeline(
   return pipeline;
 }
 
+// CPU effective pipeline storage. No device/command-buffer calls or driver
+// handles are required to prepare it. All borrowed create-info pointers refer
+// to this stable owner or the static dynamic-state table. It is intentionally
+// noncopyable/nonmovable; consumers receive a unique owner.
+struct Gta4NativeGraphicsSystem::NativePipelineDescription {
+  std::vector<VkVertexInputAttributeDescription> attributes;
+  std::vector<VkVertexInputBindingDescription> bindings;
+  VkPipelineVertexInputStateCreateInfo vertex_input{};
+  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+  VkPipelineViewportStateCreateInfo viewport_state{};
+  VkPipelineViewportDepthClipControlCreateInfoEXT viewport_depth_clip_control{};
+  VkPipelineRasterizationStateCreateInfo rasterization{};
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  VkSampleMask pipeline_sample_mask = 0;
+  std::array<VkPipelineColorBlendAttachmentState, kRenderTargetCount> color_attachments{};
+  VkPipelineColorBlendStateCreateInfo color_blend{};
+  VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+  VkPipelineDynamicStateCreateInfo dynamic_state{};
+  uint32_t specialization_value = 0;
+  VkSpecializationMapEntry specialization_entry{};
+  VkSpecializationInfo specialization_info{};
+  std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages{};
+  std::array<VkFormat, kRenderTargetCount> color_formats{};
+  VkPipelineRenderingCreateInfo rendering_info{};
+  VkGraphicsPipelineCreateInfo pipeline_info{};
+  std::optional<NativePipelineRecipe::Snapshot> snapshot;
+  bool use_late_module = false;
+  NativePipelineDescription() = default;
+  NativePipelineDescription(const NativePipelineDescription&) = delete;
+  NativePipelineDescription& operator=(const NativePipelineDescription&) = delete;
+};
+
+std::unique_ptr<Gta4NativeGraphicsSystem::NativePipelineDescription>
+Gta4NativeGraphicsSystem::PrepareNativePipelineDescription(
+    const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
+    const NativePipelineKey& key, const NativePipelineCapabilities& capabilities,
+    const NativeShaderSelection& selected_vertex, const NativeShaderSelection& selected_pixel,
+    std::string& error) {
+  const auto reject = [&](const char* reason) -> std::unique_ptr<NativePipelineDescription> {
+    error = reason; return {};
+  };
+  if (!state.vertex_shader_resource || !state.vertex_declaration_resource ||
+      !selected_vertex.has_early) return reject("missing-cpu-pipeline-state");
+  const bool user_pointer = key.user_pointer;
+  const auto cull_state = DecodeNativeCullRasterState(key.cull_mode);
+  auto description = std::make_unique<NativePipelineDescription>();
+  auto& attributes = description->attributes;
+  auto& bindings = description->bindings;
+  std::array<bool, kVertexStreamCount> binding_used{};
+  bool default_binding_used = false;
+  const auto& vertex_limits = capabilities;
+  if (state.vertex_shader_resource->vertex_inputs.size() > vertex_limits.maxVertexInputAttributes) {
+    return reject("vertex-input-attribute-count-limit");
+  }
+  attributes.reserve(state.vertex_shader_resource->vertex_inputs.size());
+  for (const NativeVertexInput& shader_input : state.vertex_shader_resource->vertex_inputs) {
+    if (shader_input.location >= vertex_limits.maxVertexInputAttributes) {
+      return reject("vertex-input-location-limit");
+    }
+    const VertexElement* matching_element = nullptr;
+    for (const VertexElement& element : state.vertex_declaration_resource->elements) {
+      if (ConvertVertexUsageToLocation(element.usage, element.usage_index) ==
+          shader_input.location) {
+        matching_element = &element;
+        break;
+      }
+    }
+
+    VkVertexInputAttributeDescription attribute{};
+    attribute.location = shader_input.location;
+    if (!matching_element) {
+      attribute.binding = kDefaultVertexBinding;
+      attribute.format =
+          GetDefaultVertexFormat(shader_input.numeric_type, shader_input.component_count);
+      attribute.offset = 0;
+      if (attribute.format == VK_FORMAT_UNDEFINED) {
+        return reject("unsupported-default-vertex-format");
+      }
+      if (NativeVertexFormatSize(attribute.format) > kDefaultVertexDataSize) {
+        return reject("default-vertex-record-size");
+      }
+      default_binding_used = true;
+      attributes.push_back(attribute);
+      continue;
+    }
+
+    const uint32_t stream = user_pointer ? 0 : matching_element->stream;
+    if ((user_pointer && matching_element->stream != 0) || stream >= kVertexStreamCount ||
+        stream >= vertex_limits.maxVertexInputBindings) {
+      return reject("required-vertex-stream-range");
+    }
+    if (!NativeVertexBindingValid(key.vertex_strides[stream],
+                                   vertex_limits.minVertexInputBindingStrideAlignment,
+                                   vertex_limits.maxVertexInputBindingStride) ||
+        matching_element->offset > vertex_limits.maxVertexInputAttributeOffset) {
+      return reject("required-vertex-stream-layout");
+    }
+    attribute.binding = stream;
+    attribute.format = GetCompatibleVertexFormat(matching_element->type, shader_input.numeric_type);
+    attribute.offset = matching_element->offset;
+    if (attribute.format == VK_FORMAT_UNDEFINED) {
+      static std::atomic<uint64_t> vertex_format_rejection_count{0};
+      const uint64_t count = ++vertex_format_rejection_count;
+      if (count <= 64 || !(count % 1024)) {
+        REXLOG_WARN(
+            "gta4-native-diag: vertex format reject #{} vs={:08X} vdecl={:08X} "
+            "location={} numeric={} components={} stream={} offset={} type={:08X} "
+            "usage={}/{} converted={}",
+            count, state.vertex_shader, state.vertex_declaration, shader_input.location,
+            uint32_t(shader_input.numeric_type), shader_input.component_count,
+            matching_element->stream, matching_element->offset, matching_element->type,
+            matching_element->usage, matching_element->usage_index,
+            uint32_t(ConvertVertexElementFormat(matching_element->type)));
+      }
+      return reject("vertex-format-numeric-type");
+    }
+    if (!NativeVertexAttributeFits(attribute.offset, NativeVertexFormatSize(attribute.format),
+                                   key.vertex_strides[stream],
+                                   capabilities.vertex_attribute_beyond_stride)) {
+      return reject("vertex-attribute-beyond-stride");
+    }
+    attributes.push_back(attribute);
+    binding_used[stream] = true;
+  }
+
+  if (default_binding_used && binding_used[kDefaultVertexBinding]) {
+    return reject("default-vertex-binding-conflict");
+  }
+  if (default_binding_used && kDefaultVertexBinding >= vertex_limits.maxVertexInputBindings) {
+    return reject("default-vertex-binding-limit");
+  }
+
+  for (uint32_t stream = 0; stream < kVertexStreamCount; ++stream) {
+    if (!binding_used[stream]) {
+      continue;
+    }
+    VkVertexInputBindingDescription binding{};
+    binding.binding = stream;
+    binding.stride = key.vertex_strides[stream];
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    bindings.push_back(binding);
+  }
+  if (default_binding_used) {
+    VkVertexInputBindingDescription binding{};
+    binding.binding = kDefaultVertexBinding;
+    binding.stride = NativeDefaultVertexStride(
+        capabilities.minVertexInputBindingStrideAlignment,
+        capabilities.maxVertexInputBindingStride);
+    if (!binding.stride) {
+      return reject("default-vertex-stride-limit");
+    }
+    binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+    bindings.push_back(binding);
+  }
+  auto& vertex_input = description->vertex_input;
+  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertex_input.vertexBindingDescriptionCount = uint32_t(bindings.size());
+  vertex_input.pVertexBindingDescriptions = bindings.data();
+  vertex_input.vertexAttributeDescriptionCount = uint32_t(attributes.size());
+  vertex_input.pVertexAttributeDescriptions = attributes.data();
+
+  auto& input_assembly = description->input_assembly;
+  input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  input_assembly.topology = key.topology;
+  input_assembly.primitiveRestartEnable = key.primitive_restart_enable ? VK_TRUE : VK_FALSE;
+
+  auto& viewport_state = description->viewport_state;
+  viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport_state.viewportCount = 1;
+  viewport_state.scissorCount = 1;
+  auto& viewport_depth_clip_control = description->viewport_depth_clip_control;
+  if (key.negative_one_to_one_clip_space) {
+    viewport_depth_clip_control.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT;
+    viewport_depth_clip_control.negativeOneToOne = VK_TRUE;
+    viewport_state.pNext = &viewport_depth_clip_control;
+  }
+
+  auto& rasterization = description->rasterization;
+  rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterization.depthClampEnable = key.depth_clamp_enable ? VK_TRUE : VK_FALSE;
+  rasterization.polygonMode =
+      key.polygon_mode == uint32_t(NativePolygonMode::kLine) ? VK_POLYGON_MODE_LINE
+                                                            : VK_POLYGON_MODE_FILL;
+  switch (cull_state.cull_face) {
+    case NativeCullFace::kNone:
+      rasterization.cullMode = VK_CULL_MODE_NONE;
+      break;
+    case NativeCullFace::kFront:
+      rasterization.cullMode = VK_CULL_MODE_FRONT_BIT;
+      break;
+    case NativeCullFace::kBack:
+      rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+      break;
+    case NativeCullFace::kInvalid:
+      return reject("unsupported-cull-mode");
+  }
+  rasterization.frontFace = cull_state.front_face_clockwise ? VK_FRONT_FACE_CLOCKWISE
+                                                            : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterization.depthBiasEnable = key.depth_bias_enable;
+  rasterization.lineWidth = 1.0f;
+
+  auto& multisample = description->multisample;
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = key.samples;
+  auto& pipeline_sample_mask = description->pipeline_sample_mask;
+  pipeline_sample_mask = key.sample_mask;
+  multisample.pSampleMask = &pipeline_sample_mask;
+  // Xenos alpha-to-mask has title-controlled per-pixel threshold offsets.
+  // Host fixed-function alpha-to-coverage is implementation-defined and drops
+  // those offsets, so the native pixel shader writes the exact sample mask.
+  multisample.alphaToCoverageEnable = VK_FALSE;
+
+  auto& color_attachments = description->color_attachments;
+  uint32_t color_attachment_count = 0;
+  for (uint32_t index = 0; index < kRenderTargetCount; ++index) {
+    if (key.color_formats[index] != VK_FORMAT_UNDEFINED) {
+      color_attachment_count = index + 1;
+    }
+    const NativeBlendControlState attachment_blend =
+        DecodeNativeBlendControl(key.blend_controls[index]);
+    VkPipelineColorBlendAttachmentState& attachment = color_attachments[index];
+    attachment.blendEnable = key.color_formats[index] != VK_FORMAT_UNDEFINED &&
+                             (key.blend_enable_mask & (1u << index)) != 0;
+    attachment.srcColorBlendFactor = ConvertBlendFactor(attachment_blend.source_color);
+    attachment.dstColorBlendFactor = ConvertBlendFactor(attachment_blend.destination_color);
+    attachment.colorBlendOp = ConvertBlendOperation(attachment_blend.color_operation);
+    attachment.srcAlphaBlendFactor = ConvertBlendFactor(attachment_blend.source_alpha);
+    attachment.dstAlphaBlendFactor = ConvertBlendFactor(attachment_blend.destination_alpha);
+    attachment.alphaBlendOp = ConvertBlendOperation(attachment_blend.alpha_operation);
+    if (!capabilities.constant_alpha_color_blend) {
+      if (attachment_blend.source_color == 14) {
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
+      } else if (attachment_blend.source_color == 15) {
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+      }
+      if (attachment_blend.destination_color == 14) {
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
+      } else if (attachment_blend.destination_color == 15) {
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+      }
+    }
+    attachment.colorWriteMask = ConvertColorWriteMask(
+        NativeColorWriteMaskForTarget(key.color_write_mask, index));
+  }
+  auto& color_blend = description->color_blend;
+  color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  color_blend.attachmentCount = color_attachment_count;
+  color_blend.pAttachments = color_attachments.data();
+
+  auto& depth_stencil = description->depth_stencil;
+  depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  const bool has_depth = key.depth_format != VK_FORMAT_UNDEFINED;
+  depth_stencil.depthTestEnable = has_depth && fixed_function_state.depth_enable != 0;
+  depth_stencil.depthWriteEnable = has_depth && fixed_function_state.depth_write_enable != 0;
+  depth_stencil.depthCompareOp = ConvertCompareFunction(fixed_function_state.depth_function);
+  depth_stencil.stencilTestEnable = has_depth && fixed_function_state.stencil_enable != 0;
+  depth_stencil.front.failOp = ConvertStencilOperation(fixed_function_state.stencil_fail);
+  depth_stencil.front.passOp = ConvertStencilOperation(fixed_function_state.stencil_pass);
+  depth_stencil.front.depthFailOp =
+      ConvertStencilOperation(fixed_function_state.stencil_depth_fail);
+  depth_stencil.front.compareOp = ConvertCompareFunction(fixed_function_state.stencil_function);
+  depth_stencil.front.compareMask = fixed_function_state.stencil_mask;
+  depth_stencil.front.writeMask = fixed_function_state.stencil_write_mask;
+  depth_stencil.front.reference = fixed_function_state.stencil_reference;
+  depth_stencil.back = depth_stencil.front;
+  if (fixed_function_state.two_sided_stencil) {
+    depth_stencil.back.failOp = ConvertStencilOperation(fixed_function_state.ccw_stencil_fail);
+    depth_stencil.back.passOp = ConvertStencilOperation(fixed_function_state.ccw_stencil_pass);
+    depth_stencil.back.depthFailOp =
+        ConvertStencilOperation(fixed_function_state.ccw_stencil_depth_fail);
+    depth_stencil.back.compareOp =
+        ConvertCompareFunction(fixed_function_state.ccw_stencil_function);
+  }
+
+  const auto& dynamic_states = NativePipelineRecipe::DynamicStates();
+  auto& dynamic_state = description->dynamic_state;
+  dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamic_state.dynamicStateCount = uint32_t(dynamic_states.size());
+  dynamic_state.pDynamicStates = dynamic_states.data();
+
+  auto& specialization_value = description->specialization_value;
+  const bool alpha_test_requested = IsAlphaTestRequested(fixed_function_state.alpha_test_enable,
+                                                         fixed_function_state.alpha_function);
+  const bool fragment_coverage_requested =
+      IsNativeFragmentCoverageRequested(alpha_test_requested, fixed_function_state.alpha_to_mask);
+  const bool alpha_test_capable =
+      state.pixel_shader_resource &&
+      HasAlphaTestCapability(selected_pixel.specialization_constants_mask);
+  const bool late_module_available = state.pixel_shader_resource && selected_pixel.has_late;
+  const bool use_late_module =
+      fragment_coverage_requested && alpha_test_capable && late_module_available;
+  if (alpha_test_requested && use_late_module) {
+    specialization_value = PackAlphaTestSpecialization(fixed_function_state.alpha_function);
+  }
+  if (state.pixel_shader_resource &&
+      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
+    const std::string_view diagnostic_category =
+        ClassifyTranslucentDiagnosticShader(selected_pixel.filename);
+    if (fixed_function_state.alpha_test_enable || !diagnostic_category.empty()) {
+      REXLOG_INFO(
+          "gta4-native-cause: point=alpha-pipeline-semantics frame={} cmd={} draw={:016X} "
+          "category={} shader={} ps={:016X} requested={}:{}:{} alpha-to-mask={} capability={:08X} "
+          "alpha-to-mask-packed={:03X} capable={} packed={:08X} coverage-depends-alpha={} "
+          "module={} "
+          "early-module={} late-module={} rejected={} depth={}:{}:{} stencil={}:{}",
+          diagnostic_submitted_frame_, diagnostic_command_index_, diagnostic_draw_id_,
+          diagnostic_category, selected_pixel.filename, state.pixel_shader_resource->hash,
+          fixed_function_state.alpha_test_enable, fixed_function_state.alpha_function,
+          fixed_function_state.alpha_reference, fixed_function_state.alpha_to_mask_enable,
+          fixed_function_state.alpha_to_mask, selected_pixel.specialization_constants_mask,
+          alpha_test_capable, specialization_value, fragment_coverage_requested,
+          use_late_module ? "late" : "early", selected_pixel.has_early,
+          late_module_available, fragment_coverage_requested && !use_late_module,
+          fixed_function_state.depth_enable, fixed_function_state.depth_function,
+          fixed_function_state.depth_write_enable, fixed_function_state.stencil_enable,
+          fixed_function_state.stencil_write_mask);
+    }
+  }
+  if (fragment_coverage_requested && !use_late_module) {
+    REXLOG_ERROR(
+        "gta4-native: rejecting fragment coverage pipeline ps={:016X} function={} "
+        "alpha-to-mask={:03X} capability={:08X} late-module={}",
+        state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0,
+        fixed_function_state.alpha_function, fixed_function_state.alpha_to_mask,
+        state.pixel_shader_resource ? selected_pixel.specialization_constants_mask : 0,
+        late_module_available);
+    return reject(alpha_test_capable ? "coverage-late-module-missing"
+                                     : "coverage-capability-missing");
+  }
+  auto& specialization_entry = description->specialization_entry;
+  specialization_entry.constantID = 0;
+  specialization_entry.size = sizeof(specialization_value);
+  auto& specialization_info = description->specialization_info;
+  specialization_info.mapEntryCount = 1;
+  specialization_info.pMapEntries = &specialization_entry;
+  specialization_info.dataSize = sizeof(specialization_value);
+  specialization_info.pData = &specialization_value;
+
+  auto& shader_stages = description->shader_stages;
+  shader_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  shader_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  // Shader modules and pipeline layout are assigned only by the driver realization path.
+  shader_stages[0].pName = "shaderMain";
+  if (selected_vertex.specialization_constants_mask) {
+    shader_stages[0].pSpecializationInfo = &specialization_info;
+  }
+  uint32_t shader_stage_count = 1;
+  if (state.pixel_shader_resource) {
+    shader_stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shader_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    shader_stages[1].pName = "shaderMain";
+    if (selected_pixel.specialization_constants_mask) {
+      shader_stages[1].pSpecializationInfo = &specialization_info;
+    }
+    shader_stage_count = 2;
+  }
+
+  auto& rendering_info = description->rendering_info;
+  rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  rendering_info.colorAttachmentCount = color_attachment_count;
+  description->color_formats = key.color_formats;
+  rendering_info.pColorAttachmentFormats =
+      color_attachment_count ? description->color_formats.data() : nullptr;
+  rendering_info.depthAttachmentFormat = key.depth_format;
+  rendering_info.stencilAttachmentFormat = key.depth_format;
+
+  auto& pipeline_info = description->pipeline_info;
+  pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipeline_info.pNext = &rendering_info;
+  pipeline_info.stageCount = shader_stage_count;
+  pipeline_info.pStages = shader_stages.data();
+  pipeline_info.pVertexInputState = &vertex_input;
+  pipeline_info.pInputAssemblyState = &input_assembly;
+  pipeline_info.pViewportState = &viewport_state;
+  pipeline_info.pRasterizationState = &rasterization;
+  pipeline_info.pMultisampleState = &multisample;
+  pipeline_info.pDepthStencilState = &depth_stencil;
+  pipeline_info.pColorBlendState = &color_blend;
+  pipeline_info.pDynamicState = &dynamic_state;
+  pipeline_info.renderPass = VK_NULL_HANDLE;
+  pipeline_info.subpass = 0;
+
+  description->use_late_module = use_late_module;
+  // Snapshot creation is pure CPU work even when modules/layout are absent.
+  // Keep the larger-layout immediate path available if bounded capture cannot
+  // represent a future interface. Shader identities describe code, not handles.
+  if (auto recipe = NativePipelineRecipe::Capture(pipeline_info, specialization_value)) {
+    auto& data = recipe->data;
+    data.indexed_descriptors = key.indexed_descriptors;
+    data.shaders[0].title_hash = key.vertex_shader_hash;
+    data.shaders[0].variant = selected_vertex.override_selected ? 2 : 0;
+    data.shaders[0].code_hash = state.vertex_shader_resource->module_code_hashes[data.shaders[0].variant];
+    if (state.pixel_shader_resource) {
+      data.shaders[1].title_hash = key.pixel_shader_hash;
+      data.shaders[1].variant = selected_pixel.override_selected
+          ? (use_late_module ? 3 : 2) : (use_late_module ? 1 : 0);
+      data.shaders[1].code_hash = state.pixel_shader_resource->module_code_hashes[data.shaders[1].variant];
+    }
+    description->snapshot = data;
+  }
+  return description;
+}
+
 VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     const NativePipelineState& state, const NativeFixedFunctionState& fixed_function_state,
     uint32_t primitive_type, const NativeRenderingTarget& target, uint32_t user_pointer_stride,
@@ -21495,44 +21899,41 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   const ShaderOverrideSelection shader_override_selection = ResolvePipelineShaderOverrides(
       state.vertex_shader_resource, state.pixel_shader_resource, target.samples);
 
-  struct SelectedShaderVariant {
-    const NativeShader* shader = nullptr;
-    bool override_selected = false;
-    uint32_t specialization_constants_mask = 0;
-    uint32_t used_texture_mask = 0;
-    VkShaderModule early_module = VK_NULL_HANDLE;
-    VkShaderModule late_module = VK_NULL_HANDLE;
-    const char* filename = "<none>";
-  };
-  auto select_shader_variant = [](const NativeShader* shader, bool select_override) {
-    SelectedShaderVariant selected;
+  const auto select_shader_variant = [](const NativeShader* shader, bool select_override) {
+    NativeShaderSelection selected;
     selected.shader = shader;
-    if (!shader) {
-      return selected;
-    }
+    if (!shader) return selected;
     selected.override_selected = select_override;
-    if (select_override) {
-      selected.specialization_constants_mask = shader->override_specialization_constants_mask;
-      selected.used_texture_mask = shader->override_used_texture_mask;
-      selected.early_module = shader->override_early_module;
-      selected.late_module = shader->override_late_module;
-      selected.filename = shader->override_entry ? shader->override_entry->filename : "<invalid>";
-    } else {
-      selected.specialization_constants_mask = shader->specialization_constants_mask;
-      selected.used_texture_mask = shader->used_texture_mask;
-      selected.early_module = shader->early_module;
-      selected.late_module = shader->late_module;
-      selected.filename = shader->filename.c_str();
-    }
+    selected.specialization_constants_mask = select_override
+        ? shader->override_specialization_constants_mask : shader->specialization_constants_mask;
+    selected.used_texture_mask = select_override ? shader->override_used_texture_mask
+                                                 : shader->used_texture_mask;
+    selected.has_early = shader->module_code_hashes[select_override ? 2 : 0] != 0;
+    selected.has_late = shader->module_code_hashes[select_override ? 3 : 1] != 0;
+    selected.filename = select_override
+        ? (shader->override_entry ? shader->override_entry->filename : "<invalid>")
+        : shader->filename.c_str();
     return selected;
   };
-  const SelectedShaderVariant selected_vertex = select_shader_variant(
+  const auto selected_vertex = select_shader_variant(
       state.vertex_shader_resource, shader_override_selection.vertex_override);
-  const SelectedShaderVariant selected_pixel =
-      select_shader_variant(state.pixel_shader_resource, shader_override_selection.pixel_override);
-  if (!state.vertex_shader_resource || !selected_vertex.early_module ||
+  auto selected_pixel = select_shader_variant(
+      state.pixel_shader_resource, shader_override_selection.pixel_override);
+  const VkShaderModule selected_vertex_early_module = !selected_vertex.shader ? VK_NULL_HANDLE :
+      selected_vertex.override_selected ? selected_vertex.shader->override_early_module
+                                        : selected_vertex.shader->early_module;
+  const VkShaderModule selected_pixel_early_module = !selected_pixel.shader ? VK_NULL_HANDLE :
+      selected_pixel.override_selected ? selected_pixel.shader->override_early_module
+                                       : selected_pixel.shader->early_module;
+  const VkShaderModule selected_pixel_late_module = !selected_pixel.shader ? VK_NULL_HANDLE :
+      selected_pixel.override_selected ? selected_pixel.shader->override_late_module
+                                       : selected_pixel.shader->late_module;
+  selected_pixel.has_late = selected_pixel_late_module != VK_NULL_HANDLE;
+  // The active Vulkan path admits only realized modules, as before. CPU
+  // preparation uses code identities and can also serve a Metal-only backend.
+  if (!state.vertex_shader_resource || !selected_vertex_early_module ||
       (!state.pixel_shader_resource && !depth_only_without_pixel_shader) ||
-      (state.pixel_shader_resource && !selected_pixel.early_module) ||
+      (state.pixel_shader_resource && !selected_pixel_early_module) ||
       !state.vertex_declaration_resource || !draw_pipeline_layout) {
     return reject("missing-state");
   }
@@ -21867,362 +22268,37 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   }
   AddNativeGpuProfileCounter(performance::Counter::kPipelineMisses);
 
-  std::vector<VkVertexInputAttributeDescription> attributes;
-  std::vector<VkVertexInputBindingDescription> bindings;
-  std::array<bool, kVertexStreamCount> binding_used{};
-  bool default_binding_used = false;
-  const auto& vertex_limits = vulkan_device->properties();
-  if (state.vertex_shader_resource->vertex_inputs.size() > vertex_limits.maxVertexInputAttributes) {
-    return reject("vertex-input-attribute-count-limit");
-  }
-  attributes.reserve(state.vertex_shader_resource->vertex_inputs.size());
-  for (const NativeVertexInput& shader_input : state.vertex_shader_resource->vertex_inputs) {
-    if (shader_input.location >= vertex_limits.maxVertexInputAttributes) {
-      return reject("vertex-input-location-limit");
-    }
-    const VertexElement* matching_element = nullptr;
-    for (const VertexElement& element : state.vertex_declaration_resource->elements) {
-      if (ConvertVertexUsageToLocation(element.usage, element.usage_index) ==
-          shader_input.location) {
-        matching_element = &element;
-        break;
-      }
-    }
-
-    VkVertexInputAttributeDescription attribute{};
-    attribute.location = shader_input.location;
-    if (!matching_element) {
-      attribute.binding = kDefaultVertexBinding;
-      attribute.format =
-          GetDefaultVertexFormat(shader_input.numeric_type, shader_input.component_count);
-      attribute.offset = 0;
-      if (attribute.format == VK_FORMAT_UNDEFINED) {
-        return reject("unsupported-default-vertex-format");
-      }
-      if (NativeVertexFormatSize(attribute.format) > kDefaultVertexDataSize) {
-        return reject("default-vertex-record-size");
-      }
-      default_binding_used = true;
-      attributes.push_back(attribute);
-      continue;
-    }
-
-    const uint32_t stream = user_pointer ? 0 : matching_element->stream;
-    if ((user_pointer && matching_element->stream != 0) || stream >= kVertexStreamCount ||
-        stream >= vertex_limits.maxVertexInputBindings) {
-      return reject("required-vertex-stream-range");
-    }
-    if (!NativeVertexBindingValid(key.vertex_strides[stream],
-                                   vertex_limits.minVertexInputBindingStrideAlignment,
-                                   vertex_limits.maxVertexInputBindingStride) ||
-        matching_element->offset > vertex_limits.maxVertexInputAttributeOffset) {
-      return reject("required-vertex-stream-layout");
-    }
-    attribute.binding = stream;
-    attribute.format = GetCompatibleVertexFormat(matching_element->type, shader_input.numeric_type);
-    attribute.offset = matching_element->offset;
-    if (attribute.format == VK_FORMAT_UNDEFINED) {
-      static std::atomic<uint64_t> vertex_format_rejection_count{0};
-      const uint64_t count = ++vertex_format_rejection_count;
-      if (count <= 64 || !(count % 1024)) {
-        REXLOG_WARN(
-            "gta4-native-diag: vertex format reject #{} vs={:08X} vdecl={:08X} "
-            "location={} numeric={} components={} stream={} offset={} type={:08X} "
-            "usage={}/{} converted={}",
-            count, state.vertex_shader, state.vertex_declaration, shader_input.location,
-            uint32_t(shader_input.numeric_type), shader_input.component_count,
-            matching_element->stream, matching_element->offset, matching_element->type,
-            matching_element->usage, matching_element->usage_index,
-            uint32_t(ConvertVertexElementFormat(matching_element->type)));
-      }
-      return reject("vertex-format-numeric-type");
-    }
-    const auto& device_properties = vulkan_device->properties();
-    if (!NativeVertexAttributeFits(attribute.offset, NativeVertexFormatSize(attribute.format),
-                                   key.vertex_strides[stream],
-                                   !device_properties.portabilitySubset ||
-                                       device_properties.vertexAttributeAccessBeyondStride)) {
-      return reject("vertex-attribute-beyond-stride");
-    }
-    attributes.push_back(attribute);
-    binding_used[stream] = true;
-  }
-
-  if (default_binding_used && binding_used[kDefaultVertexBinding]) {
-    return reject("default-vertex-binding-conflict");
-  }
-  if (default_binding_used && kDefaultVertexBinding >= vertex_limits.maxVertexInputBindings) {
-    return reject("default-vertex-binding-limit");
-  }
-
-  for (uint32_t stream = 0; stream < kVertexStreamCount; ++stream) {
-    if (!binding_used[stream]) {
-      continue;
-    }
-    VkVertexInputBindingDescription binding{};
-    binding.binding = stream;
-    binding.stride = key.vertex_strides[stream];
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    bindings.push_back(binding);
-  }
-  if (default_binding_used) {
-    VkVertexInputBindingDescription binding{};
-    binding.binding = kDefaultVertexBinding;
-    binding.stride = NativeDefaultVertexStride(
-        vulkan_device->properties().minVertexInputBindingStrideAlignment,
-        vulkan_device->properties().maxVertexInputBindingStride);
-    if (!binding.stride) {
-      return reject("default-vertex-stride-limit");
-    }
-    binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-    bindings.push_back(binding);
-  }
-  VkPipelineVertexInputStateCreateInfo vertex_input{};
-  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  vertex_input.vertexBindingDescriptionCount = uint32_t(bindings.size());
-  vertex_input.pVertexBindingDescriptions = bindings.data();
-  vertex_input.vertexAttributeDescriptionCount = uint32_t(attributes.size());
-  vertex_input.pVertexAttributeDescriptions = attributes.data();
-
-  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-  input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  input_assembly.topology = key.topology;
-  input_assembly.primitiveRestartEnable = key.primitive_restart_enable ? VK_TRUE : VK_FALSE;
-
-  VkPipelineViewportStateCreateInfo viewport_state{};
-  viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  viewport_state.viewportCount = 1;
-  viewport_state.scissorCount = 1;
-  VkPipelineViewportDepthClipControlCreateInfoEXT viewport_depth_clip_control{};
-  if (key.negative_one_to_one_clip_space) {
-    viewport_depth_clip_control.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT;
-    viewport_depth_clip_control.negativeOneToOne = VK_TRUE;
-    viewport_state.pNext = &viewport_depth_clip_control;
-  }
-
-  VkPipelineRasterizationStateCreateInfo rasterization{};
-  rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  rasterization.depthClampEnable = key.depth_clamp_enable ? VK_TRUE : VK_FALSE;
-  rasterization.polygonMode =
-      key.polygon_mode == uint32_t(NativePolygonMode::kLine) ? VK_POLYGON_MODE_LINE
-                                                            : VK_POLYGON_MODE_FILL;
-  switch (cull_state.cull_face) {
-    case NativeCullFace::kNone:
-      rasterization.cullMode = VK_CULL_MODE_NONE;
-      break;
-    case NativeCullFace::kFront:
-      rasterization.cullMode = VK_CULL_MODE_FRONT_BIT;
-      break;
-    case NativeCullFace::kBack:
-      rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-      break;
-    case NativeCullFace::kInvalid:
-      return reject("unsupported-cull-mode");
-  }
-  rasterization.frontFace = cull_state.front_face_clockwise ? VK_FRONT_FACE_CLOCKWISE
-                                                            : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  rasterization.depthBiasEnable = key.depth_bias_enable;
-  rasterization.lineWidth = 1.0f;
-
-  VkPipelineMultisampleStateCreateInfo multisample{};
-  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  multisample.rasterizationSamples = target.samples;
-  VkSampleMask pipeline_sample_mask = key.sample_mask;
-  multisample.pSampleMask = &pipeline_sample_mask;
-  // Xenos alpha-to-mask has title-controlled per-pixel threshold offsets.
-  // Host fixed-function alpha-to-coverage is implementation-defined and drops
-  // those offsets, so the native pixel shader writes the exact sample mask.
-  multisample.alphaToCoverageEnable = VK_FALSE;
-
-  std::array<VkPipelineColorBlendAttachmentState, kRenderTargetCount> color_attachments{};
-  uint32_t color_attachment_count = 0;
-  for (uint32_t index = 0; index < kRenderTargetCount; ++index) {
-    if (key.color_formats[index] != VK_FORMAT_UNDEFINED) {
-      color_attachment_count = index + 1;
-    }
-    const NativeBlendControlState attachment_blend =
-        DecodeNativeBlendControl(key.blend_controls[index]);
-    VkPipelineColorBlendAttachmentState& attachment = color_attachments[index];
-    attachment.blendEnable = key.color_formats[index] != VK_FORMAT_UNDEFINED &&
-                             (key.blend_enable_mask & (1u << index)) != 0;
-    attachment.srcColorBlendFactor = ConvertBlendFactor(attachment_blend.source_color);
-    attachment.dstColorBlendFactor = ConvertBlendFactor(attachment_blend.destination_color);
-    attachment.colorBlendOp = ConvertBlendOperation(attachment_blend.color_operation);
-    attachment.srcAlphaBlendFactor = ConvertBlendFactor(attachment_blend.source_alpha);
-    attachment.dstAlphaBlendFactor = ConvertBlendFactor(attachment_blend.destination_alpha);
-    attachment.alphaBlendOp = ConvertBlendOperation(attachment_blend.alpha_operation);
-    if (vulkan_device->properties().portabilitySubset &&
-        !vulkan_device->properties().constantAlphaColorBlendFactors) {
-      if (attachment_blend.source_color == 14) {
-        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
-      } else if (attachment_blend.source_color == 15) {
-        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-      }
-      if (attachment_blend.destination_color == 14) {
-        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
-      } else if (attachment_blend.destination_color == 15) {
-        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-      }
-    }
-    attachment.colorWriteMask = ConvertColorWriteMask(
-        NativeColorWriteMaskForTarget(key.color_write_mask, index));
-  }
-  VkPipelineColorBlendStateCreateInfo color_blend{};
-  color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  color_blend.attachmentCount = color_attachment_count;
-  color_blend.pAttachments = color_attachments.data();
-
-  VkPipelineDepthStencilStateCreateInfo depth_stencil{};
-  depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-  const bool has_depth = key.depth_format != VK_FORMAT_UNDEFINED;
-  depth_stencil.depthTestEnable = has_depth && fixed_function_state.depth_enable != 0;
-  depth_stencil.depthWriteEnable = has_depth && fixed_function_state.depth_write_enable != 0;
-  depth_stencil.depthCompareOp = ConvertCompareFunction(fixed_function_state.depth_function);
-  depth_stencil.stencilTestEnable = has_depth && fixed_function_state.stencil_enable != 0;
-  depth_stencil.front.failOp = ConvertStencilOperation(fixed_function_state.stencil_fail);
-  depth_stencil.front.passOp = ConvertStencilOperation(fixed_function_state.stencil_pass);
-  depth_stencil.front.depthFailOp =
-      ConvertStencilOperation(fixed_function_state.stencil_depth_fail);
-  depth_stencil.front.compareOp = ConvertCompareFunction(fixed_function_state.stencil_function);
-  depth_stencil.front.compareMask = fixed_function_state.stencil_mask;
-  depth_stencil.front.writeMask = fixed_function_state.stencil_write_mask;
-  depth_stencil.front.reference = fixed_function_state.stencil_reference;
-  depth_stencil.back = depth_stencil.front;
-  if (fixed_function_state.two_sided_stencil) {
-    depth_stencil.back.failOp = ConvertStencilOperation(fixed_function_state.ccw_stencil_fail);
-    depth_stencil.back.passOp = ConvertStencilOperation(fixed_function_state.ccw_stencil_pass);
-    depth_stencil.back.depthFailOp =
-        ConvertStencilOperation(fixed_function_state.ccw_stencil_depth_fail);
-    depth_stencil.back.compareOp =
-        ConvertCompareFunction(fixed_function_state.ccw_stencil_function);
-  }
-
-  const auto& dynamic_states = NativePipelineRecipe::DynamicStates();
-  VkPipelineDynamicStateCreateInfo dynamic_state{};
-  dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  dynamic_state.dynamicStateCount = uint32_t(dynamic_states.size());
-  dynamic_state.pDynamicStates = dynamic_states.data();
-
-  uint32_t specialization_value = 0;
-  const bool alpha_test_requested = IsAlphaTestRequested(fixed_function_state.alpha_test_enable,
-                                                         fixed_function_state.alpha_function);
-  const bool fragment_coverage_requested =
-      IsNativeFragmentCoverageRequested(alpha_test_requested, fixed_function_state.alpha_to_mask);
-  const bool alpha_test_capable =
-      state.pixel_shader_resource &&
-      HasAlphaTestCapability(selected_pixel.specialization_constants_mask);
-  const bool late_module_available = state.pixel_shader_resource && selected_pixel.late_module;
-  const bool use_late_module =
-      fragment_coverage_requested && alpha_test_capable && late_module_available;
-  if (alpha_test_requested && use_late_module) {
-    specialization_value = PackAlphaTestSpecialization(fixed_function_state.alpha_function);
-  }
-  if (state.pixel_shader_resource &&
-      rex::diagnostics::IsEnabled(rex::diagnostics::Category::kNativeTrace)) {
-    const std::string_view diagnostic_category =
-        ClassifyTranslucentDiagnosticShader(selected_pixel.filename);
-    if (fixed_function_state.alpha_test_enable || !diagnostic_category.empty()) {
-      REXLOG_INFO(
-          "gta4-native-cause: point=alpha-pipeline-semantics frame={} cmd={} draw={:016X} "
-          "category={} shader={} ps={:016X} requested={}:{}:{} alpha-to-mask={} capability={:08X} "
-          "alpha-to-mask-packed={:03X} capable={} packed={:08X} coverage-depends-alpha={} "
-          "module={} "
-          "early-module={} late-module={} rejected={} depth={}:{}:{} stencil={}:{}",
-          diagnostic_submitted_frame_, diagnostic_command_index_, diagnostic_draw_id_,
-          diagnostic_category, selected_pixel.filename, state.pixel_shader_resource->hash,
-          fixed_function_state.alpha_test_enable, fixed_function_state.alpha_function,
-          fixed_function_state.alpha_reference, fixed_function_state.alpha_to_mask_enable,
-          fixed_function_state.alpha_to_mask, selected_pixel.specialization_constants_mask,
-          alpha_test_capable, specialization_value, fragment_coverage_requested,
-          use_late_module ? "late" : "early", selected_pixel.early_module != VK_NULL_HANDLE,
-          late_module_available, fragment_coverage_requested && !use_late_module,
-          fixed_function_state.depth_enable, fixed_function_state.depth_function,
-          fixed_function_state.depth_write_enable, fixed_function_state.stencil_enable,
-          fixed_function_state.stencil_write_mask);
-    }
-  }
-  if (fragment_coverage_requested && !use_late_module) {
-    REXLOG_ERROR(
-        "gta4-native: rejecting fragment coverage pipeline ps={:016X} function={} "
-        "alpha-to-mask={:03X} capability={:08X} late-module={}",
-        state.pixel_shader_resource ? state.pixel_shader_resource->hash : 0,
-        fixed_function_state.alpha_function, fixed_function_state.alpha_to_mask,
-        state.pixel_shader_resource ? selected_pixel.specialization_constants_mask : 0,
-        late_module_available);
-    return reject(alpha_test_capable ? "coverage-late-module-missing"
-                                     : "coverage-capability-missing");
-  }
-  VkSpecializationMapEntry specialization_entry{};
-  specialization_entry.constantID = 0;
-  specialization_entry.size = sizeof(specialization_value);
-  VkSpecializationInfo specialization_info{};
-  specialization_info.mapEntryCount = 1;
-  specialization_info.pMapEntries = &specialization_entry;
-  specialization_info.dataSize = sizeof(specialization_value);
-  specialization_info.pData = &specialization_value;
-
-  std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages{};
-  shader_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  shader_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-  shader_stages[0].module = selected_vertex.early_module;
-  shader_stages[0].pName = "shaderMain";
-  if (selected_vertex.specialization_constants_mask) {
-    shader_stages[0].pSpecializationInfo = &specialization_info;
-  }
-  uint32_t shader_stage_count = 1;
-  if (state.pixel_shader_resource) {
-    shader_stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shader_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shader_stages[1].module =
-        use_late_module ? selected_pixel.late_module : selected_pixel.early_module;
-    shader_stages[1].pName = "shaderMain";
-    if (selected_pixel.specialization_constants_mask) {
-      shader_stages[1].pSpecializationInfo = &specialization_info;
-    }
-    shader_stage_count = 2;
-  }
-
-  VkPipelineRenderingCreateInfo rendering_info{};
-  rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-  rendering_info.colorAttachmentCount = color_attachment_count;
-  rendering_info.pColorAttachmentFormats =
-      color_attachment_count ? key.color_formats.data() : nullptr;
-  rendering_info.depthAttachmentFormat = key.depth_format;
-  rendering_info.stencilAttachmentFormat = key.depth_format;
-
-  VkGraphicsPipelineCreateInfo pipeline_info{};
-  pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  pipeline_info.pNext = &rendering_info;
-  pipeline_info.stageCount = shader_stage_count;
-  pipeline_info.pStages = shader_stages.data();
-  pipeline_info.pVertexInputState = &vertex_input;
-  pipeline_info.pInputAssemblyState = &input_assembly;
-  pipeline_info.pViewportState = &viewport_state;
-  pipeline_info.pRasterizationState = &rasterization;
-  pipeline_info.pMultisampleState = &multisample;
-  pipeline_info.pDepthStencilState = &depth_stencil;
-  pipeline_info.pColorBlendState = &color_blend;
-  pipeline_info.pDynamicState = &dynamic_state;
+  const auto& properties = vulkan_device->properties();
+  const NativePipelineCapabilities capabilities{
+      properties.maxVertexInputAttributes, properties.maxVertexInputBindings,
+      properties.maxVertexInputBindingStride, properties.maxVertexInputAttributeOffset,
+      properties.minVertexInputBindingStrideAlignment,
+      !properties.portabilitySubset || properties.vertexAttributeAccessBeyondStride,
+      !properties.portabilitySubset || properties.constantAlphaColorBlendFactors};
+  std::string preparation_error;
+  auto description = PrepareNativePipelineDescription(
+      state, fixed_function_state, key, capabilities, selected_vertex, selected_pixel,
+      preparation_error);
+  if (!description) return reject(preparation_error.c_str());
+  const bool use_late_module = description->use_late_module;
+  auto& input_assembly = description->input_assembly;
+  auto& pipeline_info = description->pipeline_info;
+  description->shader_stages[0].module = selected_vertex_early_module;
+  if (state.pixel_shader_resource)
+    description->shader_stages[1].module = use_late_module ? selected_pixel_late_module
+                                                        : selected_pixel_early_module;
   pipeline_info.layout = draw_pipeline_layout;
-  pipeline_info.renderPass = VK_NULL_HANDLE;
-  pipeline_info.subpass = 0;
 
   if (native_pipeline_compiler_) {
-    auto recipe = NativePipelineRecipe::Capture(pipeline_info, specialization_value);
+    std::optional<NativePipelineRecipe> recipe;
+    if (description->snapshot) {
+      recipe.emplace();
+      recipe->data = *description->snapshot;
+      recipe->modules[0] = description->shader_stages[0].module;
+      recipe->modules[1] = description->shader_stages[1].module;
+      recipe->layout = draw_pipeline_layout;
+    }
     if (recipe) {
-      recipe->data.indexed_descriptors = key.indexed_descriptors;
-      recipe->data.shaders[0].title_hash = key.vertex_shader_hash;
-      recipe->data.shaders[0].variant = selected_vertex.override_selected ? 2 : 0;
-      recipe->data.shaders[0].code_hash = state.vertex_shader_resource->module_code_hashes[
-          recipe->data.shaders[0].variant];
-      if (state.pixel_shader_resource) {
-        recipe->data.shaders[1].title_hash = key.pixel_shader_hash;
-        recipe->data.shaders[1].variant = selected_pixel.override_selected
-            ? (use_late_module ? 3 : 2) : (use_late_module ? 1 : 0);
-        recipe->data.shaders[1].code_hash = state.pixel_shader_resource->module_code_hashes[
-            recipe->data.shaders[1].variant];
-      }
       {
         std::lock_guard lock(native_pipeline_compiler_->records_mutex);
         if (native_pipeline_compiler_->records.size() < NativePipelineCompilerState::kMaximumRecipes) {
@@ -22329,6 +22405,81 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   return PublishNativePipeline(key, pipeline, 0);
 }
 
+const Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload*
+Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
+    const NativeBufferResource* resource, const NativePipelineState& state,
+    uint32_t vertex_stream) {
+  if (!resource || resource->payload.empty() || !state.vertex_declaration_resource ||
+      !state.vertex_shader_resource || vertex_stream >= kVertexStreamCount) return nullptr;
+  const auto& declaration = *state.vertex_declaration_resource;
+  const auto& shader = *state.vertex_shader_resource;
+  const auto& stream_state = state.vertex_streams[vertex_stream];
+  if (!stream_state.stride || stream_state.offset >= resource->payload.size()) return nullptr;
+  const NativeBufferResource::ConvertedVertexPayload* converted_payload = nullptr;
+  for (const auto& candidate : resource->converted_vertex_payloads) {
+    if (candidate.declaration_hash == declaration.content_hash &&
+        candidate.shader_hash == shader.hash && candidate.stream == vertex_stream &&
+        candidate.stream_offset == stream_state.offset && candidate.stride == stream_state.stride) {
+      converted_payload = &candidate;
+      const_cast<NativeBufferResource::ConvertedVertexPayload&>(candidate).last_used_frame =
+          active_texture_frame_;
+      break;
+    }
+  }
+  VertexPayloadConversionCounts conversions{};
+  if (!converted_payload) {
+    if (resource->converted_vertex_payloads.size() >= kNativeMaximumVertexConversionsPerBuffer) {
+      auto oldest = std::min_element(resource->converted_vertex_payloads.begin(),
+                                     resource->converted_vertex_payloads.end(),
+                                     [](const NativeBufferResource::ConvertedVertexPayload& left,
+                                        const NativeBufferResource::ConvertedVertexPayload& right) {
+                                       return left.last_used_frame < right.last_used_frame;
+                                     });
+      if (oldest != resource->converted_vertex_payloads.end()) {
+        RecordNativeMemoryLifecycle(
+            memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kDestroy,
+            memory::LifecycleReason::kSuperseded, oldest->declaration_hash, resource->generation,
+            resource->handle, oldest->payload.size(), oldest->payload.capacity(), 0,
+            oldest->last_used_frame, oldest->stream);
+        resource->converted_vertex_payloads.erase(oldest);
+      }
+    }
+    NativeBufferResource::ConvertedVertexPayload candidate{};
+    candidate.declaration_hash = declaration.content_hash;
+    candidate.shader_hash = shader.hash;
+    candidate.stream = vertex_stream;
+    candidate.stream_offset = stream_state.offset;
+    candidate.stride = stream_state.stride;
+    candidate.created_frame = active_texture_frame_;
+    candidate.last_used_frame = active_texture_frame_;
+    candidate.payload.resize(resource->payload.size());
+    conversions = ConvertGuestVertexPayload(
+        candidate.payload.data(), resource->payload.data(), resource->payload.size(), declaration,
+        shader, vertex_stream, stream_state.offset, stream_state.stride);
+    resource->converted_vertex_payloads.push_back(std::move(candidate));
+    converted_payload = &resource->converted_vertex_payloads.back();
+    RecordNativeMemoryLifecycle(
+        memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kCreate,
+        memory::LifecycleReason::kCacheMiss, declaration.content_hash, resource->generation,
+        resource->handle, converted_payload->payload.size(), converted_payload->payload.capacity(),
+        0, active_texture_frame_, vertex_stream);
+  }
+  if (conversions.components_16 || conversions.dec3n || conversions.color_uint) {
+    static std::atomic<uint64_t> conversion_count{0};
+    const uint64_t count = NextNativeTraceDiagnosticCount(conversion_count);
+    if (count <= 64) {
+      REXLOG_INFO(
+          "gta4-native-vertex-convert: #{} resource={:08X} declaration={:08X} "
+          "shader={:016X} stream={} offset={} stride={} components16={} dec3n={} "
+          "color-uint={}",
+          count, resource->handle, declaration.handle, shader.hash, vertex_stream,
+          stream_state.offset, stream_state.stride, conversions.components_16, conversions.dec3n,
+          conversions.color_uint);
+    }
+  }
+  return converted_payload;
+}
+
 bool Gta4NativeGraphicsSystem::UploadBufferResource(
     const NativeBufferResource* resource, VkCommandBuffer command_buffer,
     bool index_buffer, bool index32, const NativePipelineState* vertex_state,
@@ -22394,9 +22545,27 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
   persistent_key.stride = stream_state.stride;
   persistent_key.kind = NativePersistentBufferKind::kVertex;
   auto& uploads = resources.vertex_uploads;
+  const auto expose_cpu_vertices = [&]() {
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    if (metal_capture_ && metal_capture_->pending) {
+      const auto* converted = PrepareConvertedVertexPayload(resource, *vertex_state, vertex_stream);
+      if (!converted) return false;
+      allocation.host_data = converted->payload.data();
+    }
+#endif
+    return true;
+  };
+  // A CPU conversion variant can be evicted before this frame ends. Never
+  // retain its pointer in the GPU upload memo; expose bytes only for the
+  // immediate consumer, which copies them into an immutable capture owner.
+  const auto memoize_gpu_allocation = [&]() {
+    auto cached = allocation;
+    cached.host_data = nullptr;
+    return uploads.Insert(persistent_key, cached);
+  };
   if (const auto* existing = uploads.Find(persistent_key)) {
     allocation = *existing;
-    return true;
+    return expose_cpu_vertices();
   }
 
   if (!stream_state.stride || stream_state.offset >= resource->payload.size()) {
@@ -22409,72 +22578,13 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
   if (GetOrCreatePersistentBuffer(command_buffer, resource, persistent_key, nullptr,
                                   VkDeviceSize(resource->payload.size()),
                                   NativeUploadKind::kVertex, allocation)) {
-    if (!uploads.Insert(persistent_key, allocation)) return false;
-    return true;
+    if (!memoize_gpu_allocation()) return false;
+    return expose_cpu_vertices();
   }
 
-  const NativeBufferResource::ConvertedVertexPayload* converted_payload = nullptr;
-  for (const auto& candidate : resource->converted_vertex_payloads) {
-    if (candidate.declaration_hash == declaration.content_hash &&
-        candidate.shader_hash == shader.hash && candidate.stream == vertex_stream &&
-        candidate.stream_offset == stream_state.offset && candidate.stride == stream_state.stride) {
-      converted_payload = &candidate;
-      const_cast<NativeBufferResource::ConvertedVertexPayload&>(candidate).last_used_frame =
-          active_texture_frame_;
-      break;
-    }
-  }
-  VertexPayloadConversionCounts conversions{};
-  if (!converted_payload) {
-    if (resource->converted_vertex_payloads.size() >= kNativeMaximumVertexConversionsPerBuffer) {
-      auto oldest = std::min_element(resource->converted_vertex_payloads.begin(),
-                                     resource->converted_vertex_payloads.end(),
-                                     [](const NativeBufferResource::ConvertedVertexPayload& left,
-                                        const NativeBufferResource::ConvertedVertexPayload& right) {
-                                       return left.last_used_frame < right.last_used_frame;
-                                     });
-      if (oldest != resource->converted_vertex_payloads.end()) {
-        RecordNativeMemoryLifecycle(
-            memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kDestroy,
-            memory::LifecycleReason::kSuperseded, oldest->declaration_hash, resource->generation,
-            resource->handle, oldest->payload.size(), oldest->payload.capacity(), 0,
-            oldest->last_used_frame, oldest->stream);
-        resource->converted_vertex_payloads.erase(oldest);
-      }
-    }
-    NativeBufferResource::ConvertedVertexPayload candidate{};
-    candidate.declaration_hash = declaration.content_hash;
-    candidate.shader_hash = shader.hash;
-    candidate.stream = vertex_stream;
-    candidate.stream_offset = stream_state.offset;
-    candidate.stride = stream_state.stride;
-    candidate.created_frame = active_texture_frame_;
-    candidate.last_used_frame = active_texture_frame_;
-    candidate.payload.resize(resource->payload.size());
-    conversions = ConvertGuestVertexPayload(
-        candidate.payload.data(), resource->payload.data(), resource->payload.size(), declaration,
-        shader, vertex_stream, stream_state.offset, stream_state.stride);
-    resource->converted_vertex_payloads.push_back(std::move(candidate));
-    converted_payload = &resource->converted_vertex_payloads.back();
-    RecordNativeMemoryLifecycle(
-        memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kCreate,
-        memory::LifecycleReason::kCacheMiss, declaration.content_hash, resource->generation,
-        resource->handle, converted_payload->payload.size(), converted_payload->payload.capacity(),
-        0, active_texture_frame_, vertex_stream);
-  }
-  if (conversions.components_16 || conversions.dec3n || conversions.color_uint) {
-    static std::atomic<uint64_t> conversion_count{0};
-    const uint64_t count = NextNativeTraceDiagnosticCount(conversion_count);
-    if (count <= 64) {
-      REXLOG_INFO(
-          "gta4-native-vertex-convert: #{} resource={:08X} declaration={:08X} "
-          "shader={:016X} stream={} offset={} stride={} components16={} dec3n={} "
-          "color-uint={}",
-          count, resource->handle, declaration.handle, shader.hash, vertex_stream,
-          stream_state.offset, stream_state.stride, conversions.components_16, conversions.dec3n,
-          conversions.color_uint);
-    }
-  }
+  const auto* converted_payload =
+      PrepareConvertedVertexPayload(resource, *vertex_state, vertex_stream);
+  if (!converted_payload) return false;
   if (!GetOrCreatePersistentBuffer(
           command_buffer, resource, persistent_key, converted_payload->payload.data(),
           VkDeviceSize(converted_payload->payload.size()), NativeUploadKind::kVertex, allocation)) {
@@ -22485,8 +22595,8 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
     std::memcpy(allocation.mapping, converted_payload->payload.data(),
                 converted_payload->payload.size());
   }
-  if (!uploads.Insert(persistent_key, allocation)) return false;
-  return true;
+  if (!memoize_gpu_allocation()) return false;
+  return expose_cpu_vertices();
 }
 
 void Gta4NativeGraphicsSystem::InsertNativeGpuPassLabel(

@@ -49,6 +49,11 @@ class FrameGenerationMap {
   static_assert(std::is_trivially_copyable_v<Key>);
   static_assert(std::is_trivially_copyable_v<Value>);
 
+  // Power-of-two tables must not index directly with pointer/handle low bits.
+  // The optional legacy mode is for a same-process comparison in host tests.
+  FrameGenerationMap() = default;
+  explicit FrameGenerationMap(bool mix_hashes) : mix_hashes_(mix_hashes) {}
+
   struct InsertResult {
     Value* value = nullptr;
     bool inserted = false;
@@ -120,7 +125,7 @@ class FrameGenerationMap {
       return nullptr;
     }
     const size_t mask = buckets_.size() - 1;
-    size_t index = hasher_(key) & mask;
+    size_t index = BucketHash(key) & mask;
     for (size_t probe = 0; probe < buckets_.size(); ++probe) {
       const Bucket& bucket = buckets_[index];
       if (bucket.generation != generation_) {
@@ -170,7 +175,7 @@ class FrameGenerationMap {
       return nullptr;
     }
     const size_t mask = buckets_.size() - 1;
-    size_t index = hasher_(key) & mask;
+    size_t index = BucketHash(key) & mask;
     for (size_t probe = 0; probe < buckets_.size(); ++probe) {
       Bucket& bucket = buckets_[index];
       if (bucket.generation != generation_) {
@@ -190,6 +195,17 @@ class FrameGenerationMap {
   uint64_t generation_ = 1;
   Hash hasher_{};
   Equal equal_{};
+  bool mix_hashes_ = true;
+  size_t BucketHash(const Key& key) const {
+    uint64_t hash = hasher_(key);
+    if (!mix_hashes_) return size_t(hash);
+    hash ^= hash >> 33;
+    hash *= UINT64_C(0xff51afd7ed558ccd);
+    hash ^= hash >> 33;
+    hash *= UINT64_C(0xc4ceb9fe1a85ec53);
+    hash ^= hash >> 33;
+    return size_t(hash);
+  }
 };
 
 struct FrameConstantReservation {
@@ -203,6 +219,21 @@ struct FrameConstantReservation {
 // after an unsubmitted command buffer has been rolled back.
 class FrameConstantArenaIndex {
  public:
+  FrameConstantArenaIndex() = default;
+  explicit FrameConstantArenaIndex(bool mix_hashes) : reservations_(mix_hashes) {}
+  // Covered allocations are cached by the frame coverage planner. Reserving
+  // them here needs only the fence-owned cursor, not a second identity table.
+  std::optional<FrameConstantReservation> ReserveTransient(size_t byte_size, size_t alignment) {
+    if (in_flight_submission_ || !byte_size || !alignment || (alignment & (alignment - 1)))
+      return std::nullopt;
+    const size_t mask = alignment - 1;
+    if (byte_cursor_ > SIZE_MAX - mask) return std::nullopt;
+    const size_t offset = (byte_cursor_ + mask) & ~mask;
+    if (offset > byte_capacity_ || byte_size > byte_capacity_ - offset) return std::nullopt;
+    byte_cursor_ = offset + byte_size;
+    ++transient_count_;
+    return FrameConstantReservation{offset, byte_size, false};
+  }
   bool SetByteCapacity(size_t byte_capacity) {
     if (in_flight_submission_ || reservation_count() || byte_cursor_) {
       return false;
@@ -267,6 +298,7 @@ class FrameConstantArenaIndex {
     }
     in_flight_submission_ = 0;
     byte_cursor_ = 0;
+    transient_count_ = 0;
     return true;
   }
 
@@ -275,12 +307,13 @@ class FrameConstantArenaIndex {
       return false;
     }
     byte_cursor_ = 0;
+    transient_count_ = 0;
     return true;
   }
 
   size_t byte_capacity() const { return byte_capacity_; }
   size_t bytes_used() const { return byte_cursor_; }
-  size_t reservation_count() const { return reservations_.size(); }
+  size_t reservation_count() const { return reservations_.size() + transient_count_; }
   size_t lookup_bucket_count() const { return reservations_.bucket_count(); }
   uint64_t in_flight_submission() const { return in_flight_submission_; }
 
@@ -294,6 +327,7 @@ class FrameConstantArenaIndex {
   FrameGenerationMap<FrameConstantIdentity, Reservation, FrameConstantIdentityHash> reservations_;
   size_t byte_capacity_ = 0;
   size_t byte_cursor_ = 0;
+  size_t transient_count_ = 0;
   uint64_t in_flight_submission_ = 0;
 };
 

@@ -10,8 +10,8 @@ namespace rex::graphics::gta4_native {
 // retain their resources; pages are not repurposed until their slot fence.
 // Compare guest-null meaning as well as resource identity and all fetch words.
 template <typename Command>
-bool NativePreparedTextureInputsEqual(const Command& previous, const Command& next) {
-  if (!previous.bindings_prepared || previous.failed_texture_mask || !previous.pipeline_state ||
+bool NativeTextureInputsEqual(const Command& previous, const Command& next) {
+  if (previous.failed_texture_mask || !previous.pipeline_state ||
       !next.pipeline_state || previous.used_texture_mask != next.used_texture_mask) return false;
   for (size_t stage = 0; stage < previous.textures.size(); ++stage) {
     if (!(next.used_texture_mask & (uint32_t{1} << stage))) continue;
@@ -21,6 +21,10 @@ bool NativePreparedTextureInputsEqual(const Command& previous, const Command& ne
                     sizeof(previous.texture_fetches[stage])) != 0) return false;
   }
   return true;
+}
+template <typename Command>
+bool NativePreparedTextureInputsEqual(const Command& previous, const Command& next) {
+  return previous.bindings_prepared && NativeTextureInputsEqual(previous, next);
 }
 template <typename Command>
 void CopyNativePreparedTextureBindings(const Command& previous, Command& next) {
@@ -75,5 +79,40 @@ class NativePreparedBindingMemo {
 
   std::array<const Command*, Capacity> entries_{};
   const Command* previous_ = nullptr;
+};
+
+// Cached-backend preparation realizes image/sampler tuples before allocating
+// descriptor bundles. Borrow only fully realized, successful tuples from this
+// batch; their owners/storage must remain stable until descriptor publication.
+// This does not mark a draw GPU-ready or bypass descriptor lifetime accounting.
+template <typename Command, typename Tuple, size_t Capacity = 64>
+class NativePreparedDescriptorTupleMemo {
+  static_assert(Capacity && (Capacity & (Capacity - 1)) == 0);
+ public:
+  struct Entry { const Command* command = nullptr; const Tuple* tuple = nullptr; };
+  const Entry* Find(const Command& next) const {
+    if (previous_.command && NativeTextureInputsEqual(*previous_.command, next)) return &previous_;
+    const auto& e = entries_[Bucket(next)];
+    return e.command && NativeTextureInputsEqual(*e.command, next) ? &e : nullptr;
+  }
+  void Remember(const Command& command, const Tuple& tuple) {
+    if (command.failed_texture_mask || !command.pipeline_state) return;
+    previous_ = {&command, &tuple};
+    entries_[Bucket(command)] = previous_;
+  }
+ private:
+  static size_t Bucket(const Command& command) {
+    uint64_t hint = command.used_texture_mask;
+    if (command.used_texture_mask) {
+      const size_t stage = std::countr_zero(command.used_texture_mask);
+      if (stage < command.textures.size())
+        hint ^= uintptr_t(command.textures[stage].get()) >> 4;
+    }
+    hint ^= hint >> 17;
+    hint *= UINT64_C(0x9E3779B185EBCA87);
+    return size_t(hint >> 32) & (Capacity - 1);
+  }
+  std::array<Entry, Capacity> entries_{};
+  Entry previous_{};
 };
 }  // namespace rex::graphics::gta4_native

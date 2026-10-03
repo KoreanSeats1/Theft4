@@ -43,6 +43,8 @@
 #include "native_immutable_bindings.h"
 #include "native_preparation_task.h"
 #include "native_constant_projection.h"
+#include "native_masked_constants.h"
+#include "native_snapshot_pages.h"
 #include "native_texture_protection.h"
 #include "native_command_packet.h"
 #include "native_frame_resource_owners.h"
@@ -1313,6 +1315,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::array<std::array<ProjectedBinding, 256>, 2> projected_bindings{};
     std::array<std::array<uint64_t, 256>, 2> projected_stamps{};
     uint64_t projected_clock = 0;
+    std::array<NativeFrameConstantCoverage<NativeUploadAllocation>, 2> masked_coverage;
+    uint64_t masked_uploads = 0, masked_bytes_written = 0, masked_bytes_reserved = 0;
+    uint64_t masked_fallbacks = 0;
     NativeUploadAllocation unused_allocation{};
     uint64_t unused_bank_bindings = 0, unused_bank_bytes_avoided = 0;
     NativeUploadBuffer storage;
@@ -1737,6 +1742,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       NativeConstantBufferKind kind, uint64_t immutable_identity,
       const NativeUploadAllocation& parent, const ConstantPayloadDelta& delta,
       size_t byte_size, NativeUploadAllocation& allocation);
+  bool GetOrCreateMaskedConstantBuffer(NativeConstantBufferKind kind,
+      const NativeMaskedConstantPlan& plan, NativeUploadAllocation& allocation);
   bool ResetFrameConstantArena(uint32_t slot, uint64_t completed_submission, bool unsubmitted);
   void DestroyNativeFrameConstantArenas();
   void ReleaseUnusedPersistentBuffers(uint64_t completed_submission);
@@ -1806,6 +1813,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::mutex render_mutex_;
   std::condition_variable render_condition_;
   std::pmr::synchronized_pool_resource snapshot_pool_;
+  NativeSnapshotPages<NativePipelineState, 64> pipeline_snapshot_pages_;
 #ifdef THEFT4_LAB_BUILD
   // Construct once on the producer. Enabled command-stream mode retains the
   // same unique owner through queue, staging, and frame; OFF uses value frames.

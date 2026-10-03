@@ -30,7 +30,10 @@ extern "C" {
 // Fields218-221: sampled post-Present command clearing, draws, logical
 // setters and batch acquisitions. Sample count advances after clearing;
 // consume the following publication row to include that completed sample.
-enum { REX_LIGHT_FIELDS = 257 };
+// Fields257-260: per-frame covered-bank uploads, actual CPU bytes written,
+// covered allocation bytes reserved, and bounded replay fallbacks.
+// Fields261-263: cumulative snapshot pages/objects and currently retained page bytes.
+enum { REX_LIGHT_FIELDS = 264 };
 typedef struct rex_light_sample { uint64_t value[REX_LIGHT_FIELDS]; } rex_light_sample;
 // Renderer-thread only; actual driver calls/publication, never pipeline hits.
 // Work outside a title frame is retained until the next recorded title frame.

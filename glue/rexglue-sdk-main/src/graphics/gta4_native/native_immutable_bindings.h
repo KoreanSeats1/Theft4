@@ -21,6 +21,9 @@ namespace rex::graphics::gta4_native {
 template <typename Allocation>
 class NativeImmutableBindings {
  public:
+  NativeImmutableBindings() = default;
+  explicit NativeImmutableBindings(bool mix_hashes)
+      : versions_(mix_hashes), contents_(mix_hashes) {}
   static_assert(std::is_trivially_copyable_v<Allocation>);
   enum class Result { kFailure, kVersionHit, kContentHit, kDeltaUploaded, kUploaded };
   struct Entry {

@@ -2,13 +2,28 @@
 // fail-closed while game draw/helper lowering is being connected: an unsupported
 // command rejects the WHOLE batch before Metal submits any of it.
 struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
-  struct SurfaceRecord {SurfaceDescriptor descriptor;std::shared_ptr<const theft4::render::Surface> owner;};
+  struct SurfaceRecord {
+    SurfaceDescriptor descriptor;
+    std::shared_ptr<const theft4::render::Surface> owner;
+    uint32_t logical_width=0,logical_height=0;
+    bool is_reflection=false;
+    NativeReflectionTarget reflection;
+    NativeReflectionCaptureState capture;
+    uint64_t materialized_serial=0;
+  };
+  struct PlacementOwner {uint64_t surface=0,serial=0;GuestSurfaceView view;};
   struct TextureRecord {std::shared_ptr<const NativeTextureResource> resource;
                         std::shared_ptr<const theft4::render::Surface> owner;
                         std::shared_ptr<NativeTextureImage> description;
                         bool depth_resolved=false;
-                        uint64_t content_serial=0,packed_source_serial=0;};
-  std::map<std::pair<uint32_t,bool>,SurfaceRecord> surfaces;
+                        std::set<std::pair<uint32_t,uint32_t>> resolved;
+                        uint64_t content_serial=0,packed_source_serial=0;
+                        uint64_t virtual_lifetime=0,packed_allocation=0;};
+  // A handle can have several physical extent/sample variants. Placement
+  // ownership identifies the current writer, independently of those allocations.
+  std::map<uint64_t,SurfaceRecord> surfaces;
+  std::map<std::pair<uint32_t,bool>,std::vector<uint64_t>> surface_buckets;
+  std::unordered_map<GuestPlacementKey,PlacementOwner,GuestPlacementKeyHash> placements;
   std::map<uint64_t,TextureRecord> textures;
   struct BytesRecord {
     std::weak_ptr<const void> resource;
@@ -29,7 +44,8 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
 void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend() {
   // Allocation generations must not restart across a title device reset.
   if(native_metal_frame_) {
-    native_metal_frame_->surfaces.clear();native_metal_frame_->textures.clear();
+    native_metal_frame_->surfaces.clear();native_metal_frame_->surface_buckets.clear();
+    native_metal_frame_->placements.clear();native_metal_frame_->textures.clear();
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
   }
@@ -43,8 +59,10 @@ void Gta4NativeGraphicsSystem::ReleaseNativeMetalResource(uint32_t handle) {
     std::erase_if(native_metal_frame_->contents,[&](const auto& view){return view.surface==key;});
   };
   std::erase_if(native_metal_frame_->surfaces,[&](const auto& entry) {
-    if(entry.first.first!=handle)return false;forget(entry.second.owner->key);return true;
+    if(entry.second.descriptor.handle!=handle)return false;forget(entry.second.owner->key);return true;
   });
+  std::erase_if(native_metal_frame_->surface_buckets,[&](const auto& entry){return entry.first.first==handle;});
+  std::erase_if(native_metal_frame_->placements,[&](const auto& entry){return !native_metal_frame_->surfaces.contains(entry.second.surface);});
   std::erase_if(native_metal_frame_->textures,[&](const auto& entry) {
     if(entry.second.resource->handle!=handle)return false;forget(entry.second.owner->key);return true;
   });
@@ -79,51 +97,162 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     } else break;
   }
   NativeMetalFrameState next;
-  next.surfaces=native_metal_frame_->surfaces;next.textures=native_metal_frame_->textures;
+  next.surfaces=native_metal_frame_->surfaces;next.surface_buckets=native_metal_frame_->surface_buckets;
+  next.placements=native_metal_frame_->placements;next.textures=native_metal_frame_->textures;
   next.contents=native_metal_frame_->contents;
   auto plan=std::make_shared<r::FramePlan>();plan->sequence=++next_native_metal_sequence_;
   const auto caps=frame_backend_->Capabilities();
+  // Releases in this batch retire reflection aliases in command order. Failed
+  // admission commits neither that registry nor placement/content ownership.
+  auto reflections=reflection_resources_;
   const auto reject=[&](const char* reason){error=reason;return false;};
   const auto retain=[&](const std::shared_ptr<const r::Surface>& surface) {
     if(std::none_of(plan->surfaces.begin(),plan->surfaces.end(),[&](const auto& s){return s->key==surface->key;}))
       plan->surfaces.push_back(surface);
   };
-  const auto surface_for=[&](const SurfaceDescriptor& descriptor,bool depth)->std::shared_ptr<const r::Surface> {
+  const uint32_t supported_samples=((caps.sample_counts&(1u<<1))?1u:0u)|
+      ((caps.sample_counts&(1u<<2))?2u:0u)|((caps.sample_counts&(1u<<4))?4u:0u);
+  const auto forget_contents=[&](r::SurfaceKey key) {
+    std::erase_if(next.contents,[&](const auto& view){return view.surface==key;});
+  };
+  const auto surface_for=[&](const SurfaceDescriptor& descriptor,bool depth,
+                            uint32_t scene_sample_override=0)->std::shared_ptr<const r::Surface> {
     const auto format=r::source::PixelFormat(ConvertSurfaceFormat(descriptor.format,depth));
-    const uint32_t samples=uint32_t(ConvertSurfaceSamples(descriptor.sample_type));
-    if(!descriptor.handle || !descriptor.width || !descriptor.height ||
-       descriptor.width>caps.max_image_dimension_2d || descriptor.height>caps.max_image_dimension_2d ||
-       format==r::Format::Invalid || samples>8 || !(caps.sample_counts&(1u<<samples))) {
+    uint32_t samples=uint32_t(ConvertSurfaceSamples(descriptor.sample_type));
+    uint32_t width=descriptor.width,height=descriptor.height;
+    if(!descriptor.handle||!width||!height||format==r::Format::Invalid||samples>8) {
       error="Metal surface descriptor unsupported";return {};
-    }
-    if(FindNativeReflectionSurface(reflection_resources_,descriptor,depth)) {
-      error="Metal reflection allocation policy requires full draw lowering";return {};
     }
     {
       std::lock_guard lock(texture_resource_mutex_);
-      const auto* virtual_resource=virtual_resource_registry_.Find(descriptor.handle);
-      if(virtual_resource && (virtual_resource->physical_width!=descriptor.width ||
-                              virtual_resource->physical_height!=descriptor.height)) {
-        error="Metal scaled placement requires full draw lowering";return {};
+      const auto* registered=virtual_resource_registry_.Find(descriptor.handle);
+      if(registered&&registered->kind==VirtualResourceKind::kSurface&&
+         registered->logical_width==descriptor.width&&registered->logical_height==descriptor.height) {
+        width=registered->physical_width;height=registered->physical_height;
       }
     }
-    const auto key=std::pair{descriptor.handle,depth};
-    auto it=next.surfaces.find(key);
-    if(it!=next.surfaces.end() && SurfaceDescriptorsEqual(it->second.descriptor,descriptor)) {
-      retain(it->second.owner);return it->second.owner;
+    NativeReflectionTarget reflection;
+    const auto* entry=FindNativeReflectionSurface(reflections,descriptor,depth);
+    const bool is_reflection=entry!=nullptr;
+    if(entry) {
+      reflection=*entry;width=reflection.physical_width;height=reflection.physical_height;
+      if(reflection.sample_count_override)
+        samples=SelectSupportedNativeSceneSampleCount(reflection.sample_count_override,supported_samples);
+      if(width>caps.max_image_dimension_2d||height>caps.max_image_dimension_2d) {
+        width=descriptor.width;height=descriptor.height;
+      }
+    } else if(scene_sample_override) {
+      samples=SelectSupportedNativeSceneSampleCount(scene_sample_override,supported_samples);
     }
-    // Shared EDRAM placement cannot be treated as independent texture contents.
-    // The complete producer must materialize aliases explicitly before reading.
-    for(const auto& [other_key,record]:next.surfaces) {
-      if(other_key!=key && record.descriptor.base==descriptor.base &&
-          (record.descriptor.address&0x7ffu)==(descriptor.address&0x7ffu)) {
-        error="Metal surface placement alias requires explicit materialization";return {};
+    if(!width||!height||width>caps.max_image_dimension_2d||height>caps.max_image_dimension_2d||
+       !samples||samples>8||!(caps.sample_counts&(1u<<samples))) {
+      error="Metal surface physical extent or coherent samples unsupported";return {};
+    }
+    const auto bucket=std::pair{descriptor.handle,depth};
+    for(uint64_t id:next.surface_buckets[bucket]) {
+      auto& record=next.surfaces.at(id);const auto& owner=record.owner;
+      if(SurfaceDescriptorsEqual(record.descriptor,descriptor)&&owner->width==width&&
+         owner->height==height&&owner->samples==samples&&record.is_reflection==is_reflection&&
+         (!is_reflection||SameNativeReflectionRegistration(record.reflection,reflection))) {
+        // Persistent resolved reflection textures are separate. An old capture
+        // workspace must receive a real first-use clear before this frame uses it.
+        if(is_reflection&&!HasCurrentNativeReflectionCaptureContent(record.capture,present.submitted_frame))
+          forget_contents(owner->key);
+        retain(owner);return owner;
       }
     }
     auto owner=std::make_shared<r::Surface>();
     owner->key={++next_native_metal_allocation_,1};owner->format=format;
-    owner->width=descriptor.width;owner->height=descriptor.height;owner->samples=samples;
-    next.surfaces[key]={descriptor,owner};retain(owner);return owner;
+    owner->width=width;owner->height=height;owner->samples=samples;
+    auto& record=next.surfaces[owner->key.id];record.descriptor=descriptor;record.owner=owner;
+    record.logical_width=descriptor.width;record.logical_height=descriptor.height;
+    record.is_reflection=is_reflection;record.reflection=reflection;
+    next.surface_buckets[bucket].push_back(owner->key.id);retain(owner);return owner;
+  };
+  const auto placement_owner=[&](const SurfaceDescriptor& descriptor,bool depth)
+      ->const NativeMetalFrameState::PlacementOwner* {
+    if(FindNativeReflectionSurface(reflections,descriptor,depth))return nullptr;
+    GuestSurfaceView view;if(!DecodeGuestSurfaceView(descriptor,depth,view))return nullptr;
+    const auto it=next.placements.find(GetGuestPlacementKey(view));
+    if(it==next.placements.end())return nullptr;
+    const auto surface=next.surfaces.find(it->second.surface);
+    return surface!=next.surfaces.end()&&surface->second.materialized_serial==it->second.serial?
+        &it->second:nullptr;
+  };
+  const auto claim=[&](const std::shared_ptr<const r::Surface>& surface) {
+    auto& record=next.surfaces.at(surface->key.id);
+    const uint64_t serial=++next_native_metal_content_serial_;
+    record.materialized_serial=serial;
+    if(record.is_reflection) {
+      ClaimNativeReflectionCaptureContent(record.capture,serial,serial,present.submitted_frame,
+                                           diagnostic_command_index_,0,0);
+    } else {
+      GuestSurfaceView view;
+      if(DecodeGuestSurfaceView(record.descriptor,r::SupportsAspect(surface->format,r::Aspect::Depth),view))
+        next.placements[GetGuestPlacementKey(view)]={surface->key.id,serial,view};
+    }
+  };
+  const auto prepare_surface=[&](const std::shared_ptr<const r::Surface>& surface) {
+    auto& record=next.surfaces.at(surface->key.id);
+    if(record.is_reflection)return true;
+    const bool depth=r::SupportsAspect(surface->format,r::Aspect::Depth);
+    GuestSurfaceView view;
+    if(!DecodeGuestSurfaceView(record.descriptor,depth,view))return reject("Metal attachment guest placement invalid");
+    const auto* current=placement_owner(record.descriptor,depth);
+    if(!current) {forget_contents(surface->key);return true;}
+    if(current->surface==surface->key.id)return true;
+    // Save before retargeting the map. Both allocations remain retained by this
+    // plan, including when materialization spans differently sampled views.
+    const auto writer=*current;const auto input=next.surfaces.at(writer.surface).owner;retain(input);
+    const r::SurfaceView input_view{input->key,0,0,depth?r::Aspect::Depth:r::Aspect::Color};
+    const r::SurfaceView output_view{surface->key,0,0,input_view.aspect};
+    if(!next.contents.contains(input_view))return reject("Metal placement writer contents undefined");
+    if(depth) {
+      if(input->format!=r::Format::Depth32FloatStencil8||surface->format!=input->format||
+         input->samples!=1||surface->samples!=1||input->width!=surface->width||input->height!=surface->height||
+         writer.view!=view||!next.contents.contains({input->key,0,0,r::Aspect::Stencil}))
+        return reject("Metal depth placement materialization requires identical combined storage");
+      r::ImageCopy copy;copy.source=input_view;copy.destination=output_view;
+      copy.extent={surface->width,surface->height};copy.combined_depth_stencil=true;
+      plan->commands.push_back(copy);next.contents.insert({surface->key,0,0,r::Aspect::Stencil});
+    } else {
+      NativeResolveConversionConstants constants;
+      constants.source_guest_sample_type=uint32_t(writer.view.msaa_samples);
+      constants.requested_guest_sample_type=uint32_t(view.msaa_samples);
+      constants.destination_guest_sample_type=uint32_t(view.msaa_samples);
+      constants.physical_source_sample_type=uint32_t(ConvertHostSamplesToGuestSamples(VkSampleCountFlagBits(input->samples)));
+      constants.physical_destination_sample_type=uint32_t(ConvertHostSamplesToGuestSamples(VkSampleCountFlagBits(surface->samples)));
+      constants.source_width=input->width;constants.source_height=input->height;
+      constants.destination_width=surface->width;constants.destination_height=surface->height;constants.mode=1;
+      if(RequiresNativeResolveScaleConversion(input->width,input->height,surface->width,surface->height))
+        constants.flags|=kResolveConversionFlagScaleConversion;
+      else if(CanDirectlyMaterializePhysicalSamples(writer.view==view,input->samples,surface->samples))
+        constants.flags|=kResolveConversionFlagDirectPhysicalMaterialization;
+      auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
+      bytes->conversion={uint64_t(r::HostProgram::Resolve),writer.serial,input->key.id,surface->key.id};
+      const auto* data=reinterpret_cast<const uint8_t*>(&constants);bytes->value.assign(data,data+sizeof(constants));
+      r::HostDraw draw;draw.program=input->samples==1?r::HostProgram::Resolve:r::HostProgram::ResolveMSAA;
+      draw.pipeline.colors[0]=surface->format;draw.pipeline.samples=surface->samples;
+      draw.constants={bytes,0,sizeof(constants)};draw.scissor={0,0,surface->width,surface->height};
+      draw.fetches[0].produced=input_view;draw.fetches[0].sampler=std::make_shared<r::Sampler>();
+      r::Attachment attachment;attachment.view=output_view;attachment.load=r::Load::Clear;attachment.store=r::Store::Store;
+      r::Pass pass;pass.colors[0]=attachment;pass.commands.push_back(std::move(draw));r::AppendPass(*plan,std::move(pass));
+    }
+    next.contents.insert(output_view);record.materialized_serial=writer.serial;
+    next.placements[GetGuestPlacementKey(view)]={surface->key.id,writer.serial,view};return true;
+  };
+  const auto sample_override_for=[&](const NativeCommand& command) {
+    const auto usage=GetRenderingTargetUsage(command);const auto& state=*command.pipeline_state;
+    bool reflection=false,has_bound=false,all_multisampled=true;
+    const auto inspect=[&](const SurfaceDescriptor& descriptor,bool depth) {
+      if(!descriptor.handle)return;
+      has_bound=true;all_multisampled&=descriptor.sample_type!=uint32_t(xenos::MsaaSamples::k1X);
+      reflection|=FindNativeReflectionSurface(reflections,descriptor,depth)!=nullptr;
+    };
+    for(uint32_t i=0;i<kRenderTargetCount;++i)if(usage.color_attachment_mask&(1u<<i))inspect(state.render_targets[i],false);
+    if(usage.depth_stencil_aspects)inspect(state.depth_stencil,true);
+    return ShouldApplyNativeSceneSampleOverride(reflection,has_bound,all_multisampled)?
+        uint32_t(GetNativeSceneSampleOverride()):0u;
   };
   const auto validate_append=[&](r::FrameCommand command) {
     if(auto* pass=std::get_if<r::Pass>(&command))r::AppendPass(*plan,std::move(*pass));
@@ -132,10 +261,16 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   };
   const auto clear_surface=[&](const std::shared_ptr<const r::Surface>& surface,
                               r::Aspect aspect,const ClearCommand& clear,uint32_t slot) {
-    const auto left=std::clamp(clear.left,0,int32_t(surface->width));
-    const auto top=std::clamp(clear.top,0,int32_t(surface->height));
-    const auto right=std::clamp(clear.right,left,int32_t(surface->width));
-    const auto bottom=std::clamp(clear.bottom,top,int32_t(surface->height));
+    if(!prepare_surface(surface))return false;
+    const auto& record=next.surfaces.at(surface->key.id);
+    const auto logical_left=std::clamp(clear.left,0,int32_t(record.logical_width));
+    const auto logical_top=std::clamp(clear.top,0,int32_t(record.logical_height));
+    const auto logical_right=std::clamp(clear.right,logical_left,int32_t(record.logical_width));
+    const auto logical_bottom=std::clamp(clear.bottom,logical_top,int32_t(record.logical_height));
+    const auto left=ScaleCoordinateFloor(logical_left,record.logical_width,surface->width);
+    const auto top=ScaleCoordinateFloor(logical_top,record.logical_height,surface->height);
+    const auto right=ScaleCoordinateCeil(logical_right,record.logical_width,surface->width);
+    const auto bottom=ScaleCoordinateCeil(logical_bottom,record.logical_height,surface->height);
     if(left==right || top==bottom)return true;
     r::SurfaceView view{surface->key,0,0,aspect};r::Attachment attachment;
     attachment.view=view;attachment.store=r::Store::Store;
@@ -165,11 +300,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
     }
     if(attachment.load==r::Load::Clear)next.contents.insert(view);
-    return validate_append(std::move(pass));
+    claim(surface);return validate_append(std::move(pass));
   };
   const auto produced_texture=[&](const std::shared_ptr<const NativeTextureResource>& resource) {
     auto existing=next.textures.find(resource->generation);
-    if(existing!=next.textures.end()) {retain(existing->second.owner);return true;}
     if(!resource->gpu_produced)return reject("Metal produced texture has no GPU resource contract");
     VkFormat format=ConvertTextureFormat(resource->info.format);
     // Metal uses float32 depth storage. Packed-depth reconstruction retains the
@@ -179,13 +313,54 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const auto lowered=r::source::PixelFormat(format);
     if(lowered==r::Format::Invalid||lowered>r::Format::Depth32FloatStencil8)
       return reject("Metal produced texture requires a renderable native format");
+    uint64_t virtual_lifetime=0,packed_allocation=0;
+    {
+      std::lock_guard lock(texture_resource_mutex_);
+      const auto* registered=virtual_resource_registry_.Find(resource->handle);
+      if(registered&&registered->kind==VirtualResourceKind::kTexture&&
+         registered->logical_width==resource->info.width+1&&registered->logical_height==resource->info.height+1)
+        virtual_lifetime=registered->lifetime;
+    }
+    const auto* reflection=FindNativeReflectionTexture(reflections,resource->handle,
+                                                       resource->info.width+1,resource->info.height+1);
+    if(resource->packed_depth_source) {
+      const auto parent=next.textures.find(resource->packed_depth_source->generation);
+      if(parent==next.textures.end())return reject("Metal packed alias requires prepared source metadata");
+      packed_allocation=parent->second.owner->key.id;
+    }
+    if(existing!=next.textures.end()&&existing->second.virtual_lifetime==virtual_lifetime&&
+       existing->second.packed_allocation==packed_allocation&&existing->second.description->is_reflection==bool(reflection)&&
+       (!reflection||SameNativeReflectionRegistration(existing->second.description->reflection,*reflection))) {
+      // Immutable resource identity plus registration identity avoids rebuilding
+      // CPU descriptions on every draw that samples the same produced texture.
+      retain(existing->second.owner);return true;
+    }
     PreparedNativeTextureDescription description;
     NativeTextureCapabilities tcaps{caps.max_image_dimension_2d,true,true,
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT|
         VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT|
         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT};
-    if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,nullptr,tcaps,description,error))return false;
+    const NativeTextureImage* packed_source=nullptr;
+    if(resource->packed_depth_source) {
+      const auto parent=next.textures.find(resource->packed_depth_source->generation);
+      if(parent==next.textures.end())return reject("Metal packed alias requires prepared source metadata");
+      packed_source=parent->second.description.get();
+    }
+    if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,packed_source,tcaps,description,error,&reflections))return false;
     const auto& metadata=*description.image;
+    if(existing!=next.textures.end()) {
+      const auto& old=*existing->second.description;
+      if(old.width==metadata.width&&old.height==metadata.height&&old.mip_levels==metadata.mip_levels&&
+         old.view_type==metadata.view_type&&old.format==metadata.format&&old.is_reflection==metadata.is_reflection&&
+         (!old.is_reflection||SameNativeReflectionRegistration(old.reflection,metadata.reflection))) {
+        existing->second.virtual_lifetime=virtual_lifetime;existing->second.packed_allocation=packed_allocation;
+        existing->second.description=std::shared_ptr<NativeTextureImage>(std::move(description.image));
+        existing->second.description->source.reset();retain(existing->second.owner);return true;
+      }
+      // A virtual/reflection registration can change physical storage without
+      // changing the guest resource generation. Retire its old content journal.
+      forget_contents(existing->second.owner->key);
+    }
     auto surface=std::make_shared<r::Surface>();surface->key={++next_native_metal_allocation_,1};
     surface->format=lowered;surface->width=metadata.width;surface->height=metadata.height;
     surface->levels=metadata.mip_levels;
@@ -220,14 +395,15 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
     auto cpu=std::shared_ptr<NativeTextureImage>(std::move(description.image));cpu->source.reset();
     auto& record=next.textures[resource->generation];record={resource,surface,std::move(cpu)};
-    record.content_serial=++next_native_metal_content_serial_;return true;
+    record.content_serial=++next_native_metal_content_serial_;
+    record.virtual_lifetime=virtual_lifetime;record.packed_allocation=packed_allocation;return true;
   };
   const auto produced_fetch=[&](const std::shared_ptr<const NativeTextureResource>& resource) {
-    if(!produced_texture(resource))return false;
-    if(!resource->packed_depth_source)return true;
+    if(!resource->packed_depth_source)return produced_texture(resource);
     const auto& parent=resource->packed_depth_source;
     if(parent->packed_depth_source||!produced_texture(parent))
       return reject("Metal packed alias source must be original resolved depth/stencil storage");
+    if(!produced_texture(resource))return false;
     auto& input=next.textures.at(parent->generation);auto& destination=next.textures.at(resource->generation);
     const auto& source_storage=*input.owner;const auto& storage=*destination.owner;
     if(source_storage.format!=r::Format::Depth32FloatStencil8||source_storage.kind!=r::ImageKind::Texture2D||
@@ -252,13 +428,54 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     destination.packed_source_serial=input.content_serial;destination.content_serial=++next_native_metal_content_serial_;
     return true;
   };
+  const auto resolve_clears=[&](const NativeCommand& command,const ResolveCommand& resolve) {
+    if(!(resolve.flags&0x300u))return true;
+    ClearCommand clear;
+    std::copy(std::begin(resolve.clear_color_bits),std::end(resolve.clear_color_bits),clear.color_bits);
+    clear.depth_bits=resolve.clear_depth_bits;clear.stencil=resolve.clear_stencil;
+    const auto clear_target=[&](const SurfaceDescriptor& descriptor,bool depth) {
+      const auto* writer=placement_owner(descriptor,depth);
+      auto surface=writer?next.surfaces.at(writer->surface).owner:surface_for(descriptor,depth);
+      if(!surface)return false;retain(surface);
+      // Resolve clears act on the actual writer. The existing renderer clamps
+      // their rectangle in that writer's logical extent, before physical scaling.
+      const auto& record=next.surfaces.at(surface->key.id);
+      clear.left=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.left:0,0,int32_t(record.logical_width));
+      clear.top=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.top:0,0,int32_t(record.logical_height));
+      clear.right=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.right:int32_t(record.logical_width),clear.left,int32_t(record.logical_width));
+      clear.bottom=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.bottom:int32_t(record.logical_height),clear.top,int32_t(record.logical_height));
+      if(!clear_surface(surface,depth?r::Aspect::Depth:r::Aspect::Color,clear,0))return false;
+      return !depth||clear_surface(surface,r::Aspect::Stencil,clear,0);
+    };
+    if(resolve.flags&(1u<<8)) {
+      const uint32_t slot=resolve.flags&7u;
+      const auto& descriptor=command.pipeline_state&&slot<kRenderTargetCount?
+          command.pipeline_state->render_targets[slot]:resolve.source;
+      if(!clear_target(descriptor,false))return false;
+    }
+    if(resolve.flags&(1u<<9)) {
+      if(!command.pipeline_state||!command.pipeline_state->depth_stencil.handle)
+        return reject("Metal resolve source depth clear unavailable");
+      if(!clear_target(command.pipeline_state->depth_stencil,true))return false;
+    }
+    return true;
+  };
   size_t command_index=0;
-  diagnostic_submitted_frame_=uint32_t(plan->sequence);
+  diagnostic_submitted_frame_=present.submitted_frame;
   for(const NativeCommand& command:current_frame_) {
     diagnostic_command_index_=command_index++;
+    if(command.type==CommandType::kRenderPhaseMarker) {
+      // The worker already applies phase nesting and each draw captures its
+      // effective phase. This marker performs no graphics-memory operation.
+      if(command.bytes.size()!=sizeof(RenderPhaseMarkerCommand))return reject("Metal render phase marker malformed");
+      continue;
+    }
     if(command.type==CommandType::kReleaseResource) {
       ReleaseResourceCommand release{};std::memcpy(&release,command.bytes.data(),sizeof(release));
-      std::erase_if(next.surfaces,[&](const auto& entry){return entry.first.first==release.resource;});
+      EraseNativeReflectionRegistration(reflections,release.resource);
+      std::erase_if(next.surfaces,[&](const auto& entry){return entry.second.descriptor.handle==release.resource;});
+      std::erase_if(next.surface_buckets,[&](const auto& entry){return entry.first.first==release.resource;});
+      std::erase_if(next.placements,[&](const auto& entry){return !next.surfaces.contains(entry.second.surface);});
       std::erase_if(next.textures,[&](const auto& entry){return entry.second.resource->handle==release.resource;});
       continue;
     }
@@ -267,7 +484,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       if(!command.pipeline_state||!command.pipeline_state->vertex_shader_resource)
         return reject("Metal draw snapshot unavailable");
       const auto usage=GetRenderingTargetUsage(command);
-      NativeRenderingTarget target;r::Pass pass;
+      NativeRenderingTarget target;r::Pass pass;const auto sample_override=sample_override_for(command);
       const auto attachment_for=[&](const std::shared_ptr<const r::Surface>& surface,r::Aspect aspect) {
         r::Attachment attachment;attachment.view={surface->key,0,0,aspect};
         attachment.load=next.contents.contains(attachment.view)?r::Load::Load:r::Load::Clear;
@@ -275,14 +492,22 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         attachment.store=r::Store::Store;return attachment;
       };
       const auto merge_extent=[&](const std::shared_ptr<const r::Surface>& surface) {
-        if(target.width && (target.width!=surface->width||target.height!=surface->height||uint32_t(target.samples)!=surface->samples))
-          return reject("Metal draw attachments have incompatible dimensions or samples");
-        target.width=target.logical_width=surface->width;target.height=target.logical_height=surface->height;
-        target.samples=target.guest_samples=VkSampleCountFlagBits(surface->samples);return true;
+        const auto& record=next.surfaces.at(surface->key.id);
+        const auto guest_samples=ConvertSurfaceSamples(record.descriptor.sample_type);
+        if(target.width&&(target.width!=surface->width||target.height!=surface->height||
+           uint32_t(target.samples)!=surface->samples||target.guest_samples!=guest_samples||
+           target.logical_width!=record.logical_width||target.logical_height!=record.logical_height||
+           target.is_reflection!=record.is_reflection||
+           (target.is_reflection&&target.reflection.family!=record.reflection.family)))
+          return reject("Metal draw attachments have incompatible physical/logical extent, sample topology or family");
+        target.width=surface->width;target.height=surface->height;
+        target.logical_width=record.logical_width;target.logical_height=record.logical_height;
+        target.samples=VkSampleCountFlagBits(surface->samples);target.guest_samples=guest_samples;
+        target.is_reflection=record.is_reflection;target.reflection=record.reflection;return true;
       };
       for(uint32_t i=0;i<kRenderTargetCount;++i)if(usage.color_attachment_mask&(1u<<i)) {
         const auto& descriptor=command.pipeline_state->render_targets[i];if(!descriptor.handle)continue;
-        auto surface=surface_for(descriptor,false);if(!surface||!merge_extent(surface))return false;
+        auto surface=surface_for(descriptor,false,sample_override);if(!surface||!merge_extent(surface)||!prepare_surface(surface))return false;
         pass.colors[i]=attachment_for(surface,r::Aspect::Color);
         target.color_formats[i]=ConvertSurfaceFormat(descriptor.format,false);
         target.color_attachment_mask|=1u<<i;
@@ -290,7 +515,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
       if(usage.depth_stencil_aspects && command.pipeline_state->depth_stencil.handle) {
         const auto& descriptor=command.pipeline_state->depth_stencil;
-        auto surface=surface_for(descriptor,true);if(!surface||!merge_extent(surface))return false;
+        auto surface=surface_for(descriptor,true,sample_override);if(!surface||!merge_extent(surface)||!prepare_surface(surface))return false;
         // A combined allocation exposes both declared pipeline aspects. Preserve
         // the unmodified aspect instead of discarding it when only depth writes.
         pass.depth=attachment_for(surface,r::Aspect::Depth);
@@ -307,10 +532,23 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
       r::FrameDraw draw;if(!PrepareNativeMetalDraw(command,target,next,draw,error))return false;
       if(draw.capture) {
-        for(const auto& attachment:pass.colors)if(attachment&&attachment->load==r::Load::Clear)
+        for(uint32_t i=0;i<kRenderTargetCount;++i)if(pass.colors[i]) {
+          const auto& attachment=*pass.colors[i];
+          const auto surface=next.surfaces.at(attachment.view.surface.id).owner;
+          if(attachment.load==r::Load::Clear)next.contents.insert(attachment.view);
+          if(attachment.load==r::Load::Clear||NativeColorWriteMaskForTarget(target.color_write_mask,i))claim(surface);
+        }
+        const auto& fixed=command.fixed_function_state;
+        const bool writes_depth=fixed.depth_enable&&fixed.depth_write_enable;
+        const bool writes_stencil=fixed.stencil_enable&&
+            ((fixed.stencil_write_mask&&(fixed.stencil_fail||fixed.stencil_depth_fail||fixed.stencil_pass))||
+             (fixed.two_sided_stencil&&fixed.back_stencil_write_mask&&
+              (fixed.ccw_stencil_fail||fixed.ccw_stencil_depth_fail||fixed.ccw_stencil_pass)));
+        for(const auto& attachment:{pass.depth,pass.stencil})if(attachment&&attachment->load==r::Load::Clear)
           next.contents.insert(attachment->view);
-        if(pass.depth&&pass.depth->load==r::Load::Clear)next.contents.insert(pass.depth->view);
-        if(pass.stencil&&pass.stencil->load==r::Load::Clear)next.contents.insert(pass.stencil->view);
+        if(pass.depth&&(writes_depth||writes_stencil||pass.depth->load==r::Load::Clear||
+                        (pass.stencil&&pass.stencil->load==r::Load::Clear)))
+          claim(next.surfaces.at(pass.depth->view.surface.id).owner);
         pass.commands.push_back(std::move(draw));r::AppendPass(*plan,std::move(pass));
       }
       continue;
@@ -324,7 +562,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       const auto& input=next.textures.at(resource->generation);
       if(!input.depth_resolved)return reject("Metal depth handoff source has no successful depth resolve");
       auto destination=surface_for(handoff.destination,true);if(!destination)return false;
-      if(input.owner->format!=r::Format::Depth32FloatStencil8||destination->format!=input.owner->format||
+      if(next.surfaces.at(destination->key.id).is_reflection||input.owner->format!=r::Format::Depth32FloatStencil8||destination->format!=input.owner->format||
          input.owner->width!=destination->width||input.owner->height!=destination->height||
          input.description->logical_width!=handoff.destination.width||
          input.description->logical_height!=handoff.destination.height||input.owner->samples!=1||
@@ -358,7 +596,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         draw.stencil_front_reference=draw.stencil_back_reference=kForwardCoveredSceneStencil;
       }
       r::Pass pass;pass.depth=depth;pass.stencil=stencil;pass.commands.push_back(std::move(draw));
-      r::AppendPass(*plan,std::move(pass));next.contents.insert(depth.view);next.contents.insert(stencil.view);
+      r::AppendPass(*plan,std::move(pass));next.contents.insert(depth.view);next.contents.insert(stencil.view);claim(destination);
       continue;
     }
     if(command.type==CommandType::kResolve) {
@@ -369,20 +607,33 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       const bool depth=(resolve.flags&7u)==4;
       if(resolve.parameters_valid&&(resolve.flags&0x300u))
         return reject("Metal resolve-clear packing overrides are unrepresentable");
-      auto source_surface=surface_for(resolve.source,depth);if(!source_surface)return false;
+      GuestSurfaceView guest_view;
+      if(!DecodeGuestSurfaceView(resolve.source,depth,guest_view))return reject("Metal resolve guest sample view invalid");
+      const auto* writer=placement_owner(resolve.source,depth);
+      const GuestSurfaceView content_view=writer?writer->view:guest_view;
+      auto source_surface=writer?next.surfaces.at(writer->surface).owner:surface_for(resolve.source,depth);
+      if(!source_surface)return false;retain(source_surface);
+      const auto& source_record=next.surfaces.at(source_surface->key.id);
       const r::SurfaceView source_view{source_surface->key,0,0,depth?r::Aspect::Depth:r::Aspect::Color};
-      if(!next.contents.contains(source_view))
-        return reject("Metal resolve source placement has not been written");
       const auto resource=NativeResourceView<NativeTextureResource>(command.resolve_destination).Share();
       if(resource->packed_depth_source)return reject("Metal resolve cannot overwrite a packed-depth view");
       if(!produced_texture(resource))return false;
       auto& destination=next.textures.at(resource->generation);
       const auto& storage=*destination.owner;const auto& metadata=*destination.description;
+      const bool current_source=source_record.is_reflection?
+          HasCurrentNativeReflectionCaptureContent(source_record.capture,present.submitted_frame):writer!=nullptr;
+      if(!current_source||!next.contents.contains(source_view)) {
+        // First-use fallback initialization is not a successful resolve. Only a
+        // completed reflection texture may survive a frame without a new capture.
+        if(destination.resolved.contains({resolve.destination_level,resolve.destination_slice_or_face})&&
+           (source_record.is_reflection||metadata.is_reflection)) {
+          if(!resolve_clears(command,resolve))return false;continue;
+        }
+        return reject("Metal resolve source has no current written placement");
+      }
       if(!r::SupportsAspect(storage.format,source_view.aspect)||resolve.destination_level>=storage.levels||
          resolve.destination_slice_or_face>=r::SurfaceSlices(storage))
-        return reject("Metal color resolve destination subresource unavailable");
-      GuestSurfaceView guest_view;
-      if(!DecodeGuestSurfaceView(resolve.source,depth,guest_view))return reject("Metal resolve guest sample view invalid");
+        return reject("Metal resolve destination subresource unavailable");
       const int32_t logical_width=int32_t(resolve.source.width),logical_height=int32_t(resolve.source.height);
       const int32_t left=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.left:0,0,logical_width);
       const int32_t top=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.top:0,0,logical_height);
@@ -410,7 +661,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       constants.destination_height=ScaleCoordinateCeil(destination_y+copy_height,logical_mip_height,mip_height)-constants.destination_y;
       auto select=SanitizeGuestCopySampleSelect(DecodeResolveSampleSelect(resolve.flags),guest_view.msaa_samples,depth);
       const auto host_samples=ConvertHostSamplesToGuestSamples(VkSampleCountFlagBits(source_surface->samples));
-      const auto mapping=NormalizeColorResolveSampleMapping(guest_view.msaa_samples,guest_view.msaa_samples,host_samples,select);
+      const auto mapping=NormalizeColorResolveSampleMapping(content_view.msaa_samples,guest_view.msaa_samples,host_samples,select);
       constants.source_guest_sample_type=uint32_t(mapping.content_samples);
       constants.requested_guest_sample_type=uint32_t(mapping.requested_samples);
       constants.physical_source_sample_type=uint32_t(host_samples);constants.sample_select=uint32_t(mapping.sample_select);
@@ -427,7 +678,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         return reject("Metal depth resolve requires matching defined depth/stencil and unscaled storage");
       const bool exact=source_surface->samples==1&&source_surface->format==storage.format&&
           !(constants.flags&~kResolveConversionFlagXenosFloat16Pack)&&
-          (depth||guest_view.msaa_samples==xenos::MsaaSamples::k1X);
+          (depth||(content_view.msaa_samples==xenos::MsaaSamples::k1X&&guest_view.msaa_samples==xenos::MsaaSamples::k1X));
       if(exact) {
         r::ImageCopy copy;copy.source=source_view;copy.destination=destination_view;
         copy.source_origin={uint32_t(constants.source_x),uint32_t(constants.source_y)};
@@ -461,35 +712,12 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       // full resolve, so pixels outside the copied rectangle remain defined.
       next.contents.insert(destination_view);
       destination.content_serial=++next_native_metal_content_serial_;
+      destination.resolved.insert({resolve.destination_level,resolve.destination_slice_or_face});
       if(depth) {
         next.contents.insert({storage.key,resolve.destination_level,resolve.destination_slice_or_face,r::Aspect::Stencil});
         if(!resolve.destination_level&&!resolve.destination_slice_or_face)destination.depth_resolved=true;
       }
-      if(resolve.flags&0x300u) {
-        ClearCommand clear;
-        std::copy(std::begin(resolve.clear_color_bits),std::end(resolve.clear_color_bits),clear.color_bits);
-        clear.depth_bits=resolve.clear_depth_bits;clear.stencil=resolve.clear_stencil;
-        const auto rectangle_for=[&](const SurfaceDescriptor& descriptor) {
-          clear.left=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.left:0,0,int32_t(descriptor.width));
-          clear.top=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.top:0,0,int32_t(descriptor.height));
-          clear.right=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.right:int32_t(descriptor.width),clear.left,int32_t(descriptor.width));
-          clear.bottom=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.bottom:int32_t(descriptor.height),clear.top,int32_t(descriptor.height));
-        };
-        if(resolve.flags&(1u<<8)) {
-          const uint32_t slot=resolve.flags&7u;
-          const auto& descriptor=command.pipeline_state&&slot<kRenderTargetCount?
-              command.pipeline_state->render_targets[slot]:resolve.source;
-          rectangle_for(descriptor);
-          auto surface=surface_for(descriptor,false);if(!surface||!clear_surface(surface,r::Aspect::Color,clear,0))return false;
-        }
-        if(resolve.flags&(1u<<9)) {
-          if(!command.pipeline_state||!command.pipeline_state->depth_stencil.handle)
-            return reject("Metal resolve source depth clear unavailable");
-          const auto& descriptor=command.pipeline_state->depth_stencil;rectangle_for(descriptor);
-          auto surface=surface_for(descriptor,true);
-          if(!surface||!clear_surface(surface,r::Aspect::Depth,clear,0)||!clear_surface(surface,r::Aspect::Stencil,clear,0))return false;
-        }
-      }
+      if(!resolve_clears(command,resolve))return false;
       continue;
     }
     if(command.type!=CommandType::kClear) {
@@ -500,15 +728,15 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       return reject("Metal clear snapshot unavailable");
     ClearCommand clear{};std::memcpy(&clear,command.bytes.data(),sizeof(clear));
     if(clear.flags&~0x3fu)return reject("Metal clear flags unsupported");
-    const auto& state=*command.pipeline_state;
+    const auto& state=*command.pipeline_state;const auto sample_override=sample_override_for(command);
     for(uint32_t i=0;i<kRenderTargetCount;++i)if(clear.flags&(1u<<i)) {
       // Guest null render targets have no clear destination.
       if(!state.render_targets[i].handle)continue;
-      auto surface=surface_for(state.render_targets[i],false);if(!surface)return false;
+      auto surface=surface_for(state.render_targets[i],false,sample_override);if(!surface)return false;
       if(!clear_surface(surface,r::Aspect::Color,clear,i))return false;
     }
     if((clear.flags&0x30u) && state.depth_stencil.handle) {
-      auto surface=surface_for(state.depth_stencil,true);if(!surface)return false;
+      auto surface=surface_for(state.depth_stencil,true,sample_override);if(!surface)return false;
       if((clear.flags&0x10u) && !clear_surface(surface,r::Aspect::Depth,clear,0))return false;
       if((clear.flags&0x20u) && !clear_surface(surface,r::Aspect::Stencil,clear,0))return false;
     }
@@ -534,5 +762,5 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   });
   next.buffers=std::move(native_metal_frame_->buffers);
   next.images=std::move(native_metal_frame_->images);
-  *native_metal_frame_=std::move(next);error.clear();return true;
+  *native_metal_frame_=std::move(next);reflection_resources_=std::move(reflections);error.clear();return true;
 }

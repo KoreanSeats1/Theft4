@@ -104,6 +104,118 @@ int main(int argc,char** argv) {
         assert(pixels[i]==128&&pixels[i+1]==128&&pixels[i+2]==255&&pixels[i+3]==255);
       }
     }
+    // Placement materialization uses mode 1 of the stock conversion ABI. Check
+    // spatially distinct pixels across physical resizes and coherent sample
+    // families, then load that allocation for a partial following write.
+    uint64_t placement_case=0;
+    for(uint32_t source_samples:{1u,2u,4u})for(uint32_t destination_samples:{1u,2u,4u}) {
+      if(!(caps.sample_counts&(1u<<source_samples))||!(caps.sample_counts&(1u<<destination_samples)))continue;
+      for(bool resized:{false,true}) {
+        // Different guest views describe the same sample-space footprint.
+        // A physical resize uses the existing area filter; identical physical
+        // layouts retain each sample through direct materialization.
+        if(!resized&&source_samples!=destination_samples)continue;
+        const uint32_t source_type=source_samples==4?2:source_samples==2?1:0;
+        const uint32_t destination_type=destination_samples==4?2:destination_samples==2?1:0;
+        const uint32_t destination_width=resized?(source_samples==4?64u:32u)/(destination_samples==4?2u:1u):32u;
+        const uint32_t destination_height=resized?(source_samples>1?32u:16u)/(destination_samples>1?2u:1u):16u;
+        const bool scaled=destination_width!=32||destination_height!=16;
+        const uint64_t id=600+4*++placement_case;
+        auto input=std::make_shared<render::Surface>(*surface);input->key={id,1};input->samples=source_samples;
+        auto placed=std::make_shared<render::Surface>(*surface);placed->key={id+1,1};placed->samples=destination_samples;
+        placed->width=destination_width;placed->height=destination_height;
+        auto output=std::make_shared<render::Surface>(*placed);output->key={id+2,1};output->samples=1;
+        auto f=Clear(input,80+placement_case,0);f->surfaces.push_back(placed);
+        auto& producer=std::get<render::Pass>(f->commands[0]);producer.colors[0]->clear_color={0,0,1,1};
+        render::RectClear mark;mark.colors=1;mark.rectangle={0,0,16,16};mark.color={1,0,0,1};producer.commands={mark};
+        mark.rectangle={0,8,32,8};mark.color={0,1,0,1};producer.commands.push_back(mark);
+        const std::array<uint32_t,16> constants{0,0,0,0,source_type,destination_type,destination_type,0,1,
+            source_type,destination_type,scaled?4u:2u,32,16,destination_width,destination_height};
+        auto bytes=std::make_shared<render::Bytes>();bytes->generation=f->sequence;bytes->value.resize(sizeof(constants));
+        std::memcpy(bytes->value.data(),constants.data(),sizeof(constants));
+        render::HostDraw materialize;materialize.program=source_samples==1?render::HostProgram::Resolve:render::HostProgram::ResolveMSAA;
+        materialize.pipeline.colors[0]=placed->format;materialize.pipeline.samples=destination_samples;
+        materialize.constants={bytes,0,sizeof(constants)};materialize.scissor={0,0,destination_width,destination_height};
+        materialize.fetches[0].produced=*f->output;materialize.fetches[0].sampler=std::make_shared<render::Sampler>();
+        auto transfer=std::get<render::Pass>(Clear(placed,f->sequence,0)->commands[0]);transfer.commands={materialize};
+        f->commands.push_back(transfer);
+        render::Pass following;following.colors[0]=transfer.colors[0];following.colors[0]->load=render::Load::Load;
+        mark.rectangle={0,0,destination_width/4,destination_height/4};mark.color={1,1,0,1};following.commands={mark};
+        if(destination_samples>1) {
+          f->surfaces.push_back(output);following.colors[0]->store=render::Store::StoreAndResolve;
+          following.colors[0]->resolve=render::SurfaceView{output->key,0,0,render::Aspect::Color};
+        }
+        render::AppendPass(*f,std::move(following));
+        f->output=render::SurfaceView{destination_samples>1?output->key:placed->key,0,0,render::Aspect::Color};
+        assert(backend->Submit(f,false,error));assert(backend->ReadRGBA8(*f,*f->output,pixels,error));
+        for(size_t y=0;y<destination_height;++y)for(size_t x=0;x<destination_width;++x) {
+          const bool yellow=x<destination_width/4&&y<destination_height/4;
+          const bool green=y>=destination_height/2,red=x<destination_width/2&&!green;
+          const std::array<uint8_t,4> expected{uint8_t(yellow||red?255:0),uint8_t(yellow||green?255:0),
+              uint8_t(!yellow&&!red&&!green?255:0),255};
+          for(size_t c=0;c<4;++c)assert(pixels[(y*destination_width+x)*4+c]==expected[c]);
+        }
+      }
+    }
+    std::cout<<"Placement mode-1 materialization and following partial LOAD passed: "<<placement_case<<" cases\n";
+    // A title-shader triangle with a half-pixel vertical edge creates different covered samples at its
+    // edge. Direct materialization must preserve those samples, rather than
+    // broadcasting source sample zero. Compare independently resolved pixels.
+    for(uint32_t samples:{2u,4u}) {
+      if(!(caps.sample_counts&(1u<<samples)))continue;
+      const uint64_t id=800+samples*4;
+      auto input=std::make_shared<render::Surface>(*surface);input->key={id,1};input->samples=samples;
+      auto placed=std::make_shared<render::Surface>(*input);placed->key={id+1,1};
+      auto baseline=std::make_shared<render::Surface>(*surface);baseline->key={id+2,1};
+      auto output=std::make_shared<render::Surface>(*surface);output->key={id+3,1};
+      auto f=Clear(input,110+samples,0);f->surfaces={input,placed,baseline,output};
+      auto c=std::make_shared<render::Capture>();c->width=32;c->height=16;auto& d=c->draw;
+      d.pipeline.vertex.hash=0x048E49996734F6B5ull;d.pipeline.fragment.hash=0x949ED69300FB92B7ull;
+      d.pipeline.colors[0]=input->format;d.pipeline.samples=samples;
+      d.pipeline.attributes={{0,0,0,render::VertexFormat::Float4},{17,0,16,render::VertexFormat::Float4},
+                             {13,0,32,render::VertexFormat::Float4}};d.pipeline.streams[0]={48,false};
+      const auto buffer=[](std::span<const uint8_t> data,uint64_t generation) {
+        auto bytes=std::make_shared<render::Bytes>();bytes->generation=generation;bytes->value.assign(data.begin(),data.end());
+        return render::Buffer{bytes,0,data.size()};
+      };
+      for(size_t bank=0;bank<3;++bank) {
+        std::vector<uint8_t> data(bank==0?4096:bank==1?3584:1056);
+        if(bank==2) {
+          const float one=1;std::memcpy(data.data()+744,&one,4);std::memcpy(data.data()+748,&one,4);
+          std::memcpy(data.data()+740,&samples,4);
+          for(size_t target=0;target<4;++target) {
+            const std::array<float,12> output_parameters{1,1,1,1,0,0,0,0,1,1,1,1};
+            std::memcpy(data.data()+0x360+target*48,output_parameters.data(),48);
+          }
+        }
+        d.constants[bank]=buffer(data,id*10+bank);
+      }
+      const std::array<float,36> vertices{-1,-1,0.5,1, 1,1,1,1, 0,0,0,0,
+          -0.34375,-1,0.5,1, 1,1,1,1, 0,0,0,0, -0.34375,1,0.5,1, 1,1,1,1, 0,0,0,0};
+      d.vertices[0]=buffer({reinterpret_cast<const uint8_t*>(vertices.data()),sizeof(vertices)},id*10+3);
+      d.vertex_count=3;d.viewport={0,0,32,16,0,1};d.scissor={0,0,32,16};
+      auto& producer=std::get<render::Pass>(f->commands[0]);producer.colors[0]->clear_color={0,0,0,1};
+      producer.colors[0]->store=render::Store::StoreAndResolve;
+      producer.colors[0]->resolve=render::SurfaceView{baseline->key,0,0,render::Aspect::Color};
+      producer.commands={render::FrameDraw{c,{}}};
+      const uint32_t sample_type=samples==4?2:1;
+      const std::array<uint32_t,16> constants{0,0,0,0,sample_type,sample_type,sample_type,0,1,sample_type,sample_type,2,32,16,32,16};
+      render::HostDraw copy;copy.program=render::HostProgram::ResolveMSAA;copy.pipeline.colors[0]=placed->format;
+      copy.pipeline.samples=samples;copy.scissor={0,0,32,16};
+      copy.constants=buffer({reinterpret_cast<const uint8_t*>(constants.data()),sizeof(constants)},id*10+4);
+      copy.fetches[0].produced=render::SurfaceView{input->key,0,0,render::Aspect::Color};
+      copy.fetches[0].sampler=std::make_shared<render::Sampler>();
+      auto transfer=std::get<render::Pass>(Clear(placed,f->sequence,0)->commands[0]);transfer.commands={copy};
+      transfer.colors[0]->store=render::Store::StoreAndResolve;
+      transfer.colors[0]->resolve=render::SurfaceView{output->key,0,0,render::Aspect::Color};f->commands.push_back(transfer);
+      f->output=render::SurfaceView{output->key,0,0,render::Aspect::Color};
+      assert(backend->Submit(f,false,error));assert(backend->ReadRGBA8(*f,*f->output,pixels,error));
+      std::vector<uint8_t> expected;assert(backend->ReadRGBA8(*f,{baseline->key,0,0,render::Aspect::Color},expected,error));
+      assert(expected==pixels);size_t partial_samples=0;
+      for(size_t i=0;i<expected.size();i+=4)partial_samples+=expected[i]>0&&expected[i]<255;
+      assert(partial_samples>0);
+      std::cout<<"Direct per-sample materialization preserved "<<samples<<"x title-shader edges: "<<partial_samples<<" partially covered pixels\n";
+    }
     const auto depth_surface=[&](uint64_t id,uint32_t samples=1) {
       auto s=std::make_shared<render::Surface>(*surface);s->key={id,1};s->samples=samples;
       s->format=render::Format::Depth32FloatStencil8;return s;

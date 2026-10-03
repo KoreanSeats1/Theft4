@@ -1668,7 +1668,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource> texture,
       VkFormat format, const NativeTextureImage* packed_source,
       const NativeTextureCapabilities& capabilities,
-      PreparedNativeTextureDescription& description, std::string& error);
+      PreparedNativeTextureDescription& description, std::string& error,
+      const NativeReflectionRegistry* reflection_snapshot = nullptr);
   bool AllocateNativeTextureImage(const VkImageCreateInfo& image_info, NativeTextureImage& image);
   void EvictNativeTextureImages(uint32_t submitted_frame, bool allocation_recovery);
   void RetireNativeTextureImage(std::unique_ptr<NativeTextureImage> image);

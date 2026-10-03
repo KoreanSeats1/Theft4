@@ -7625,6 +7625,25 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         target.physical_width = registration.physical_width;
         target.physical_height = registration.physical_height;
         target.sample_count_override = registration.sample_count_override;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+        if (frame_backend_) {
+          const auto previous = reflection_resources_.find(target.surface);
+          if (previous == reflection_resources_.end() ||
+              !SameNativeReflectionRegistration(previous->second, target)) {
+            if (!current_frame_.empty()) {
+              // Only changed registrations are boundaries. Pending commands
+              // must see the old registration; no drawable is acquired here.
+              const bool accepted = PublishFrame(PresentCommand{});
+              ClearNativeFrameCommands();
+              if (!accepted) break;
+            }
+            // Retire incompatible allocation/placement identities, while any
+            // already accepted GPU frame retains its exact old declarations.
+            ReleaseNativeMetalResource(target.surface);
+            if (target.texture) ReleaseNativeMetalResource(target.texture);
+          }
+        }
+#endif
         const size_t retired_aliases =
             RegisterNativeReflectionTarget(reflection_resources_, target);
         const NativeSurfaceImage* cached_surface = nullptr;
@@ -7676,9 +7695,10 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         std::memcpy(&release, command.bytes.data(), sizeof(release));
 #ifdef THEFT4_DIRECT_METAL_BACKEND
         if (frame_backend_) {
-          EraseNativeReflectionRegistration(reflection_resources_, release.resource);
-          if (current_frame_.empty()) ReleaseNativeMetalResource(release.resource);
-          else {
+          if (current_frame_.empty()) {
+            EraseNativeReflectionRegistration(reflection_resources_, release.resource);
+            ReleaseNativeMetalResource(release.resource);
+          } else {
             AddProtectedTextureGenerations(command, frame_texture_protection_);
             RetainWorkerCommand(command);
           }
@@ -18154,7 +18174,8 @@ bool Gta4NativeGraphicsSystem::AllocateNativeTextureImage(const VkImageCreateInf
 bool Gta4NativeGraphicsSystem::PrepareNativeTextureDescription(
     NativeResourceView<NativeTextureResource> texture, VkFormat format,
     const NativeTextureImage* packed_source, const NativeTextureCapabilities& capabilities,
-    PreparedNativeTextureDescription& description, std::string& error) {
+    PreparedNativeTextureDescription& description, std::string& error,
+    const NativeReflectionRegistry* reflection_snapshot) {
   const auto reject = [&](const char* reason) { error = reason; return false; };
   constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
                                           VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
@@ -18189,7 +18210,8 @@ bool Gta4NativeGraphicsSystem::PrepareNativeTextureDescription(
     image->height = packed_source->height;
   }
   const NativeReflectionTarget* reflection_entry = FindNativeReflectionTexture(
-      reflection_resources_, texture->handle, image->logical_width, image->logical_height);
+      reflection_snapshot ? *reflection_snapshot : reflection_resources_, texture->handle,
+      image->logical_width, image->logical_height);
   if (reflection_entry) {
     image->reflection = *reflection_entry;
     image->is_reflection = true;

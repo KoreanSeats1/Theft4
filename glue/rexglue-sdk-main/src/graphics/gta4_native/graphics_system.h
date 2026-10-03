@@ -97,6 +97,7 @@
 #include "split_postfx_pass.h"
 #include "sun_shafts_pass.h"
 
+struct ShaderCacheEntry;
 struct ShaderOverrideCacheEntry;
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
 namespace theft4::render { struct Image; }
@@ -1423,6 +1424,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
                                             NativeVertexNumericType numeric_type);
   static VkFormat GetDefaultVertexFormat(NativeVertexNumericType numeric_type,
                                          uint32_t component_count);
+  struct PreparedNativeShader;
+  std::unique_ptr<PreparedNativeShader> PrepareNativeShader(
+      const RegisterShaderCommand& command, const ShaderCacheEntry& stock_entry,
+      const ShaderOverrideCacheEntry* override_entry);
+  bool RealizeVulkanShader(PreparedNativeShader& prepared, const ui::vulkan::VulkanDevice& device);
   void RegisterShader(const RegisterShaderCommand& command);
   void RegisterVertexDeclaration(const RegisterVertexDeclarationCommand& command);
   const NativeShader* FindRegisteredShader(uint32_t handle, ShaderStage stage) const;

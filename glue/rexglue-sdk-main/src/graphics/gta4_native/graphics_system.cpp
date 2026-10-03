@@ -121,6 +121,7 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_color_output_spirv.h"
 #include "native_probe_region.h"
 #include "native_pipeline_policy.h"
+#include "native_shader_realization.h"
 #include "native_pipeline_compiler.h"
 #include "native_pipeline_recipe.h"
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
@@ -8518,7 +8519,7 @@ ShaderOverrideSelection Gta4NativeGraphicsSystem::ResolvePipelineShaderOverrides
     VkSampleCountFlagBits rasterization_samples) const {
   auto make_candidate = [](const NativeShader* shader) {
     ShaderOverrideCandidate candidate;
-    if (!shader || !shader->override_entry || !shader->override_early_module) {
+    if (!shader || !shader->override_entry || !shader->module_code_hashes[2]) {
       return candidate;
     }
     const ShaderOverrideCacheEntry& entry = *shader->override_entry;
@@ -8601,6 +8602,351 @@ VkFormat Gta4NativeGraphicsSystem::GetDefaultVertexFormat(NativeVertexNumericTyp
   return VK_FORMAT_UNDEFINED;
 }
 
+// Shader decoding, interface validation and title output lowering are CPU
+// preparation. Metal consumes these identities/interfaces without realizing
+// VkShaderModules. Encoded shader payloads are transient registration storage.
+struct Gta4NativeGraphicsSystem::PreparedNativeShader {
+  std::unique_ptr<NativeShader> shader;
+  std::array<std::vector<uint32_t>, 4> code;
+  NativeConstantUsage stock_constant_usage;
+};
+
+std::unique_ptr<Gta4NativeGraphicsSystem::PreparedNativeShader>
+Gta4NativeGraphicsSystem::PrepareNativeShader(
+    const RegisterShaderCommand& command, const ShaderCacheEntry& stock_entry,
+    const ShaderOverrideCacheEntry* override_entry) {
+  const auto* cache_entry = &stock_entry;
+  const char* stage_name = command.stage == ShaderStage::kVertex ? "vertex" : "pixel";
+  if (!StockShaderCacheEntryMatchesStage(stock_entry, command.stage) ||
+      (stock_entry.usedTextureMask & ~kSupportedShaderTextureMask)) return nullptr;
+  auto prepared = std::make_unique<PreparedNativeShader>();
+  const size_t cache_size = shader_cache_data_.size();
+  auto decode_cached_spirv = [&](uint32_t offset, uint32_t size, std::string_view variant,
+                                 std::vector<uint32_t>& decoded, size_t& decoded_size) {
+    if (!size || offset > cache_size || size > cache_size - offset) {
+      REXLOG_ERROR("gta4-native: invalid {} SMOL-V range for cache entry {}", variant,
+                   cache_entry->filename);
+      return false;
+    }
+    const uint8_t* smolv_data = shader_cache_data_.data() + offset;
+    decoded_size = smolv::GetDecodedBufferSize(smolv_data, size);
+    if (!decoded_size || decoded_size % sizeof(uint32_t)) {
+      REXLOG_ERROR("gta4-native: invalid decoded {} SPIR-V size for cache entry {}", variant,
+                   cache_entry->filename);
+      return false;
+    }
+    decoded.resize(decoded_size / sizeof(uint32_t));
+    if (!smolv::Decode(smolv_data, size, decoded.data(), decoded_size)) {
+      REXLOG_ERROR("gta4-native: failed to decode {} SMOL-V cache entry {}", variant,
+                   cache_entry->filename);
+      return false;
+    }
+    return true;
+  };
+
+  std::vector<uint32_t> stock_early_spirv;
+  std::vector<uint32_t> stock_late_spirv;
+  size_t stock_early_spirv_size = 0;
+  size_t stock_late_spirv_size = 0;
+  if (!decode_cached_spirv(cache_entry->spirvOffset, cache_entry->spirvSize, "early",
+                           stock_early_spirv, stock_early_spirv_size)) {
+    return nullptr;
+  }
+  if (cache_entry->lateSpirvSize &&
+      !decode_cached_spirv(cache_entry->lateSpirvOffset, cache_entry->lateSpirvSize, "late",
+                           stock_late_spirv, stock_late_spirv_size)) {
+    return nullptr;
+  }
+  if (stock_early_spirv.empty() || stock_early_spirv.front() != kSpirvMagic) {
+    REXLOG_ERROR("gta4-native: invalid stock early SPIR-V module for shader {}",
+                 cache_entry->filename);
+    return nullptr;
+  }
+  uint32_t stock_color_output_mask = 0;
+  if (command.stage == ShaderStage::kPixel) {
+    const std::optional<uint32_t> early_output_mask =
+        ReflectNativeFragmentColorOutputMask(stock_early_spirv);
+    if (!early_output_mask) {
+      REXLOG_ERROR("gta4-native: failed to reflect stock fragment outputs for shader {}",
+                   cache_entry->filename);
+      return nullptr;
+    }
+    stock_color_output_mask = *early_output_mask;
+    if (!stock_late_spirv.empty()) {
+      const std::optional<uint32_t> late_output_mask =
+          ReflectNativeFragmentColorOutputMask(stock_late_spirv);
+      if (!late_output_mask || *late_output_mask != stock_color_output_mask) {
+        REXLOG_ERROR(
+            "gta4-native: stock early/late fragment outputs differ for shader {}",
+            cache_entry->filename);
+        return nullptr;
+      }
+    }
+  }
+  if (!stock_late_spirv.empty()) {
+    const EarlyFragmentTestsStatus late_early_tests = InspectEarlyFragmentTests(stock_late_spirv);
+    if (late_early_tests == EarlyFragmentTestsStatus::kInvalid) {
+      REXLOG_ERROR("gta4-native: malformed stock late SPIR-V module for shader {}",
+                   cache_entry->filename);
+      return nullptr;
+    }
+    if (late_early_tests == EarlyFragmentTestsStatus::kPresent) {
+      REXLOG_ERROR(
+          "gta4-native: rejecting stock late SPIR-V module with EarlyFragmentTests for shader {}",
+          cache_entry->filename);
+      return nullptr;
+    }
+  }
+
+  if (command.stage == ShaderStage::kPixel) {
+    std::string output_error;
+    auto transformed = AddNativeColorOutputEpilogue(stock_early_spirv, &output_error);
+    if (!transformed) {
+      REXLOG_ERROR("gta4-native: output-contract rejection shader={} reason={}",
+                   cache_entry->filename, output_error);
+      return nullptr;
+    }
+    stock_early_spirv = std::move(*transformed);
+    stock_early_spirv_size = stock_early_spirv.size() * sizeof(uint32_t);
+    if (!stock_late_spirv.empty()) {
+      transformed = AddNativeColorOutputEpilogue(stock_late_spirv, &output_error);
+      if (!transformed) {
+        REXLOG_ERROR("gta4-native: late output-contract rejection shader={} reason={}",
+                     cache_entry->filename, output_error);
+        return nullptr;
+      }
+      stock_late_spirv = std::move(*transformed);
+      stock_late_spirv_size = stock_late_spirv.size() * sizeof(uint32_t);
+    }
+  }
+  auto resource = std::make_unique<NativeShader>();
+  resource->stage = command.stage;
+  resource->hash = command.hash;
+  resource->specialization_constants_mask = cache_entry->specConstantsMask;
+  resource->used_texture_mask = cache_entry->usedTextureMask;
+  resource->color_output_mask = stock_color_output_mask;
+  resource->module_code_hashes[0] = XXH3_64bits(stock_early_spirv.data(), stock_early_spirv_size);
+  resource->module_code_hashes[1] = stock_late_spirv.empty()
+      ? 0 : XXH3_64bits(stock_late_spirv.data(), stock_late_spirv_size);
+  resource->constant_usage = ReflectNativeConstantUsage(stock_early_spirv);
+  if (!stock_late_spirv.empty())
+    resource->constant_usage.Merge(ReflectNativeConstantUsage(stock_late_spirv));
+  resource->filename.assign(cache_entry->filename,
+                            ::strnlen(cache_entry->filename, sizeof(cache_entry->filename)));
+
+  if (command.stage == ShaderStage::kVertex &&
+      !ReflectVertexInputs(stock_early_spirv, resource->vertex_inputs)) {
+    REXLOG_ERROR("gta4-native: failed to reflect stock vertex inputs for shader {}",
+                 cache_entry->filename);
+    return nullptr;
+  }
+
+  prepared->stock_constant_usage = resource->constant_usage;
+
+  if (override_entry) {
+    const char* override_rejection = nullptr;
+    if (override_entry->activation != kShaderOverrideActivationStage &&
+        override_entry->activation != kShaderOverrideActivationPipelinePair) {
+      override_rejection = "activation";
+    } else if (override_entry->activation == kShaderOverrideActivationPipelinePair &&
+               (!override_entry->pipeline_pair_id || !override_entry->counterpart_hashes ||
+                !override_entry->counterpart_hash_count || !override_entry->support_radius_bits ||
+                !override_entry->supported_sample_count_mask)) {
+      override_rejection = "pair-contract";
+    } else if (override_entry->activation == kShaderOverrideActivationStage &&
+               (override_entry->pipeline_pair_id || override_entry->counterpart_hashes ||
+                override_entry->counterpart_hash_count)) {
+      override_rejection = "stage-contract";
+    } else if (override_entry->specialization_constants_mask != cache_entry->specConstantsMask) {
+      override_rejection = "specialization-contract";
+    }
+
+    const uint32_t override_used_texture_mask =
+        override_entry->used_texture_mask == kShaderOverrideUseStockTextureMask
+            ? cache_entry->usedTextureMask
+            : override_entry->used_texture_mask;
+    if (!override_rejection && (override_used_texture_mask & ~kSupportedShaderTextureMask)) {
+      override_rejection = "texture-mask-range";
+    }
+    if (!override_rejection && override_used_texture_mask != cache_entry->usedTextureMask) {
+      override_rejection = "texture-mask-contract";
+    }
+    if (!override_rejection && (!override_entry->spirv || !override_entry->spirv_size ||
+                                override_entry->spirv_size % sizeof(uint32_t))) {
+      override_rejection = "early-module-range";
+    }
+    if (!override_rejection &&
+        ((override_entry->late_spirv == nullptr) != (override_entry->late_spirv_size == 0) ||
+         override_entry->late_spirv_size % sizeof(uint32_t))) {
+      override_rejection = "late-module-range";
+    }
+
+    std::vector<uint32_t> override_early_spirv;
+    std::vector<uint32_t> override_late_spirv;
+    uint32_t override_color_output_mask = 0;
+    if (!override_rejection) {
+      override_early_spirv.assign(
+          override_entry->spirv,
+          override_entry->spirv + override_entry->spirv_size / sizeof(uint32_t));
+      if (override_entry->late_spirv_size) {
+        override_late_spirv.assign(
+            override_entry->late_spirv,
+            override_entry->late_spirv + override_entry->late_spirv_size / sizeof(uint32_t));
+      }
+      if (override_early_spirv.empty() || override_early_spirv.front() != kSpirvMagic) {
+        override_rejection = "early-module";
+      }
+    }
+    if (!override_rejection && !override_late_spirv.empty()) {
+      const EarlyFragmentTestsStatus late_early_tests =
+          InspectEarlyFragmentTests(override_late_spirv);
+      if (late_early_tests == EarlyFragmentTestsStatus::kInvalid) {
+        override_rejection = "late-module";
+      } else if (late_early_tests == EarlyFragmentTestsStatus::kPresent) {
+        override_rejection = "late-early-fragment-tests";
+      }
+    }
+    if (!override_rejection && command.stage == ShaderStage::kPixel &&
+        HasAlphaTestCapability(override_entry->specialization_constants_mask) &&
+        override_late_spirv.empty()) {
+      override_rejection = "late-module-required";
+    }
+    if (!override_rejection && command.stage == ShaderStage::kPixel) {
+      const std::optional<uint32_t> early_output_mask =
+          ReflectNativeFragmentColorOutputMask(override_early_spirv);
+      const std::optional<uint32_t> late_output_mask =
+          override_late_spirv.empty()
+              ? early_output_mask
+              : ReflectNativeFragmentColorOutputMask(override_late_spirv);
+      if (!early_output_mask || !late_output_mask ||
+          *early_output_mask != *late_output_mask ||
+          *early_output_mask != resource->color_output_mask) {
+        override_rejection = "fragment-output-interface";
+      } else {
+        override_color_output_mask = *early_output_mask;
+      }
+    }
+    if (!override_rejection && command.stage == ShaderStage::kVertex) {
+      std::vector<NativeVertexInput> override_inputs;
+      if (!ReflectVertexInputs(override_early_spirv, override_inputs) ||
+          override_inputs != resource->vertex_inputs) {
+        override_rejection = "vertex-interface";
+      }
+    }
+
+    if (!override_rejection && command.stage == ShaderStage::kPixel) {
+      auto transformed = AddNativeColorOutputEpilogue(override_early_spirv);
+      if (!transformed) {
+        override_rejection = "output-contract-early";
+      } else {
+        override_early_spirv = std::move(*transformed);
+        if (!override_late_spirv.empty()) {
+          transformed = AddNativeColorOutputEpilogue(override_late_spirv);
+          if (!transformed) override_rejection = "output-contract-late";
+          else override_late_spirv = std::move(*transformed);
+        }
+      }
+    }
+    if (!override_rejection) {
+      const size_t effective_early_size = override_early_spirv.size() * sizeof(uint32_t);
+      const size_t effective_late_size = override_late_spirv.size() * sizeof(uint32_t);
+      resource->override_entry = override_entry;
+      resource->override_specialization_constants_mask =
+          override_entry->specialization_constants_mask;
+      resource->override_used_texture_mask = override_used_texture_mask;
+      resource->override_color_output_mask = override_color_output_mask;
+      resource->module_code_hashes[2] =
+          XXH3_64bits(override_early_spirv.data(), effective_early_size);
+      resource->module_code_hashes[3] = override_late_spirv.empty()
+          ? 0 : XXH3_64bits(override_late_spirv.data(), effective_late_size);
+      resource->constant_usage.Merge(ReflectNativeConstantUsage(override_early_spirv));
+      if (!override_late_spirv.empty())
+        resource->constant_usage.Merge(ReflectNativeConstantUsage(override_late_spirv));
+      prepared->code[2] = std::move(override_early_spirv);
+      prepared->code[3] = std::move(override_late_spirv);
+      REXLOG_INFO(
+          "gta4-native-shader-overrides: candidate stage={} hash={:016X} activation={} "
+          "pair={} counterparts={} support={:08X} samples={:08X} file={}",
+          stage_name, command.hash, override_entry->activation,
+          override_entry->pipeline_pair_id, override_entry->counterpart_hash_count,
+          override_entry->support_radius_bits, override_entry->supported_sample_count_mask,
+          override_entry->filename);
+    }
+    if (override_rejection) {
+      REXLOG_ERROR(
+          "gta4-native-shader-overrides: rejected candidate stage={} hash={:016X} reason={} "
+          "file={}; using stock",
+          stage_name, command.hash, override_rejection, override_entry->filename);
+    }
+  }
+
+  if (command.stage == ShaderStage::kVertex) {
+    const auto blend_indices =
+        std::find_if(resource->vertex_inputs.begin(), resource->vertex_inputs.end(),
+                     [](const NativeVertexInput& input) { return input.location == 18; });
+    if (blend_indices != resource->vertex_inputs.end()) {
+      static std::atomic<uint64_t> blend_indices_shader_count{0};
+      const uint64_t index = NextNativeTraceDiagnosticCount(blend_indices_shader_count);
+      if (index <= 128) {
+        REXLOG_INFO(
+            "gta4-native-shader-interface: index={} hash={:016X} file={} "
+            "location=18 numeric-type={} components={}",
+            index, command.hash, resource->filename, uint32_t(blend_indices->numeric_type),
+            blend_indices->component_count);
+      }
+    }
+  }
+
+  prepared->code[0] = std::move(stock_early_spirv);
+  prepared->code[1] = std::move(stock_late_spirv);
+  prepared->shader = std::move(resource);
+  return prepared;
+}
+
+bool Gta4NativeGraphicsSystem::RealizeVulkanShader(
+    PreparedNativeShader& prepared, const ui::vulkan::VulkanDevice& device) {
+  auto& resource = *prepared.shader;
+  const auto& functions = device.functions();
+  const auto module = [&](uint32_t variant) {
+    const auto& code = prepared.code[variant];
+    return ui::vulkan::util::CreateShaderModule(&device, code.data(), code.size() * sizeof(uint32_t));
+  };
+  const auto destroy = [&](VkShaderModule shader) {
+    profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] {
+      return functions.vkDestroyShaderModule(device.device(), shader, nullptr);
+    });
+  };
+  const auto realized = RealizeNativeShaderVariants<VkShaderModule>(
+      !prepared.code[1].empty(), resource.override_entry != nullptr,
+      !prepared.code[3].empty(), module, destroy);
+  using Failure = NativeShaderRealizationFailure;
+  if (!realized.stock_ready()) {
+    REXLOG_ERROR("gta4-native: Vulkan rejected stock {} shader {}",
+                realized.failure == Failure::kStockLate ? "late" : "early", resource.filename);
+    return false;
+  }
+  resource.early_module = realized.stock_early;
+  resource.late_module = realized.stock_late;
+  resource.override_early_module = realized.override_early;
+  resource.override_late_module = realized.override_late;
+  if (realized.failure == Failure::kNone) return true;
+  const char* rejection = realized.failure == Failure::kOverrideLate ? "vulkan-late-module"
+                                                                  : "vulkan-early-module";
+  // Failed optional realization preserves exactly the stock metadata and
+  // driver resources. No accepted override identity can reach selection.
+  REXLOG_ERROR(
+      "gta4-native-shader-overrides: rejected candidate stage={} hash={:016X} reason={} "
+      "file={}; using stock",
+      resource.stage == ShaderStage::kVertex ? "vertex" : "pixel", resource.hash,
+      rejection, resource.override_entry->filename);
+  resource.override_entry = nullptr;
+  resource.override_specialization_constants_mask = resource.override_used_texture_mask =
+      resource.override_color_output_mask = 0;
+  resource.module_code_hashes[2] = resource.module_code_hashes[3] = 0;
+  resource.constant_usage = prepared.stock_constant_usage;
+  return true;
+}
+
 void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& command) {
   static_assert(uint32_t(ShaderStage::kPixel) == kShaderOverrideStagePixel);
   static_assert(uint32_t(ShaderStage::kVertex) == kShaderOverrideStageVertex);
@@ -8655,322 +9001,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
       REXLOG_ERROR("gta4-native: Vulkan device unavailable while registering shader");
       return;
     }
-    const auto& dfn = vulkan_device->functions();
-    const VkDevice device = vulkan_device->device();
-
-    const size_t cache_size = shader_cache_data_.size();
-    auto decode_cached_spirv = [&](uint32_t offset, uint32_t size, std::string_view variant,
-                                   std::vector<uint32_t>& decoded, size_t& decoded_size) {
-      if (!size || offset > cache_size || size > cache_size - offset) {
-        REXLOG_ERROR("gta4-native: invalid {} SMOL-V range for cache entry {}", variant,
-                     cache_entry->filename);
-        return false;
-      }
-      const uint8_t* smolv_data = shader_cache_data_.data() + offset;
-      decoded_size = smolv::GetDecodedBufferSize(smolv_data, size);
-      if (!decoded_size || decoded_size % sizeof(uint32_t)) {
-        REXLOG_ERROR("gta4-native: invalid decoded {} SPIR-V size for cache entry {}", variant,
-                     cache_entry->filename);
-        return false;
-      }
-      decoded.resize(decoded_size / sizeof(uint32_t));
-      if (!smolv::Decode(smolv_data, size, decoded.data(), decoded_size)) {
-        REXLOG_ERROR("gta4-native: failed to decode {} SMOL-V cache entry {}", variant,
-                     cache_entry->filename);
-        return false;
-      }
-      return true;
-    };
-
-    std::vector<uint32_t> stock_early_spirv;
-    std::vector<uint32_t> stock_late_spirv;
-    size_t stock_early_spirv_size = 0;
-    size_t stock_late_spirv_size = 0;
-    if (!decode_cached_spirv(cache_entry->spirvOffset, cache_entry->spirvSize, "early",
-                             stock_early_spirv, stock_early_spirv_size)) {
-      return;
-    }
-    if (cache_entry->lateSpirvSize &&
-        !decode_cached_spirv(cache_entry->lateSpirvOffset, cache_entry->lateSpirvSize, "late",
-                             stock_late_spirv, stock_late_spirv_size)) {
-      return;
-    }
-    if (stock_early_spirv.empty() || stock_early_spirv.front() != kSpirvMagic) {
-      REXLOG_ERROR("gta4-native: invalid stock early SPIR-V module for shader {}",
-                   cache_entry->filename);
-      return;
-    }
-    uint32_t stock_color_output_mask = 0;
-    if (command.stage == ShaderStage::kPixel) {
-      const std::optional<uint32_t> early_output_mask =
-          ReflectNativeFragmentColorOutputMask(stock_early_spirv);
-      if (!early_output_mask) {
-        REXLOG_ERROR("gta4-native: failed to reflect stock fragment outputs for shader {}",
-                     cache_entry->filename);
-        return;
-      }
-      stock_color_output_mask = *early_output_mask;
-      if (!stock_late_spirv.empty()) {
-        const std::optional<uint32_t> late_output_mask =
-            ReflectNativeFragmentColorOutputMask(stock_late_spirv);
-        if (!late_output_mask || *late_output_mask != stock_color_output_mask) {
-          REXLOG_ERROR(
-              "gta4-native: stock early/late fragment outputs differ for shader {}",
-              cache_entry->filename);
-          return;
-        }
-      }
-    }
-    if (!stock_late_spirv.empty()) {
-      const EarlyFragmentTestsStatus late_early_tests = InspectEarlyFragmentTests(stock_late_spirv);
-      if (late_early_tests == EarlyFragmentTestsStatus::kInvalid) {
-        REXLOG_ERROR("gta4-native: malformed stock late SPIR-V module for shader {}",
-                     cache_entry->filename);
-        return;
-      }
-      if (late_early_tests == EarlyFragmentTestsStatus::kPresent) {
-        REXLOG_ERROR(
-            "gta4-native: rejecting stock late SPIR-V module with EarlyFragmentTests for shader {}",
-            cache_entry->filename);
-        return;
-      }
-    }
-
-    if (command.stage == ShaderStage::kPixel) {
-      std::string output_error;
-      auto transformed = AddNativeColorOutputEpilogue(stock_early_spirv, &output_error);
-      if (!transformed) {
-        REXLOG_ERROR("gta4-native: output-contract rejection shader={} reason={}",
-                     cache_entry->filename, output_error);
-        return;
-      }
-      stock_early_spirv = std::move(*transformed);
-      stock_early_spirv_size = stock_early_spirv.size() * sizeof(uint32_t);
-      if (!stock_late_spirv.empty()) {
-        transformed = AddNativeColorOutputEpilogue(stock_late_spirv, &output_error);
-        if (!transformed) {
-          REXLOG_ERROR("gta4-native: late output-contract rejection shader={} reason={}",
-                       cache_entry->filename, output_error);
-          return;
-        }
-        stock_late_spirv = std::move(*transformed);
-        stock_late_spirv_size = stock_late_spirv.size() * sizeof(uint32_t);
-      }
-    }
-    VkShaderModule stock_early_module = ui::vulkan::util::CreateShaderModule(
-        vulkan_device, stock_early_spirv.data(), stock_early_spirv_size);
-    if (!stock_early_module) {
-      REXLOG_ERROR("gta4-native: Vulkan rejected stock early shader {}", cache_entry->filename);
-      return;
-    }
-    VkShaderModule stock_late_module = VK_NULL_HANDLE;
-    if (!stock_late_spirv.empty()) {
-      stock_late_module = ui::vulkan::util::CreateShaderModule(
-          vulkan_device, stock_late_spirv.data(), stock_late_spirv_size);
-      if (!stock_late_module) {
-        profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, stock_early_module, nullptr); });
-        REXLOG_ERROR("gta4-native: Vulkan rejected stock late shader {}", cache_entry->filename);
-        return;
-      }
-    }
-
-    auto resource = std::make_unique<NativeShader>();
-    resource->stage = command.stage;
-    resource->hash = command.hash;
-    resource->specialization_constants_mask = cache_entry->specConstantsMask;
-    resource->used_texture_mask = cache_entry->usedTextureMask;
-    resource->color_output_mask = stock_color_output_mask;
-    resource->early_module = stock_early_module;
-    resource->late_module = stock_late_module;
-    resource->module_code_hashes[0] = XXH3_64bits(stock_early_spirv.data(), stock_early_spirv_size);
-    resource->module_code_hashes[1] = stock_late_spirv.empty()
-        ? 0 : XXH3_64bits(stock_late_spirv.data(), stock_late_spirv_size);
-    resource->constant_usage = ReflectNativeConstantUsage(stock_early_spirv);
-    if (!stock_late_spirv.empty())
-      resource->constant_usage.Merge(ReflectNativeConstantUsage(stock_late_spirv));
-    resource->filename.assign(cache_entry->filename,
-                              ::strnlen(cache_entry->filename, sizeof(cache_entry->filename)));
-
-    if (command.stage == ShaderStage::kVertex &&
-        !ReflectVertexInputs(stock_early_spirv, resource->vertex_inputs)) {
-      if (stock_late_module) {
-        profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, stock_late_module, nullptr); });
-      }
-      profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, stock_early_module, nullptr); });
-      REXLOG_ERROR("gta4-native: failed to reflect stock vertex inputs for shader {}",
-                   cache_entry->filename);
-      return;
-    }
-
-    if (override_entry) {
-      const char* override_rejection = nullptr;
-      if (override_entry->activation != kShaderOverrideActivationStage &&
-          override_entry->activation != kShaderOverrideActivationPipelinePair) {
-        override_rejection = "activation";
-      } else if (override_entry->activation == kShaderOverrideActivationPipelinePair &&
-                 (!override_entry->pipeline_pair_id || !override_entry->counterpart_hashes ||
-                  !override_entry->counterpart_hash_count || !override_entry->support_radius_bits ||
-                  !override_entry->supported_sample_count_mask)) {
-        override_rejection = "pair-contract";
-      } else if (override_entry->activation == kShaderOverrideActivationStage &&
-                 (override_entry->pipeline_pair_id || override_entry->counterpart_hashes ||
-                  override_entry->counterpart_hash_count)) {
-        override_rejection = "stage-contract";
-      } else if (override_entry->specialization_constants_mask != cache_entry->specConstantsMask) {
-        override_rejection = "specialization-contract";
-      }
-
-      const uint32_t override_used_texture_mask =
-          override_entry->used_texture_mask == kShaderOverrideUseStockTextureMask
-              ? cache_entry->usedTextureMask
-              : override_entry->used_texture_mask;
-      if (!override_rejection && (override_used_texture_mask & ~kSupportedShaderTextureMask)) {
-        override_rejection = "texture-mask-range";
-      }
-      if (!override_rejection && override_used_texture_mask != cache_entry->usedTextureMask) {
-        override_rejection = "texture-mask-contract";
-      }
-      if (!override_rejection && (!override_entry->spirv || !override_entry->spirv_size ||
-                                  override_entry->spirv_size % sizeof(uint32_t))) {
-        override_rejection = "early-module-range";
-      }
-      if (!override_rejection &&
-          ((override_entry->late_spirv == nullptr) != (override_entry->late_spirv_size == 0) ||
-           override_entry->late_spirv_size % sizeof(uint32_t))) {
-        override_rejection = "late-module-range";
-      }
-
-      std::vector<uint32_t> override_early_spirv;
-      std::vector<uint32_t> override_late_spirv;
-      uint32_t override_color_output_mask = 0;
-      if (!override_rejection) {
-        override_early_spirv.assign(
-            override_entry->spirv,
-            override_entry->spirv + override_entry->spirv_size / sizeof(uint32_t));
-        if (override_entry->late_spirv_size) {
-          override_late_spirv.assign(
-              override_entry->late_spirv,
-              override_entry->late_spirv + override_entry->late_spirv_size / sizeof(uint32_t));
-        }
-        if (override_early_spirv.empty() || override_early_spirv.front() != kSpirvMagic) {
-          override_rejection = "early-module";
-        }
-      }
-      if (!override_rejection && !override_late_spirv.empty()) {
-        const EarlyFragmentTestsStatus late_early_tests =
-            InspectEarlyFragmentTests(override_late_spirv);
-        if (late_early_tests == EarlyFragmentTestsStatus::kInvalid) {
-          override_rejection = "late-module";
-        } else if (late_early_tests == EarlyFragmentTestsStatus::kPresent) {
-          override_rejection = "late-early-fragment-tests";
-        }
-      }
-      if (!override_rejection && command.stage == ShaderStage::kPixel &&
-          HasAlphaTestCapability(override_entry->specialization_constants_mask) &&
-          override_late_spirv.empty()) {
-        override_rejection = "late-module-required";
-      }
-      if (!override_rejection && command.stage == ShaderStage::kPixel) {
-        const std::optional<uint32_t> early_output_mask =
-            ReflectNativeFragmentColorOutputMask(override_early_spirv);
-        const std::optional<uint32_t> late_output_mask =
-            override_late_spirv.empty()
-                ? early_output_mask
-                : ReflectNativeFragmentColorOutputMask(override_late_spirv);
-        if (!early_output_mask || !late_output_mask ||
-            *early_output_mask != *late_output_mask ||
-            *early_output_mask != resource->color_output_mask) {
-          override_rejection = "fragment-output-interface";
-        } else {
-          override_color_output_mask = *early_output_mask;
-        }
-      }
-      if (!override_rejection && command.stage == ShaderStage::kVertex) {
-        std::vector<NativeVertexInput> override_inputs;
-        if (!ReflectVertexInputs(override_early_spirv, override_inputs) ||
-            override_inputs != resource->vertex_inputs) {
-          override_rejection = "vertex-interface";
-        }
-      }
-
-      if (!override_rejection && command.stage == ShaderStage::kPixel) {
-        auto transformed = AddNativeColorOutputEpilogue(override_early_spirv);
-        if (!transformed) {
-          override_rejection = "output-contract-early";
-        } else {
-          override_early_spirv = std::move(*transformed);
-          if (!override_late_spirv.empty()) {
-            transformed = AddNativeColorOutputEpilogue(override_late_spirv);
-            if (!transformed) override_rejection = "output-contract-late";
-            else override_late_spirv = std::move(*transformed);
-          }
-        }
-      }
-      if (!override_rejection) {
-        const size_t effective_early_size = override_early_spirv.size() * sizeof(uint32_t);
-        const size_t effective_late_size = override_late_spirv.size() * sizeof(uint32_t);
-        VkShaderModule override_early_module = ui::vulkan::util::CreateShaderModule(
-            vulkan_device, override_early_spirv.data(), effective_early_size);
-        VkShaderModule override_late_module = VK_NULL_HANDLE;
-        if (!override_early_module) {
-          override_rejection = "vulkan-early-module";
-        } else if (!override_late_spirv.empty()) {
-          override_late_module = ui::vulkan::util::CreateShaderModule(
-              vulkan_device, override_late_spirv.data(), effective_late_size);
-          if (!override_late_module) {
-            profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, override_early_module, nullptr); });
-            override_early_module = VK_NULL_HANDLE;
-            override_rejection = "vulkan-late-module";
-          }
-        }
-        if (!override_rejection) {
-          resource->override_entry = override_entry;
-          resource->override_specialization_constants_mask =
-              override_entry->specialization_constants_mask;
-          resource->override_used_texture_mask = override_used_texture_mask;
-          resource->override_color_output_mask = override_color_output_mask;
-          resource->override_early_module = override_early_module;
-          resource->override_late_module = override_late_module;
-          resource->module_code_hashes[2] =
-              XXH3_64bits(override_early_spirv.data(), effective_early_size);
-          resource->module_code_hashes[3] = override_late_spirv.empty()
-              ? 0 : XXH3_64bits(override_late_spirv.data(), effective_late_size);
-          resource->constant_usage.Merge(ReflectNativeConstantUsage(override_early_spirv));
-          if (!override_late_spirv.empty())
-            resource->constant_usage.Merge(ReflectNativeConstantUsage(override_late_spirv));
-          REXLOG_INFO(
-              "gta4-native-shader-overrides: candidate stage={} hash={:016X} activation={} "
-              "pair={} counterparts={} support={:08X} samples={:08X} file={}",
-              stage_name, command.hash, override_entry->activation,
-              override_entry->pipeline_pair_id, override_entry->counterpart_hash_count,
-              override_entry->support_radius_bits, override_entry->supported_sample_count_mask,
-              override_entry->filename);
-        }
-      }
-      if (override_rejection) {
-        REXLOG_ERROR(
-            "gta4-native-shader-overrides: rejected candidate stage={} hash={:016X} reason={} "
-            "file={}; using stock",
-            stage_name, command.hash, override_rejection, override_entry->filename);
-      }
-    }
-
-    if (command.stage == ShaderStage::kVertex) {
-      const auto blend_indices =
-          std::find_if(resource->vertex_inputs.begin(), resource->vertex_inputs.end(),
-                       [](const NativeVertexInput& input) { return input.location == 18; });
-      if (blend_indices != resource->vertex_inputs.end()) {
-        static std::atomic<uint64_t> blend_indices_shader_count{0};
-        const uint64_t index = NextNativeTraceDiagnosticCount(blend_indices_shader_count);
-        if (index <= 128) {
-          REXLOG_INFO(
-              "gta4-native-shader-interface: index={} hash={:016X} file={} "
-              "location=18 numeric-type={} components={}",
-              index, command.hash, resource->filename, uint32_t(blend_indices->numeric_type),
-              blend_indices->component_count);
-        }
-      }
-    }
+    auto prepared = PrepareNativeShader(command, *cache_entry, override_entry);
+    if (!prepared || !RealizeVulkanShader(*prepared, *vulkan_device)) return;
+    auto resource = std::move(prepared->shader);
 
     shader = resource.get();
     shader_resources_.push_back(std::move(resource));

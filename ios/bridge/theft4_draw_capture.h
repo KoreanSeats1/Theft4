@@ -38,6 +38,8 @@ class DrawCaptureRecorder {
   std::map<std::string, size_t> rejections_;
   std::thread writer_;
   size_t written_ = 0, failures_ = 0;
+  size_t summary_generation_ = 1, summary_flushed_ = 0;
+  bool flush_requested_ = false;
   bool stopping_ = false, writing_ = false;
   void Start();
   void WriteLoop();

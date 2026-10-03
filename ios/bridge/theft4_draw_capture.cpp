@@ -76,7 +76,9 @@ std::shared_ptr<const Bytes> DrawCaptureRecorder::Copy(
 void DrawCaptureRecorder::Reject(const std::string& reason) {
   // Reasons are fixed diagnostic strings, not arbitrary game filenames.
   std::lock_guard lock(mutex_);
-  if (rejections_.size() < 64 || rejections_.contains(reason)) ++rejections_[reason];
+  if (rejections_.size() < 64 || rejections_.contains(reason)) {
+    ++rejections_[reason]; ++summary_generation_;
+  }
 }
 bool DrawCaptureRecorder::Submit(Capture capture, bool indexed) {
   if (!Wants(capture.draw.pipeline, indexed)) return false;
@@ -85,30 +87,50 @@ bool DrawCaptureRecorder::Submit(Capture capture, bool indexed) {
   const size_t bytes = ResourceBytes(capture);
   if (bytes > kOutputLimit - submitted_bytes_) { Reject("total capture budget"); return false; }
   std::lock_guard lock(mutex_);
-  if (queue_.size() >= kQueueLimit) { ++rejections_["capture writer queue full"]; return false; }
+  if (queue_.size() >= kQueueLimit) {
+    ++rejections_["capture writer queue full"]; ++summary_generation_; return false;
+  }
   const auto filename = "draw-" + std::to_string(families_.size()) + ".t4draw";
   families_.insert({capture.draw.pipeline, indexed});
   (indexed ? indexed_ : other_)++;
   submitted_bytes_ += bytes;
+  ++summary_generation_;
   queue_.emplace_back(std::move(capture), filename);
   changed_.notify_all();
   return true;
 }
 void DrawCaptureRecorder::Flush() {
+  if (!writer_.joinable()) return;
   std::unique_lock lock(mutex_);
-  changed_.wait(lock, [this] { return queue_.empty() && !writing_; });
+  flush_requested_ = true; changed_.notify_all();
+  changed_.wait(lock, [this] {
+    return queue_.empty() && !writing_ && summary_flushed_ == summary_generation_;
+  });
 }
 void DrawCaptureRecorder::WriteLoop() {
   for (;;) {
     std::unique_lock lock(mutex_);
-    changed_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
-    if (queue_.empty() && stopping_) break;
-    auto item = std::move(queue_.front()); queue_.pop_front(); writing_ = true;
-    lock.unlock();
-    std::string error;
-    const bool okay = WriteCapture((std::filesystem::path(directory_) / item.second).string(), item.first, error);
-    lock.lock();
-    if (okay) ++written_; else { ++failures_; ++rejections_[error]; }
+    // Rejected-only runs also need a durable report. Batch those updates at
+    // one-second intervals, without waking the writer on every rejected draw.
+    changed_.wait_for(lock, std::chrono::seconds(1), [this] {
+      return stopping_ || !queue_.empty() || flush_requested_ || summary_flushed_ == 0;
+    });
+    flush_requested_ = false;
+    if (queue_.empty() && summary_generation_ == summary_flushed_) {
+      if (stopping_) break;
+      continue;
+    }
+    writing_ = true;
+    if (!queue_.empty()) {
+      auto item = std::move(queue_.front()); queue_.pop_front();
+      lock.unlock();
+      std::string error;
+      const bool okay = WriteCapture((std::filesystem::path(directory_) / item.second).string(), item.first, error);
+      lock.lock();
+      if (okay) ++written_; else { ++failures_; ++rejections_[error]; }
+      ++summary_generation_;
+    }
+    const size_t generation = summary_generation_;
     nlohmann::json report = {
       {"schema", 1}, {"source_revision", THEFT4_RENDER_SOURCE_REVISION},
       {"written", written_}, {"failed", failures_}, {"queued", queue_.size()},
@@ -124,8 +146,8 @@ void DrawCaptureRecorder::WriteLoop() {
       const auto temporary = file.string() + ".partial";
       { std::ofstream out(temporary); out << report.dump(2) << '\n'; }
       std::filesystem::rename(temporary, file);
-    } catch (...) { /* File failures are also reported by the caller's log. */ }
-    lock.lock(); writing_ = false; changed_.notify_all();
+    } catch (...) { /* A failed report must not stall queue retirement or shutdown. */ }
+    lock.lock(); summary_flushed_ = generation; writing_ = false; changed_.notify_all();
   }
 }
 }

@@ -81,6 +81,13 @@ int main(int argc, char** argv) {
       recorder.Flush(); Capture written;
       Require(ReadCapture((root / "writer/draw-0.t4draw").string(), written, error), error);
     }
+    {
+      DrawCaptureRecorder recorder((root / "rejected-only").string());
+      recorder.Reject("draw needs preceding GPU-produced image"); recorder.Flush();
+      std::ifstream input(root / "rejected-only/CAPTURE_REPORT.json"); nlohmann::json report; input >> report;
+      Require(report.at("written") == 0 && report.at("rejections").at("draw needs preceding GPU-produced image") == 1,
+              "Rejected-only game capture lost its diagnostic report");
+    }
     std::cout << "Draw contract: alias-preserving roundtrip, index and instance bounds, corrupted input, frontend mapping, bounded asynchronous writer passed\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

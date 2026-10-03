@@ -102,5 +102,51 @@ int main() {
   host.constants={constants,0,64};host.fetches[0].produced->surface={1,1};hostPass.commands={host};
   assert(ValidateFrame(utilities,{},result,error));
   bad=utilities;hostDraw(bad).fetches[0].produced->surface={2,1};reject(bad);
+  // Complete sampled ranges must preserve every mip/face and reject feedback
+  // into any member. Other mips and cube groups of the same backing can differ.
+  FramePlan ranges;ranges.sequence=3;
+  auto layered=SurfaceFor(20);layered->kind=ImageKind::Texture2DArray;layered->layers=12;layered->levels=3;
+  auto output=SurfaceFor(21);ranges.surfaces={layered,output};
+  for(uint32_t level=0;level<3;++level)for(uint32_t slice=0;slice<12;++slice) {
+    Pass clear;clear.colors[0]=Color(20);clear.colors[0]->view.level=level;clear.colors[0]->view.slice=slice;
+    ranges.commands.push_back(clear);
+  }
+  Pass sample;sample.colors[0]=Color(21);FrameDraw ranged;ranged.capture=DrawFor();
+  SampledSurfaceView cube;cube.surface={20,1};cube.level=1;cube.levels=2;cube.slice=6;cube.slices=6;cube.kind=ImageKind::TextureCube;
+  ranged.produced[0]=cube;sample.commands.push_back(ranged);ranges.commands.push_back(sample);
+  ranges.output=sample.colors[0]->view;assert(ValidateFrame(ranges,{},result,error));
+  assert(SampledViewDefined(cube,result));
+  assert(SampledViewContains(cube,{{20,1},2,11,Aspect::Color}));
+  assert(!SampledViewContains(cube,{{20,1},0,11,Aspect::Color}));
+  assert(!SampledViewContains(cube,{{20,1},1,5,Aspect::Color}));
+  const auto range=[](FramePlan& f)->SampledSurfaceView& {
+    return *std::get<FrameDraw>(std::get<Pass>(f.commands.back()).commands[0]).produced[0];
+  };
+  bad=ranges;bad.commands.erase(bad.commands.begin()+23);reject(bad); // Missing mip 1, face 11.
+  bad=ranges;range(bad).level=UINT32_MAX;reject(bad);
+  bad=ranges;range(bad).levels=UINT32_MAX;reject(bad);
+  bad=ranges;range(bad).slice=UINT32_MAX;reject(bad);
+  bad=ranges;range(bad).slices=UINT32_MAX;reject(bad);
+  bad=ranges;range(bad).slice=1;reject(bad);
+  bad=ranges;range(bad).slices=5;reject(bad);
+  bad=ranges;range(bad).kind=ImageKind::Texture2D;reject(bad);
+  bad=ranges;range(bad).kind=ImageKind::Texture3D;reject(bad);
+  bad=ranges;range(bad).format=Format::R32Float;reject(bad);
+  bad=ranges;range(bad).swizzle[0]=Swizzle(uint32_t(Swizzle::Alpha)+1);reject(bad);
+  auto viewed=ranges;range(viewed).format=Format::RGBA8Srgb;
+  range(viewed).swizzle={Swizzle::Blue,Swizzle::Green,Swizzle::Red,Swizzle::One};
+  assert(ValidateFrame(viewed,{},result,error));
+  viewed=ranges;range(viewed).kind=ImageKind::Texture2DArray;
+  assert(ValidateFrame(viewed,{},result,error));
+  viewed=ranges;range(viewed).kind=ImageKind::TextureCubeArray;range(viewed).slice=0;range(viewed).slices=12;
+  assert(ValidateFrame(viewed,{},result,error));
+  auto feedback=ranges;auto small=std::make_shared<Surface>(*output);small->width=small->height=2;feedback.surfaces[1]=small;
+  auto draw2=std::make_shared<Capture>(*DrawFor());draw2->width=draw2->height=2;
+  draw2->draw.viewport={0,0,2,2,0,1};draw2->draw.scissor={0,0,2,2};draw2->draw.pipeline.colors[1]=Format::RGBA8Unorm;
+  auto& last=std::get<Pass>(feedback.commands.back());std::get<FrameDraw>(last.commands[0]).capture=draw2;
+  last.colors[1]=Color(20,Load::Load);last.colors[1]->view.level=1;last.colors[1]->view.slice=8;
+  reject(feedback);assert(error=="Ordered pass samples its active render attachment");
+  last.colors[1]->view.slice=0;assert(ValidateFrame(feedback,{},result,error)); // Different cube group.
+  auto depthView=cube;depthView.surface={99,1};assert(!ValidateSampledView(ranges,depthView,error));
   std::cout<<"Ordered frame dependencies, content validity, resolve actions, generations and transactional rejection passed\n";
 }

@@ -26,6 +26,19 @@ struct SurfaceView {
   Aspect aspect=Aspect::Color;
   auto operator<=>(const SurfaceView&) const = default;
 };
+// A sampled alias can expose a complete mip chain and several array layers or
+// cube faces. Attachment/copy views still select one exact subresource.
+struct SampledSurfaceView {
+  SurfaceKey surface;
+  uint32_t level=0,levels=1,slice=0,slices=1;
+  Aspect aspect=Aspect::Color;
+  ImageKind kind=ImageKind::Texture2D;
+  Format format=Format::Invalid; // Inherit the allocation's format.
+  std::array<Swizzle,4> swizzle{Swizzle::Red,Swizzle::Green,Swizzle::Blue,Swizzle::Alpha};
+  SampledSurfaceView()=default;
+  SampledSurfaceView(SurfaceView view):surface(view.surface),level(view.level),slice(view.slice),aspect(view.aspect){}
+  auto operator<=>(const SampledSurfaceView&) const = default;
+};
 enum class Load : uint32_t { Discard,Load,Clear,Count };
 enum class Store : uint32_t { Discard,Store,Resolve,StoreAndResolve,Count };
 enum class ResolveFilter : uint32_t { Average,Sample0,Min,Max,Count };
@@ -42,9 +55,7 @@ struct Attachment {
 struct FrameDraw {
   std::shared_ptr<const Capture> capture;
   // Only GPU-produced inputs appear here. Static images remain in Capture.
-  // The initial boundary samples one 2D mip/slice; wider views are explicit
-  // future extensions, rather than silently flattening cube/volume inputs.
-  std::array<std::optional<SurfaceView>,kFetchCount> produced{};
+  std::array<std::optional<SampledSurfaceView>,kFetchCount> produced{};
 };
 struct RectClear {
   // Attachment slots are independent of the current draw's color write mask.
@@ -96,6 +107,9 @@ using SurfaceContents=std::set<SurfaceView>;
 const Surface* FindSurface(const FramePlan&,SurfaceKey);
 uint32_t SurfaceSlices(const Surface&);
 bool SupportsAspect(Format,Aspect);
+bool ValidateSampledView(const FramePlan&,const SampledSurfaceView&,std::string& error);
+bool SampledViewContains(const SampledSurfaceView&,const SurfaceView&);
+bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
 // Admission is transactional. Reads/loads of discarded or undefined content,
 // render/sample feedback, mismatched resolves and incompatible draw targets
 // reject before encoding. Draw coverage never proves whole-target definition:

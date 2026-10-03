@@ -19,6 +19,9 @@ class FrameAdapter {
   Receipt SubmitAndPresent(const std::shared_ptr<const render::FramePlan>&,
                            render::SurfaceKey,id<CAMetalDrawable>,std::string& error);
   id<MTLTexture> Output(const render::FramePlan&,std::string& error);
+  // Retrieve a defined GPU alias of a retained frame allocation. This never
+  // uploads pixels or creates a new backing allocation.
+  id<MTLTexture> SampledTexture(const render::FramePlan&,const render::SampledSurfaceView&,std::string& error);
   size_t RetireResources();
   FrameResourceStats Stats() const;
   ResourceCacheStats ImmutableStats() const;

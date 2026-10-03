@@ -540,6 +540,73 @@ struct Probe {
       @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
       @"gpu_retains_retired_targets":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void SampledGameRanges() {
+    namespace r=theft4::render;
+    FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    auto layered=std::make_shared<r::Surface>();layered->key={70,1};layered->format=r::Format::RGBA8Unorm;
+    layered->kind=r::ImageKind::Texture2DArray;layered->width=layered->height=W*4;layered->levels=3;layered->layers=12;
+    auto output=std::make_shared<r::Surface>();output->key={71,1};output->format=r::Format::RGBA8Unorm;output->width=W;output->height=H;
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=70;plan->surfaces={layered,output};
+    for(uint32_t level=0;level<3;++level)for(uint32_t face=0;face<12;++face) {
+      r::Pass clear;r::Attachment a;a.view={layered->key,level,face,r::Aspect::Color};a.load=r::Load::Clear;a.store=r::Store::Store;
+      a.clear_color={0.2+0.2*level,double(face+1)/16,0.4,0.8};clear.colors[0]=a;plan->commands.push_back(clear);
+    }
+    const auto copy=[](std::span<const uint8_t> bytes) {
+      auto owner=std::make_shared<r::Bytes>();owner->generation=1;owner->value.assign(bytes.begin(),bytes.end());
+      return r::Buffer{owner,0,bytes.size()};
+    };
+    auto capture=std::make_shared<r::Capture>();capture->width=W;capture->height=H;auto& d=capture->draw;
+    d.pipeline.vertex.hash=0x048E49996734F6B5ull;d.pipeline.fragment.hash=0xB9589DA9F4B1770Full;
+    d.pipeline.colors[0]=r::Format::RGBA8Unorm;
+    d.pipeline.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},{13,0,32,r::VertexFormat::Float4}};
+    d.pipeline.streams[0]={sizeof(Vertex),false};
+    auto banks=Constants(Case{.texture=true},1);
+    for(size_t i=0;i<3;++i)d.constants[i]=copy({static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+    auto vertices=Quad({1,1,1,1});d.vertices[0]=copy(Bytes(vertices));d.vertex_count=vertices.size();
+    d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};
+    auto sampler=std::make_shared<r::Sampler>();sampler->min_lod_bits=sampler->max_lod_bits=std::bit_cast<uint32_t>(1.f);
+    d.fetches[0].sampler=sampler;
+    r::SampledSurfaceView input;input.surface=layered->key;input.level=1;input.levels=2;input.slice=7;
+    input.swizzle={r::Swizzle::Blue,r::Swizzle::Green,r::Swizzle::Red,r::Swizzle::One};
+    r::FrameDraw draw{capture,{}};draw.produced[0]=input;
+    r::Pass sampled;r::Attachment target;target.view={output->key,0,0,r::Aspect::Color};
+    target.load=r::Load::Clear;target.store=r::Store::Store;sampled.colors[0]=target;sampled.commands={draw};
+    plan->commands.push_back(sampled);plan->output=target.view;
+    const auto check=[&](const std::array<uint8_t,4>& expected) {
+      auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
+      auto pixels=renderer.ReadRGBA8(adapter.Output(*plan,error),error);Require(pixels.size()==W*H*4);
+      for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(expected[byte%4]))<=1);
+    };
+    check({102,128,153,255});
+    auto& fetch=std::get<r::FrameDraw>(std::get<r::Pass>(plan->commands.back()).commands[0]);
+    fetch.produced[0]->format=r::Format::RGBA8Srgb;check({34,55,81,255});
+    const auto warm=adapter.Stats();const auto uploads=adapter.ImmutableStats();check({34,55,81,255});
+    Require(adapter.Stats().surface_creates==warm.surface_creates&&adapter.Stats().view_creates==warm.view_creates&&
+      adapter.ImmutableStats().uploaded_bytes==uploads.uploaded_bytes);
+    r::SampledSurfaceView cube;cube.surface=layered->key;cube.kind=r::ImageKind::TextureCube;
+    cube.level=1;cube.levels=2;cube.slice=6;cube.slices=6;
+    auto cubeTexture=adapter.SampledTexture(*plan,cube,error);Require(cubeTexture);
+    Require(cubeTexture.textureType==MTLTextureTypeCube&&cubeTexture.width==W*2&&cubeTexture.mipmapLevelCount==2);
+    auto face=[cubeTexture newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm textureType:MTLTextureType2D
+      levels:NSMakeRange(1,1) slices:NSMakeRange(3,1)];Require(face);
+    auto pixels=renderer.ReadRGBA8(face,error);Require(pixels.size()==W*H*4);
+    const uint8_t expectedFace[]{153,159,102,204};
+    for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(expectedFace[byte%4]))<=1);
+    cube.kind=r::ImageKind::TextureCubeArray;cube.slice=0;cube.slices=12;
+    auto cubes=adapter.SampledTexture(*plan,cube,error);Require(cubes);
+    Require(cubes.textureType==MTLTextureTypeCubeArray&&cubes.arrayLength==2&&cubes.mipmapLevelCount==2);
+    cube.kind=r::ImageKind::Texture2DArray;cube.slice=5;cube.slices=3;
+    auto array=adapter.SampledTexture(*plan,cube,error);Require(array);
+    Require(array.textureType==MTLTextureType2DArray&&array.arrayLength==3&&array.width==W*2);
+    auto impostor=std::make_shared<r::FramePlan>(*plan);impostor->surfaces[0]=std::make_shared<r::Surface>(*layered);
+    Require(!adapter.SampledTexture(*impostor,cube,error));error.clear();
+    cube.levels=3;Require(!adapter.SampledTexture(*plan,cube,error));error.clear();
+    [results addObject:@{ @"case":@"sampled_game_texture_ranges",@"passed":@YES,
+      @"mip_base_and_range":@YES,@"array_and_cube_aliases":@YES,@"cube_face_content":@YES,
+      @"game_shader_lod_and_channel_swizzle":@YES,@"srgb_alias_decode":@YES,
+      @"warm_aliases_and_uploads_reused":@YES,@"changed_owner_rejected":@YES,
+      @"synthetic_validation_geometry":@YES }];
+  }
   void OrderedFrameOperations() {
     namespace r=theft4::render;
     FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -893,7 +960,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

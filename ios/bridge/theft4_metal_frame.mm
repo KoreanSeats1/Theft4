@@ -45,6 +45,7 @@ struct FrameAdapter::Impl {
     bool external=false;
     std::map<render::SurfaceView,id<MTLTexture>> views;
     std::map<render::SurfaceView,id<MTLTexture>> sampled_views;
+    std::map<render::SampledSurfaceView,id<MTLTexture>> sampled_ranges;
   };
   Renderer& renderer;
   PlanAdapter draws;
@@ -147,6 +148,29 @@ struct FrameAdapter::Impl {
     auto stencil=[texture newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];
     if(!stencil){error="Metal rejected the sampled stencil alias";return nil;}
     entry.sampled_views.emplace(view,stencil);++stats.view_creates;return stencil;
+  }
+  id<MTLTexture> SampledView(const render::SampledSurfaceView& view,std::string& error) {
+    auto it=surfaces.find(view.surface);
+    if(it==surfaces.end()||it->second.owner.expired()||it->second.external) {
+      error="Missing retained sampleable Metal allocation";return nil;
+    }
+    auto& entry=it->second;
+    if(auto found=entry.sampled_ranges.find(view);found!=entry.sampled_ranges.end())return found->second;
+    auto format=PlanAdapter::PixelFormat(view.format==render::Format::Invalid ? entry.descriptor.format : view.format);
+    if(view.aspect==render::Aspect::Stencil&&format==MTLPixelFormatDepth32Float_Stencil8)format=MTLPixelFormatX32_Stencil8;
+    const std::array identity{render::Swizzle::Red,render::Swizzle::Green,render::Swizzle::Blue,render::Swizzle::Alpha};
+    id<MTLTexture> texture=nil;
+    if(view.swizzle==identity) {
+      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:Type(view.kind)
+        levels:NSMakeRange(view.level,view.levels) slices:NSMakeRange(view.slice,view.slices)];
+    }else {
+      auto channels=MTLTextureSwizzleChannelsMake(MTLTextureSwizzle(view.swizzle[0]),MTLTextureSwizzle(view.swizzle[1]),
+        MTLTextureSwizzle(view.swizzle[2]),MTLTextureSwizzle(view.swizzle[3]));
+      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:Type(view.kind)
+        levels:NSMakeRange(view.level,view.levels) slices:NSMakeRange(view.slice,view.slices) swizzle:channels];
+    }
+    if(!texture){error="Metal rejected the sampled mip/layer/format alias";return nil;}
+    entry.sampled_ranges.emplace(view,texture);++stats.view_creates;return texture;
   }
   bool PrepareHost(const render::HostDraw& source,MTLRenderPassDescriptor* pass,Draw& draw,std::string& error) {
     const auto key=std::pair{source.program,source.pipeline};
@@ -264,7 +288,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       auto base=impl_->draws.Realize(item.capture,error);if(!base)return {};
       std::array<id<MTLTexture>,26> produced{};
       for(size_t slot=0;slot<produced.size();++slot)if(item.produced[slot]) {
-        produced[slot]=impl_->View(*item.produced[slot],error);if(!produced[slot])return {};
+        produced[slot]=impl_->SampledView(*item.produced[slot],error);if(!produced[slot])return {};
       }
       Draw draw=*base;if(!impl_->draws.BindProduced(*item.capture,produced,draw,error))return {};
       prepared.commands.push_back(std::move(draw));
@@ -296,6 +320,25 @@ id<MTLTexture> FrameAdapter::Output(const render::FramePlan& plan,std::string& e
     error="Ordered Metal frame has no stored output";return nil;
   }
   return impl_->View(*plan.output,error);
+}
+id<MTLTexture> FrameAdapter::SampledTexture(const render::FramePlan& plan,
+                                          const render::SampledSurfaceView& view,std::string& error) {
+  if(!render::ValidateSampledView(plan,view,error))return nil;
+  if(!render::SampledViewDefined(view,impl_->contents)) {
+    error="Sampled Metal range contains undefined or discarded content";return nil;
+  }
+  const auto it=impl_->surfaces.find(view.surface);
+  const auto declaration=std::find_if(plan.surfaces.begin(),plan.surfaces.end(),
+    [&](const auto& s){return s&&s->key==view.surface;});
+  if(it==impl_->surfaces.end()||declaration==plan.surfaces.end()) {
+    error="Sampled Metal range has no realized allocation";return nil;
+  }
+  const auto owner=it->second.owner.lock();
+  if(!owner||owner.owner_before(*declaration)||declaration->owner_before(owner)||
+     it->second.descriptor!=**declaration) {
+    error="Sampled Metal allocation declaration changed identity";return nil;
+  }
+  auto texture=impl_->SampledView(view,error);if(texture)error.clear();return texture;
 }
 size_t FrameAdapter::RetireResources() {
   size_t retired=impl_->draws.RetireResources();

@@ -20,6 +20,54 @@ bool SupportsAspect(Format f,Aspect a) {
     default:return false;
   }
 }
+bool SampledViewContains(const SampledSurfaceView& sampled,const SurfaceView& view) {
+  return sampled.surface==view.surface&&view.level>=sampled.level&&
+    view.level-sampled.level<sampled.levels&&view.slice>=sampled.slice&&
+    view.slice-sampled.slice<sampled.slices;
+}
+bool SampledViewDefined(const SampledSurfaceView& view,const SurfaceContents& contents) {
+  // Bounds also constrain iteration when this helper is used independently
+  // of frame admission. Mutable allocation declarations allow at most these.
+  if(!view.levels||view.levels>15||!view.slices||view.slices>2048||
+     view.level>UINT32_MAX-view.levels||view.slice>UINT32_MAX-view.slices)return false;
+  for(uint32_t level=0;level<view.levels;++level)
+    for(uint32_t slice=0;slice<view.slices;++slice)
+      if(!contents.contains({view.surface,view.level+level,view.slice+slice,view.aspect}))return false;
+  return true;
+}
+bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,std::string& error) {
+  const auto reject=[&](const char* reason){error=reason;return false;};
+  const auto* s=FindSurface(frame,view.surface);
+  if(!s||s->kind==ImageKind::Texture3D||s->kind>=ImageKind::Count||s->samples!=1||!view.levels||!view.slices||view.level>=s->levels||
+     view.levels>s->levels-view.level||view.slice>=SurfaceSlices(*s)||
+     view.slices>SurfaceSlices(*s)-view.slice||!SupportsAspect(s->format,view.aspect))
+    return reject("Sampled GPU view has an invalid allocation or range");
+  for(auto channel:view.swizzle)if(channel>Swizzle::Alpha)return reject("Invalid sampled GPU channel swizzle");
+  const auto format=view.format==Format::Invalid ? s->format : view.format;
+  const auto rgba=[](Format f){return f==Format::RGBA8Unorm||f==Format::RGBA8Srgb;};
+  const auto bgra=[](Format f){return f==Format::BGRA8Unorm||f==Format::BGRA8Srgb;};
+  if(!SupportsAspect(format,view.aspect)||
+     (format!=s->format&&!(rgba(format)&&rgba(s->format))&&!(bgra(format)&&bgra(s->format))))
+    return reject("Sampled GPU format reinterpretation needs explicit lowering");
+  const std::array identity{Swizzle::Red,Swizzle::Green,Swizzle::Blue,Swizzle::Alpha};
+  if(view.aspect!=Aspect::Color&&view.swizzle!=identity)return reject("Depth/stencil sampling requires its native channel contract");
+  const bool array=s->kind==ImageKind::Texture2DArray||s->kind==ImageKind::TextureCube||s->kind==ImageKind::TextureCubeArray;
+  switch(view.kind) {
+    case ImageKind::Texture2D:
+      if(view.slices!=1)return reject("A sampled 2D view must select one layer");
+      break;
+    case ImageKind::Texture2DArray:
+      if(!array)return reject("Sampled array view requires layered storage");
+      break;
+    case ImageKind::TextureCube:case ImageKind::TextureCubeArray:
+      if(!array||s->width!=s->height||view.slice%6||view.slices%6||
+         (view.kind==ImageKind::TextureCube&&view.slices!=6))
+        return reject("Sampled cube view requires aligned complete square faces");
+      break;
+    default:return reject("Sampled GPU view type needs explicit lowering");
+  }
+  error.clear();return true;
+}
 namespace {
 bool Reject(std::string& error,const char* message){error=message;return false;}
 bool View(const FramePlan& f,const SurfaceView& v) {
@@ -224,10 +272,11 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       if(p.depth!=depth||p.stencil!=stencil)return Reject(error,"Draw depth/stencil differs from its ordered pass");
       for(size_t slot=0;slot<item.produced.size();++slot)if(item.produced[slot]) {
         const auto& view=*item.produced[slot];
-        if(!View(f,view)||FindSurface(f,view.surface)->samples!=1||view.aspect==Aspect::Stencil||
-           !contents.contains(view)||c.draw.fetches[slot].image||!c.draw.fetches[slot].sampler)
+        if(!ValidateSampledView(f,view,error))return false;
+        if(view.aspect==Aspect::Stencil||!SampledViewDefined(view,contents)||
+           c.draw.fetches[slot].image||!c.draw.fetches[slot].sampler)
           return Reject(error,"Draw samples unavailable GPU-produced content");
-        for(const auto& attachment:writes)if(SameStorage(view,attachment))
+        for(const auto& attachment:writes)if(SampledViewContains(view,attachment))
           return Reject(error,"Ordered pass samples its active render attachment");
       }
     }

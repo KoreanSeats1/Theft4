@@ -1,0 +1,240 @@
+#include "theft4_metal_plan.h"
+#include <algorithm>
+#include <bit>
+#include <cstring>
+
+namespace theft4::metal {
+namespace {
+bool Error(std::string& error,const char* text){error=text;return false;}
+MTLVertexFormat VertexFormat(render::VertexFormat format) {
+  using F=render::VertexFormat;
+  switch(format) {
+#define V(name) case F::name:return MTLVertexFormat##name
+    V(Float);V(Float2);V(Float3);V(Float4);V(Int);V(Int2);V(Int3);V(Int4);
+    V(UInt);V(UInt2);V(UInt3);V(UInt4);V(Half2);V(Half4);V(Short2);V(Short4);
+    V(UShort2);V(UShort4);V(Short2Normalized);V(Short4Normalized);
+    V(UShort2Normalized);V(UShort4Normalized);V(UChar4);V(UChar4Normalized);
+    V(Int1010102Normalized);
+#undef V
+    case F::UChar4NormalizedBGRA:return MTLVertexFormatUChar4Normalized_BGRA;
+    default:return MTLVertexFormatInvalid;
+  }
+}
+MTLTextureType ImageType(render::ImageKind kind) {
+  using K=render::ImageKind;
+  switch(kind){case K::Texture2D:return MTLTextureType2D;case K::Texture2DArray:return MTLTextureType2DArray;
+    case K::Texture3D:return MTLTextureType3D;case K::TextureCube:return MTLTextureTypeCube;
+    case K::TextureCubeArray:return MTLTextureTypeCubeArray;default:return MTLTextureType1D;}
+}
+MTLBlendFactor BlendFactor(render::BlendFactor factor) {
+  using B=render::BlendFactor;
+  switch(factor) {
+#define B(name) case B::name:return MTLBlendFactor##name
+    B(Zero);B(One);B(SourceColor);B(OneMinusSourceColor);B(DestinationColor);B(OneMinusDestinationColor);
+    B(SourceAlpha);B(OneMinusSourceAlpha);B(DestinationAlpha);B(OneMinusDestinationAlpha);
+    B(SourceAlphaSaturated);B(Source1Color);B(OneMinusSource1Color);B(Source1Alpha);B(OneMinusSource1Alpha);
+#undef B
+    case B::ConstantColor:return MTLBlendFactorBlendColor;
+    case B::OneMinusConstantColor:return MTLBlendFactorOneMinusBlendColor;
+    case B::ConstantAlpha:return MTLBlendFactorBlendAlpha;
+    case B::OneMinusConstantAlpha:return MTLBlendFactorOneMinusBlendAlpha;
+    default:return MTLBlendFactorZero;
+  }
+}
+MTLColorWriteMask WriteMask(uint32_t mask) {
+  return MTLColorWriteMask(((mask&1)?MTLColorWriteMaskRed:0)|((mask&2)?MTLColorWriteMaskGreen:0)|
+      ((mask&4)?MTLColorWriteMaskBlue:0)|((mask&8)?MTLColorWriteMaskAlpha:0));
+}
+ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
+  return {source,source->generation,source->conversion};
+}
+}
+PlanAdapter::PlanAdapter(Renderer& renderer):renderer_(renderer),shaders_(renderer),resources_(renderer){}
+bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
+  if(!shaders_.Open(libraries,error))return false;
+  pipelines_.clear();prepared_.clear();return true;
+}
+MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
+  using F=render::Format;
+  switch(format) {
+    case F::Invalid:return MTLPixelFormatInvalid;
+#define P(name) case F::name:return MTLPixelFormat##name
+    P(R8Unorm);P(RG8Unorm);P(RGBA8Unorm);P(BGRA8Unorm);P(R16Unorm);P(RG16Unorm);P(RGBA16Unorm);
+    P(R16Float);P(RG16Float);P(RGBA16Float);P(R32Float);P(RG32Float);P(RGBA32Float);
+    P(RGB10A2Unorm);P(Depth32Float);P(Stencil8);
+#undef P
+    case F::RGBA8Srgb:return MTLPixelFormatRGBA8Unorm_sRGB;
+    case F::BGRA8Srgb:return MTLPixelFormatBGRA8Unorm_sRGB;
+    case F::Depth32FloatStencil8:return MTLPixelFormatDepth32Float_Stencil8;
+    case F::BC1Unorm:return MTLPixelFormatBC1_RGBA;case F::BC1Srgb:return MTLPixelFormatBC1_RGBA_sRGB;
+    case F::BC2Unorm:return MTLPixelFormatBC2_RGBA;case F::BC2Srgb:return MTLPixelFormatBC2_RGBA_sRGB;
+    case F::BC3Unorm:return MTLPixelFormatBC3_RGBA;case F::BC3Srgb:return MTLPixelFormatBC3_RGBA_sRGB;
+    case F::BC4Unorm:return MTLPixelFormatBC4_RUnorm;case F::BC4Snorm:return MTLPixelFormatBC4_RSnorm;
+    case F::BC5Unorm:return MTLPixelFormatBC5_RGUnorm;case F::BC5Snorm:return MTLPixelFormatBC5_RGSnorm;
+    case F::ASTC4x4:return MTLPixelFormatASTC_4x4_LDR;case F::ASTC4x4Srgb:return MTLPixelFormatASTC_4x4_sRGB;
+    default:return MTLPixelFormatInvalid;
+  }
+}
+std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,render::Primitive primitive,std::string& error) {
+  if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
+  if(p.negative_one_to_one){error="This game draw requires explicit negative-one-to-one clip-space shader lowering";return {};}
+  const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
+  if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
+  const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1},Stage::Vertex);
+  const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
+  if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
+  p.vertex.specialization=vs_meta->Specialization(p.vertex.specialization);
+  if(ps_meta)p.fragment.specialization=ps_meta->Specialization(p.fragment.specialization);
+  auto key=std::pair{p,primitive};if(auto it=pipelines_.find(key);it!=pipelines_.end()){error.clear();return it->second;}
+  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1},Stage::Vertex,p.vertex.specialization,error);
+  if(!vertex.function)return {};
+  Shader pixel{};
+  if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,p.fragment.specialization,error);if(!pixel.function)return {};}
+  auto descriptor=[MTLRenderPipelineDescriptor new];descriptor.rasterSampleCount=p.samples;
+  descriptor.inputPrimitiveTopology=primitive==render::Primitive::Point ? MTLPrimitiveTopologyClassPoint :
+      (primitive==render::Primitive::Line||primitive==render::Primitive::LineStrip) ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
+  auto declaration=[MTLVertexDescriptor new];
+  for(const auto& attribute:p.attributes) {
+    auto a=declaration.attributes[attribute.location];a.format=VertexFormat(attribute.format);
+    a.offset=attribute.offset;a.bufferIndex=attribute.stream+8;
+    auto layout=declaration.layouts[attribute.stream+8];layout.stride=p.streams[attribute.stream].stride;
+    layout.stepFunction=p.streams[attribute.stream].per_instance ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
+    layout.stepRate=1;
+  }
+  descriptor.vertexDescriptor=declaration;
+  for(size_t i=0;i<4;++i) {
+    const auto format=p.colors[i];
+    if(format>=render::Format::Depth32Float&&format!=render::Format::Invalid){error="Game color target is not a renderable color format";return {};}
+    const auto& b=p.blends[i];auto a=descriptor.colorAttachments[i];a.pixelFormat=PixelFormat(format);
+    a.blendingEnabled=b.enabled;a.sourceRGBBlendFactor=BlendFactor(b.source_rgb);
+    a.destinationRGBBlendFactor=BlendFactor(b.destination_rgb);a.sourceAlphaBlendFactor=BlendFactor(b.source_alpha);
+    a.destinationAlphaBlendFactor=BlendFactor(b.destination_alpha);
+    a.rgbBlendOperation=MTLBlendOperation(b.rgb);a.alphaBlendOperation=MTLBlendOperation(b.alpha);a.writeMask=WriteMask(b.write_mask);
+  }
+  descriptor.depthAttachmentPixelFormat=PixelFormat(p.depth);descriptor.stencilAttachmentPixelFormat=PixelFormat(p.stencil);
+  auto depth=[MTLDepthStencilDescriptor new];depth.depthCompareFunction=p.depth_test ? MTLCompareFunction(p.depth_compare) : MTLCompareFunctionAlways;
+  depth.depthWriteEnabled=p.depth_write;
+  if(p.stencil_test) {
+    const auto stencil=[](const render::Stencil& s) {
+      auto d=[MTLStencilDescriptor new];d.stencilCompareFunction=MTLCompareFunction(s.compare);
+      d.stencilFailureOperation=MTLStencilOperation(s.fail);d.depthStencilPassOperation=MTLStencilOperation(s.pass);
+      d.depthFailureOperation=MTLStencilOperation(s.depth_fail);d.readMask=s.read_mask;d.writeMask=s.write_mask;return d;
+    };
+    depth.frontFaceStencil=stencil(p.front);depth.backFaceStencil=stencil(p.back);
+  }
+  auto result=p.fragment.hash ? renderer_.MakePipeline(vertex,pixel,descriptor,depth,error) : renderer_.MakeDepthPipeline(vertex,descriptor,depth,error);
+  if(result)pipelines_.emplace(std::move(key),result);return result;
+}
+BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
+  if(!b.source)return {};
+  auto buffer=resources_.Buffer(Version(b.source),b.source->value,error);
+  return {buffer,NSUInteger(b.offset),NSUInteger(b.length)};
+}
+id<MTLTexture> PlanAdapter::ImageFor(const render::Image& image,std::string& error) {
+  auto d=[MTLTextureDescriptor new];d.textureType=ImageType(image.kind);d.pixelFormat=PixelFormat(image.format);
+  d.width=image.width;d.height=image.height;d.depth=image.depth;d.arrayLength=image.layers;d.mipmapLevelCount=image.levels;
+  d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead;
+  const auto swizzle=[](render::Swizzle s){return MTLTextureSwizzle(s);};
+  d.swizzle=MTLTextureSwizzleChannelsMake(swizzle(image.swizzle[0]),swizzle(image.swizzle[1]),swizzle(image.swizzle[2]),swizzle(image.swizzle[3]));
+  std::vector<TextureUpload> uploads;uploads.reserve(image.mips.size());
+  for(const auto& m:image.mips)uploads.push_back({m.level,m.slice,m.width,m.height,m.depth,
+      NSUInteger(m.row_bytes),NSUInteger(m.image_bytes),size_t(m.offset),size_t(m.size)});
+  return resources_.Texture(Version(image.source),d,image.source->value,uploads,error);
+}
+id<MTLSamplerState> PlanAdapter::SamplerFor(const render::Sampler& s,std::string& error) {
+  if(auto it=samplers_.find(s);it!=samplers_.end()){error.clear();return it->second;}
+  const auto address=[](render::Address a) {
+    switch(a){case render::Address::Repeat:return MTLSamplerAddressModeRepeat;
+      case render::Address::MirrorRepeat:return MTLSamplerAddressModeMirrorRepeat;
+      case render::Address::ClampEdge:return MTLSamplerAddressModeClampToEdge;
+      case render::Address::MirrorClampEdge:return MTLSamplerAddressModeMirrorClampToEdge;
+      case render::Address::ClampBorder:return MTLSamplerAddressModeClampToBorderColor;
+      default:return MTLSamplerAddressModeClampToEdge;}
+  };
+  auto d=[MTLSamplerDescriptor new];d.minFilter=s.min_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+  d.magFilter=s.mag_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+  d.mipFilter=s.mip_linear ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNearest;
+  d.sAddressMode=address(s.address[0]);d.tAddressMode=address(s.address[1]);d.rAddressMode=address(s.address[2]);
+  d.maxAnisotropy=s.anisotropy;d.lodMinClamp=std::bit_cast<float>(s.min_lod_bits);d.lodMaxClamp=std::bit_cast<float>(s.max_lod_bits);
+  d.borderColor=s.opaque_white_border ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorTransparentBlack;
+  auto result=[renderer_.Device() newSamplerStateWithDescriptor:d];
+  if(result)samplers_.emplace(s,result);else error="Metal rejected the game sampler descriptor";
+  return result;
+}
+bool PlanAdapter::EnsureDummyImages(std::string& error) {
+  for(size_t i=0;i<4;++i)if(!dummy_images_[i]) {
+    auto d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+    d.textureType=ImageType(render::ImageKind(i));d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead;
+    auto image=renderer_.Texture(d,error);if(!image)return false;
+    const uint8_t black[4]{};
+    for(NSUInteger slice=0;slice<(i==3 ? 6u : 1u);++slice)
+      [image replaceRegion:MTLRegionMake3D(0,0,0,1,1,1) mipmapLevel:0 slice:slice withBytes:black bytesPerRow:4 bytesPerImage:4];
+    dummy_images_[i]=image;
+  }
+  return true;
+}
+bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string& error) {
+  if(!render::Validate(capture,error))return false;const auto& source=capture.draw;Draw result;
+  result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
+  result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
+  result.vertex_count=source.vertex_count;result.instance_count=source.instances;result.base_vertex=source.base_vertex;
+  for(size_t i=0;i<3;++i){result.constants[i]=BufferFor(source.constants[i],error);if(!result.constants[i].buffer)return false;}
+  for(size_t i=0;i<kGameVertexStreamCount;++i)if(result.pipeline->vertex_streams&(1u<<i)) {
+    result.vertices[i]=BufferFor(source.vertices[i],error);if(!result.vertices[i].buffer)return false;
+  }
+  if(source.index_count) {
+    result.indices=BufferFor(source.indices,error);if(!result.indices.buffer)return false;
+    result.index_count=source.index_count;result.index_type=source.index_bytes==2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
+    const auto* bytes=source.indices.source->value.data()+source.indices.offset;
+    for(size_t i=0;i<source.index_count;++i) {
+      uint32_t index=0;if(source.index_bytes==2){uint16_t v;memcpy(&v,bytes+i*2,2);index=v;}else memcpy(&index,bytes+i*4,4);
+      const uint32_t restart=source.index_bytes==2 ? UINT16_MAX : UINT32_MAX;
+      if(index==restart) {
+        if(source.primitive_restart&&(source.primitive==render::Primitive::LineStrip||source.primitive==render::Primitive::TriangleStrip))continue;
+        return Error(error,"Metal fixed restart markers differ from this game index stream; frontend expansion is required");
+      }
+      result.maximum_vertex=std::max(result.maximum_vertex,NSUInteger(int64_t(index)+source.base_vertex));
+    }
+  }
+  if((result.pipeline->vertex.textures||result.pipeline->fragment.textures)&&!EnsureDummyImages(error))return false;
+  std::array<FetchResources,26> fetches{};
+  const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1},Stage::Vertex);
+  const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
+  const auto used=(vm ? vm->used_texture_mask : 0)|(pm ? pm->used_texture_mask : 0);
+  for(size_t i=0;i<fetches.size();++i) {
+    fetches[i].images=dummy_images_;const auto& f=source.fetches[i];
+    if(!(used&(1u<<i)))continue;
+    if(f.image) {
+      const auto kind=size_t(f.image->kind);
+      if(kind>=4)return Error(error,"Game cube-array sampling needs a matching Metal shader interface");
+      fetches[i].images[kind]=ImageFor(*f.image,error);if(!fetches[i].images[kind])return false;
+    }
+    if(f.sampler){fetches[i].sampler=SamplerFor(*f.sampler,error);if(!fetches[i].sampler)return false;}
+  }
+  if(!shaders_.Bind({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1},Stage::Vertex,fetches,result,error))return false;
+  if(source.pipeline.fragment.hash&&!shaders_.Bind({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment,fetches,result,error))return false;
+  const auto& v=source.viewport;result.viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
+  const auto& s=source.scissor;result.scissor={s[0],s[1],s[2],s[3]};
+  result.cull=MTLCullMode(source.cull);result.winding=source.clockwise ? MTLWindingClockwise : MTLWindingCounterClockwise;
+  result.stencil_reference=source.stencil_front_reference;result.stencil_back_reference=source.stencil_back_reference;
+  result.blend_color=source.blend_color;result.depth_bias=source.depth_bias;result.slope_bias=source.slope_bias;
+  result.depth_clamp=source.depth_clamp;result.lines=source.lines;
+  draw=std::move(result);error.clear();return true;
+}
+std::shared_ptr<const Draw> PlanAdapter::Realize(const std::shared_ptr<const render::Capture>& capture,std::string& error) {
+  if(!capture){error="Missing immutable game draw plan";return {};}
+  if(auto it=prepared_.find(capture.get());it!=prepared_.end()) {
+    auto owner=it->second.owner.lock();
+    if(owner&&!owner.owner_before(capture)&&!capture.owner_before(owner)){error.clear();return it->second.draw;}
+    prepared_.erase(it);
+  }
+  auto draw=std::make_shared<Draw>();if(!Prepare(*capture,*draw,error))return {};
+  prepared_[capture.get()]={capture,draw};return draw;
+}
+size_t PlanAdapter::RetireResources() {
+  for(auto it=prepared_.begin();it!=prepared_.end();) {
+    if(it->second.owner.expired())it=prepared_.erase(it);else ++it;
+  }
+  return resources_.SweepRetired();
+}
+}

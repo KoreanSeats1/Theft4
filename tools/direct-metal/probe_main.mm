@@ -1,10 +1,13 @@
 #include "direct_metal_probe.h"
+#include "direct_metal_capture.h"
 #include <iostream>
 int main(int argc, char** argv) {
   @autoreleasepool {
-    if (argc != 3) { std::cerr << "Usage: metal_probe libraries output\n"; return 2; }
+    if (argc != 3 && argc != 4) { std::cerr << "Usage: metal_probe libraries output [private-captures]\n"; return 2; }
     auto report = RunDirectMetalValidation([NSString stringWithUTF8String:argv[1]],
                                           [NSString stringWithUTF8String:argv[2]]);
+    if(argc==4)report=ReplayDirectMetalCaptures([NSString stringWithUTF8String:argv[1]],
+        [NSString stringWithUTF8String:argv[3]],[[NSString stringWithUTF8String:argv[2]] stringByAppendingPathComponent:@"GameDrawReplay"]);
     NSData* data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
     std::cout << std::string(static_cast<const char*>(data.bytes), data.length) << '\n';
     return [report[@"passed"] boolValue] ? 0 : 1;

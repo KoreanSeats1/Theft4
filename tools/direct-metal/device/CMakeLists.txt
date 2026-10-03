@@ -11,14 +11,19 @@ add_executable(Theft4MetalLab MACOSX_BUNDLE app.mm
   "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp"
   "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
   "${ROOT}/ios/bridge/theft4_metal_resources.mm"
+  "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_render_plan.cpp"
+  "${ROOT}/ios/tests/direct_metal_capture.mm"
   "${ROOT}/ios/tests/direct_metal_probe.mm")
 target_compile_options(Theft4MetalLab PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 set(METAL_SOURCE_REVISION "development" CACHE STRING "Source commit represented by this validation app")
 target_compile_definitions(Theft4MetalLab PRIVATE "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
 target_include_directories(Theft4MetalLab PRIVATE "${ROOT}/ios/bridge" "${ROOT}/ios/tests"
+  "${ROOT}/thirdparty/json/include"
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_link_libraries(Theft4MetalLab PRIVATE "-framework UIKit" "-framework Foundation"
   "-framework Metal" "-framework CoreGraphics" "-framework QuartzCore")
+target_link_libraries(Theft4MetalLab PRIVATE "-framework ImageIO")
 set_target_properties(Theft4MetalLab PROPERTIES
   MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
   XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.lukebrosious.theft4.metallab"

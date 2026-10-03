@@ -2,6 +2,8 @@
 #include "theft4_native_metal.h"
 #include "theft4_metal_shader_store.h"
 #include "theft4_metal_resources.h"
+#include "theft4_metal_plan.h"
+#include "direct_metal_capture.h"
 #include "native_color_output.h"
 #include <algorithm>
 #include <cstring>
@@ -468,6 +470,62 @@ struct Probe {
     [results addObject:@{@"case":@"game_stream_16_per_instance",@"passed":@YES,
         @"game_streams":@17,@"metal_buffer_slot":@24,@"instances":@2,@"short_instance_stream_rejected":@YES}];
   }
+  void GameDrawPlan() {
+    namespace r=theft4::render;
+    PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    auto source=std::make_shared<r::Capture>();source->width=W;source->height=H;
+    auto& d=source->draw;
+    d.pipeline.vertex.hash=0x048E49996734F6B5ull;
+    d.pipeline.fragment.hash=0x949ED69300FB92B7ull;
+    d.pipeline.colors[0]=r::Format::BGRA8Unorm;
+    d.pipeline.attributes={{0,0,0,r::VertexFormat::Float4},{17,0,16,r::VertexFormat::Float4},
+                           {13,0,32,r::VertexFormat::Float4}};
+    d.pipeline.streams[0]={sizeof(Vertex),false};
+    auto& b=d.pipeline.blends[0];b.enabled=true;b.source_rgb=r::BlendFactor::ConstantColor;
+    b.source_alpha=r::BlendFactor::One;b.write_mask=9;
+    d.blend_color={0.5f,0.25f,0.75f,1};
+    d.viewport={0,0,double(W),double(H),0,1};d.scissor={0,0,W,H};
+    const auto copy=[](std::span<const uint8_t> bytes) {
+      auto s=std::make_shared<r::Bytes>();s->generation=1;s->value.assign(bytes.begin(),bytes.end());
+      return r::Buffer{s,0,bytes.size()};
+    };
+    const Case c{};auto banks=Constants(c,1);
+    for(size_t i=0;i<3;++i)
+      d.constants[i]=copy({static_cast<const uint8_t*>(banks[i].buffer.contents)+banks[i].offset,banks[i].length});
+    auto vertices=Quad({0.8f,0.6f,0.4f,1},0.5f,true);d.vertices[0]=copy(Bytes(vertices));
+    const std::vector<uint16_t> indices{0,1,2,0,2,3};d.indices=copy(Bytes(indices));d.index_count=6;
+    auto immutable=std::shared_ptr<const r::Capture>(source);source.reset();
+    NSString* fixture=[output stringByAppendingPathComponent:@"PlanFixture/synthetic-plan.t4draw"];
+    Require(r::WriteCapture(fixture.UTF8String,*immutable,error));
+    auto prepared=adapter.Realize(immutable,error);Require(bool(prepared));
+    const auto resources=adapter.ResourceStats();
+    Require(adapter.Realize(immutable,error)==prepared);
+    auto warm=adapter.ResourceStats();
+    Require(adapter.PipelineCount()==1&&warm.buffer_creates==resources.buffer_creates&&
+            warm.uploaded_bytes==resources.uploaded_bytes);
+    auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        width:W height:H mipmapped:NO];descriptor.usage=MTLTextureUsageRenderTarget;
+    descriptor.storageMode=MTLStorageModePrivate;
+    auto target=renderer.Texture(descriptor,error);Require(target);
+    auto frame=renderer.BeginFrame(error);Require(bool(frame));auto pass=Pass(target,nil,nil);
+    pass.colorAttachments[0].clearColor=MTLClearColorMake(0.1,0.2,0.3,0.4);
+    Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));Require(frame.EndPass(error));
+    immutable.reset();Require(adapter.RetireResources()>=5);prepared.reset();
+    auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+    auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    const uint8_t expected[]{102,51,77,255};
+    for(size_t i=0;i<pixels.size();++i)Require(std::abs(int(pixels[i])-int(expected[i%4]))<=1);
+    [results addObject:@{@"case":@"immutable_game_draw_plan",@"passed":@YES,
+        @"warm_pipeline_and_resource_reuse":@YES,@"indexed_range_derived":@YES,
+        @"rgba_write_mask_on_bgra":@YES,@"constant_color_blend":@YES,
+        @"retired_before_submission":@YES}];
+    auto replay=ReplayDirectMetalCaptures(libraries,[output stringByAppendingPathComponent:@"PlanFixture"],
+        [output stringByAppendingPathComponent:@"PlanReplayValidation"]);
+    Require([replay[@"passed"] boolValue]&&[replay[@"visible_draws"] unsignedIntegerValue]==1);
+    [results addObject:@{@"case":@"private_draw_serialization_replay",@"passed":@YES,
+        @"synthetic_validation_geometry":@YES,@"repeat_pixels_identical":@YES,
+        @"gpu_target_sampling":@YES}];
+  }
 };
 }
 NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
@@ -494,7 +552,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GamePipelineLayouts();passed=true;
+    probe.GamePipelineLayouts();probe.GameDrawPlan();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

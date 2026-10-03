@@ -51,6 +51,35 @@ validation. The test app itself uses the project's iOS 26 deployment target.
 
 ## Validation
 
+The API-free `theft4_render_plan` contract carries converted immutable buffers,
+sampled images, shaders, and effective pipeline/draw state. The Metal adapter
+realizes and caches those packets. Its diagnostic CBOR codec preserves shared
+resource ownership and rejects malformed references, integer overflow, invalid
+index/instance ranges, and attachment-role mismatches. Unsupported override
+shaders, clip conventions, sample masks, fans, and GPU-produced inputs reject
+explicitly rather than approximating their effects.
+
+An optional `THEFT4_NATIVE_METAL_CAPTURE` lab build records the exact bytes after
+frontend vertex/index/texture conversion. It is OFF by default; capture also
+requires `THEFT4_METAL_CAPTURE=1` at launch. Its worker writes up to 24 scene-indexed
+and 8 other pipeline families into `Documents/MetalDrawCaptures/run-*`. Resident
+copies are bounded at 64 MiB, output resources at 128 MiB, and queued files at
+four. The game remains on its comparison renderer. Captures contain game asset
+data and must stay private, outside Git and published reports.
+
+Metal Lab build 5 includes the full stock shader catalog and an isolated draw
+replayer. Transfer a selected private capture run into its `Documents/GameDrawInputs`
+and reopen the Lab. Each admitted draw renders on cleared matching attachments,
+repeats with cached GPU resources, compares repeat pixels, and saves a PNG/report.
+The visible preview samples that GPU target directly into the drawable. This
+does not yet reproduce prior pass contents, GPU-generated aliases, or a complete
+game frame. Its measured draw GPU time is not a gameplay FPS benchmark.
+
+The expanded host checks include constant-color blending and RGBA write masks
+on BGRA targets, immutable draw reuse, retirement before submission, private
+serialization/replay, and GPU target sampling. The replay self-test is clearly
+labeled as synthetic validation geometry; real game capture requires user Play.
+
 The Mac M1 Max passes 20 checks: vertex color, texture tint/orientation, 16/32-bit
 indexed draws and offsets, depth occlusion, blending, late alpha discard, output
 scaling/clamping order, MSAA resolve, Xenos alpha coverage, ASTC sampling,

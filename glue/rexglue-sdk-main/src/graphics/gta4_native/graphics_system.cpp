@@ -123,6 +123,10 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_pipeline_policy.h"
 #include "native_pipeline_compiler.h"
 #include "native_pipeline_recipe.h"
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+#include "theft4_draw_capture.h"
+#include "theft4_render_plan_source.h"
+#endif
 #include "native_spirv_reflection.h"
 #include "native_stencil_volume_policy.h"
 #include "hdr_present_ps.h"
@@ -3883,6 +3887,10 @@ struct Gta4NativeGraphicsSystem::NativePipelineCompilerState {
     return XXH3_64bits(abi, sizeof(abi));
   }
 };
+
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+#include "metal_draw_capture.inc"
+#endif
 
 size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(
     const NativePipelineKey& key) const noexcept {
@@ -18409,6 +18417,9 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
       return reject("upload-allocation");
     }
     std::memcpy(upload.mapping, payload_to_upload.data(), payload_to_upload.size());
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    CaptureMetalTexture(*image, payload_to_upload, mips_to_upload);
+#endif
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -23387,6 +23398,11 @@ bool Gta4NativeGraphicsSystem::BindCommonDrawState(
                            sizeof(push_constants), &push_constants); });
   }
   #include "bulb_appearance_bind.inc"
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  BeginMetalCapture(command, pipeline, width, height, shared_constants_allocation.mapping,
+                    viewport, scissor, blend_constants.constants, stencil_mask_ref.front,
+                    effective_back_stencil, depth_bias_constant, depth_bias_slope);
+#endif
   return true;
 }
 
@@ -23720,8 +23736,15 @@ bool Gta4NativeGraphicsSystem::RecordPrimitiveUp(VkCommandBuffer command_buffer,
                                &vertex_buffer, &vertex_offset);
     });
   }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  CaptureMetalVertices(0, vertex_allocation, size_t(host_vertex_count) * draw.stride);
+#endif
   if (draw.primitive_type == uint32_t(xenos::PrimitiveType::kRectangleList)) {
     const uint32_t rectangle_count = host_vertex_count / 4;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    // One rectangle is one real draw in the comparison backend.
+    FinishMetalCapture(0, 4);
+#endif
     for (uint32_t rectangle = 0; rectangle < rectangle_count; ++rectangle) {
       profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, 4, 1, rectangle * 4, 0); });
     }
@@ -23733,8 +23756,14 @@ bool Gta4NativeGraphicsSystem::RecordPrimitiveUp(VkCommandBuffer command_buffer,
                                quad_list_indices.offset, VK_INDEX_TYPE_UINT32);
       });
     }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    FinishMetalCapture(0, host_vertex_count, quad_list_indices.mapping, quad_list_index_count, 4);
+#endif
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDrawIndexed(command_buffer, quad_list_index_count, 1, 0, 0, 0); });
   } else {
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    FinishMetalCapture(0, host_vertex_count);
+#endif
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, host_vertex_count, 1, 0, 0); });
   }
   return true;
@@ -23858,6 +23887,9 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
                               stream, resources, stream_allocation)) {
       return fail("vertex-stream-upload");
     }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    CaptureMetalVertices(stream, stream_allocation, resource->payload.size(), stream_state.offset);
+#endif
     const VkDeviceSize stream_offset = stream_allocation.offset + stream_state.offset;
     if (native_draw_state_cache_.UpdateVertexBuffer(
             stream, NativeVulkanHandleIdentity(stream_allocation.buffer), stream_offset)) {
@@ -23896,8 +23928,15 @@ bool Gta4NativeGraphicsSystem::RecordPrimitive(VkCommandBuffer command_buffer,
                                indices_allocation.offset, VK_INDEX_TYPE_UINT32);
       });
     }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    FinishMetalCapture(0, draw.vertex_count, indices_allocation.mapping, index_count, 4,
+                       int32_t(draw.start_vertex));
+#endif
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDrawIndexed(command_buffer, index_count, 1, 0, int32_t(draw.start_vertex), 0); });
   } else {
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    FinishMetalCapture(draw.start_vertex, draw.vertex_count);
+#endif
     profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDraw(command_buffer, draw.vertex_count, 1, draw.start_vertex, 0); });
   }
   return true;
@@ -23992,6 +24031,9 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
                               stream, resources, stream_allocation)) {
       return fail("vertex-stream-upload");
     }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    CaptureMetalVertices(stream, stream_allocation, resource->payload.size(), stream_state.offset);
+#endif
     const VkDeviceSize stream_offset = stream_allocation.offset + stream_state.offset;
     if (native_draw_state_cache_.UpdateVertexBuffer(
             stream, NativeVulkanHandleIdentity(stream_allocation.buffer), stream_offset)) {
@@ -24329,6 +24371,9 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
   }
 
   VkIndexType bound_index_type = index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  const uint8_t* metal_capture_indices = selected_index_bytes;
+#endif
   const bool moltenvk_strip_restart =
       vulkan_provider->vulkan_device()->properties().driverID == VK_DRIVER_ID_MOLTENVK && strip;
   if (moltenvk_strip_restart && !guest_restart_enabled) {
@@ -24359,6 +24404,9 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
       host_index_buffer = sanitized_indices.buffer;
       bound_index_type = VK_INDEX_TYPE_UINT32;
       host_start_index = 0;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+      metal_capture_indices = sanitized_indices.mapping;
+#endif
     }
   }
 
@@ -24414,6 +24462,10 @@ bool Gta4NativeGraphicsSystem::RecordIndexedPrimitive(VkCommandBuffer command_bu
           command.fixed_function_state.depth_bias_bits);
     }
   }
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  FinishMetalCapture(0, 0, metal_capture_indices, host_index_count,
+                     bound_index_type == VK_INDEX_TYPE_UINT16 ? 2 : 4, draw.base_vertex);
+#endif
   profile::CpuCall(profile::CpuOp::kDriverDraw, [&] { return dfn.vkCmdDrawIndexed(command_buffer, host_index_count, 1, host_start_index, draw.base_vertex, 0); });
   return true;
 }

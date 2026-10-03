@@ -98,6 +98,9 @@
 #include "sun_shafts_pass.h"
 
 struct ShaderOverrideCacheEntry;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+namespace theft4::render { struct Image; }
+#endif
 
 namespace rex::memory {
 class Memory;
@@ -860,6 +863,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
 
   struct NativeTextureImage {
     std::shared_ptr<const NativeTextureResource> source;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+    std::shared_ptr<const theft4::render::Image> metal_capture_image;
+#endif
     uint64_t descriptor_lifetime = 0;
     NativeImageResource resource;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -2301,6 +2307,23 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   VkPipelineLayout resolve_conversion_pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout cached_pipeline_layout_ = VK_NULL_HANDLE;
   std::unordered_map<NativePipelineKey, NativePipeline, NativePipelineKeyHash> native_pipelines_;
+#ifdef THEFT4_NATIVE_METAL_CAPTURE
+  struct MetalCaptureState;
+  std::unique_ptr<MetalCaptureState> metal_capture_;
+  MetalCaptureState& MetalCapture();
+  void CaptureMetalTexture(NativeTextureImage& image, std::span<const uint8_t> payload,
+                          std::span<const NativeTextureResource::MipLevel> mips);
+  void BeginMetalCapture(const NativeCommand& command, VkPipeline pipeline,
+                        uint32_t width, uint32_t height, const uint8_t* shared_constants,
+                        const VkViewport& viewport, const VkRect2D& scissor,
+                        const std::array<float, 4>& blend, const NativeStencilMaskRefState& front,
+                        const NativeStencilMaskRefState& back, float depth_bias, float slope_bias);
+  void CaptureMetalVertices(uint32_t stream, const NativeUploadAllocation& allocation,
+                            size_t size, size_t offset = 0);
+  void FinishMetalCapture(uint32_t first_vertex, uint32_t vertex_count,
+                         const uint8_t* indices = nullptr, uint32_t index_count = 0,
+                         uint32_t index_bytes = 2, int32_t base_vertex = 0);
+#endif
   NativePipelineLookupLifetime native_pipeline_lookup_lifetime_;
   // Render-worker-owned cumulative counters; sampled only by the existing log.
   uint64_t native_pipeline_memo_inheritances_ = 0;

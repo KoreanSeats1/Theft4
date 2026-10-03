@@ -5,6 +5,11 @@ set(THEFT4_DISPLAY_NAME "Theft4" CACHE STRING "Name shown on the device")
 option(THEFT4_ASTC_EXPERIMENT
     "Enable isolated on-device BC-to-ASTC preparation and discovery" OFF)
 option(THEFT4_LAB_BUILD "Enable the M5 performance and capture baseline" ON)
+option(THEFT4_NATIVE_METAL_CAPTURE "Record bounded private CPU draws for direct Metal replay" OFF)
+set(THEFT4_RENDER_SOURCE_REVISION "development" CACHE STRING "Source revision for private draw captures")
+if(THEFT4_NATIVE_METAL_CAPTURE AND NOT THEFT4_LAB_BUILD)
+    message(FATAL_ERROR "Private Metal draw capture requires a lab build")
+endif()
 if(THEFT4_LAB_BUILD)
     if(THEFT4_ASTC_EXPERIMENT)
         if(NOT THEFT4_BUNDLE_IDENTIFIER STREQUAL "com.lukebrosious.theft4.astc" OR
@@ -245,6 +250,18 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             REXGLUE_BUILD_CONFIG="$<CONFIG>"
             GTA4_NATIVE_FONT_ASSET_ROOT="${THEFT4_NATIVE_FONT_ASSET_ROOT}")
         target_compile_features(theft4_gta4_native_compile PRIVATE cxx_std_23)
+        if(THEFT4_NATIVE_METAL_CAPTURE)
+            target_sources(theft4_gta4_native_compile PRIVATE
+                bridge/theft4_render_plan.cpp
+                bridge/theft4_render_plan_source.cpp
+                bridge/theft4_draw_capture.cpp)
+            target_compile_definitions(theft4_gta4_native_compile PRIVATE
+                "THEFT4_RENDER_SOURCE_REVISION=\"${THEFT4_RENDER_SOURCE_REVISION}\"")
+            # The bridge constructs this class outside the native archive;
+            # every header consumer must agree on the optional sidecar layout.
+            target_compile_definitions(theft4_gta4_native_compile PUBLIC
+                THEFT4_NATIVE_METAL_CAPTURE=1)
+        endif()
         if(THEFT4_LAB_BUILD)
             target_compile_definitions(theft4_gta4_native_compile PRIVATE THEFT4_LAB_BUILD=1)
         endif()

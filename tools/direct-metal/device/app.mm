@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #include "direct_metal_probe.h"
+#include "direct_metal_capture.h"
 @interface MetalLabPreview : UIView
 @end
 @implementation MetalLabPreview
@@ -11,6 +12,7 @@
 @property(strong,nonatomic) MetalLabPreview* preview;
 @property(strong,nonatomic) NSDictionary* report;
 @property(copy,nonatomic) NSString* reportText;
+@property(copy,nonatomic) NSString* gameCapturePreview;
 @property(nonatomic) BOOL checksStarted;
 @property(nonatomic) BOOL presentationFinished;
 @end
@@ -52,15 +54,33 @@
       NSString* output=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject
           stringByAppendingPathComponent:@"MetalValidation"];
       NSDictionary* report=RunDirectMetalValidation(libraries,output);
+      NSString* captures=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject
+          stringByAppendingPathComponent:@"GameDrawInputs"];
+      NSDictionary* replay=ReplayDirectMetalCaptures(libraries,captures,[output stringByAppendingPathComponent:@"GameDrawReplay"]);
+      NSString* capturePreview=nil;NSUInteger previewIndices=0;
+      for(NSDictionary* result in replay[@"cases"])
+        if([result[@"passed"] boolValue]&&[result[@"visible_pixels"] unsignedIntegerValue]>0&&
+           (!capturePreview||[result[@"indices"] unsignedIntegerValue]>previewIndices)) {
+          capturePreview=result[@"preview_capture"];previewIndices=[result[@"indices"] unsignedIntegerValue];
+        }
+      if([replay[@"available"] boolValue]) {
+        NSMutableDictionary* combined=[report mutableCopy];combined[@"game_draw_replay"]=replay;
+        combined[@"passed"]=@([report[@"passed"] boolValue]&&[replay[@"passed"] boolValue]);report=combined;
+      }
       NSMutableString* text=[NSMutableString stringWithFormat:@"Theft4 Metal Lab\n\n%@\n%@\nBC textures: %@\n\n",
         [report[@"passed"] boolValue] ? @"All graphics checks passed" : @"A graphics check failed",
         report[@"device"],[report[@"supports_bc"] boolValue] ? @"Supported" : @"Uses prepared ASTC"];
       for(NSDictionary* result in report[@"cases"])
         [text appendFormat:@"%@ %@\n",[result[@"passed"] boolValue] ? @"✓" : @"✕",result[@"case"]];
       if(![report[@"passed"] boolValue])[text appendFormat:@"\n%@",report[@"failure"]];
+      if([replay[@"available"] boolValue]) {
+        [text appendFormat:@"\nCaptured game draws: %@\nVisible draws: %@\n",
+          [replay[@"passed"] boolValue] ? @"Passed" : @"Needs investigation",replay[@"visible_draws"]];
+        [text appendString:@"This preview shows individual game draws on cleared targets. The complete frame still needs integration.\n"];
+      }
       [text appendString:@"\nThese checks render with game shaders directly through Metal. The game app remains separate.\n\nReport: Files → Theft4 Metal Lab → MetalValidation"];
       dispatch_async(dispatch_get_main_queue(),^{
-        self.report=report;self.reportText=text;self.text.text=text;
+        self.report=report;self.reportText=text;self.text.text=text;self.gameCapturePreview=capturePreview;
         [self presentReportIfActive];
       });
     }
@@ -75,7 +95,8 @@
   NSString* output=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject
       stringByAppendingPathComponent:@"MetalValidation"];
   NSString* failure=nil;
-  bool shown=PresentDirectMetalPreview((CAMetalLayer*)self.preview.layer,libraries,&failure);
+  bool shown=self.gameCapturePreview ? PresentDirectMetalCapture((CAMetalLayer*)self.preview.layer,libraries,self.gameCapturePreview,&failure)
+                                    : PresentDirectMetalPreview((CAMetalLayer*)self.preview.layer,libraries,&failure);
   self.text.text=[self.reportText stringByAppendingFormat:@"\nDirect Metal presentation: %@%@",
       shown ? @"Passed" : @"Failed",failure ? [@" — " stringByAppendingString:failure] : @""];
   NSMutableDictionary* final=[self.report mutableCopy];final[@"onscreen_metal_presentation"]=@(shown);

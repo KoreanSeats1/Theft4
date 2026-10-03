@@ -20,8 +20,11 @@ NSUInteger FormatBytes(MTLVertexFormat f) {
     case MTLVertexFormatFloat3: case MTLVertexFormatInt3: case MTLVertexFormatUInt3: return 12;
     case MTLVertexFormatFloat4: case MTLVertexFormatInt4: case MTLVertexFormatUInt4: return 16;
     case MTLVertexFormatHalf2: case MTLVertexFormatShort2: case MTLVertexFormatUShort2:
-    case MTLVertexFormatUChar4: case MTLVertexFormatUChar4Normalized: return 4;
-    case MTLVertexFormatHalf4: case MTLVertexFormatShort4: case MTLVertexFormatUShort4: return 8;
+    case MTLVertexFormatShort2Normalized: case MTLVertexFormatUShort2Normalized:
+    case MTLVertexFormatUChar4: case MTLVertexFormatUChar4Normalized:
+    case MTLVertexFormatUChar4Normalized_BGRA: case MTLVertexFormatInt1010102Normalized: return 4;
+    case MTLVertexFormatHalf4: case MTLVertexFormatShort4: case MTLVertexFormatUShort4:
+    case MTLVertexFormatShort4Normalized: case MTLVertexFormatUShort4Normalized: return 8;
     default: return 0;
   }
 }
@@ -205,6 +208,10 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     if (depth.sampleCount != p.samples) return Error(error, "Metal depth sample count mismatch");
     if (!width) { width = depth.width; height = depth.height; }
   }
+  if (stencil) {
+    if (stencil.sampleCount != p.samples) return Error(error, "Metal stencil sample count mismatch");
+    if (!width) { width = stencil.width; height = stencil.height; }
+  }
   if (!width || !height || !std::isfinite(d.viewport.originX) || !std::isfinite(d.viewport.originY) ||
       !std::isfinite(d.viewport.width) || !std::isfinite(d.viewport.height) ||
       !std::isfinite(d.viewport.znear) || !std::isfinite(d.viewport.zfar) ||
@@ -213,6 +220,11 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       d.scissor.x > width || d.scissor.y > height || !d.scissor.width || !d.scissor.height ||
       d.scissor.width > width - d.scissor.x || d.scissor.height > height - d.scissor.y)
     return Error(error, "Invalid direct Metal viewport/scissor");
+  if(!std::isfinite(d.depth_bias)||!std::isfinite(d.slope_bias)||
+      d.stencil_reference>255||d.stencil_back_reference>255)
+    return Error(error,"Invalid direct Metal dynamic state");
+  for(float value:d.blend_color)if(!std::isfinite(value))
+    return Error(error,"Invalid direct Metal blend color");
   constexpr NSUInteger sizes[]{4096, 3584, 1056};
   for (size_t i = 0; i < 3; ++i) if (!ViewValid(d.constants[i], sizes[i]) || d.constants[i].offset % 16)
     return Error(error, "Invalid Metal game constant bank");
@@ -258,7 +270,11 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   [e setRenderPipelineState:p.state]; [e setDepthStencilState:p.depth_stencil];
   [e setViewport:d.viewport]; [e setScissorRect:d.scissor];
   [e setCullMode:d.cull]; [e setFrontFacingWinding:d.winding];
-  [e setStencilReferenceValue:uint32_t(d.stencil_reference)];
+  [e setStencilFrontReferenceValue:uint32_t(d.stencil_reference) backReferenceValue:uint32_t(d.stencil_back_reference)];
+  [e setBlendColorRed:d.blend_color[0] green:d.blend_color[1] blue:d.blend_color[2] alpha:d.blend_color[3]];
+  [e setDepthBias:d.depth_bias slopeScale:d.slope_bias clamp:0];
+  [e setDepthClipMode:d.depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
+  [e setTriangleFillMode:d.lines ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
   for (NSUInteger i = 0; i < 3; ++i) {
     [e setVertexBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
     [e setFragmentBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
@@ -320,7 +336,8 @@ std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
   const bool volume=type==MTLTextureType3D;
   const NSUInteger slices=cube ? t.arrayLength*6 : array ? t.arrayLength : 1;
   if (!Ready() || !t || (!cube && !array && !volume && type!=MTLTextureType2D) || t.sampleCount != 1 ||
-      t.pixelFormat != MTLPixelFormatRGBA8Unorm || t.width > 16384 || t.height > 16384 ||
+      (t.pixelFormat != MTLPixelFormatRGBA8Unorm && t.pixelFormat != MTLPixelFormatBGRA8Unorm) ||
+      t.width > 16384 || t.height > 16384 ||
       level>=t.mipmapLevelCount || slice>=slices ||
       depth_plane>=(volume ? std::max(NSUInteger(1),t.depth>>level) : 1)) {
     error = "Unsupported direct Metal validation readback"; return {};
@@ -340,6 +357,8 @@ std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
   std::vector<uint8_t> bytes(width * height * 4);
   for (NSUInteger y = 0; y < height; ++y)
     memcpy(bytes.data() + y * width * 4, static_cast<const uint8_t*>(out.contents) + y * stride, width * 4);
+  if(t.pixelFormat == MTLPixelFormatBGRA8Unorm)
+    for(size_t i=0;i<bytes.size();i+=4)std::swap(bytes[i],bytes[i+2]);
   return bytes;
 }
 }

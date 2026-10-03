@@ -60,6 +60,10 @@ struct Draw {
   MTLCullMode cull = MTLCullModeNone;
   MTLWinding winding = MTLWindingCounterClockwise;
   NSUInteger stencil_reference = 0;
+  NSUInteger stencil_back_reference = 0;
+  std::array<float,4> blend_color{};
+  float depth_bias = 0, slope_bias = 0;
+  bool depth_clamp = false, lines = false;
 };
 class Receipt {
  public:

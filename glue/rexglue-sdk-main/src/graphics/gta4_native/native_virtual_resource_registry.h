@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 
@@ -24,6 +26,7 @@ struct NativeVirtualResourceRecord {
   uint32_t packed_depth_source = 0;
   uint64_t lifetime = 0;
   bool guest_write_conflict = false;
+  bool operator==(const NativeVirtualResourceRecord&) const = default;
 
   bool HasSameIdentity(const RegisterVirtualResourceCommand& command) const {
     return resource == command.resource && kind == command.kind && wrapper == command.wrapper &&
@@ -46,6 +49,15 @@ enum class VirtualResourceRegistrationResult : uint8_t {
 
 class NativeVirtualResourceRegistry {
  public:
+  // Retain the exact producer identity rather than assigning a new lifetime
+  // when its registration reaches the render worker.
+  bool ApplyCapturedRecord(const NativeVirtualResourceRecord& record) {
+    const auto previous=records_.find(record.resource);
+    if(previous!=records_.end()&&previous->second==record)return false;
+    records_.insert_or_assign(record.resource,record);
+    next_lifetime_=std::max(next_lifetime_,record.lifetime+1);
+    return true;
+  }
   VirtualResourceRegistrationResult Register(const RegisterVirtualResourceCommand& command) {
     auto existing = records_.find(command.resource);
     if (existing != records_.end() && existing->second.HasSameIdentity(command)) {
@@ -104,6 +116,32 @@ class NativeVirtualResourceRegistry {
  private:
   std::unordered_map<uint32_t, NativeVirtualResourceRecord> records_;
   uint64_t next_lifetime_ = 1;
+};
+
+// Registrations are CPU protocol state even when a GPU batch is rejected.
+// Snapshot once at the first metadata change inside a pending batch; replay
+// that batch from its old definitions while retaining the latest worker state.
+class NativeVirtualResourceJournal {
+ public:
+  const NativeVirtualResourceRegistry& Latest() const {return latest_;}
+  const NativeVirtualResourceRegistry& BatchBase() const {return base_?*base_:latest_;}
+  bool ApplyCapturedRecord(const NativeVirtualResourceRecord& record,bool pending) {
+    const auto* old=latest_.Find(record.resource);
+    if(old&&*old==record)return false;
+    Preserve(pending);latest_.ApplyCapturedRecord(record);return true;
+  }
+  bool Erase(uint32_t handle,bool pending) {
+    if(!latest_.Find(handle))return false;
+    Preserve(pending);return latest_.Erase(handle);
+  }
+  void FinishBatch() {base_.reset();}
+  void Clear() {latest_.Clear();base_.reset();}
+ private:
+  void Preserve(bool pending) {
+    if(pending&&!base_)base_=std::make_shared<const NativeVirtualResourceRegistry>(latest_);
+  }
+  NativeVirtualResourceRegistry latest_;
+  std::shared_ptr<const NativeVirtualResourceRegistry> base_;
 };
 
 enum class ResourceUnlockDecision : uint8_t {

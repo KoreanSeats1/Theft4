@@ -69,7 +69,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
         PreparedNativeTextureDescription description;
         NativeTextureCapabilities tcaps{caps.max_image_dimension_2d,true,true,
             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT};
-        if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,nullptr,tcaps,description,error,&frame_state.reflections))return false;
+        if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,nullptr,tcaps,description,error,&frame_state.reflections,&frame_state.virtuals))return false;
         auto image=std::make_shared<r::Image>();const auto& m=*description.image;
         r::source::SampledImageDescription sampled{m.format,m.view_type,m.view_components,m.width,m.height,
             m.view_type==VK_IMAGE_VIEW_TYPE_3D?resource->info.depth+1:1,

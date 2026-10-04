@@ -5309,6 +5309,10 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
     }
     const NativeVirtualResourceRecord* record =
         virtual_resource_registry_.Find(registration.resource);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    if(frame_backend_&&record)
+      native_command.virtual_registration=std::make_shared<const NativeVirtualResourceRecord>(*record);
+#endif
     if (result == VirtualResourceRegistrationResult::kReplaced) {
       InvalidateCapturedTextureResourceLocked(registration.resource);
       dirty_texture_handles_.erase(registration.resource);
@@ -7562,7 +7566,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
       }
       case CommandType::kDeviceDestroyed: {
 #ifdef THEFT4_DIRECT_METAL_BACKEND
-        if (frame_backend_) ResetNativeMetalFrontend();
+        if (frame_backend_) ResetNativeMetalFrontend(true);
 #endif
         DeviceCommand device{};
         std::memcpy(&device, command.bytes.data(), sizeof(device));
@@ -7619,7 +7623,11 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         ApplyStateCommand(command.type, command.bytes.data());
         break;
       case CommandType::kResourceUnlock:
+        break;
       case CommandType::kRegisterVirtualResource:
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+        if(frame_backend_)ProcessNativeMetalVirtualRegistration(command);
+#endif
         break;
       case CommandType::kRegisterReflectionTarget: {
         RegisterReflectionTargetCommand registration{};
@@ -7705,6 +7713,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         std::memcpy(&release, command.bytes.data(), sizeof(release));
 #ifdef THEFT4_DIRECT_METAL_BACKEND
         if (frame_backend_) {
+          EraseNativeMetalVirtualRegistration(release.resource);
           if (current_frame_.empty()) {
             EraseNativeReflectionRegistration(reflection_resources_, release.resource);
             ReleaseNativeMetalResource(release.resource);
@@ -8079,7 +8088,7 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
   if (frame_backend_) {
     std::string error;
     if (!frame_backend_->Drain(error)) REXLOG_ERROR("gta4-metal: shutdown drain failed: {}", error);
-    ResetNativeMetalFrontend();
+    ResetNativeMetalFrontend(true);
     frame_backend_->Close();
     DestroyShaderResources();
   } else
@@ -18186,7 +18195,8 @@ bool Gta4NativeGraphicsSystem::PrepareNativeTextureDescription(
     NativeResourceView<NativeTextureResource> texture, VkFormat format,
     const NativeTextureImage* packed_source, const NativeTextureCapabilities& capabilities,
     PreparedNativeTextureDescription& description, std::string& error,
-    const NativeReflectionRegistry* reflection_snapshot) {
+    const NativeReflectionRegistry* reflection_snapshot,
+    const NativeVirtualResourceRegistry* virtual_snapshot) {
   const auto reject = [&](const char* reason) { error = reason; return false; };
   constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
                                           VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
@@ -18201,16 +18211,17 @@ bool Gta4NativeGraphicsSystem::PrepareNativeTextureDescription(
   image->height = image->logical_height;
   NativeVirtualResourceRecord virtual_registration{};
   bool has_virtual_registration = false;
-  {
-    std::lock_guard lock(texture_resource_mutex_);
-    const NativeVirtualResourceRecord* registered =
-        virtual_resource_registry_.Find(texture->handle);
-    if (registered && registered->kind == VirtualResourceKind::kTexture &&
-        registered->logical_width == image->logical_width &&
-        registered->logical_height == image->logical_height) {
-      virtual_registration = *registered;
-      has_virtual_registration = true;
+  const auto capture_virtual=[&](const NativeVirtualResourceRegistry& registry) {
+    const auto* registered=registry.Find(texture->handle);
+    if(registered&&registered->kind==VirtualResourceKind::kTexture&&
+       registered->logical_width==image->logical_width&&registered->logical_height==image->logical_height) {
+      virtual_registration=*registered;has_virtual_registration=true;
     }
+  };
+  if(virtual_snapshot)capture_virtual(*virtual_snapshot);
+  else {
+    std::lock_guard lock(texture_resource_mutex_);
+    capture_virtual(virtual_resource_registry_);
   }
   if (has_virtual_registration) {
     image->width = virtual_registration.physical_width;
@@ -20166,6 +20177,9 @@ void Gta4NativeGraphicsSystem::RetainWorkerCommand(NativeCommand& command) {
 }
 
 void Gta4NativeGraphicsSystem::ClearNativeFrameCommands() {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(frame_backend_&&native_metal_frame_)native_metal_frame_->virtual_journal.FinishBatch();
+#endif
   prewarm_target_cache_.valid = false;
 #ifdef THEFT4_LAB_BUILD
   // Publication joins its preparation task. Explicitly cover abandoned frames

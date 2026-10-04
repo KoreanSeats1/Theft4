@@ -9,7 +9,7 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
     bool is_reflection=false;
     NativeReflectionTarget reflection;
     NativeReflectionCaptureState capture;
-    uint64_t materialized_serial=0;
+    uint64_t materialized_serial=0,virtual_lifetime=0;
   };
   struct PlacementOwner {uint64_t surface=0,serial=0;GuestSurfaceView view;};
   struct TextureRecord {std::shared_ptr<const NativeTextureResource> resource;
@@ -28,6 +28,8 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   std::map<std::string,std::shared_ptr<const theft4::render::Surface>> utilities;
   theft4::render::SmaaLookups smaa_lookups;
   NativeReflectionRegistry reflections; // Snapshot for this speculative batch.
+  NativeVirtualResourceRegistry virtuals; // Definitions at this batch position.
+  NativeVirtualResourceJournal virtual_journal;
   struct BytesRecord {
     std::weak_ptr<const void> resource;
     std::shared_ptr<const theft4::render::Bytes> owner;
@@ -42,9 +44,38 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   std::map<std::array<uint64_t,8>,BytesRecord> buffers;
   std::map<uint64_t,ImageRecord> images;
   theft4::render::SurfaceContents contents;
+  void Release(uint32_t handle) {
+    std::erase_if(images,[&](const auto& entry) {
+      const auto owner=entry.second.resource.lock();return !owner||owner->handle==handle;
+    });
+    const auto forget=[&](theft4::render::SurfaceKey key) {
+      std::erase_if(contents,[&](const auto& view){return view.surface==key;});
+    };
+    std::erase_if(surfaces,[&](const auto& entry) {
+      if(entry.second.descriptor.handle!=handle)return false;forget(entry.second.owner->key);return true;
+    });
+    std::erase_if(surface_buckets,[&](const auto& entry){return entry.first.first==handle;});
+    std::erase_if(placements,[&](const auto& entry){return !surfaces.contains(entry.second.surface);});
+    std::erase_if(textures,[&](const auto& entry) {
+      if(entry.second.resource->handle!=handle)return false;forget(entry.second.owner->key);return true;
+    });
+  }
 };
 
-void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend() {
+void Gta4NativeGraphicsSystem::ProcessNativeMetalVirtualRegistration(NativeCommand& command) {
+  if(!command.virtual_registration) {
+    REXLOG_ERROR("gta4-metal: virtual registration lacks its captured identity");return;
+  }
+  if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
+  const auto& record=*command.virtual_registration;
+  if(!native_metal_frame_->virtual_journal.ApplyCapturedRecord(record,!current_frame_.empty()))return;
+  if(current_frame_.empty())native_metal_frame_->Release(record.resource);
+  else RetainWorkerCommand(command);
+}
+void Gta4NativeGraphicsSystem::EraseNativeMetalVirtualRegistration(uint32_t handle) {
+  if(native_metal_frame_)native_metal_frame_->virtual_journal.Erase(handle,!current_frame_.empty());
+}
+void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations) {
   // Allocation generations must not restart across a title device reset.
   if(native_metal_frame_) {
     native_metal_frame_->surfaces.clear();native_metal_frame_->surface_buckets.clear();
@@ -52,24 +83,12 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend() {
     native_metal_frame_->utilities.clear();native_metal_frame_->smaa_lookups={};
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
+    native_metal_frame_->virtual_journal.FinishBatch();
+    if(clear_registrations){native_metal_frame_->virtuals.Clear();native_metal_frame_->virtual_journal.Clear();}
   }
 }
 void Gta4NativeGraphicsSystem::ReleaseNativeMetalResource(uint32_t handle) {
-  if(!native_metal_frame_)return;
-  std::erase_if(native_metal_frame_->images,[&](const auto& entry) {
-    const auto owner=entry.second.resource.lock();return !owner||owner->handle==handle;
-  });
-  const auto forget=[&](theft4::render::SurfaceKey key) {
-    std::erase_if(native_metal_frame_->contents,[&](const auto& view){return view.surface==key;});
-  };
-  std::erase_if(native_metal_frame_->surfaces,[&](const auto& entry) {
-    if(entry.second.descriptor.handle!=handle)return false;forget(entry.second.owner->key);return true;
-  });
-  std::erase_if(native_metal_frame_->surface_buckets,[&](const auto& entry){return entry.first.first==handle;});
-  std::erase_if(native_metal_frame_->placements,[&](const auto& entry){return !native_metal_frame_->surfaces.contains(entry.second.surface);});
-  std::erase_if(native_metal_frame_->textures,[&](const auto& entry) {
-    if(entry.second.resource->handle!=handle)return false;forget(entry.second.owner->key);return true;
-  });
+  if(native_metal_frame_)native_metal_frame_->Release(handle);
 }
 
 bool Gta4NativeGraphicsSystem::ReadNativeMetalTextureToGuest(
@@ -152,6 +171,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.placements=native_metal_frame_->placements;next.textures=native_metal_frame_->textures;
   next.contents=native_metal_frame_->contents;next.utilities=native_metal_frame_->utilities;
   next.smaa_lookups=native_metal_frame_->smaa_lookups;
+  next.virtuals=native_metal_frame_->virtual_journal.BatchBase();
   auto plan=std::make_shared<r::FramePlan>();plan->sequence=++next_native_metal_sequence_;
   const auto caps=frame_backend_->Capabilities();
   // Releases in this batch retire reflection aliases in command order. Failed
@@ -184,12 +204,13 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(!descriptor.handle||!width||!height||format==r::Format::Invalid||samples>8) {
       error="Metal surface descriptor unsupported";return {};
     }
+    uint64_t virtual_lifetime=0;
     {
-      std::lock_guard lock(texture_resource_mutex_);
-      const auto* registered=virtual_resource_registry_.Find(descriptor.handle);
+      const auto* registered=next.virtuals.Find(descriptor.handle);
       if(registered&&registered->kind==VirtualResourceKind::kSurface&&
          registered->logical_width==descriptor.width&&registered->logical_height==descriptor.height) {
         width=registered->physical_width;height=registered->physical_height;
+        virtual_lifetime=registered->lifetime;
       }
     }
     NativeReflectionTarget reflection;
@@ -213,7 +234,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     for(uint64_t id:next.surface_buckets[bucket]) {
       auto& record=next.surfaces.at(id);const auto& owner=record.owner;
       if(SurfaceDescriptorsEqual(record.descriptor,descriptor)&&owner->width==width&&
-         owner->height==height&&owner->samples==samples&&record.is_reflection==is_reflection&&
+         owner->height==height&&owner->samples==samples&&record.virtual_lifetime==virtual_lifetime&&record.is_reflection==is_reflection&&
          (!is_reflection||SameNativeReflectionRegistration(record.reflection,reflection))) {
         // Persistent resolved reflection textures are separate. An old capture
         // workspace must receive a real first-use clear before this frame uses it.
@@ -227,6 +248,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     owner->width=width;owner->height=height;owner->samples=samples;
     auto& record=next.surfaces[owner->key.id];record.descriptor=descriptor;record.owner=owner;
     record.logical_width=descriptor.width;record.logical_height=descriptor.height;
+    record.virtual_lifetime=virtual_lifetime;
     record.is_reflection=is_reflection;record.reflection=reflection;
     next.surface_buckets[bucket].push_back(owner->key.id);retain(owner);return owner;
   };
@@ -376,8 +398,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       return reject("Metal produced texture requires a renderable native format");
     uint64_t virtual_lifetime=0,packed_allocation=0;
     {
-      std::lock_guard lock(texture_resource_mutex_);
-      const auto* registered=virtual_resource_registry_.Find(resource->handle);
+      const auto* registered=next.virtuals.Find(resource->handle);
       if(registered&&registered->kind==VirtualResourceKind::kTexture&&
          registered->logical_width==resource->info.width+1&&registered->logical_height==resource->info.height+1)
         virtual_lifetime=registered->lifetime;
@@ -407,7 +428,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       if(parent==next.textures.end())return reject("Metal packed alias requires prepared source metadata");
       packed_source=parent->second.description.get();
     }
-    if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,packed_source,tcaps,description,error,&reflections))return false;
+    if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,packed_source,tcaps,description,error,&reflections,&next.virtuals))return false;
     const auto& metadata=*description.image;
     if(existing!=next.textures.end()) {
       const auto& old=*existing->second.description;
@@ -576,13 +597,16 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       RenderPhaseMarkerCommand marker;std::memcpy(&marker,command.bytes.data(),sizeof(marker));
       postfx.ObserveMarker(marker.phase,marker.event);continue;
     }
+    if(command.type==CommandType::kRegisterVirtualResource) {
+      if(!command.virtual_registration)return reject("Metal virtual registration lacks its captured identity");
+      const auto& record=*command.virtual_registration;
+      if(next.virtuals.ApplyCapturedRecord(record))next.Release(record.resource);
+      continue;
+    }
     if(command.type==CommandType::kReleaseResource) {
       ReleaseResourceCommand release{};std::memcpy(&release,command.bytes.data(),sizeof(release));
       EraseNativeReflectionRegistration(reflections,release.resource);
-      std::erase_if(next.surfaces,[&](const auto& entry){return entry.second.descriptor.handle==release.resource;});
-      std::erase_if(next.surface_buckets,[&](const auto& entry){return entry.first.first==release.resource;});
-      std::erase_if(next.placements,[&](const auto& entry){return !next.surfaces.contains(entry.second.surface);});
-      std::erase_if(next.textures,[&](const auto& entry){return entry.second.resource->handle==release.resource;});
+      next.virtuals.Erase(release.resource);next.Release(release.resource);
       continue;
     }
     if(command.type==CommandType::kDrawPrimitive || command.type==CommandType::kDrawPrimitiveUp ||
@@ -895,6 +919,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     }) && std::none_of(next.utilities.begin(),next.utilities.end(),[&](const auto& entry){return entry.second->key==view.surface;});
   });
   next.buffers=std::move(native_metal_frame_->buffers);
+  next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
+  next.virtual_journal.FinishBatch();
   next.images=std::move(native_metal_frame_->images);
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

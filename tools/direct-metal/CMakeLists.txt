@@ -100,3 +100,10 @@ add_executable(color_readback_test color_readback_test.cpp)
 target_include_directories(color_readback_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_compile_options(color_readback_test PRIVATE -UNDEBUG)
 add_test(NAME guest_color_readback COMMAND color_readback_test)
+
+add_executable(virtual_resource_journal_test virtual_resource_journal_test.cpp)
+target_include_directories(virtual_resource_journal_test PRIVATE
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
+  "${ROOT}/glue/rexglue-sdk-main/include")
+target_compile_options(virtual_resource_journal_test PRIVATE -UNDEBUG)
+add_test(NAME virtual_resource_journal COMMAND virtual_resource_journal_test)

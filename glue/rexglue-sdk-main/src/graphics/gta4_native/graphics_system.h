@@ -454,6 +454,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     NativeCommandResourceRef<const NativeTextureResource> depth_handoff_source;
     NativeCommandResourceRef<const NativeTextureResource> present_source;
     std::shared_ptr<const EnvironmentalDataV1> environmental_data;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    std::shared_ptr<const NativeVirtualResourceRecord> virtual_registration;
+#endif
     std::array<SurfaceDescriptor, kRenderTargetCount> snapshot_render_targets{};
     SurfaceDescriptor snapshot_depth_stencil{};
     std::array<VkDescriptorSet, 5> draw_descriptor_sets{};
@@ -1670,7 +1673,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       VkFormat format, const NativeTextureImage* packed_source,
       const NativeTextureCapabilities& capabilities,
       PreparedNativeTextureDescription& description, std::string& error,
-      const NativeReflectionRegistry* reflection_snapshot = nullptr);
+      const NativeReflectionRegistry* reflection_snapshot = nullptr,
+      const NativeVirtualResourceRegistry* virtual_snapshot = nullptr);
   bool AllocateNativeTextureImage(const VkImageCreateInfo& image_info, NativeTextureImage& image);
   void EvictNativeTextureImages(uint32_t submitted_frame, bool allocation_recovery);
   void RetireNativeTextureImage(std::unique_ptr<NativeTextureImage> image);
@@ -1912,7 +1916,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       theft4::render::HostFetch&,std::string& error);
   bool PrepareNativeMetalDraw(const NativeCommand&, const NativeRenderingTarget&,
       const NativeMetalFrameState&, theft4::render::FrameDraw&, std::string& error);
-  void ResetNativeMetalFrontend();
+  void ResetNativeMetalFrontend(bool clear_registrations=false);
+  void ProcessNativeMetalVirtualRegistration(NativeCommand&);
+  void EraseNativeMetalVirtualRegistration(uint32_t handle);
   void ReleaseNativeMetalResource(uint32_t handle);
 #endif
   std::unique_ptr<ui::GraphicsProvider> provider_;

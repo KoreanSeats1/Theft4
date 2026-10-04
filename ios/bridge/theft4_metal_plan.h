@@ -57,7 +57,7 @@ class PlanAdapter {
   std::map<std::pair<render::Pipeline,render::Primitive>,std::shared_ptr<const Pipeline>,PipelineLess> pipelines_;
   std::map<render::Sampler,id<MTLSamplerState>> samplers_;
   std::array<id<MTLTexture>,4> dummy_images_{};
-  struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;};
+  struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;uint64_t generation=0;};
   std::unordered_map<const render::Capture*,Prepared> prepared_;
   struct ImageEntry {
     std::weak_ptr<const render::Image> owner;

@@ -21,10 +21,10 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
                         uint64_t virtual_lifetime=0,packed_allocation=0;};
   // A handle can have several physical extent/sample variants. Placement
   // ownership identifies the current writer, independently of those allocations.
-  std::map<uint64_t,SurfaceRecord> surfaces;
+  NativeTransactionalMap<uint64_t,SurfaceRecord> surfaces;
   std::map<std::pair<uint32_t,bool>,std::vector<uint64_t>> surface_buckets;
   std::unordered_map<GuestPlacementKey,PlacementOwner,GuestPlacementKeyHash> placements;
-  std::map<uint64_t,TextureRecord> textures;
+  NativeTransactionalMap<uint64_t,TextureRecord> textures;
   std::set<uint64_t> pending_texture_generations;
   uint64_t retired_texture_generations=0;
   std::map<std::string,std::shared_ptr<const theft4::render::Surface>> utilities;
@@ -74,6 +74,7 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   uint64_t timed_presents=0;
   std::array<double,60> frontend_ms{};
   std::unique_ptr<theft4::render::DrawResourceValidationCache> resource_admission;
+  std::unique_ptr<NativeSharedFrameArena<theft4::render::Capture>> draw_arena;
   void Release(uint32_t handle) {
     images.EraseIf([&](const auto& entry) {
       const auto owner=entry.second.resource.lock();return !owner||owner->handle==handle;
@@ -81,12 +82,12 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
     const auto forget=[&](theft4::render::SurfaceKey key) {
       std::erase_if(contents,[&](const auto& view){return view.surface==key;});
     };
-    std::erase_if(surfaces,[&](const auto& entry) {
+    surfaces.EraseIf([&](const auto& entry) {
       if(entry.second.descriptor.handle!=handle)return false;forget(entry.second.owner->key);return true;
     });
     std::erase_if(surface_buckets,[&](const auto& entry){return entry.first.first==handle;});
     std::erase_if(placements,[&](const auto& entry){return !surfaces.contains(entry.second.surface);});
-    std::erase_if(textures,[&](const auto& entry) {
+    textures.EraseIf([&](const auto& entry) {
       if(entry.second.resource->handle!=handle)return false;forget(entry.second.owner->key);return true;
     });
   }
@@ -190,6 +191,12 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   if(!native_metal_frame_->resource_admission)
     native_metal_frame_->resource_admission=std::make_unique<r::DrawResourceValidationCache>();
   native_metal_frame_->resource_admission->Clear();
+  if(!native_metal_frame_->draw_arena)native_metal_frame_->draw_arena=std::make_unique<NativeSharedFrameArena<r::Capture>>();
+  native_metal_frame_->draw_arena->BeginBatch([](r::Capture& capture){
+    // Retain attribute capacity but release all immutable resource owners.
+    auto attributes=std::move(capture.draw.pipeline.attributes);capture={};
+    attributes.clear();capture.draw.pipeline.attributes=std::move(attributes);
+  });
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
@@ -235,8 +242,16 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   }
   sweep_done=tick();
   NativeMetalFrameState next;
-  next.surfaces=native_metal_frame_->surfaces;next.surface_buckets=native_metal_frame_->surface_buckets;
-  next.placements=native_metal_frame_->placements;next.textures=native_metal_frame_->textures;
+  next.surfaces=std::move(native_metal_frame_->surfaces);next.textures=std::move(native_metal_frame_->textures);
+  bool registry_committed=false;
+  const auto rollback_registries=MakeScopeExit([&]{
+    if(registry_committed)return;
+    next.surfaces.Rollback();next.textures.Rollback();
+    native_metal_frame_->surfaces=std::move(next.surfaces);native_metal_frame_->textures=std::move(next.textures);
+  });
+  next.surfaces.Begin();next.textures.Begin();
+  next.surface_buckets=native_metal_frame_->surface_buckets;
+  next.placements=native_metal_frame_->placements;
   next.contents=native_metal_frame_->contents;next.utilities=native_metal_frame_->utilities;
   next.smaa_lookups=native_metal_frame_->smaa_lookups;
   next.virtuals=native_metal_frame_->virtual_journal.BatchBase();
@@ -354,7 +369,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     }
     // A newer incompatible/shorter write must not expose an older allocation.
     if(!latest||!NativeResolveContains(latest->view,requested))return nullptr;
-    const auto& record=next.surfaces.at(latest->surface);
+    const auto& record=next.surfaces.Read(latest->surface);
     if(record.owner->format!=r::source::PixelFormat(ConvertSurfaceFormat(descriptor.format,false))||
        !next.contents.contains({record.owner->key,0,0,r::Aspect::Color}))return nullptr;
     return latest;
@@ -386,7 +401,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(current->surface==surface->key.id)return true;
     // Save before retargeting the map. Both allocations remain retained by this
     // plan, including when materialization spans differently sampled views.
-    const auto writer=*current;const auto input=next.surfaces.at(writer.surface).owner;retain(input);
+    const auto writer=*current;const auto input=next.surfaces.Read(writer.surface).owner;retain(input);
     const r::SurfaceView input_view{input->key,0,0,depth?r::Aspect::Depth:r::Aspect::Color};
     const r::SurfaceView output_view{surface->key,0,0,input_view.aspect};
     if(!next.contents.contains(input_view))return reject("Metal placement writer contents undefined");
@@ -445,7 +460,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   const auto clear_surface=[&](const std::shared_ptr<const r::Surface>& surface,
                               r::Aspect aspect,const ClearCommand& clear,uint32_t slot) {
     if(!prepare_surface(surface))return false;
-    const auto& record=next.surfaces.at(surface->key.id);
+    const auto& record=next.surfaces.Read(surface->key.id);
     const auto logical_left=std::clamp(clear.left,0,int32_t(record.logical_width));
     const auto logical_top=std::clamp(clear.top,0,int32_t(record.logical_height));
     const auto logical_right=std::clamp(clear.right,logical_left,int32_t(record.logical_width));
@@ -617,11 +632,11 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     clear.depth_bits=resolve.clear_depth_bits;clear.stencil=resolve.clear_stencil;
     const auto clear_target=[&](const SurfaceDescriptor& descriptor,bool depth) {
       const auto* writer=placement_owner(descriptor,depth);
-      auto surface=writer?next.surfaces.at(writer->surface).owner:surface_for(descriptor,depth);
+      auto surface=writer?next.surfaces.Read(writer->surface).owner:surface_for(descriptor,depth);
       if(!surface)return false;retain(surface);
       // Resolve clears act on the actual writer. The existing renderer clamps
       // their rectangle in that writer's logical extent, before physical scaling.
-      const auto& record=next.surfaces.at(surface->key.id);
+      const auto& record=next.surfaces.Read(surface->key.id);
       clear.left=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.left:0,0,int32_t(record.logical_width));
       clear.top=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.top:0,0,int32_t(record.logical_height));
       clear.right=std::clamp(resolve.source_rectangle_valid?resolve.source_rectangle.right:int32_t(record.logical_width),clear.left,int32_t(record.logical_width));
@@ -726,7 +741,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         attachment.store=r::Store::Store;return attachment;
       };
       const auto merge_extent=[&](const std::shared_ptr<const r::Surface>& surface) {
-        const auto& record=next.surfaces.at(surface->key.id);
+        const auto& record=next.surfaces.Read(surface->key.id);
         const auto guest_samples=ConvertSurfaceSamples(record.descriptor.sample_type);
         if(target.width&&(target.width!=surface->width||target.height!=surface->height||
            uint32_t(target.samples)!=surface->samples||target.guest_samples!=guest_samples||
@@ -871,9 +886,9 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         return reject("Metal resolve sample storage invalid");
       const auto* writer=resolve_placement_owner(resolve.source,depth);
       const GuestSurfaceView content_view=writer?writer->view:guest_view;
-      auto source_surface=writer?next.surfaces.at(writer->surface).owner:surface_for(resolve.source,depth);
+      auto source_surface=writer?next.surfaces.Read(writer->surface).owner:surface_for(resolve.source,depth);
       if(!source_surface)return false;retain(source_surface);
-      const auto& source_record=next.surfaces.at(source_surface->key.id);
+      const auto& source_record=next.surfaces.Read(source_surface->key.id);
       const r::SurfaceView source_view{source_surface->key,0,0,depth?r::Aspect::Depth:r::Aspect::Color};
       const auto resource=NativeResourceView<NativeTextureResource>(command.resolve_destination).Share();
       if(resource->packed_depth_source)return reject("Metal resolve cannot overwrite a packed-depth view");
@@ -1050,7 +1065,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(!PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>(source),source->fetch,next,input,error))return false;
     uint32_t width=0,height=0,logical_width=0,logical_height=0;
     if(input.produced) {
-      const auto& texture=next.textures.at(source->generation);const auto& storage=*texture.owner;
+      const auto& texture=next.textures.Read(source->generation);const auto& storage=*texture.owner;
       if(storage.kind!=r::ImageKind::Texture2D||!r::SupportsAspect(storage.format,r::Aspect::Color))
         return reject("Metal presentation requires single-slice color input");
       width=storage.width;height=storage.height;
@@ -1099,6 +1114,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.pipeline_hits=native_metal_frame_->pipeline_hits;next.pipeline_misses=native_metal_frame_->pipeline_misses;
   next.projected_constants=std::move(native_metal_frame_->projected_constants);
   next.resource_admission=std::move(native_metal_frame_->resource_admission);
+  next.draw_arena=std::move(native_metal_frame_->draw_arena);
   next.unused_constant_banks=native_metal_frame_->unused_constant_banks;
   next.constant_bytes_avoided=native_metal_frame_->constant_bytes_avoided;
   next.masked_constant_materializations=native_metal_frame_->masked_constant_materializations;
@@ -1143,5 +1159,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     light::Set(light::Finalization, tick()-submit_done);
     light::Set(light::DriverSubmit, submit_done-validate_done);
   }
+  if(present.device&&next.timed_presents%60==1)
+    REXLOG_INFO("gta4-metal-allocation-performance: present={} registry-copies={} pooled-draws={} draw-pages={} recycled-draws={} fallback-draws={} draw-arena-bytes={}",
+      next.timed_presents,next.surfaces.CopiedEntries()+next.textures.CopiedEntries(),next.draw_arena->pooled_objects,
+      next.draw_arena->page_allocations,next.draw_arena->recycled_objects,next.draw_arena->fallback_objects,next.draw_arena->AllocatedBytes());
+  next.surfaces.Commit();next.textures.Commit();registry_committed=true;
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

@@ -8,6 +8,7 @@
 #include "present_constants.h"
 #include "direct_metal_capture.h"
 #include "native_color_output.h"
+#include "native_shared_frame_arena.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -1105,6 +1106,18 @@ struct Probe {
     auto warm=adapter.ResourceStats();
     Require(adapter.PipelineCount()==1&&warm.buffer_creates==resources.buffer_creates&&
             warm.uploaded_bytes==resources.uploaded_bytes);
+    // A reused aliasing page keeps its control block alive. Generation identity
+    // must prevent an old prepared draw from surviving at the same address.
+    rex::graphics::gta4_native::NativeSharedFrameArena<r::Capture,1> pool;
+    const auto reset=[](r::Capture& c){c={};};pool.BeginBatch(reset);
+    auto pooled=pool.Acquire();*pooled=*immutable;pooled->allocation_generation=1;
+    auto pooled_draw=adapter.Realize(pooled,error);Require(bool(pooled_draw));
+    auto* pooled_address=pooled.get();pooled.reset();pool.BeginBatch(reset);
+    pooled=pool.Acquire();Require(pooled.get()==pooled_address);
+    *pooled=*immutable;pooled->allocation_generation=2;pooled->draw.scissor[2]=W/2;
+    auto refreshed=adapter.Realize(pooled,error);Require(bool(refreshed)&&refreshed!=pooled_draw);
+    Require(refreshed->scissor.width==W/2&&pooled_draw->scissor.width==W);
+    pooled.reset();pool.BeginBatch(reset);adapter.RetireResources();
     auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
         width:W height:H mipmapped:NO];descriptor.usage=MTLTextureUsageRenderTarget;
     descriptor.storageMode=MTLStorageModePrivate;

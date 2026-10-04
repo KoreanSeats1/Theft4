@@ -273,15 +273,16 @@ std::shared_ptr<const Draw> PlanAdapter::Realize(const std::shared_ptr<const ren
   if(!capture){error="Missing immutable game draw plan";return {};}
   if(auto it=prepared_.find(capture.get());it!=prepared_.end()) {
     auto owner=it->second.owner.lock();
-    if(owner&&!owner.owner_before(capture)&&!capture.owner_before(owner)){error.clear();return it->second.draw;}
+    if(owner&&it->second.generation==capture->allocation_generation&&!owner.owner_before(capture)&&!capture.owner_before(owner)){error.clear();return it->second.draw;}
     prepared_.erase(it);
   }
   auto draw=std::make_shared<Draw>();if(!Prepare(*capture,*draw,error))return {};
-  prepared_[capture.get()]={capture,draw};return draw;
+  prepared_[capture.get()]={capture,draw,capture->allocation_generation};return draw;
 }
 size_t PlanAdapter::RetireResources() {
   for(auto it=prepared_.begin();it!=prepared_.end();) {
-    if(it->second.owner.expired())it=prepared_.erase(it);else ++it;
+    const auto owner=it->second.owner.lock();
+    if(!owner||owner->allocation_generation!=it->second.generation)it=prepared_.erase(it);else ++it;
   }
   std::erase_if(images_,[](const auto& e){return e.second.owner.expired();});
   return resources_.SweepRetired();

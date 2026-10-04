@@ -189,7 +189,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     chosen.used_texture_mask=shader->used_texture_mask;
     chosen.filename=shader->filename.c_str();return chosen;
   };
-  auto capture=std::make_shared<r::Capture>();capture->frame=diagnostic_submitted_frame_;
+  auto capture=native_metal_frame_->draw_arena->Acquire();capture->allocation_generation=++next_native_metal_allocation_;capture->frame=diagnostic_submitted_frame_;
   capture->command=uint32_t(std::min(diagnostic_command_index_,size_t(UINT32_MAX)));
   capture->width=target.width;capture->height=target.height;
   // Preserve every field consumed by CPU snapshot construction, including

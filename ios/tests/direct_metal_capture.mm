@@ -6,6 +6,7 @@
 #import <ImageIO/ImageIO.h>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <stdexcept>
 #ifndef THEFT4_METAL_SOURCE_REVISION
 #define THEFT4_METAL_SOURCE_REVISION "development"
@@ -187,6 +188,74 @@ NSDictionary* ReplayDirectMetalCaptures(NSString* libraries,NSString* captures,N
   auto json=[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
   [json writeToFile:[output stringByAppendingPathComponent:@"GAME_DRAW_REPLAY.json"] atomically:YES];return report;
 }
+#ifdef THEFT4_SHADER_BENCHMARK
+// Shader workload comparison only: identical resources and geometry, alternating
+// order, warmed pipelines, repeated draws, no depth/stencil rejection. This does
+// not estimate game FPS or include frontend/streaming/preceding-pass dependencies.
+NSDictionary* CompareDirectMetalCaptureShaders(NSString* baselineLibraries,NSString* candidateLibraries,
+    NSString* captures,NSString* output) {
+  auto files=[NSFileManager.defaultManager subpathsAtPath:captures];NSMutableArray* paths=[NSMutableArray new];
+  for(NSString* file in files)if([file.pathExtension isEqualToString:@"t4draw"])[paths addObject:[captures stringByAppendingPathComponent:file]];
+  [paths sortUsingSelector:@selector(compare:)];NSMutableArray* results=[NSMutableArray new];
+  constexpr size_t repetitions=128,trials=16;size_t passed=0;
+  for(NSString* path in paths) {
+    if(results.count>=32)break;
+    @autoreleasepool {
+      NSMutableDictionary* item=[@{@"file":path.lastPathComponent,@"passed":@NO} mutableCopy];
+      try {
+        Replay replay;replay.Open(baselineLibraries);PlanAdapter candidate(replay.renderer);
+        replay.Require(candidate.Open(candidateLibraries.UTF8String,replay.error));auto capture=replay.Read(path);
+        auto original=replay.adapter.Realize(capture,replay.error);replay.Require(bool(original));
+        auto replacement=candidate.Realize(capture,replay.error);replay.Require(bool(replacement));
+        // Same Metal resource objects, offsets and binding indices in both runs.
+        replay.Require(original->pipeline->vertex.textures==replacement->pipeline->vertex.textures&&
+          original->pipeline->fragment.textures==replacement->pipeline->fragment.textures&&
+          original->pipeline->vertex.samplers==replacement->pipeline->vertex.samplers&&
+          original->pipeline->fragment.samplers==replacement->pipeline->fragment.samplers&&
+          original->pipeline->vertex.texture_types==replacement->pipeline->vertex.texture_types&&
+          original->pipeline->fragment.texture_types==replacement->pipeline->fragment.texture_types&&
+          original->pipeline->constant_bytes==replacement->pipeline->constant_bytes&&
+          original->pipeline->vertex_streams==replacement->pipeline->vertex_streams);
+        Draw draws[2]{*original,*original};auto disabled=[MTLDepthStencilDescriptor new];
+        disabled.depthCompareFunction=MTLCompareFunctionAlways;disabled.depthWriteEnabled=NO;
+        draws[0].pipeline=replay.renderer.MakeDepthVariant(*original->pipeline,disabled,replay.error);
+        draws[1].pipeline=replay.renderer.MakeDepthVariant(*replacement->pipeline,disabled,replay.error);
+        replay.Require(bool(draws[0].pipeline)&&bool(draws[1].pipeline));auto targets=replay.MakeTargets(*capture);
+        const auto run=[&](size_t which,size_t count) {
+          auto frame=replay.renderer.BeginFrame(replay.error);replay.Require(bool(frame));
+          replay.Require(frame.BeginPass(targets.pass,replay.error));
+          for(size_t n=0;n<count;++n)replay.Require(frame.Encode(draws[which],replay.error));
+          replay.Require(frame.EndPass(replay.error));auto receipt=frame.Submit(replay.error);
+          replay.Require(bool(receipt));replay.Require(receipt.Wait(replay.error));return receipt.GpuMilliseconds();
+        };
+        std::vector<std::vector<uint8_t>> expected;
+        run(0,1);for(auto texture:targets.readable)if(texture){auto bytes=replay.renderer.ReadColorBytes(texture,replay.error);replay.Require(!bytes.empty());expected.push_back(std::move(bytes));}
+        run(1,1);size_t slot=0;
+        for(auto texture:targets.readable)if(texture){auto bytes=replay.renderer.ReadColorBytes(texture,replay.error);replay.Require(bytes==expected[slot++]);}
+        std::vector<double> times[2];
+        for(size_t trial=0;trial<trials;++trial)for(size_t order=0;order<2;++order) {
+          const size_t which=(trial+order)%2;const double ms=run(which,repetitions);
+          replay.Require(ms>0&&std::isfinite(ms));if(trial>=4)times[which].push_back(ms);
+        }
+        const auto median=[](auto values){std::sort(values.begin(),values.end());return (values[(values.size()-1)/2]+values[values.size()/2])/2;};
+        const double a=median(times[0]),b=median(times[1]);item[@"baseline_gpu_ms"]=@(a);item[@"candidate_gpu_ms"]=@(b);
+        item[@"delta_gpu_ms"]=@(a-b);item[@"percent_saved"]=@((a-b)*100/a);item[@"readback_byte_identical"]=@YES;
+        item[@"vertex_shader"]=[NSString stringWithFormat:@"%016llx",(unsigned long long)capture->draw.pipeline.vertex.hash];
+        item[@"fragment_shader"]=[NSString stringWithFormat:@"%016llx",(unsigned long long)capture->draw.pipeline.fragment.hash];
+        item[@"samples_per_variant"]=@(times[0].size());item[@"passed"]=@YES;++passed;
+      }catch(const std::exception& e){item[@"failure"]=[NSString stringWithUTF8String:e.what()];}
+      [results addObject:item];
+    }
+  }
+  NSDictionary* report=@{@"schema":@1,@"passed":@(passed>0&&passed==results.count),@"cases":results,
+    @"draw_repetitions":@(repetitions),@"trials_per_variant":@(trials),@"warmup_trials":@4,
+    @"device":MTLCreateSystemDefaultDevice().name,@"source_revision":@THEFT4_METAL_SOURCE_REVISION,
+    @"scope":@"Isolated saved draw shader workload, depth/stencil rejection disabled, same bound GPU resources, alternating warmed runs. Not game frame time or an iPad result."};
+  [NSFileManager.defaultManager createDirectoryAtPath:output withIntermediateDirectories:YES attributes:nil error:nil];
+  auto json=[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
+  [json writeToFile:[output stringByAppendingPathComponent:@"SHADER_COMPARISON.json"] atomically:YES];return report;
+}
+#endif
 bool PresentDirectMetalCapture(CAMetalLayer* layer,NSString* libraries,NSString* path,NSString** failure) {
   try {
     namespace r=theft4::render;

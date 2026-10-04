@@ -726,6 +726,9 @@ struct Probe {
     plan->commands.push_back(sampled);plan->output=target.view;
     const auto check=[&](const std::array<uint8_t,4>& expected) {
       auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
+      Require(!(adapter.Output(*plan,error).usage&MTLTextureUsagePixelFormatView));
+      auto sampled=adapter.SampledTexture(*plan,std::get<r::FrameDraw>(std::get<r::Pass>(plan->commands.back()).commands[0]).produced[0].value(),error);
+      Require(sampled&&!(sampled.usage&MTLTextureUsagePixelFormatView));
       auto pixels=renderer.ReadRGBA8(adapter.Output(*plan,error),error);Require(pixels.size()==W*H*4);
       for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(expected[byte%4]))<=1);
     };
@@ -738,6 +741,7 @@ struct Probe {
     r::SampledSurfaceView cube;cube.surface=layered->key;cube.kind=r::ImageKind::TextureCube;
     cube.level=1;cube.levels=2;cube.slice=6;cube.slices=6;
     auto cubeTexture=adapter.SampledTexture(*plan,cube,error);Require(cubeTexture);
+    Require(!(cubeTexture.usage&MTLTextureUsagePixelFormatView));
     Require(cubeTexture.textureType==MTLTextureTypeCube&&cubeTexture.width==W*2&&cubeTexture.mipmapLevelCount==2);
     auto face=[cubeTexture newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm textureType:MTLTextureType2D
       levels:NSMakeRange(1,1) slices:NSMakeRange(3,1)];Require(face);
@@ -746,9 +750,11 @@ struct Probe {
     for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(expectedFace[byte%4]))<=1);
     cube.kind=r::ImageKind::TextureCubeArray;cube.slice=0;cube.slices=12;
     auto cubes=adapter.SampledTexture(*plan,cube,error);Require(cubes);
+    Require(!(cubes.usage&MTLTextureUsagePixelFormatView));
     Require(cubes.textureType==MTLTextureTypeCubeArray&&cubes.arrayLength==2&&cubes.mipmapLevelCount==2);
     cube.kind=r::ImageKind::Texture2DArray;cube.slice=5;cube.slices=3;
     auto array=adapter.SampledTexture(*plan,cube,error);Require(array);
+    Require(!(array.usage&MTLTextureUsagePixelFormatView));
     Require(array.textureType==MTLTextureType2DArray&&array.arrayLength==3&&array.width==W*2);
     auto impostor=std::make_shared<r::FramePlan>(*plan);impostor->surfaces[0]=std::make_shared<r::Surface>(*layered);
     Require(!adapter.SampledTexture(*impostor,cube,error));error.clear();
@@ -756,6 +762,7 @@ struct Probe {
     [results addObject:@{ @"case":@"sampled_game_texture_ranges",@"passed":@YES,
       @"mip_base_and_range":@YES,@"array_and_cube_aliases":@YES,@"cube_face_content":@YES,
       @"game_shader_lod_and_channel_swizzle":@YES,@"srgb_alias_decode":@YES,
+      @"color_aliases_preserve_lossless_compression_eligibility":@YES,
       @"warm_aliases_and_uploads_reused":@YES,@"changed_owner_rejected":@YES,
       @"synthetic_validation_geometry":@YES }];
   }
@@ -823,6 +830,9 @@ struct Probe {
       auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
       check(cv,0);check(ov,1);check(out,2);
     }
+    auto stencilAlias=adapter.SampledTexture(*plan,sv,error);
+    Require(stencilAlias&&stencilAlias.pixelFormat==MTLPixelFormatX32_Stencil8&&
+      (stencilAlias.usage&MTLTextureUsagePixelFormatView));
     auto invalid=std::make_shared<r::FramePlan>(*plan);
     std::get<r::ImageCopy>(invalid->commands.back()).extent={UINT32_MAX,25};
     Require(!adapter.Submit(invalid,error));error.clear();check(cv,0);check(out,2);
@@ -850,6 +860,7 @@ struct Probe {
       @"mrt_clear_ignores_draw_write_masks":@YES,@"depth_clear_preserves_stencil":@YES,
       @"draw_state_restored_after_clear":@YES,@"offset_copy_preserves_outside_pixels":@YES,
       @"stencil_only_pass_and_clear":@YES,
+      @"combined_stencil_plane_alias_preserved":@YES,
       @"invalid_copy_rejected_before_encoding":@YES,@"synthetic_validation_geometry":@YES}];
   }
   void OrderedHostUtilities() {

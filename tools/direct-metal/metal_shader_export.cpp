@@ -33,6 +33,7 @@ struct Export {
   std::string source, inputs;
   std::vector<Binding> bindings;
   bool vertex = false;
+  uint32_t fp_flags = 0;
 };
 Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one_to_one = false) {
   spirv_cross::CompilerMSL probe(code);
@@ -122,6 +123,7 @@ Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one
         + ":" + std::to_string(type.basetype) + ":" + std::to_string(type.vecsize) + ",";
   }
   std::string source = compiler.compile();
+  result.fp_flags=compiler.get_fp_fast_math_flags(true);
   const std::string parameter = "constant Theft4GuestBanks& guestBanks [[buffer(7)]]";
   if (source.find(parameter) == std::string::npos)
     throw std::runtime_error("unexpected Metal guest bank parameter");
@@ -148,7 +150,7 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> cache(g_spirvCacheDecompressedSize);
   if (ZSTD_decompress(cache.data(), cache.size(), g_compressedSpirvCache,
       g_spirvCacheCompressedSize) != cache.size()) throw std::runtime_error("cache decode");
-  std::ofstream manifest(root / "manifest.tsv"), errors(root / "rejections.tsv");
+  std::ofstream manifest(root / "manifest.tsv"), errors(root / "rejections.tsv"), math(root / "shader_math.tsv");
   size_t accepted = 0, rejected = 0;
   for (size_t i = 0; i < g_shaderCacheEntryCount; ++i) {
     const auto& e = g_shaderCacheEntries[i];
@@ -170,7 +172,17 @@ int main(int argc, char** argv) {
             << e.usedTextureMask << '\t' << e.specConstantsMask << '\t' << e.filename << '\t'
             << output.inputs << '\t';
           for (auto b : output.bindings) manifest << b.kind << ':' << b.slot << ':' << b.index << ',';
-          manifest << '\n'; ++accepted;
+          manifest << '\n';
+          // Match MoltenVK's on-demand compiler policy from the original SPIR-V
+          // permissions. Legacy NoContraction operations keep their generated
+          // precise helpers independently of the module's permitted math mode.
+          const uint32_t relaxed=spv::FPFastMathModeNSZMask|spv::FPFastMathModeAllowRecipMask|
+              spv::FPFastMathModeAllowReassocMask|spv::FPFastMathModeAllowContractMask;
+          const uint32_t finite=spv::FPFastMathModeNotNaNMask|spv::FPFastMathModeNotInfMask;
+          const auto mode=(output.fp_flags&relaxed)!=relaxed ? "safe" :
+              (output.fp_flags&finite)==finite ? "fast" : "relaxed";
+          math<<identity<<'\t'<<output.fp_flags<<'\t'<<mode<<'\t'<<(std::string(mode)=="fast" ? "fast" : "precise")<<'\n';
+          ++accepted;
         };
         write(result, name);
         if (result.vertex) write(Convert(std::move(code), e.usedTextureMask, true), name + "-clip-neg");

@@ -5,6 +5,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdio>
+#include <map>
 namespace theft4::metal {
 namespace {
 class Backend final:public render::FrameBackend {
@@ -192,23 +193,50 @@ class Backend final:public render::FrameBackend {
       auto timings=submitted.receipt.GpuPassTimings();
       if(!timings.empty()) {
         std::vector<const render::Pass*> passes;
-        for(const auto& c:submitted.owner->commands)if(const auto* pass=std::get_if<render::Pass>(&c))passes.push_back(pass);
+        std::vector<size_t> pass_commands;
+        for(size_t i=0;i<submitted.owner->commands.size();++i)
+          if(const auto* pass=std::get_if<render::Pass>(&submitted.owner->commands[i])){passes.push_back(pass);pass_commands.push_back(i);}
+        const auto dead_stores=render::DeadAttachmentStores(*submitted.owner);
+        char summary[512];std::snprintf(summary,sizeof(summary),
+          "gta4-metal-gpu-profile: sequence=%llu command-buffer-ms=%.3f pass-samples=%zu passes=%zu copies=%zu detail-limit=12 stage-times-overlap=true color-pixel-format-view=false",
+          (unsigned long long)submitted.owner->sequence,last_gpu_ms_,timings.size(),passes.size(),submitted.owner->commands.size()-passes.size());
+        if(diagnostic_)diagnostic_(summary);else std::fprintf(stderr,"%s\n",summary);
         std::sort(timings.begin(),timings.end(),[](const auto& a,const auto& b){return std::max(a.vertex_ms,a.fragment_ms)>std::max(b.vertex_ms,b.fragment_ms);});
-        for(size_t rank=0;rank<std::min(size_t(8),timings.size());++rank) {
+        for(size_t rank=0;rank<std::min(size_t(12),timings.size());++rank) {
           const auto& t=timings[rank];if(t.pass>=passes.size())continue;const auto& pass=*passes[t.pass];
-          uint64_t vertex=0,pixel=0;uint32_t host=0;size_t draws=0;
+          uint64_t vertex=0,pixel=0,vertices=0,indices=0;uint32_t host=0;size_t draws=0,host_draws=0,clears=0,dominant_count=0;
+          std::map<std::pair<uint64_t,uint64_t>,size_t> shaders;
           for(const auto& c:pass.commands) {
-            if(const auto* d=std::get_if<render::FrameDraw>(&c)){++draws;if(!vertex){vertex=d->capture->draw.pipeline.vertex.hash;pixel=d->capture->draw.pipeline.fragment.hash;}}
-            if(const auto* h=std::get_if<render::HostDraw>(&c))host|=1u<<uint32_t(h->program);
+            if(const auto* d=std::get_if<render::FrameDraw>(&c)) {
+              ++draws;const auto& draw=d->capture->draw;vertices+=uint64_t(draw.vertex_count)*draw.instances;
+              indices+=uint64_t(draw.index_count)*draw.instances;
+              const auto key=std::pair{draw.pipeline.vertex.hash,draw.pipeline.fragment.hash};
+              const auto count=++shaders[key];if(count>dominant_count){dominant_count=count;vertex=key.first;pixel=key.second;}
+            }
+            if(const auto* h=std::get_if<render::HostDraw>(&c)){host|=1u<<uint32_t(h->program);++host_draws;}
+            if(std::holds_alternative<render::RectClear>(c))++clears;
           }
           const render::Attachment* attachment=pass.depth?&*pass.depth:nullptr;
           for(const auto& color:pass.colors)if(color){attachment=&*color;break;}
           const auto* surface=attachment?render::FindSurface(*submitted.owner,attachment->view.surface):nullptr;
-          char message[768];std::snprintf(message,sizeof(message),
-            "gta4-metal-gpu-pass: sequence=%llu rank=%zu pass=%zu vertex-ms=%.3f fragment-ms=%.3f draws=%zu target=%ux%u samples=%u vs=%016llx ps=%016llx host-mask=%08x profiled=true",
+          std::array<uint32_t,6> formats{};uint32_t loads=0,stores=0,resolves=0;
+          const auto describe=[&](const std::optional<render::Attachment>& a,size_t slot) {
+            if(!a)return;const auto* s=render::FindSurface(*submitted.owner,a->view.surface);
+            formats[slot]=s?uint32_t(s->format):0;
+            if(a->load==render::Load::Load)loads|=1u<<slot;
+            if(a->store==render::Store::Store||a->store==render::Store::StoreAndResolve)stores|=1u<<slot;
+            if(a->resolve)resolves|=1u<<slot;
+          };
+          for(size_t slot=0;slot<4;++slot)describe(pass.colors[slot],slot);describe(pass.depth,4);describe(pass.stencil,5);
+          stores&=~uint32_t(dead_stores[pass_commands[t.pass]]);
+          char message[1152];std::snprintf(message,sizeof(message),
+            "gta4-metal-gpu-pass: sequence=%llu rank=%zu pass=%zu vertex-ms=%.3f fragment-ms=%.3f draws=%zu target=%ux%u samples=%u vs=%016llx ps=%016llx shader-pairs=%zu dominant-draws=%zu host-draws=%zu clears=%zu vertices=%llu indices=%llu formats=%u,%u,%u,%u,%u,%u load-mask=%02x store-mask=%02x resolve-mask=%02x host-mask=%08x profiled=true",
             (unsigned long long)submitted.owner->sequence,rank,t.pass,t.vertex_ms,t.fragment_ms,draws,
-            surface?surface->width:0,surface?surface->height:0,surface?surface->samples:1,
-            (unsigned long long)vertex,(unsigned long long)pixel,host);
+            surface?std::max(1u,surface->width>>attachment->view.level):pass.attachmentless_extent[0],
+            surface?std::max(1u,surface->height>>attachment->view.level):pass.attachmentless_extent[1],surface?surface->samples:1,
+            (unsigned long long)vertex,(unsigned long long)pixel,shaders.size(),dominant_count,host_draws,clears,
+            (unsigned long long)vertices,(unsigned long long)indices,
+            formats[0],formats[1],formats[2],formats[3],formats[4],formats[5],loads,stores,resolves,host);
           if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
         }
       }

@@ -168,3 +168,23 @@ target_compile_definitions(metal_performance_benchmark PRIVATE THEFT4_PERF_OPTIM
 target_compile_definitions(metal_performance_benchmark PRIVATE THEFT4_PACKED_UPLOAD_STATS=1)
 target_link_libraries(metal_performance_benchmark PRIVATE metal_shader_catalog render_plan
   "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+# Alternating A/B GPU shader comparison using private saved game draws.
+get_target_property(shader_comparison_sources metal_probe SOURCES)
+list(REMOVE_ITEM shader_comparison_sources probe_main.mm)
+add_executable(metal_shader_comparison shader_comparison_main.mm ${shader_comparison_sources})
+target_include_directories(metal_shader_comparison PRIVATE "${ROOT}/ios/bridge" "${ROOT}/ios/tests"
+  "${ROOT}/thirdparty/json/include" "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_compile_options(metal_shader_comparison PRIVATE -fobjc-arc)
+target_compile_definitions(metal_shader_comparison PRIVATE THEFT4_SHADER_BENCHMARK=1
+  "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
+target_link_libraries(metal_shader_comparison PRIVATE metal_shader_catalog render_plan
+  "-framework Foundation" "-framework Metal" "-framework QuartzCore"
+  "-framework CoreGraphics" "-framework ImageIO")
+
+add_executable(metal_texture_usage_benchmark texture_usage_benchmark.mm)
+target_include_directories(metal_texture_usage_benchmark PRIVATE "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_texture_usage_benchmark PRIVATE -fobjc-arc)
+target_compile_definitions(metal_texture_usage_benchmark PRIVATE
+  "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
+target_link_libraries(metal_texture_usage_benchmark PRIVATE "-framework Foundation" "-framework Metal")

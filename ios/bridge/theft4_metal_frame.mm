@@ -100,7 +100,12 @@ struct FrameAdapter::Impl {
     d.pixelFormat=PlanAdapter::PixelFormat(s->format);d.width=s->width;d.height=s->height;
     d.mipmapLevelCount=s->levels;d.arrayLength=s->layers;d.sampleCount=s->samples;
     d.storageMode=MTLStorageModePrivate;d.hazardTrackingMode=MTLHazardTrackingModeTracked;
-    d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead|MTLTextureUsagePixelFormatView;
+    // PixelFormatView disables Apple's lossless render-target compression.
+    // Same-format, linear/sRGB, ranged and swizzled color aliases don't need
+    // it. Admission rejects other color reinterpretations. Combined depth /
+    // stencil storage still needs the flag for its X32_Stencil8 sampling view.
+    d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+    if(s->format==render::Format::Depth32FloatStencil8)d.usage|=MTLTextureUsagePixelFormatView;
     auto texture=renderer.Texture(d,error);if(!texture)return false;
     surfaces.emplace(s->key,Entry{s,*s,texture,false,{},{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
     return true;

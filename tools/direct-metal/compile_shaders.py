@@ -13,6 +13,9 @@ parser.add_argument("output", type=Path)
 parser.add_argument("--platform", choices=("ios", "macos"), default="ios")
 parser.add_argument("--compiler-directory", type=Path)
 parser.add_argument("--jobs", type=int, default=6)
+# Optional A/B compiler controls. Safe math remains the shipping default.
+parser.add_argument("--math-mode", choices=("safe", "relaxed", "fast"), default="safe")
+parser.add_argument("--fp32-functions", choices=("precise", "fast"))
 args = parser.parse_args()
 if args.compiler_directory is None:
     component = json.loads(subprocess.check_output([
@@ -37,7 +40,9 @@ def compile_one(source):
         result = subprocess.run([
             str(args.compiler_directory / "metal"), "-target", target,
             "-std=" + standard, "-fmodules-cache-path=" + str(cache),
-            "-fmetal-math-mode=safe", "-c", str(source), "-o", str(air)
+            "-fmetal-math-mode=" + args.math_mode,
+            *(["-fmetal-math-fp32-functions=" + args.fp32_functions] if args.fp32_functions else []),
+            "-c", str(source), "-o", str(air)
         ], stdout=diagnostics, stderr=diagnostics)
         if result.returncode == 0:
             result = subprocess.run([
@@ -53,6 +58,7 @@ if not manifest.is_file():
 with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
     results = list(pool.map(compile_one, sources))
 report = {"platform": args.platform, "target": target, "standard": standard,
+          "math_mode": args.math_mode, "fp32_functions": args.fp32_functions or "compiler-default",
           "sources": len(results), "compiled": sum(r["compiled"] for r in results),
           "rejected": [r for r in results if not r["compiled"]]}
 (args.output / "COMPILATION.json").write_text(json.dumps(report, indent=2) + "\n")

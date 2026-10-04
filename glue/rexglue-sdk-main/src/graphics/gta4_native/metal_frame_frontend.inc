@@ -691,6 +691,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   std::set<std::string> scan_errors;
   for(const NativeCommand& command:current_frame_) {
     diagnostic_command_index_=command_index++;
+    if (!diagnostic_scan) ObserveNativeLightCommand(command);
     const auto lower_command=[&]()->bool {
     if(command.type==CommandType::kRenderPhaseMarker) {
       // The worker already applies phase nesting and each draw captures its
@@ -1133,6 +1134,14 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     REXLOG_INFO("gta4-metal-lifetime-performance: present={} produced-generations={} pending-retirements={} retired-generations={} cpu-cache-bytes={} resource-checks={} resource-reuses={}",
       next.timed_presents,next.textures.size(),next.pending_texture_generations.size(),next.retired_texture_generations,
       next.buffers.bytes()+next.images.bytes(),next.resource_admission->checks,next.resource_admission->hits);
+  }
+  // API-neutral saved CPU capture. Submission includes backend admission,
+  // drawable acquisition and in-flight waits; it is not a GPU duration.
+  if (!diagnostic_scan && light::current) {
+    light::Set(light::Preparation, copy_done-began);
+    light::Set(light::Recording, lower_done-copy_done);
+    light::Set(light::Finalization, tick()-submit_done);
+    light::Set(light::DriverSubmit, submit_done-validate_done);
   }
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

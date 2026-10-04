@@ -1448,6 +1448,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void RegisterVertexDeclaration(const RegisterVertexDeclarationCommand& command);
   const NativeShader* FindRegisteredShader(uint32_t handle, ShaderStage stage) const;
   void DestroyShaderResources();
+  void ObserveNativeLightCommand(const NativeCommand& command);
   bool PublishFrame(const PresentCommand& present,
                     const std::shared_ptr<const NativeTextureResource>& present_source = nullptr,
                     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data = nullptr);

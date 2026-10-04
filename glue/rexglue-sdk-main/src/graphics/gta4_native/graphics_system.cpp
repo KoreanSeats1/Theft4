@@ -30946,59 +30946,7 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
   }
   for (size_t command_index = 0; command_index < current_frame_.size(); ++command_index) {
     const NativeCommand& queued_command = current_frame_[command_index];
-    if (light::current) {
-      auto& values = light::current->sample.value;
-      ++values[light::ObservedCommands];
-      const uint64_t sequence = queued_command.diagnostic_submit_sequence;
-      const uint32_t epoch = queued_command.diagnostic_producer_epoch;
-      if (!values[light::FirstSequence]) {
-        values[light::FirstSequence] = sequence;
-        values[light::FirstEpoch] = epoch;
-      } else if (sequence <= values[light::LastSequence]) {
-        ++values[light::SequenceRegressions];
-      }
-      values[light::LastSequence] = sequence;
-      values[light::LastEpoch] = epoch;
-      values[light::EpochMismatches] += epoch != values[light::BoundaryEpoch];
-      bool draw = false;
-      switch (queued_command.type) {
-        case CommandType::kDrawPrimitive: ++values[light::DrawPrimitiveCount]; draw = true; break;
-        case CommandType::kDrawPrimitiveUp: ++values[light::DrawUpCount]; draw = true; break;
-        case CommandType::kDrawIndexedPrimitive: ++values[light::DrawIndexedCount]; draw = true; break;
-        case CommandType::kResolve: ++values[light::ResolveCount]; break;
-        case CommandType::kClear: ++values[light::ClearCount]; break;
-        case CommandType::kDepthSurfaceHandoff: ++values[light::HandoffCount]; break;
-        case CommandType::kReleaseResource: ++values[light::ReleaseCount]; break;
-        case CommandType::kRenderPhaseMarker: {
-          ++values[light::MarkerCount];
-          RenderPhaseMarkerCommand marker{};
-          std::memcpy(&marker, queued_command.bytes.data(), sizeof(marker));
-          const uint32_t phase = uint32_t(marker.phase);
-          if (phase < 7) {
-            if (marker.event == RenderPhaseEvent::kBegin) ++values[light::PhaseBegin0 + phase];
-          } else { ++values[light::InvalidPhase]; }
-          break;
-        }
-        default: ++values[light::OtherCount]; break;
-      }
-      if (draw) {
-        const uint32_t phase = uint32_t(queued_command.render_phase);
-        if (phase < 7) ++values[light::PhaseDraw0 + phase];
-        else ++values[light::InvalidPhase];
-        // Mix already-cached identities only: no payload hashing, heap lookup,
-        // timing call or GPU query. This is not an instruction/work equivalence proof.
-        uint64_t& signature = values[light::DrawStructureSignature];
-        if (!signature) signature = 14695981039346656037ull;
-        const auto mix = [&](uint64_t value) { signature = (signature ^ value) * 1099511628211ull; };
-        mix(uint32_t(queued_command.type)); mix(phase);
-        if (const auto* state = queued_command.pipeline_state.get()) {
-          mix(state->vertex_shader_resource ? state->vertex_shader_resource->hash : 0);
-          mix(state->pixel_shader_resource ? state->pixel_shader_resource->hash : 0);
-        }
-        const auto& color = queued_command.snapshot_render_targets[0];
-        mix(color.handle); mix((uint64_t(color.width) << 32) | color.height);
-      }
-    }
+    ObserveNativeLightCommand(queued_command);
     SetNativeWorkerDiagnosticFrameProgress(uint32_t(command_index), uint32_t(current_frame_.size()),
                                            queued_command.type);
     const auto* profile_state = queued_command.pipeline_state.get();
@@ -36186,14 +36134,106 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
 #include "metal_draw_frontend.inc"
 #endif
 
+void Gta4NativeGraphicsSystem::ObserveNativeLightCommand(const NativeCommand& queued_command) {
+  if (light::current) {
+    auto& values = light::current->sample.value;
+    ++values[light::ObservedCommands];
+    const uint64_t sequence = queued_command.diagnostic_submit_sequence;
+    const uint32_t epoch = queued_command.diagnostic_producer_epoch;
+    if (!values[light::FirstSequence]) {
+      values[light::FirstSequence] = sequence;
+      values[light::FirstEpoch] = epoch;
+    } else if (sequence <= values[light::LastSequence]) {
+      ++values[light::SequenceRegressions];
+    }
+    values[light::LastSequence] = sequence;
+    values[light::LastEpoch] = epoch;
+    values[light::EpochMismatches] += epoch != values[light::BoundaryEpoch];
+    bool draw = false;
+    switch (queued_command.type) {
+      case CommandType::kDrawPrimitive: ++values[light::DrawPrimitiveCount]; draw = true; break;
+      case CommandType::kDrawPrimitiveUp: ++values[light::DrawUpCount]; draw = true; break;
+      case CommandType::kDrawIndexedPrimitive: ++values[light::DrawIndexedCount]; draw = true; break;
+      case CommandType::kResolve: ++values[light::ResolveCount]; break;
+      case CommandType::kClear: ++values[light::ClearCount]; break;
+      case CommandType::kDepthSurfaceHandoff: ++values[light::HandoffCount]; break;
+      case CommandType::kReleaseResource: ++values[light::ReleaseCount]; break;
+      case CommandType::kRenderPhaseMarker: {
+        ++values[light::MarkerCount];
+        RenderPhaseMarkerCommand marker{};
+        if (queued_command.bytes.size() != sizeof(marker)) {
+          ++values[light::InvalidPhase]; break;
+        }
+        std::memcpy(&marker, queued_command.bytes.data(), sizeof(marker));
+        const uint32_t phase = uint32_t(marker.phase);
+        if (phase < 7) {
+          if (marker.event == RenderPhaseEvent::kBegin) ++values[light::PhaseBegin0 + phase];
+        } else { ++values[light::InvalidPhase]; }
+        break;
+      }
+      default: ++values[light::OtherCount]; break;
+    }
+    if (draw) {
+      const uint32_t phase = uint32_t(queued_command.render_phase);
+      if (phase < 7) ++values[light::PhaseDraw0 + phase];
+      else ++values[light::InvalidPhase];
+      // Mix already-cached identities only: no payload hashing, heap lookup,
+      // timing call or GPU query. This is not an instruction/work equivalence proof.
+      uint64_t& signature = values[light::DrawStructureSignature];
+      if (!signature) signature = 14695981039346656037ull;
+      const auto mix = [&](uint64_t value) { signature = (signature ^ value) * 1099511628211ull; };
+      mix(uint32_t(queued_command.type)); mix(phase);
+      if (const auto* state = queued_command.pipeline_state.get()) {
+        mix(state->vertex_shader_resource ? state->vertex_shader_resource->hash : 0);
+        mix(state->pixel_shader_resource ? state->pixel_shader_resource->hash : 0);
+      }
+      const auto& color = queued_command.snapshot_render_targets[0];
+      mix(color.handle); mix((uint64_t(color.width) << 32) | color.height);
+    }
+  }
+}
+
 bool Gta4NativeGraphicsSystem::PublishFrame(
     const PresentCommand& present,
     const std::shared_ptr<const NativeTextureResource>& present_source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data) {
+  // Capture the common publication boundary before choosing the graphics API.
+  // The disabled scope makes no task accounting calls or ring writes.
+  if (!present.device) ++light_internal_flushes_;
+  size_t capture_images = native_texture_images_.size();
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (frame_backend_) capture_images = native_metal_frame_ ? native_metal_frame_->textures.size() + native_metal_frame_->images.size() : 0;
+#endif
+  light::FrameScope light_frame(present.device != 0, present.submitted_frame,
+      current_frame_.size(), capture_images,
+      host_activity_epoch_.load(std::memory_order_relaxed));
+  if (light_frame.active) {
+    auto& values = light_frame.sample.value;
+    if (active_worker_command_ && active_worker_command_->type == CommandType::kPresent) {
+      values[light::BoundaryEpoch] = active_worker_command_->diagnostic_producer_epoch;
+      values[light::BoundarySequence] = active_worker_command_->diagnostic_submit_sequence;
+    }
+    {
+      std::lock_guard lock(render_mutex_);
+      values[light::QueuedPresents] = queued_title_presents_;
+      values[light::QueuedCommands] = render_queue_.size();
+    }
+    values[light::InternalFlushes] = light_internal_flushes_;
+    values[light::PhaseStackDepth] = light_phase_stack_depth_;
+    values[light::PhaseMismatches] = light_phase_mismatches_;
+    values[light::HostPauseCount] = host_pause_count_;
+    values[light::HostPauseDrainTicks] = host_pause_drain_ticks_;
+    values[light::HostPauseDrainSucceeded] = host_pause_drain_succeeded_;
+    values[light::PrewarmTargetRequests] = prewarm_target_requests_;
+    values[light::PrewarmTargetHits] = prewarm_target_hits_;
+    values[light::PrewarmSurfaceLookupsAvoided] = prewarm_surface_lookups_avoided_;
+    values[light::PrewarmTargetReuseEnabled] = NativePrewarmTargetReuseEnabled();
+  }
 #ifdef THEFT4_DIRECT_METAL_BACKEND
   if (frame_backend_) {
     std::string error;
     const bool okay = PublishNativeMetalFrame(present, present_source, environmental_data, error);
+    light::Set(light::Result, okay ? VK_SUCCESS : VK_ERROR_UNKNOWN);
     if (!okay) {
       REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
       // On the first rejection inspect the entire captured batch, including
@@ -36257,10 +36297,6 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
   preparation_wait_ticks_ = preparation_dispatch_ticks_ = preparation_queue_delay_ticks_ = 0;
   preparation_counters_.fill(0);
   preparation_index_bytes_ = preparation_index_count_ = 0;
-  if (!present.device) ++light_internal_flushes_;
-  light::FrameScope light_frame(present.device != 0, present.submitted_frame,
-      current_frame_.size(), native_texture_images_.size(),
-      host_activity_epoch_.load(std::memory_order_relaxed));
   const auto capture_efficiency_counters = MakeScopeExit([&] {
     if (!light_frame.active) return;
     auto& values = light_frame.sample.value;
@@ -36368,28 +36404,6 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
         preparation_counters_[size_t(performance::Counter::kVertexConstantUploadBytes)] +
         preparation_counters_[size_t(performance::Counter::kPixelConstantUploadBytes)];
   });
-  if (light_frame.active) {
-    auto& values = light_frame.sample.value;
-    if (active_worker_command_ && active_worker_command_->type == CommandType::kPresent) {
-      values[light::BoundaryEpoch] = active_worker_command_->diagnostic_producer_epoch;
-      values[light::BoundarySequence] = active_worker_command_->diagnostic_submit_sequence;
-    }
-    {
-      std::lock_guard lock(render_mutex_);
-      values[light::QueuedPresents] = queued_title_presents_;
-      values[light::QueuedCommands] = render_queue_.size();
-    }
-    values[light::InternalFlushes] = light_internal_flushes_;
-    values[light::PhaseStackDepth] = light_phase_stack_depth_;
-    values[light::PhaseMismatches] = light_phase_mismatches_;
-    values[light::HostPauseCount] = host_pause_count_;
-    values[light::HostPauseDrainTicks] = host_pause_drain_ticks_;
-    values[light::HostPauseDrainSucceeded] = host_pause_drain_succeeded_;
-    values[light::PrewarmTargetRequests] = prewarm_target_requests_;
-    values[light::PrewarmTargetHits] = prewarm_target_hits_;
-    values[light::PrewarmSurfaceLookupsAvoided] = prewarm_surface_lookups_avoided_;
-    values[light::PrewarmTargetReuseEnabled] = NativePrewarmTargetReuseEnabled();
-  }
   if (light_frame.active && (present.submitted_frame % 120) == 0) {
     REXLOG_INFO("gta4-draw-reuse: frame={} pipeline-on={} scope-on={} "
                 "pipeline-inherited={} inherited-hits={} scope-candidates={} scope-reuses={}",

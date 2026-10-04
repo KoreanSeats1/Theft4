@@ -195,6 +195,15 @@ int main(int argc,char** argv) {
           -0.34375,-1,0.5,1, 1,1,1,1, 0,0,0,0, -0.34375,1,0.5,1, 1,1,1,1, 0,0,0,0};
       d.vertices[0]=buffer({reinterpret_cast<const uint8_t*>(vertices.data()),sizeof(vertices)},id*10+3);
       d.vertex_count=3;d.viewport={0,0,32,16,0,1};d.scissor={0,0,32,16};
+      if(samples==2) {
+        auto attachmentless=std::make_shared<render::FramePlan>();attachmentless->sequence=119;
+        auto draw=std::make_shared<render::Capture>(*c);draw->draw.pipeline.colors={};
+        draw->draw.pipeline.samples=1;
+        render::Pass pass;pass.attachmentless_extent={32,16};pass.commands={render::FrameDraw{draw,{}}};
+        attachmentless->commands={pass};
+        assert(backend->Submit(attachmentless,false,error));assert(backend->Drain(error));
+        std::cout<<"Attachmentless game-shader draw completed without surface allocations.\n";
+      }
       auto& producer=std::get<render::Pass>(f->commands[0]);producer.colors[0]->clear_color={0,0,0,1};
       producer.colors[0]->store=render::Store::StoreAndResolve;
       producer.colors[0]->resolve=render::SurfaceView{baseline->key,0,0,render::Aspect::Color};

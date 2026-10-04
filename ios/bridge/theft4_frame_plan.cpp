@@ -13,7 +13,7 @@ void AppendPass(FramePlan& frame,Pass next) {
     return !a||(a->view==b->view&&!a->resolve&&!b->resolve&&
         a->store==Store::Store&&b->store==Store::Store&&b->load==Load::Load);
   };
-  bool merge=previous&&compatible(previous->depth,next.depth)&&compatible(previous->stencil,next.stencil);
+  bool merge=previous&&previous->attachmentless_extent==next.attachmentless_extent&&compatible(previous->depth,next.depth)&&compatible(previous->stencil,next.stencil);
   if(merge)for(size_t slot=0;slot<next.colors.size();++slot)
     merge&=compatible(previous->colors[slot],next.colors[slot]);
   if(merge) {
@@ -101,7 +101,7 @@ bool SameStorage(const SurfaceView& a,const SurfaceView& b) {
 }
 bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
                    SurfaceContents& final,std::string& error) {
-  if(!f.sequence||f.surfaces.empty()||f.surfaces.size()>4096||f.commands.empty()||f.commands.size()>4096)
+  if(!f.sequence||f.surfaces.size()>4096||f.commands.empty()||f.commands.size()>4096)
     return Reject(error,"Invalid ordered frame size or sequence");
   std::map<SurfaceKey,const Surface*> declarations;
   uint64_t subresources=0;
@@ -158,8 +158,13 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
     for(const auto& a:pass.colors)if(a)attachments.push_back(&*a);
     if(pass.depth)attachments.push_back(&*pass.depth);
     if(pass.stencil)attachments.push_back(&*pass.stencil);
-    if(attachments.empty())return Reject(error,"Ordered pass has no attachments");
     uint32_t width=0,height=0,samples=0;
+    if(attachments.empty()) {
+      width=pass.attachmentless_extent[0];height=pass.attachmentless_extent[1];samples=1;
+      if(!width||!height||width>16384||height>16384)
+        return Reject(error,"Invalid attachmentless pass extent");
+    } else if(pass.attachmentless_extent!=std::array<uint32_t,2>{})
+      return Reject(error,"Attached pass has an attachmentless extent");
     std::set<SurfaceView> occupied;
     std::vector<SurfaceView> writes;
     const auto role=[&](const std::optional<Attachment>& a,Aspect aspect) {

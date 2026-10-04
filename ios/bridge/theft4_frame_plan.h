@@ -84,6 +84,8 @@ struct HostDraw {
 };
 using PassCommand=std::variant<FrameDraw,RectClear,HostDraw>;
 struct Pass {
+  // Explicit dimensions only for passes without attachments (one sample).
+  std::array<uint32_t,2> attachmentless_extent{};
   std::array<std::optional<Attachment>,4> colors{};
   std::optional<Attachment> depth,stencil;
   std::vector<PassCommand> commands;

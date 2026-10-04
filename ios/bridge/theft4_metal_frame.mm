@@ -115,6 +115,10 @@ struct FrameAdapter::Impl {
   }
   MTLRenderPassDescriptor* Pass(const render::Pass& source,std::string& error) {
     auto result=[MTLRenderPassDescriptor renderPassDescriptor];
+    if(source.attachmentless_extent[0]) {
+      result.renderTargetWidth=source.attachmentless_extent[0];
+      result.renderTargetHeight=source.attachmentless_extent[1];result.defaultRasterSampleCount=1;
+    }
     const auto assign=[&](MTLRenderPassAttachmentDescriptor* d,const render::Attachment& a) {
       d.texture=View(a.view,error);if(!d.texture)return false;
       d.loadAction=Load(a.load);d.storeAction=Store(a.store);

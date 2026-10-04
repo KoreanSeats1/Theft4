@@ -654,7 +654,30 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         target.depth_stencil_attachment_active=true;
         target.depth_format=ConvertSurfaceFormat(descriptor.format,true);
       }
-      if(!target.width)return reject("Metal draw requires explicit attachmentless/presenter lowering");
+      if(!target.width) {
+        const auto& state=*command.pipeline_state;
+        const SurfaceDescriptor* extent=nullptr;
+        for(const auto& descriptor:state.render_targets)
+          if(descriptor.handle&&descriptor.width&&descriptor.height){extent=&descriptor;break;}
+        if(!extent&&state.depth_stencil.handle&&state.depth_stencil.width&&state.depth_stencil.height)
+          extent=&state.depth_stencil;
+        const bool has_bound_target=state.depth_stencil.handle||std::any_of(state.render_targets.begin(),state.render_targets.end(),
+          [](const auto& descriptor){return descriptor.handle!=0;});
+        if(!has_bound_target&&(usage.color_attachment_mask&1u))
+          return reject("Metal legacy presenter draw requires explicit output lowering");
+        uint32_t fallback_width=0,fallback_height=0;
+        if(!extent) {
+          r::PresentationTarget presentation;
+          if(!frame_backend_->Target(presentation,error))return false;
+          fallback_width=presentation.width;fallback_height=presentation.height;
+        }
+        const auto bounded=BoundNativeAttachmentlessExtent(extent?extent->width:fallback_width,extent?extent->height:fallback_height,
+          caps.max_image_dimension_2d,caps.max_image_dimension_2d);
+        if(!bounded.width||!bounded.height)return reject("Metal attachmentless draw has no title extent");
+        target.width=target.logical_width=bounded.width;target.height=target.logical_height=bounded.height;
+        target.samples=target.guest_samples=VK_SAMPLE_COUNT_1_BIT;
+        pass.attachmentless_extent={target.width,target.height};
+      }
       const uint32_t fetch_mask=command.pipeline_state->vertex_shader_resource->used_texture_mask|
           (command.pipeline_state->pixel_shader_resource?command.pipeline_state->pixel_shader_resource->used_texture_mask:0);
       for(uint32_t slot=0;slot<kTextureStageCount;++slot)if((fetch_mask&(1u<<slot))&&

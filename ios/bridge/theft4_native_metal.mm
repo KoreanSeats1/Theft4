@@ -230,6 +230,11 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     if (stencil.sampleCount != p.samples) return Error(error, "Metal stencil sample count mismatch");
     if (!width) { width = stencil.width; height = stencil.height; }
   }
+  if (!width && !depth && !stencil) {
+    width=impl_->pass.renderTargetWidth;height=impl_->pass.renderTargetHeight;
+    if(p.samples!=impl_->pass.defaultRasterSampleCount)
+      return Error(error,"Metal attachmentless sample count mismatch");
+  }
   if (!width || !height || !std::isfinite(d.viewport.originX) || !std::isfinite(d.viewport.originY) ||
       !std::isfinite(d.viewport.width) || !std::isfinite(d.viewport.height) ||
       !std::isfinite(d.viewport.znear) || !std::isfinite(d.viewport.zfar) ||

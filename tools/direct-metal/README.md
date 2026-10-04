@@ -276,4 +276,33 @@ planes, volume depth pitch, compressed block footprints, padded rows and the tig
 last row; checks every mip/slice and rejects duplicate/missing or truncated inputs.
 It returns layout only; the caller attaches the shared immutable byte generation
 after validation. These are the actual game frontend preparation boundaries.
-Full ordered Metal game-frame production and backend selection are still required.
+The ordered Metal frontend now uses this boundary for both game draws and host
+effect inputs. Full-game execution and representative scene comparisons remain
+unverified.
+
+## Ordered effects and game startup
+
+The live frame producer consumes composite markers and builds SplitPostFx and
+sun-shaft passes in command order. It snapshots the scene before writing it,
+retains the zero-amplitude DOF shortcut, rounds half extents up, and preserves
+sampled channel views. Presentation supports the encoded SDR drawable contract,
+including manual SMAA at all four qualities with the shipped lookup textures.
+Host multisample resolves retain the allocation's multisample texture type.
+
+Configure `THEFT4_METAL_LIBRARIES` with the offline iOS game shader directory
+and `THEFT4_METAL_HOST_LIBRARIES` with its host utility directory. Both manifests
+and the compiled libraries are packaged under `MetalShaders` in the game app.
+With `THEFT4_DIRECT_METAL_BACKEND` compiled, `THEFT4_GRAPHICS_BACKEND=metal`
+selects the title frontend with a direct Metal worker and creates no Vulkan
+provider or presenter. `THEFT4_DIRECT_METAL_DEFAULT=ON` selects that route for
+normal icon launches and requires bundled shaders. It remains off in the current
+build configuration. `native` and `generic` explicitly select the preserved
+comparison renderers. A requested Metal route never silently falls back.
+
+The Mac `metal_backend_worker_test` exercises the same effects builder: zero/full
+DOF, odd extents, the four-pass sun chain, all SMAA qualities, sampled swizzles,
+scaled presentation, and an isolated bright pixel controlled by its stipple mask.
+These checks prove those host passes on a Mac GPU; they do not prove that the live
+game command producer boots or renders complete scenes on iPad. Outstanding paths
+include override shader libraries, GPU texture locks, buffered/indexed rectangles,
+attachmentless draws, registration ordering, and HDR/EDR presentation.

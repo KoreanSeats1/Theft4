@@ -25,6 +25,9 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   std::map<std::pair<uint32_t,bool>,std::vector<uint64_t>> surface_buckets;
   std::unordered_map<GuestPlacementKey,PlacementOwner,GuestPlacementKeyHash> placements;
   std::map<uint64_t,TextureRecord> textures;
+  std::map<std::string,std::shared_ptr<const theft4::render::Surface>> utilities;
+  theft4::render::SmaaLookups smaa_lookups;
+  NativeReflectionRegistry reflections; // Snapshot for this speculative batch.
   struct BytesRecord {
     std::weak_ptr<const void> resource;
     std::shared_ptr<const theft4::render::Bytes> owner;
@@ -46,6 +49,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend() {
   if(native_metal_frame_) {
     native_metal_frame_->surfaces.clear();native_metal_frame_->surface_buckets.clear();
     native_metal_frame_->placements.clear();native_metal_frame_->textures.clear();
+    native_metal_frame_->utilities.clear();native_metal_frame_->smaa_lookups={};
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
   }
@@ -70,7 +74,7 @@ void Gta4NativeGraphicsSystem::ReleaseNativeMetalResource(uint32_t handle) {
 
 bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
-    std::string& error) {
+    const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error) {
   namespace r=theft4::render;
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
@@ -99,12 +103,13 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   NativeMetalFrameState next;
   next.surfaces=native_metal_frame_->surfaces;next.surface_buckets=native_metal_frame_->surface_buckets;
   next.placements=native_metal_frame_->placements;next.textures=native_metal_frame_->textures;
-  next.contents=native_metal_frame_->contents;
+  next.contents=native_metal_frame_->contents;next.utilities=native_metal_frame_->utilities;
+  next.smaa_lookups=native_metal_frame_->smaa_lookups;
   auto plan=std::make_shared<r::FramePlan>();plan->sequence=++next_native_metal_sequence_;
   const auto caps=frame_backend_->Capabilities();
   // Releases in this batch retire reflection aliases in command order. Failed
   // admission commits neither that registry nor placement/content ownership.
-  auto reflections=reflection_resources_;
+  next.reflections=reflection_resources_;auto& reflections=next.reflections;
   const auto reject=[&](const char* reason){error=reason;return false;};
   const auto retain=[&](const std::shared_ptr<const r::Surface>& surface) {
     if(std::none_of(plan->surfaces.begin(),plan->surfaces.end(),[&](const auto& s){return s->key==surface->key;}))
@@ -114,6 +119,15 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       ((caps.sample_counts&(1u<<2))?2u:0u)|((caps.sample_counts&(1u<<4))?4u:0u);
   const auto forget_contents=[&](r::SurfaceKey key) {
     std::erase_if(next.contents,[&](const auto& view){return view.surface==key;});
+  };
+  const r::UtilityAllocator utility_for=[&](std::string_view role,uint32_t width,uint32_t height,r::Format format)
+      ->std::shared_ptr<const r::Surface> {
+    if(!width||!height||width>caps.max_image_dimension_2d||height>caps.max_image_dimension_2d)return {};
+    auto& cached=next.utilities[std::string(role)];
+    if(cached&&cached->width==width&&cached->height==height&&cached->format==format) {retain(cached);return cached;}
+    if(cached)forget_contents(cached->key);
+    auto surface=std::make_shared<r::Surface>();surface->key={++next_native_metal_allocation_,1};
+    surface->width=width;surface->height=height;surface->format=format;cached=surface;retain(surface);return surface;
   };
   const auto surface_for=[&](const SurfaceDescriptor& descriptor,bool depth,
                             uint32_t scene_sample_override=0)->std::shared_ptr<const r::Surface> {
@@ -460,6 +474,50 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     }
     return true;
   };
+  PostFxScheduler postfx;postfx.BeginFrame();
+  const auto host_fetch=[&](const NativeCommand& command,uint32_t slot,r::HostFetch& fetch) {
+    const auto& resource=command.textures[slot];
+    if(resource&&resource->gpu_produced&&!produced_fetch(NativeResourceView<NativeTextureResource>(resource).Share()))return false;
+    if(!PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>(resource),command.texture_fetches[slot],next,fetch,error))return false;
+    if(fetch.produced) {
+      if(fetch.produced->kind!=r::ImageKind::Texture2D)return reject("Metal host effect requires a 2D input");
+      fetch.produced->level=fetch.produced->slice=0;fetch.produced->levels=fetch.produced->slices=1;
+    } else if(!fetch.image||fetch.image->kind!=r::ImageKind::Texture2D)return reject("Metal host effect texture unavailable");
+    return true;
+  };
+  const auto capture_scene=[&](const NativeCommand& command) {
+    bool captured=false;
+    if(command.textures[2]&&command.textures[2]->gpu_produced&&command.textures[0]&&command.textures[1]) {
+      r::HostFetch scene,depth,mask;
+      if(!host_fetch(command,2,scene)||!host_fetch(command,1,depth)||!host_fetch(command,0,mask))return false;
+      auto& texture=next.textures.at(command.textures[2]->generation);
+      if(!r::SupportsAspect(texture.owner->format,r::Aspect::Color)||texture.owner->kind!=r::ImageKind::Texture2D)
+        return reject("Metal composite scene requires color 2D storage");
+      const auto bytes=command.shader_state?AuthoritativeConstantState::Materialize(command.shader_state->pixel_constants):nullptr;
+      const auto vector=[&](size_t offset) {
+        std::array<float,4> value{};const size_t relative=offset-kPixelConstantsOffset;
+        if(bytes&&relative<=bytes->size()&&sizeof(value)<=bytes->size()-relative)
+          for(size_t c=0;c<4;++c)value[c]=std::bit_cast<float>(LoadGuestWord(*bytes,relative+c*4));
+        return value;
+      };
+      r::SplitConstants constants;constants.projection=vector(kDofProjectionSnapshotOffset);
+      constants.distance=vector(kDofDistanceSnapshotOffset);constants.blur=vector(kDofBlurSnapshotOffset);
+      if(!r::AppendSplitPostFx(*plan,next.contents,texture.owner,depth,mask,constants,utility_for,next_native_metal_allocation_,error))return false;
+      texture.content_serial=++next_native_metal_content_serial_;captured=true;
+      if(REXCVAR_GET(gta4_native_host_sun_shafts)) {
+        const auto parameters=BuildSunShaftParameters(environmental_data.get());
+        if(parameters.valid) {
+          r::SunConstants sun;sun.density=parameters.density;sun.decay=parameters.decay;
+          sun.screen={parameters.screen_position[0],parameters.screen_position[1],parameters.intensity,parameters.horizon_fade};
+          std::copy(parameters.sun_color.begin(),parameters.sun_color.end(),sun.color_and_sky_start.begin());
+          sun.color_and_sky_start[3]=0.9f;sun.sky_end[0]=1;
+          if(!r::AppendSunShafts(*plan,next.contents,texture.owner,depth,sun,utility_for,next_native_metal_allocation_,error))return false;
+          texture.content_serial=++next_native_metal_content_serial_;
+        }
+      }
+    }
+    postfx.FinishSceneCapture(captured);return true;
+  };
   size_t command_index=0;
   diagnostic_submitted_frame_=present.submitted_frame;
   for(const NativeCommand& command:current_frame_) {
@@ -468,7 +526,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       // The worker already applies phase nesting and each draw captures its
       // effective phase. This marker performs no graphics-memory operation.
       if(command.bytes.size()!=sizeof(RenderPhaseMarkerCommand))return reject("Metal render phase marker malformed");
-      continue;
+      RenderPhaseMarkerCommand marker;std::memcpy(&marker,command.bytes.data(),sizeof(marker));
+      postfx.ObserveMarker(marker.phase,marker.event);continue;
     }
     if(command.type==CommandType::kReleaseResource) {
       ReleaseResourceCommand release{};std::memcpy(&release,command.bytes.data(),sizeof(release));
@@ -483,6 +542,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
        command.type==CommandType::kDrawIndexedPrimitive) {
       if(!command.pipeline_state||!command.pipeline_state->vertex_shader_resource)
         return reject("Metal draw snapshot unavailable");
+      if(postfx.scene_capture_pending()&&!capture_scene(command))return false;
       const auto usage=GetRenderingTargetUsage(command);
       NativeRenderingTarget target;r::Pass pass;const auto sample_override=sample_override_for(command);
       const auto attachment_for=[&](const std::shared_ptr<const r::Surface>& surface,r::Aspect aspect) {
@@ -742,14 +802,41 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     }
   }
   if(present.device) {
-    // Publication is wired to this producer, but no half-rendered game frame
-    // is presented while draw, resolve and post-processing integration remains.
-    (void)source;return reject("Metal game presentation awaits complete draw/resolve/helper lowering");
+    if(!source)return reject("Metal presentation source resource missing");
+    r::PresentationTarget target;if(!frame_backend_->Target(target,error))return false;
+    // The existing utility shader emits encoded SDR or extended-linear HDR.
+    // Enabling an sRGB drawable here would encode its SDR output a second time.
+    // The HDR layer/EDR contract must be connected before using float drawables.
+    if(target.format!=r::Format::BGRA8Unorm)return reject("Metal presentation requires the SDR drawable color contract");
+    if(source->gpu_produced&&!produced_fetch(source))return false;
+    r::HostFetch input;
+    if(!PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>(source),source->fetch,next,input,error))return false;
+    uint32_t width=0,height=0,logical_width=0,logical_height=0;
+    if(input.produced) {
+      const auto& texture=next.textures.at(source->generation);const auto& storage=*texture.owner;
+      if(storage.kind!=r::ImageKind::Texture2D||!r::SupportsAspect(storage.format,r::Aspect::Color))
+        return reject("Metal presentation requires single-slice color input");
+      width=storage.width;height=storage.height;
+      logical_width=texture.description->logical_width;logical_height=texture.description->logical_height;
+      input.produced->levels=input.produced->slices=1;input.produced->level=input.produced->slice=0;
+    } else {
+      if(!input.image||input.image->kind!=r::ImageKind::Texture2D)return reject("Metal presentation texture unavailable");
+      width=input.image->width;height=input.image->height;logical_width=source->info.width+1;logical_height=source->info.height+1;
+    }
+    r::PresentConstants constants;constants.source_width=width;constants.source_height=height;
+    constants.destination_width=target.width;constants.destination_height=target.height;
+    const bool ssaa=IsNativeSsaaEnabled()&&(width!=logical_width||height!=logical_height);
+    constants.output_mode=GetNativePresentationAABits()|(ssaa?32u:0u)|4u|(REXCVAR_GET(gta4_native_output_dither)?8u:0u);
+    const int quality=IsNativeSmaaEnabled()?int(ParseSmaaQuality(rex::cvar::Query<std::string>("gta4_native_smaa_quality"))):-1;
+    if(quality>=0&&!next.smaa_lookups.area)next.smaa_lookups=r::MakeSmaaLookups(next_native_metal_allocation_);
+    auto output=utility_for("present-output",target.width,target.height,target.format);
+    if(!output||!r::AppendPresentation(*plan,next.contents,input,output,constants,quality,next.smaa_lookups,
+                                     utility_for,next_native_metal_allocation_,error))return false;
   }
   if(!plan->commands.empty()) {
     r::SurfaceContents final;
     if(!r::ValidateFrame(*plan,native_metal_frame_->contents,final,error))return false;
-    if(!frame_backend_->Submit(plan,false,error))return false;
+    if(!frame_backend_->Submit(plan,present.device!=0,error))return false;
     std::erase_if(next.contents,[&](const auto& view){return r::FindSurface(*plan,view.surface)!=nullptr;});
     next.contents.insert(final.begin(),final.end());
   }
@@ -758,9 +845,9 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       return entry.second.owner->key==view.surface;
     }) && std::none_of(next.textures.begin(),next.textures.end(),[&](const auto& entry) {
       return entry.second.owner->key==view.surface;
-    });
+    }) && std::none_of(next.utilities.begin(),next.utilities.end(),[&](const auto& entry){return entry.second->key==view.surface;});
   });
   next.buffers=std::move(native_metal_frame_->buffers);
   next.images=std::move(native_metal_frame_->images);
-  *native_metal_frame_=std::move(next);reflection_resources_=std::move(reflections);error.clear();return true;
+  reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

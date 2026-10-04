@@ -29,6 +29,8 @@ uint32_t theft4_platform_thermal_state(void);
 // Borrowed pointer retained by the UIKit bridge while bound. Used only to
 // create the MoltenVK surface; ownership remains with the view hierarchy.
 void* theft4_metal_bound_layer(void);
+// Stable process-owned path to the app's offline game and host shader bundle.
+const char* theft4_metal_shader_library_directory(void);
 bool theft4_metal_bound_layer_size(uint32_t* width, uint32_t* height);
 bool theft4_metal_present_clear(double red, double green, double blue,
                                 double alpha);

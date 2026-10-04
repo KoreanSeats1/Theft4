@@ -471,6 +471,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         rex::RuntimeConfig config;
         config.tool_mode = false;
         config.graphics = theft4_create_bootstrap_graphics();
+        if (!config.graphics) throw std::runtime_error("Selected graphics renderer could not initialize");
         config.input_factory = [](bool) { return theft4_create_bootstrap_input(); };
         config.audio_factory = [](rex::runtime::FunctionDispatcher* dispatcher) {
             return theft4_create_bootstrap_audio(dispatcher);

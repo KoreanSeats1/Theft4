@@ -469,6 +469,24 @@ theft4_create_bootstrap_graphics() {
   // silently returned manual Release launches to the much slower generic
   // Xenos translator. Keep the generic renderer as an explicit recovery path.
   const char* backend = std::getenv("THEFT4_GRAPHICS_BACKEND");
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  const bool force_metal=backend&&std::string_view(backend)=="metal";
+#ifdef THEFT4_DIRECT_METAL_DEFAULT
+  const bool default_metal=!backend||!backend[0];
+#else
+  const bool default_metal=false;
+#endif
+  if(force_metal||default_metal) {
+    // An explicit Metal test must fail visibly rather than run a different
+    // renderer and produce misleading validation or performance captures.
+    return theft4_create_gta4_metal_graphics();
+  }
+#else
+  if(backend&&std::string_view(backend)=="metal") {
+    REXLOG_ERROR("Theft4 direct Metal was requested but is not compiled into this app");
+    return nullptr;
+  }
+#endif
   const bool force_generic = backend && std::string_view(backend) == "generic";
   if (!force_generic) {
     if (auto native = theft4_create_gta4_native_graphics()) {

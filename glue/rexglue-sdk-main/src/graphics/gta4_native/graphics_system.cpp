@@ -36180,7 +36180,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
 #ifdef THEFT4_DIRECT_METAL_BACKEND
   if (frame_backend_) {
     std::string error;
-    const bool okay = PublishNativeMetalFrame(present, present_source, error);
+    const bool okay = PublishNativeMetalFrame(present, present_source, environmental_data, error);
     if (!okay) REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
 #if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
     if (okay && present.device) theft4_frame_counter_note_published();

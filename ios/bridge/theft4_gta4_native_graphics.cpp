@@ -18,6 +18,9 @@
 #include <rex/ui/vulkan/provider.h>
 
 #include "../../glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h"
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+#include "theft4_metal_backend.h"
+#endif
 
 // The desktop frontend normally owns these user-facing GTA IV settings. The
 // iOS shell has no desktop GTA4App, so publish the same renderer defaults here
@@ -231,3 +234,23 @@ theft4_create_gta4_native_graphics() {
   }
   return graphics;
 }
+
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+std::unique_ptr<rex::system::IGraphicsSystem>
+theft4_create_gta4_metal_graphics() {
+  void* layer=theft4_metal_bound_layer();
+  if(!layer){REXLOG_ERROR("Theft4 direct Metal renderer has no bound CAMetalLayer");return nullptr;}
+  rex::cvar::SetFlagByName("gta4_native_vector_fonts","false");
+  auto backend=theft4::metal::CreateFrameBackend(layer,theft4_metal_shader_library_directory(),2);
+  if(!backend||!backend->Capabilities().max_image_dimension_2d) {
+    REXLOG_ERROR("Theft4 direct Metal renderer rejected the Apple GPU");return nullptr;
+  }
+  auto graphics=std::make_unique<rex::graphics::gta4_native::Gta4NativeGraphicsSystem>(std::move(backend));
+  {
+    std::lock_guard lock(native_lifecycle_mutex);
+    graphics->SetHostActive(native_lifecycle_active);native_lifecycle_renderer=graphics.get();
+  }
+  REXLOG_INFO("Theft4 selected direct Metal; title command frontend, no Vulkan provider or presenter");
+  return graphics;
+}
+#endif

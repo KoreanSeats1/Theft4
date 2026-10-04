@@ -159,14 +159,17 @@ struct FrameAdapter::Impl {
     auto format=PlanAdapter::PixelFormat(view.format==render::Format::Invalid ? entry.descriptor.format : view.format);
     if(view.aspect==render::Aspect::Stencil&&format==MTLPixelFormatDepth32Float_Stencil8)format=MTLPixelFormatX32_Stencil8;
     const std::array identity{render::Swizzle::Red,render::Swizzle::Green,render::Swizzle::Blue,render::Swizzle::Alpha};
+    // Host resolve shaders sample a multisample allocation directly. Preserve
+    // its texture type when constructing a ranged or swizzled sampling view.
+    const auto texture_type=entry.descriptor.samples>1 ? MTLTextureType2DMultisample : Type(view.kind);
     id<MTLTexture> texture=nil;
     if(view.swizzle==identity) {
-      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:Type(view.kind)
+      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:texture_type
         levels:NSMakeRange(view.level,view.levels) slices:NSMakeRange(view.slice,view.slices)];
     }else {
       auto channels=MTLTextureSwizzleChannelsMake(MTLTextureSwizzle(view.swizzle[0]),MTLTextureSwizzle(view.swizzle[1]),
         MTLTextureSwizzle(view.swizzle[2]),MTLTextureSwizzle(view.swizzle[3]));
-      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:Type(view.kind)
+      texture=[entry.texture newTextureViewWithPixelFormat:format textureType:texture_type
         levels:NSMakeRange(view.level,view.levels) slices:NSMakeRange(view.slice,view.slices) swizzle:channels];
     }
     if(!texture){error="Metal rejected the sampled mip/layer/format alias";return nil;}

@@ -1,3 +1,104 @@
+bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
+    NativeResourceView<NativeTextureResource> resource_view,const xenos::xe_gpu_texture_fetch_t& fetch,
+    const NativeMetalFrameState& frame_state,theft4::render::HostFetch& output,std::string& error) {
+  namespace r=theft4::render;
+  const auto reject=[&](const char* reason){error=reason;return false;};
+  if(!native_metal_frame_||!frame_backend_)return reject("Metal fetch CPU state unavailable");
+  const auto caps=frame_backend_->Capabilities();output={};
+  struct FetchPacket {r::Fetch fetch;std::optional<r::SampledSurfaceView> produced;} packet;
+  const auto make_bytes=[&](std::span<const uint8_t> data,std::array<uint64_t,4> conversion)->std::shared_ptr<const r::Bytes> {
+    if(data.empty()||data.size()>64*1024*1024)return {};
+    auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
+    bytes->conversion=conversion;bytes->value.assign(data.begin(),data.end());return bytes;
+  };
+    const auto resource=resource_view.Share();std::shared_ptr<NativeTextureImage> metadata;
+    if(resource) {
+      if(resource->gpu_produced) {
+        const auto found=frame_state.textures.find(resource->generation);
+        if(found==frame_state.textures.end())return reject("Metal GPU-produced fetch allocation missing");
+        metadata=found->second.description;const auto& surface=*found->second.owner;
+        r::SampledSurfaceView view;view.surface=surface.key;view.kind=surface.kind;
+        view.levels=surface.levels;view.slices=r::SurfaceSlices(surface);
+        view.aspect=r::SupportsAspect(surface.format,r::Aspect::Depth)?r::Aspect::Depth:r::Aspect::Color;
+        const auto& channels=metadata->view_components;
+        const std::array components{channels.r,channels.g,channels.b,channels.a};
+        for(size_t c=0;c<4;++c) {
+          if(components[c]<VK_COMPONENT_SWIZZLE_IDENTITY||components[c]>VK_COMPONENT_SWIZZLE_A)
+            return reject("Metal produced fetch channel mapping invalid");
+          view.swizzle[c]=components[c]==VK_COMPONENT_SWIZZLE_IDENTITY?r::Swizzle(uint32_t(r::Swizzle::Red)+c):
+              r::Swizzle(uint32_t(components[c])-1);
+        }
+        packet.produced=view;
+      } else {
+      auto found=native_metal_frame_->images.find(resource->generation);
+      if(found!=native_metal_frame_->images.end()&&!found->second.resource.expired()) {
+        packet.fetch.image=found->second.owner;metadata=found->second.description;found->second.used=next_native_metal_sequence_;
+      } else {
+        VkFormat format=ConvertTextureFormat(resource->info.format);
+        if(format==VK_FORMAT_UNDEFINED||format==VK_FORMAT_D24_UNORM_S8_UINT||format==VK_FORMAT_D32_SFLOAT_S8_UINT)
+          return reject("Metal static texture format unavailable");
+        std::span<const uint8_t> payload=resource->payload;
+        std::vector<r::source::TextureUploadMip> mips;
+        for(const auto& m:resource->mip_levels)mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,
+            m.layer_count,m.buffer_row_length,m.buffer_image_height,m.payload_offset,m.payload_size});
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+        theft4::astc::BackendPayload prepared;
+        const bool bc=format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK||format==VK_FORMAT_BC2_UNORM_BLOCK||format==VK_FORMAT_BC3_UNORM_BLOCK;
+        const char* setting=std::getenv("THEFT4_ASTC_ENABLED");const bool astc=setting&&std::strcmp(setting,"1")==0;
+        if(bc&&(!caps.bc_textures||astc)) {
+          std::vector<theft4::astc::Mip> input_mips;
+          for(const auto& m:mips)input_mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,m.layer_count,
+              m.buffer_row_length,m.buffer_image_height,size_t(m.payload_offset),size_t(m.payload_size)});
+          const auto bc_format=format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK?theft4::astc::BcFormat::kBc1:
+              format==VK_FORMAT_BC2_UNORM_BLOCK?theft4::astc::BcFormat::kBc2:theft4::astc::BcFormat::kBc3;
+          theft4::astc::Input input{bc_format,resource->content_hash,resource->info.width+1,resource->info.height+1,payload,input_mips};
+          const char* root=std::getenv("THEFT4_ASTC_PREPARATION_ROOT");
+          theft4::astc::BackendPolicy policy{caps.bc_textures,astc,caps.astc_textures,true,root?std::filesystem::path(root):std::filesystem::path()};
+          if(!theft4::astc::PrepareForBackend(input,policy,prepared,&error))return false;
+          if(prepared.storage!=theft4::astc::PayloadStorage::OriginalBc) {
+            format=prepared.storage==theft4::astc::PayloadStorage::Astc4x4?VK_FORMAT_ASTC_4x4_UNORM_BLOCK:VK_FORMAT_R8G8B8A8_UNORM;
+            payload=prepared.converted.payload;mips.clear();
+            for(const auto& m:prepared.converted.mips)mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,
+                m.layer_count,m.buffer_row_length,m.buffer_image_height,m.payload_offset,m.payload_size});
+          }
+        }
+#endif
+        if(!caps.bc_textures&&(format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK||format==VK_FORMAT_BC2_UNORM_BLOCK||format==VK_FORMAT_BC3_UNORM_BLOCK||
+            format==VK_FORMAT_BC4_UNORM_BLOCK||format==VK_FORMAT_BC4_SNORM_BLOCK||format==VK_FORMAT_BC5_UNORM_BLOCK||format==VK_FORMAT_BC5_SNORM_BLOCK))
+          return reject("Metal sampled BC format unsupported by device");
+        PreparedNativeTextureDescription description;
+        NativeTextureCapabilities tcaps{caps.max_image_dimension_2d,true,true,
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT};
+        if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,nullptr,tcaps,description,error,&frame_state.reflections))return false;
+        auto image=std::make_shared<r::Image>();const auto& m=*description.image;
+        r::source::SampledImageDescription sampled{m.format,m.view_type,m.view_components,m.width,m.height,
+            m.view_type==VK_IMAGE_VIEW_TYPE_3D?resource->info.depth+1:1,
+            m.view_type==VK_IMAGE_VIEW_TYPE_2D_ARRAY?resource->info.depth+1:1,m.mip_levels};
+        if(!r::source::DecodeImageUpload(sampled,mips,payload.size(),*image,error))return false;
+        image->source=make_bytes(payload,{uint64_t(format),m.width,m.height,m.mip_levels});
+        if(!image->source)return reject("Metal static image packet allocation failed");
+        metadata=std::shared_ptr<NativeTextureImage>(std::move(description.image));metadata->source.reset();
+        native_metal_frame_->images[resource->generation]={NativeResourceView<NativeTextureResource>(resource).Share(),image,metadata,next_native_metal_sequence_};
+        packet.fetch.image=std::move(image);
+      }
+      }
+    }
+    // Borrow the original resource only during CPU font/material sampler policy;
+    // the image cache itself does not keep retired guest snapshots alive.
+    if(metadata)metadata->source=NativeResourceView<NativeTextureResource>(resource).Share();
+    const auto unborrow=MakeScopeExit([&]{if(metadata)metadata->source.reset();});
+    const auto format=metadata?metadata->format:VK_FORMAT_R8G8B8A8_UNORM;
+    const bool linear=caps.float32_filtering||(format!=VK_FORMAT_R32_SFLOAT&&format!=VK_FORMAT_R32G32_SFLOAT&&format!=VK_FORMAT_R32G32B32A32_SFLOAT);
+    NativeSamplerKey sampler_key;VkSamplerCreateInfo sampler_info;auto sampler=std::make_shared<r::Sampler>();
+    if(!PrepareNativeSampler(fetch,metadata.get(),
+        {caps.mirror_clamp_to_edge,true,float(caps.maximum_anisotropy)},linear,sampler_key,sampler_info)||
+        !r::source::DecodeSampler(sampler_info,*sampler,error))return reject("Metal effective sampler preparation failed");
+    packet.fetch.sampler=std::move(sampler);
+
+  output.produced=packet.produced;output.image=packet.fetch.image;output.sampler=packet.fetch.sampler;
+  error.clear();return true;
+}
+
 // Actual title draw lowering. This runs on the native render worker and uses
 // immutable CPU snapshots; it never creates or reads Vulkan driver objects.
 bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
@@ -263,81 +364,10 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   const uint32_t used=state.vertex_shader_resource->used_texture_mask|
       (state.pixel_shader_resource?state.pixel_shader_resource->used_texture_mask:0);
   for(uint32_t slot=0;slot<kTextureStageCount;++slot)if(used&(1u<<slot)) {
-    const auto& resource=command.textures[slot];std::shared_ptr<NativeTextureImage> metadata;
-    if(resource) {
-      if(resource->gpu_produced) {
-        const auto found=frame_state.textures.find(resource->generation);
-        if(found==frame_state.textures.end())return reject("Metal GPU-produced fetch allocation missing");
-        metadata=found->second.description;const auto& surface=*found->second.owner;
-        r::SampledSurfaceView view;view.surface=surface.key;view.kind=surface.kind;
-        view.levels=surface.levels;view.slices=r::SurfaceSlices(surface);
-        view.aspect=r::SupportsAspect(surface.format,r::Aspect::Depth)?r::Aspect::Depth:r::Aspect::Color;
-        result.produced[slot]=view;
-      } else {
-      auto found=native_metal_frame_->images.find(resource->generation);
-      if(found!=native_metal_frame_->images.end()&&!found->second.resource.expired()) {
-        draw.fetches[slot].image=found->second.owner;metadata=found->second.description;found->second.used=next_native_metal_sequence_;
-      } else {
-        VkFormat format=ConvertTextureFormat(resource->info.format);
-        if(format==VK_FORMAT_UNDEFINED||format==VK_FORMAT_D24_UNORM_S8_UINT||format==VK_FORMAT_D32_SFLOAT_S8_UINT)
-          return reject("Metal static texture format unavailable");
-        std::span<const uint8_t> payload=resource->payload;
-        std::vector<r::source::TextureUploadMip> mips;
-        for(const auto& m:resource->mip_levels)mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,
-            m.layer_count,m.buffer_row_length,m.buffer_image_height,m.payload_offset,m.payload_size});
-#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
-        theft4::astc::BackendPayload prepared;
-        const bool bc=format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK||format==VK_FORMAT_BC2_UNORM_BLOCK||format==VK_FORMAT_BC3_UNORM_BLOCK;
-        const char* setting=std::getenv("THEFT4_ASTC_ENABLED");const bool astc=setting&&std::strcmp(setting,"1")==0;
-        if(bc&&(!caps.bc_textures||astc)) {
-          std::vector<theft4::astc::Mip> input_mips;
-          for(const auto& m:mips)input_mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,m.layer_count,
-              m.buffer_row_length,m.buffer_image_height,size_t(m.payload_offset),size_t(m.payload_size)});
-          const auto bc_format=format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK?theft4::astc::BcFormat::kBc1:
-              format==VK_FORMAT_BC2_UNORM_BLOCK?theft4::astc::BcFormat::kBc2:theft4::astc::BcFormat::kBc3;
-          theft4::astc::Input input{bc_format,resource->content_hash,resource->info.width+1,resource->info.height+1,payload,input_mips};
-          const char* root=std::getenv("THEFT4_ASTC_PREPARATION_ROOT");
-          theft4::astc::BackendPolicy policy{caps.bc_textures,astc,caps.astc_textures,true,root?std::filesystem::path(root):std::filesystem::path()};
-          if(!theft4::astc::PrepareForBackend(input,policy,prepared,&error))return false;
-          if(prepared.storage!=theft4::astc::PayloadStorage::OriginalBc) {
-            format=prepared.storage==theft4::astc::PayloadStorage::Astc4x4?VK_FORMAT_ASTC_4x4_UNORM_BLOCK:VK_FORMAT_R8G8B8A8_UNORM;
-            payload=prepared.converted.payload;mips.clear();
-            for(const auto& m:prepared.converted.mips)mips.push_back({m.level,m.width,m.height,m.depth,m.base_array_layer,
-                m.layer_count,m.buffer_row_length,m.buffer_image_height,m.payload_offset,m.payload_size});
-          }
-        }
-#endif
-        if(!caps.bc_textures&&(format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK||format==VK_FORMAT_BC2_UNORM_BLOCK||format==VK_FORMAT_BC3_UNORM_BLOCK||
-            format==VK_FORMAT_BC4_UNORM_BLOCK||format==VK_FORMAT_BC4_SNORM_BLOCK||format==VK_FORMAT_BC5_UNORM_BLOCK||format==VK_FORMAT_BC5_SNORM_BLOCK))
-          return reject("Metal sampled BC format unsupported by device");
-        PreparedNativeTextureDescription description;
-        NativeTextureCapabilities tcaps{caps.max_image_dimension_2d,true,true,
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT};
-        if(!PrepareNativeTextureDescription(NativeResourceView<NativeTextureResource>(resource),format,nullptr,tcaps,description,error))return false;
-        auto image=std::make_shared<r::Image>();const auto& m=*description.image;
-        r::source::SampledImageDescription sampled{m.format,m.view_type,m.view_components,m.width,m.height,
-            m.view_type==VK_IMAGE_VIEW_TYPE_3D?resource->info.depth+1:1,
-            m.view_type==VK_IMAGE_VIEW_TYPE_2D_ARRAY?resource->info.depth+1:1,m.mip_levels};
-        if(!r::source::DecodeImageUpload(sampled,mips,payload.size(),*image,error))return false;
-        image->source=make_bytes(payload,{uint64_t(format),m.width,m.height,m.mip_levels});
-        if(!image->source)return reject("Metal static image packet allocation failed");
-        metadata=std::shared_ptr<NativeTextureImage>(std::move(description.image));metadata->source.reset();
-        native_metal_frame_->images[resource->generation]={NativeResourceView<NativeTextureResource>(resource).Share(),image,metadata,next_native_metal_sequence_};
-        draw.fetches[slot].image=std::move(image);
-      }
-      }
-    }
-    // Borrow the original resource only during CPU font/material sampler policy;
-    // the image cache itself does not keep retired guest snapshots alive.
-    if(metadata)metadata->source=NativeResourceView<NativeTextureResource>(resource).Share();
-    const auto unborrow=MakeScopeExit([&]{if(metadata)metadata->source.reset();});
-    const auto format=metadata?metadata->format:VK_FORMAT_R8G8B8A8_UNORM;
-    const bool linear=caps.float32_filtering||(format!=VK_FORMAT_R32_SFLOAT&&format!=VK_FORMAT_R32G32_SFLOAT&&format!=VK_FORMAT_R32G32B32A32_SFLOAT);
-    NativeSamplerKey sampler_key;VkSamplerCreateInfo sampler_info;auto sampler=std::make_shared<r::Sampler>();
-    if(!PrepareNativeSampler(command.texture_fetches[slot],metadata.get(),
-        {caps.mirror_clamp_to_edge,true,float(caps.maximum_anisotropy)},linear,sampler_key,sampler_info)||
-        !r::source::DecodeSampler(sampler_info,*sampler,error))return reject("Metal effective sampler preparation failed");
-    draw.fetches[slot].sampler=std::move(sampler);
+    r::HostFetch fetch;if(!PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>(command.textures[slot]),
+        command.texture_fetches[slot],frame_state,fetch,error))return false;
+    draw.fetches[slot].image=fetch.image;draw.fetches[slot].sampler=fetch.sampler;
+    result.produced[slot]=fetch.produced;
   }
   if(!r::Validate(*capture,error))return false;
   result.capture=std::move(capture);output=std::move(result);error.clear();return true;

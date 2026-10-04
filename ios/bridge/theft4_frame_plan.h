@@ -67,7 +67,7 @@ struct RectClear {
   uint32_t stencil_value=0;
 };
 struct HostFetch {
-  std::optional<SurfaceView> produced;
+  std::optional<SampledSurfaceView> produced;
   std::shared_ptr<const Image> image;
   std::shared_ptr<const Sampler> sampler;
 };
@@ -114,7 +114,7 @@ using SurfaceContents=std::set<SurfaceView>;
 const Surface* FindSurface(const FramePlan&,SurfaceKey);
 uint32_t SurfaceSlices(const Surface&);
 bool SupportsAspect(Format,Aspect);
-bool ValidateSampledView(const FramePlan&,const SampledSurfaceView&,std::string& error);
+bool ValidateSampledView(const FramePlan&,const SampledSurfaceView&,std::string& error,bool allow_multisampled=false);
 bool SampledViewContains(const SampledSurfaceView&,const SurfaceView&);
 bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
 // Admission is transactional. Reads/loads of discarded or undefined content,

@@ -1,4 +1,5 @@
 #include "theft4_metal_backend.h"
+#include "theft4_postfx_plan.h"
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <cassert>
@@ -298,6 +299,78 @@ int main(int argc,char** argv) {
         inspect_depth(ds,result,[&](size_t x,size_t){return std::array<uint8_t,4>{uint8_t(rebuild?(x<16?128:255):19),0,0,uint8_t(x<16?0:208)};});
       }
     }
+    // Exercise the exact utility builder used by the live title producer. Odd
+    // scene dimensions require rounded-up half targets; every SMAA quality
+    // uses the shipped lookup bytes and its actual Metal host programs.
+    uint64_t utility_id=10000,utility_generation=10000;
+    for(bool dof:{false,true})for(int quality=-1;quality<4;++quality) {
+      const auto allocate=[&](std::string_view,uint32_t w,uint32_t h,render::Format format) {
+        auto result=std::make_shared<render::Surface>();result->key={++utility_id,1};
+        result->width=w;result->height=h;result->format=format;
+        return render::SurfaceOwner(result);
+      };
+      auto scene=allocate("scene",33,17,render::Format::RGBA8Unorm);
+      auto mask=allocate("mask",33,17,render::Format::RGBA8Unorm);
+      auto depth=allocate("depth",33,17,render::Format::RGBA8Unorm);
+      auto output=allocate("output",19,11,render::Format::RGBA8Unorm);
+      auto frame=Clear(scene,++utility_generation,0.25);frame->surfaces.push_back(mask);frame->surfaces.push_back(depth);
+      frame->commands.push_back(Clear(mask,frame->sequence,0)->commands[0]);
+      frame->commands.push_back(Clear(depth,frame->sequence,0)->commands[0]);
+      render::SurfaceContents contents,validated;assert(render::ValidateFrame(*frame,{},contents,error));
+      const auto fetch=[](render::SurfaceOwner owner) {
+        render::HostFetch result;result.produced=render::SurfaceView{owner->key,0,0,render::Aspect::Color};
+        result.sampler=std::make_shared<render::Sampler>();return result;
+      };
+      render::SplitConstants split;split.distance={1,1,1,0.5};if(dof)split.blur={1,0.25,1,0};
+      assert(render::AppendSplitPostFx(*frame,contents,scene,fetch(depth),fetch(mask),split,allocate,utility_generation,error));
+      size_t split_count=0;
+      for(const auto& command:frame->commands)if(auto pass=std::get_if<render::Pass>(&command))
+        for(const auto& draw:pass->commands)if(auto host=std::get_if<render::HostDraw>(&draw)) {
+          if(host->program!=render::HostProgram::SplitPostFx)continue;++split_count;
+          render::SplitConstants c;std::memcpy(&c,host->constants.source->value.data(),sizeof(c));
+          if(c.pass==1||c.pass==2)assert(c.destination[0]==17&&c.destination[1]==9);
+        }
+      assert(split_count==(dof?4:1));
+      render::SunConstants sun;sun.density=0.9;sun.decay=0.95;sun.screen={0.5,0.5,1,1};
+      sun.color_and_sky_start={1,1,1,0.9};sun.sky_end={1,0,0,0};
+      assert(render::AppendSunShafts(*frame,contents,scene,fetch(depth),sun,allocate,utility_generation,error));
+      render::PresentConstants present;present.source_width=33;present.source_height=17;
+      present.destination_width=19;present.destination_height=11;present.output_mode=4;
+      const auto lookups=render::MakeSmaaLookups(utility_generation);
+      auto presentation_source=fetch(scene);
+      if(quality==0)presentation_source.produced->swizzle={render::Swizzle::Blue,render::Swizzle::Green,render::Swizzle::Red,render::Swizzle::Alpha};
+      assert(render::AppendPresentation(*frame,contents,presentation_source,output,present,quality,lookups,allocate,utility_generation,error));
+      assert(render::ValidateFrame(*frame,{},validated,error));
+      if(!backend->Submit(frame,false,error)){std::cerr<<"Utility submission: "<<error<<"\n";assert(false);}
+      assert(backend->ReadRGBA8(*frame,*frame->output,pixels,error));assert(pixels.size()==19*11*4);
+      for(size_t i=0;i<pixels.size();i+=4)for(size_t channel=0;channel<4;++channel) {
+        const int expected=channel==3?255:channel==size_t(quality==0?0:2)?128:64;
+        assert(std::abs(int(pixels[i+channel])-expected)<=1);
+      }
+    }
+    // A bright isolated pixel is filtered only when the real stipple mask
+    // authorizes it. This checks non-uniform image work, not just pass counts.
+    for(bool enabled:{false,true}) {
+      const auto allocate=[&](std::string_view,uint32_t w,uint32_t h,render::Format format) {
+        auto result=std::make_shared<render::Surface>();result->key={++utility_id,1};
+        result->width=w;result->height=h;result->format=format;return render::SurfaceOwner(result);
+      };
+      auto scene=allocate("scene",33,17,render::Format::RGBA8Unorm);
+      auto mask=allocate("mask",33,17,render::Format::RGBA8Unorm);
+      auto frame=Clear(scene,++utility_generation,0.25);frame->surfaces.push_back(mask);
+      render::RectClear impulse;impulse.colors=1;impulse.rectangle={16,8,1,1};impulse.color={1,1,1,1};
+      std::get<render::Pass>(frame->commands[0]).commands.push_back(impulse);
+      auto mask_pass=std::get<render::Pass>(Clear(mask,frame->sequence,0)->commands[0]);
+      mask_pass.colors[0]->clear_color[3]=enabled?1:0;frame->commands.push_back(mask_pass);
+      render::HostFetch input;input.produced=render::SurfaceView{mask->key,0,0,render::Aspect::Color};
+      input.sampler=std::make_shared<render::Sampler>();render::SurfaceContents contents;
+      assert(render::ValidateFrame(*frame,{},contents,error));
+      assert(render::AppendSplitPostFx(*frame,contents,scene,input,input,{},allocate,utility_generation,error));
+      assert(backend->Submit(frame,false,error));assert(backend->ReadRGBA8(*frame,*frame->output,pixels,error));
+      const size_t center=(8*33+16)*4;
+      assert(pixels[center]==(enabled?64:255));assert(pixels[center+3]==255);
+    }
+    std::cout<<"Live effects builder: zero/full DOF, odd extents, sun chain, all SMAA qualities, scaled presentation and masked stipple passed\n";
     auto noncolor=*partial->output;noncolor.aspect=render::Aspect::Depth;
     const auto saved=pixels;assert(!backend->ReadRGBA8(*partial,noncolor,pixels,error));assert(pixels==saved);
     backend->Close();assert(!backend->Submit(first,false,error));assert(!backend->Open(error));

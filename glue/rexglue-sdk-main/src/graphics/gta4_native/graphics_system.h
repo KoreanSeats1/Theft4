@@ -99,6 +99,7 @@
 
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "theft4_frame_backend.h"
+#include "theft4_postfx_plan.h"
 #endif
 struct ShaderCacheEntry;
 struct ShaderOverrideCacheEntry;
@@ -1899,7 +1900,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_metal_worker_open_complete_ = false;
   bool native_metal_worker_open_succeeded_ = false;
   bool PublishNativeMetalFrame(const PresentCommand&,
-      const std::shared_ptr<const NativeTextureResource>&, std::string& error);
+      const std::shared_ptr<const NativeTextureResource>&,
+      const std::shared_ptr<const EnvironmentalDataV1>&,std::string& error);
+  bool PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>,
+      const xenos::xe_gpu_texture_fetch_t&,const NativeMetalFrameState&,
+      theft4::render::HostFetch&,std::string& error);
   bool PrepareNativeMetalDraw(const NativeCommand&, const NativeRenderingTarget&,
       const NativeMetalFrameState&, theft4::render::FrameDraw&, std::string& error);
   void ResetNativeMetalFrontend();

@@ -43,7 +43,7 @@ target_include_directories(shader_realization_test PRIVATE "${ROOT}/glue/rexglue
 add_test(NAME shader_realization_contract COMMAND shader_realization_test)
 add_test(NAME metal_descriptor_contract COMMAND metal_descriptor_contract_test)
 add_library(metal_shader_catalog "${ROOT}/ios/bridge/theft4_metal_shader_catalog.cpp")
-add_library(render_plan "${ROOT}/ios/bridge/theft4_render_plan.cpp" "${ROOT}/ios/bridge/theft4_frame_plan.cpp")
+add_library(render_plan "${ROOT}/ios/bridge/theft4_render_plan.cpp" "${ROOT}/ios/bridge/theft4_frame_plan.cpp" "${ROOT}/ios/bridge/theft4_postfx_plan.cpp")
 target_include_directories(render_plan PUBLIC "${ROOT}/ios/bridge" PRIVATE "${ROOT}/thirdparty/json/include")
 add_executable(render_plan_test render_plan_test.cpp
   "${ROOT}/ios/bridge/theft4_render_plan_source.cpp" "${ROOT}/ios/bridge/theft4_draw_capture.cpp")

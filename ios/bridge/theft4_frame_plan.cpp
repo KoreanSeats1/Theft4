@@ -51,13 +51,16 @@ bool SampledViewDefined(const SampledSurfaceView& view,const SurfaceContents& co
       if(!contents.contains({view.surface,view.level+level,view.slice+slice,view.aspect}))return false;
   return true;
 }
-bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,std::string& error) {
+bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,std::string& error,bool allow_multisampled) {
   const auto reject=[&](const char* reason){error=reason;return false;};
   const auto* s=FindSurface(frame,view.surface);
-  if(!s||s->kind==ImageKind::Texture3D||s->kind>=ImageKind::Count||s->samples!=1||!view.levels||!view.slices||view.level>=s->levels||
+  if(!s||s->kind==ImageKind::Texture3D||s->kind>=ImageKind::Count||(!allow_multisampled&&s->samples!=1)||!view.levels||!view.slices||view.level>=s->levels||
      view.levels>s->levels-view.level||view.slice>=SurfaceSlices(*s)||
      view.slices>SurfaceSlices(*s)-view.slice||!SupportsAspect(s->format,view.aspect))
     return reject("Sampled GPU view has an invalid allocation or range");
+  if(s->samples>1&&(s->kind!=ImageKind::Texture2D||view.kind!=ImageKind::Texture2D||
+     view.level||view.levels!=1||view.slice||view.slices!=1))
+    return reject("Multisample sampling requires one complete 2D allocation");
   for(auto channel:view.swizzle)if(channel>Swizzle::Alpha)return reject("Invalid sampled GPU channel swizzle");
   const auto format=view.format==Format::Invalid ? s->format : view.format;
   const auto rgba=[](Format f){return f==Format::RGBA8Unorm||f==Format::RGBA8Srgb;};
@@ -264,10 +267,10 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
               return Reject(error,"Host static texture type differs from its ABI");
           }else {
             const auto& view=*input.produced;
-            if(!View(f,view)||!contents.contains(view)||
-               (FindSurface(f,view.surface)->samples>1)!=multisampled)
+            if(!ValidateSampledView(f,view,error,multisampled)||view.kind!=ImageKind::Texture2D||view.levels!=1||view.slices!=1||
+               !SampledViewDefined(view,contents)||(FindSurface(f,view.surface)->samples>1)!=multisampled)
               return Reject(error,"Host utility samples undefined or incorrectly sampled GPU content");
-            for(const auto& attachment:writes)if(SameStorage(view,attachment))
+            for(const auto& attachment:writes)if(SampledViewContains(view,attachment))
               return Reject(error,"Host utility samples its active attachment");
           }
         }

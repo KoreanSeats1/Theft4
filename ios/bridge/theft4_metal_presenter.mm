@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <string>
 #include "theft4_frame_time_history.h"
 #include "theft4_publication_trace.h"
 
@@ -65,6 +66,14 @@ id<MTLCommandBuffer> EnsureFrameCommandBufferLocked() {
 }
 
 }  // namespace
+
+const char* theft4_metal_shader_library_directory(void) {
+  static const std::string directory=[] {
+    NSString* path=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"MetalShaders"];
+    return std::string(path.fileSystemRepresentation ?: "");
+  }();
+  return directory.c_str();
+}
 
 void theft4_metal_bind_layer(void* raw_layer) {
   CAMetalLayer* layer = (__bridge CAMetalLayer*)raw_layer;

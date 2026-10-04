@@ -144,10 +144,10 @@ struct Draw {
   float depth_bias = 0, slope_bias = 0;
 };
 struct Capture {
-  // Runtime-only identity for reusable storage; private file reads use zero.
-  uint64_t allocation_generation = 0;
   uint32_t frame = 0, command = 0, width = 0, height = 0;
   Draw draw;
+  // Runtime-only identity for reusable storage; private file reads use zero.
+  uint64_t allocation_generation = 0;
 };
 // Private capture files contain converted resources, never graphics API
 // handles or process addresses. They must not be committed or published.

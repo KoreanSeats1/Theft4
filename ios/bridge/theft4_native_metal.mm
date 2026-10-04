@@ -5,7 +5,6 @@
 #include <cstring>
 #include <limits>
 #include <map>
-#include <mach/mach_time.h>
 
 namespace theft4::metal {
 namespace {
@@ -98,6 +97,7 @@ struct Frame::Impl {
   EncoderStats stats;
   id<MTLCounterSampleBuffer> counters=nil;
   size_t profiled_passes=0;
+  MTLTimestamp cpu_reference=0,gpu_reference=0;
   ~Impl() { if (encoder) [encoder endEncoding]; }
 };
 Renderer::Renderer(NSUInteger maximum) {
@@ -249,8 +249,9 @@ Frame::operator bool() const { return impl_ && !impl_->submitted && impl_->buffe
 bool Frame::ProfilePasses(size_t maximum_passes) {
   if(!*this||impl_->encoder||impl_->counters||!maximum_passes||maximum_passes>4096)return false;
   auto device=impl_->renderer->device;
-  // Apple stage-boundary timestamps share the mach_absolute_time clock.
-  // Other GPU families need clock calibration and are deliberately excluded.
+  // GPU timestamp clocks are hardware dependent. Capture a paired reference
+  // before encoding; the receipt samples again after completion to calibrate
+  // counter ticks against Metal's CPU nanoseconds. This never waits for GPU work.
   if(![device supportsFamily:MTLGPUFamilyApple1]||
      ![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])return false;
   id<MTLCounterSet> timestamps=nil;
@@ -262,6 +263,8 @@ bool Frame::ProfilePasses(size_t maximum_passes) {
   descriptor.storageMode=MTLStorageModeShared;descriptor.sampleCount=maximum_passes*4;
   descriptor.label=@"Theft4 Occasional Pass Timings";
   NSError* error=nil;impl_->counters=[device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+  if(impl_->counters)[device sampleTimestamps:&impl_->cpu_reference gpuTimestamp:&impl_->gpu_reference];
+  if(!impl_->cpu_reference||!impl_->gpu_reference)impl_->counters=nil;
   return impl_->counters!=nil;
 }
 bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
@@ -543,6 +546,7 @@ Receipt Frame::Submit(std::string& error) {
   [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease; }];
   result.buffer_ = impl_->buffer;
   result.counters_=impl_->counters;result.profiled_passes_=impl_->profiled_passes;
+  result.cpu_reference_=impl_->cpu_reference;result.gpu_reference_=impl_->gpu_reference;
   impl_->submitted = true; impl_->lease.reset();
   [impl_->buffer commit]; return result;
 }
@@ -560,14 +564,23 @@ std::vector<GpuPassTiming> Receipt::GpuPassTimings() const {
   if(!Completed()||!counters_||!profiled_passes_)return result;
   auto data=[counters_ resolveCounterRange:NSMakeRange(0,profiled_passes_*4)];
   if(!data||data.length!=profiled_passes_*4*sizeof(MTLCounterResultTimestamp))return result;
-  mach_timebase_info_data_t timebase{};if(mach_timebase_info(&timebase)!=KERN_SUCCESS||!timebase.denom)return result;
-  const double scale=double(timebase.numer)/double(timebase.denom)/1e6;
+  MTLTimestamp cpu_end=0,gpu_end=0;
+  [counters_.device sampleTimestamps:&cpu_end gpuTimestamp:&gpu_end];
+  if(!cpu_reference_||!gpu_reference_||cpu_end<=cpu_reference_||gpu_end<=gpu_reference_)return result;
+  // sampleTimestamps CPU values are nanoseconds, not mach_absolute_time ticks.
+  const double scale=double(cpu_end-cpu_reference_)/double(gpu_end-gpu_reference_)/1e6;
+  if(!std::isfinite(scale)||scale<=0)return result;
   const auto* timestamps=static_cast<const MTLCounterResultTimestamp*>(data.bytes);
   for(size_t i=0;i<profiled_passes_;++i) {
     const auto* t=timestamps+i*4;
-    bool valid=true;for(size_t j=0;j<4;++j)valid&=t[j].timestamp!=MTLCounterErrorValue;
+    bool valid=true;for(size_t j=0;j<4;++j)valid&=t[j].timestamp&&t[j].timestamp!=MTLCounterErrorValue;
     if(!valid||t[1].timestamp<t[0].timestamp||t[3].timestamp<t[2].timestamp)continue;
-    result.push_back({i,double(t[1].timestamp-t[0].timestamp)*scale,double(t[3].timestamp-t[2].timestamp)*scale});
+    const double vertex=double(t[1].timestamp-t[0].timestamp)*scale,fragment=double(t[3].timestamp-t[2].timestamp)*scale;
+    // Reject an inconsistent clock sample instead of reporting a render stage
+    // longer than its entire command buffer. Allow measurement granularity.
+    const auto envelope=GpuMilliseconds()*1.1+0.05;
+    if(vertex>envelope||fragment>envelope)continue;
+    result.push_back({i,vertex,fragment});
   }
   return result;
 }

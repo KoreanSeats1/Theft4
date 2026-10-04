@@ -122,6 +122,7 @@ add_test(NAME metal_frame_continuity COMMAND metal_frame_continuity_test)
 
 add_executable(metal_constant_projection_test metal_constant_projection_test.cpp)
 add_executable(incremental_owner_cache_test incremental_owner_cache_test.cpp)
+target_include_directories(incremental_owner_cache_test PRIVATE "${ROOT}/thirdparty/json/include")
 add_executable(frontend_storage_test frontend_storage_test.cpp)
 target_include_directories(frontend_storage_test PRIVATE "${ROOT}/ios/bridge")
 target_link_libraries(frontend_storage_test PRIVATE render_plan)

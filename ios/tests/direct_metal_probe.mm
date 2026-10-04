@@ -11,6 +11,7 @@
 #include "native_color_output.h"
 #include "native_shared_frame_arena.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #ifndef THEFT4_METAL_SOURCE_REVISION
@@ -692,6 +693,32 @@ struct Probe {
       @"first_use_transparent_black":@YES,@"later_capture_replaces_fallback":@YES,
       @"skipped_update_preserves_capture":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void CalibratedPassTimings() {
+    if(![renderer.Device() supportsFamily:MTLGPUFamilyApple1]||
+       ![renderer.Device() supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])return;
+    Case test{.blend=true};auto pipeline=PipelineFor(test,1);
+    auto d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1920 height:1080 mipmapped:NO];
+    d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+    auto texture=renderer.Texture(d,error);Require(texture);
+    Draw draw;draw.pipeline=pipeline;draw.constants=Constants(test,1);
+    auto vertices=Quad({0.5f,0.25f,0.75f,0.5f});draw.vertices[0]=Buffer(Bytes(vertices));
+    draw.vertex_count=vertices.size();draw.viewport={0,0,1920,1080,0,1};draw.scissor={0,0,1920,1080};
+    for(size_t trial=0;trial<3;++trial) {
+      auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.ProfilePasses(1));
+      auto pass=[MTLRenderPassDescriptor renderPassDescriptor];auto a=pass.colorAttachments[0];a.texture=texture;
+      a.loadAction=MTLLoadActionClear;a.storeAction=MTLStoreActionStore;
+      Require(frame.BeginPass(pass,error));
+      for(size_t i=0;i<64;++i)Require(frame.Encode(draw,error));
+      Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+      const auto gpu=receipt.GpuMilliseconds();const auto times=receipt.GpuPassTimings();Require(times.size()==1&&gpu>0);
+      Require(std::isfinite(times[0].vertex_ms)&&std::isfinite(times[0].fragment_ms));
+      Require(times[0].vertex_ms>=0&&times[0].fragment_ms>0&&
+        times[0].vertex_ms<=gpu*1.1+0.05&&times[0].fragment_ms<=gpu*1.1+0.05);
+    }
+    [results addObject:@{@"case":@"calibrated_gpu_stage_timestamps",@"passed":@YES,
+      @"paired_cpu_gpu_clock_references":@YES,@"stage_durations_within_command_buffer":@YES,
+      @"trials":@3,@"synthetic_validation_geometry":@YES}];
+  }
   void SampledGameRanges() {
     namespace r=theft4::render;
     FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -1246,7 +1273,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

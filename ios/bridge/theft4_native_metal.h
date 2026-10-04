@@ -102,6 +102,7 @@ class Receipt {
   id<MTLCommandBuffer> buffer_ = nil;
   id<MTLCounterSampleBuffer> counters_ = nil;
   size_t profiled_passes_=0;
+  MTLTimestamp cpu_reference_=0,gpu_reference_=0;
 };
 class Frame {
  public:

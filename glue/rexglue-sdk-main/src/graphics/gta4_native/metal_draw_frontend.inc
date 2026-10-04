@@ -32,6 +32,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
       } else {
       auto found=native_metal_frame_->images.find(resource->generation);
       if(found!=native_metal_frame_->images.end()&&!found->second.resource.expired()) {
+        native_metal_frame_->images.Touch(found);
         packet.fetch.image=found->second.owner;metadata=found->second.description;found->second.used=next_native_metal_sequence_;
       } else {
         VkFormat format=ConvertTextureFormat(resource->info.format);
@@ -249,7 +250,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       if(owner&&!owner.owner_before(resource)&&!resource.owner_before(owner)&&
          (!compare||(it->second.owner->value.size()==data.size()&&
              !std::memcmp(it->second.owner->value.data(),data.data(),data.size())))) {
-        it->second.used=next_native_metal_sequence_;return it->second.owner;
+        it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);return it->second.owner;
       }
     }
     auto bytes=make_bytes(data,conversion);
@@ -271,7 +272,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
         [](uint64_t mask){return !mask;})) {
       static const auto unused_bank_owner=std::make_shared<const uint8_t>(0);
       auto found=native_metal_frame_->buffers.find({6,bank});
-      if(found!=native_metal_frame_->buffers.end()){bytes=found->second.owner;found->second.used=next_native_metal_sequence_;}
+      if(found!=native_metal_frame_->buffers.end()){bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);}
       else {
         const std::vector<uint8_t> zero(required);
         bytes=cached_bytes({6,bank},unused_bank_owner,zero,{6,bank,required});
@@ -285,7 +286,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     const auto cache_key=std::array<uint64_t,8>{3,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank};
     auto it=native_metal_frame_->buffers.find(cache_key);
     if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
-      bytes=it->second.owner;it->second.used=next_native_metal_sequence_;
+      bytes=it->second.owner;it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);
     }
     if(!bytes&&constant_usage.known&&NativeMaskedConstantsEnabled()) {
       const auto& mask=constant_usage.banks[bank];
@@ -293,7 +294,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           mask[0],mask[1],mask[2],mask[3],required};
       const auto found=native_metal_frame_->buffers.find(covered_key);
       if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
-        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);
       } else {
         auto covered=std::make_shared<r::Bytes>();covered->value.resize(required);
         const uint64_t written=projected_constants.WriteMasked(key.vertex_shader_hash,key.pixel_shader_hash,
@@ -386,7 +387,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           state.vertex_shader_resource->hash,stream,binding.offset,binding.stride};
       auto it=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
       if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
-        bytes=it->second.owner;it->second.used=next_native_metal_sequence_;
+        bytes=it->second.owner;it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);
       } else {
         const auto* converted=PrepareConvertedVertexPayload(resource.get(),state,stream);
         if(!converted)return reject("Metal vertex conversion failed");
@@ -468,7 +469,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       const auto cache_key=std::array<uint64_t,8>{2,resource->generation,primitive,start_index,count,restart,marker};
       auto found=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
       if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
-        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);
       } else {
         std::vector<uint32_t> input(count),expanded;
         for(uint32_t i=0;i<count;++i)if(index32)std::memcpy(&input[i],selected.data()+i*4,4);
@@ -491,7 +492,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     const auto cache_key=std::array<uint64_t,8>{5,primitive,first,count};
     auto found=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
     if(found!=native_metal_frame_->buffers.end()) {
-      bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+      bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);
     } else {
       std::vector<uint32_t> input(count),expanded;for(uint32_t i=0;i<count;++i)input[i]=first+i;
       r::Primitive topology;

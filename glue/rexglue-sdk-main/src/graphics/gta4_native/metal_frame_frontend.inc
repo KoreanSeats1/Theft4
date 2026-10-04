@@ -178,7 +178,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error,bool diagnostic_scan) {
   namespace r=theft4::render;
   const auto tick=[] {return rex::chrono::Clock::QueryHostTickCount();};
-  const auto began=tick();uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
+  const auto began=tick();uint64_t arena_done=began,retire_done=began,owners_done=began;
+  uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
@@ -211,6 +212,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     auto attributes=std::move(capture.draw.pipeline.attributes);capture={};
     attributes.clear();capture.draw.pipeline.attributes=std::move(attributes);
   });
+  arena_done=tick();
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
@@ -234,25 +236,23 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   }
   if(!retired_texture_views.empty())
     std::erase_if(native_metal_frame_->contents,[&](const auto& view){return retired_texture_views.contains(view.surface);});
+  retire_done=tick();
   native_metal_frame_->buffers.Sweep(512,[](const auto& entry){return entry.second.resource.expired();});
   native_metal_frame_->images.Sweep(128,[](const auto& entry){return entry.second.resource.expired();});
+  owners_done=tick();
   size_t resident=native_metal_frame_->buffers.bytes()+native_metal_frame_->images.bytes();
+  const auto before_pressure=resident;size_t pressure_evictions=0;
   constexpr size_t budget=256*1024*1024;
-  if(resident>budget) {
-    // Sort eviction candidates once. Repeated minimum searches turned a burst
-    // of streamed resources into quadratic work at the cache-budget boundary.
-    struct Candidate {uint64_t used;size_t bytes;bool image;std::array<uint64_t,8> key;};
-    std::vector<Candidate> candidates;candidates.reserve(native_metal_frame_->buffers.size()+native_metal_frame_->images.size());
-    for(const auto& [key,entry]:native_metal_frame_->buffers)
-      candidates.push_back({entry.used,entry.owner->value.size(),false,key});
-    for(const auto& [key,entry]:native_metal_frame_->images)
-      candidates.push_back({entry.used,entry.owner->source->value.size(),true,{key}});
-    std::sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.used<b.used;});
-    for(const auto& entry:candidates) {
-      if(resident<=budget)break;
-      if(entry.image)native_metal_frame_->images.erase(entry.key[0]);else native_metal_frame_->buffers.erase(entry.key);
-      resident-=entry.bytes;
-    }
+  while(resident>budget) {
+    const auto* buffer=native_metal_frame_->buffers.Oldest();
+    const auto* image=native_metal_frame_->images.Oldest();
+    if(!buffer&&!image)break;
+    // The queues share the title command serial. Only inspect their heads;
+    // cached copies can retire while accepted GPU plans retain exact bytes.
+    if(image&&(!buffer||image->used<buffer->used))native_metal_frame_->images.EvictOldest();
+    else native_metal_frame_->buffers.EvictOldest();
+    ++pressure_evictions;
+    resident=native_metal_frame_->buffers.bytes()+native_metal_frame_->images.bytes();
   }
   sweep_done=tick();
   NativeMetalFrameState next;
@@ -1139,6 +1139,9 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.frontend_ms=native_metal_frame_->frontend_ms;
   if(present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
+    REXLOG_INFO("gta4-metal-maintenance-performance: present={} arena-ms={:.3f} retirement-ms={:.3f} owners-ms={:.3f} pressure-ms={:.3f} pressure-evictions={} pressure-before-bytes={} pressure-after-bytes={}",
+      next.timed_presents,(arena_done-began)*scale,(retire_done-arena_done)*scale,
+      (owners_done-retire_done)*scale,(sweep_done-owners_done)*scale,pressure_evictions,before_pressure,resident);
     REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={} pipeline-hits={} pipeline-misses={} cached-samplers={}",
       next.timed_presents,(tick()-began)*scale,(sweep_done-began)*scale,(copy_done-sweep_done)*scale,
       (lower_done-copy_done)*scale,(validate_done-lower_done)*scale,(submit_done-validate_done)*scale,

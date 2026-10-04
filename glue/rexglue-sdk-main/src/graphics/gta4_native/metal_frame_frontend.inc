@@ -72,6 +72,53 @@ void Gta4NativeGraphicsSystem::ReleaseNativeMetalResource(uint32_t handle) {
   });
 }
 
+bool Gta4NativeGraphicsSystem::ReadNativeMetalTextureToGuest(
+    const std::shared_ptr<const NativeTextureResource>& resource,
+    const TextureLockCommand& command,TextureLockResult& result) {
+  namespace r=theft4::render;
+  std::string error;
+  const auto reject=[&](const char* reason) {
+    REXLOG_ERROR("gta4-metal: texture lock {:08X} level {} rejected: {}",command.texture,command.level,reason);return false;
+  };
+  if(!resource||!native_metal_frame_||command.dimension!=TextureLockDimension::k2D||command.array_index)
+    return reject("Native lock requires an available 2D texture generation");
+  const auto found=native_metal_frame_->textures.find(resource->generation);
+  if(found==native_metal_frame_->textures.end()||command.level>=found->second.owner->levels)
+    return reject("Native texture generation or mip was not produced");
+  const auto& record=found->second;const auto* format=resource->info.format_info();
+  if(!format||format->block_width!=1||format->block_height!=1||record.owner->kind!=r::ImageKind::Texture2D||
+     record.owner->format!=r::source::PixelFormat(ConvertTextureFormat(resource->info.format))||
+     !r::SupportsAspect(record.owner->format,r::Aspect::Color))
+    return reject("Native color storage does not match the guest texel format");
+  r::FramePlan declarations;declarations.surfaces={record.owner};
+  r::ColorReadback readback;
+  if(!frame_backend_->ReadColor(declarations,{record.owner->key,command.level,0,r::Aspect::Color},readback,error))
+    return reject(error.c_str());
+  const uint32_t pixel_bytes=format->bytes_per_block();
+  uint32_t width=0,height=0,packed_x=0,packed_y=0;
+  resource->info.GetMipSize(command.level,&width,&height);
+  const uint32_t address=resource->info.GetMipLocation(command.level,&packed_x,&packed_y,true);
+  if(!address)return reject("Guest texture mip has no physical backing address");
+  const auto extent=resource->info.GetMipExtent(command.level,true);
+  if(!pixel_bytes||!rex::is_pow2(pixel_bytes)||readback.row_bytes!=uint64_t(readback.width)*pixel_bytes)
+    return reject("Native readback and guest texel sizes differ");
+  uint8_t* destination=memory_->TranslatePhysical<uint8_t*>(address);
+  const uint64_t capacity=std::min(uint64_t(extent.block_pitch_h)*extent.block_pitch_v*extent.depth*pixel_bytes,
+                                 uint64_t(0x20000000u-(address&0x1fffffffu)));
+  const uint32_t log2=rex::log2_floor(pixel_bytes);
+  const auto offset=[&](uint32_t x,uint32_t y)->int64_t {
+    if(uint64_t(packed_x)+x>INT32_MAX||uint64_t(packed_y)+y>INT32_MAX)return -1;
+    if(resource->info.is_tiled)return texture_util::GetTiledOffset2D(int32_t(packed_x+x),int32_t(packed_y+y),extent.block_pitch_h,log2);
+    return (uint64_t(packed_y+y)*extent.block_pitch_h+packed_x+x)*pixel_bytes;
+  };
+  const auto copy=[&](uint64_t at,const uint8_t* source,uint32_t bytes) {
+    texture_conversion::CopySwapBlock(resource->info.endianness,destination+at,source,bytes);
+  };
+  if(!CopyNativeColorToGuest(readback.bytes,readback.width,readback.height,readback.row_bytes,
+                            width,height,pixel_bytes,capacity,offset,copy,error))return reject(error.c_str());
+  result.copied_to_guest=1;return true;
+}
+
 bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error) {

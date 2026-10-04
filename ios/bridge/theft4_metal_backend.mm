@@ -124,6 +124,21 @@ class Backend final:public render::FrameBackend {
     if(result.empty())return false;
     bytes=std::move(result);error.clear();return true;
   }
+  bool ReadColor(const render::FramePlan& plan,render::SurfaceView view,
+                 render::ColorReadback& output,std::string& error) override {
+    if(!Drain(error))return false;
+    const auto* surface=render::FindSurface(plan,view.surface);
+    if(!surface||view.aspect!=render::Aspect::Color||surface->samples!=1||
+       !render::SupportsAspect(surface->format,view.aspect)) {
+      error="Metal native color readback requires a defined single-sample color allocation";return false;
+    }
+    auto texture=adapter_->SampledTexture(plan,view,error);if(!texture)return false;
+    auto bytes=renderer_->ReadColorBytes(texture,error);if(bytes.empty())return false;
+    render::ColorReadback result;result.format=surface->format;
+    result.width=uint32_t(texture.width);result.height=uint32_t(texture.height);
+    result.row_bytes=bytes.size()/result.height;result.bytes=std::move(bytes);
+    output=std::move(result);error.clear();return true;
+  }
  private:
   struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;};
   bool Worker(std::string& error) const {

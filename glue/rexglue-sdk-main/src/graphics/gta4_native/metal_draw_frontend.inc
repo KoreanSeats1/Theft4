@@ -174,6 +174,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   const auto select_shader=[](const NativeShader* shader) {
     NativeShaderSelection chosen;chosen.shader=shader;if(!shader)return chosen;
     chosen.has_early=shader->module_code_hashes[0]!=0;chosen.has_late=shader->module_code_hashes[1]!=0;
+    chosen.specialization_constants_mask=shader->specialization_constants_mask;
     chosen.used_texture_mask=shader->used_texture_mask;chosen.specialization_constants_mask=shader->specialization_constants_mask;
     chosen.filename=shader->filename.c_str();return chosen;
   };

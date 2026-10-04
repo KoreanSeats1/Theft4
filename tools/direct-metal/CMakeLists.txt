@@ -96,3 +96,7 @@ add_executable(primitive_expansion_test primitive_expansion_test.cpp "${ROOT}/io
 target_include_directories(primitive_expansion_test PRIVATE "${ROOT}/ios/bridge")
 target_compile_options(primitive_expansion_test PRIVATE -UNDEBUG)
 add_test(NAME guest_primitive_expansion COMMAND primitive_expansion_test)
+add_executable(color_readback_test color_readback_test.cpp)
+target_include_directories(color_readback_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_compile_options(color_readback_test PRIVATE -UNDEBUG)
+add_test(NAME guest_color_readback COMMAND color_readback_test)

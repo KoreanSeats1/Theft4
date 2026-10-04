@@ -304,5 +304,23 @@ DOF, odd extents, the four-pass sun chain, all SMAA qualities, sampled swizzles,
 scaled presentation, and an isolated bright pixel controlled by its stipple mask.
 These checks prove those host passes on a Mac GPU; they do not prove that the live
 game command producer boots or renders complete scenes on iPad. Outstanding paths
-include override shader libraries, GPU texture locks, buffered/indexed rectangles,
+include buffered/indexed rectangles,
 attachmentless draws, registration ordering, and HDR/EDR presentation.
+
+The current iOS build links `theft4_empty_shader_overrides.cpp`: it has zero
+replacement shaders. Its full stock/late/clip shader set is bundled. The desktop
+replacement-shader table is therefore outside the current iOS comparison path;
+future non-empty replacement tables will require catalog/export support.
+
+Explicit 2D color texture locks now pin their enqueue-time resource generation,
+flush pending game commands, and read native Metal storage on the render worker.
+BGRA, packed 10-bit, normalized and floating-point channels keep their original
+bytes. Guest writes reuse the guest tiled-offset and endian block routines,
+including packed mip offsets. Every destination address is validated before any
+write; missing backing, incompatible formats and undefined mips reject the lock.
+When physical and logical sizes differ, nearest texel centers reconstruct the
+logical image without interpreting packed storage. Transfers are bounded to
+64 MiB and require GPU completion only for an explicit lock. Publication performs
+no readback. GPU tests check raw BGRA, R16, R32F, RGBA16F and RGB10A2 mip storage;
+the CPU reconstruction test checks padded rows, packed offsets, scaling, block
+callbacks and rejection before writes. Live guest locks still need game testing.

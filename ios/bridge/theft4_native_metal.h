@@ -131,6 +131,9 @@ class Renderer {
   std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error,
                                NSUInteger level = 0, NSUInteger slice = 0,
                                NSUInteger depth_plane = 0);
+  std::vector<uint8_t> ReadColorBytes(id<MTLTexture> texture,std::string& error,
+                                    NSUInteger level=0,NSUInteger slice=0,
+                                    NSUInteger depth_plane=0);
  private:
   friend class Frame;
   std::shared_ptr<const Pipeline> MakePipelineInternal(

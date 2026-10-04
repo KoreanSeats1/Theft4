@@ -435,20 +435,43 @@ bool Receipt::Completed() const { return buffer_ && buffer_.status == MTLCommand
 double Receipt::GpuMilliseconds() const { return Completed() ? (buffer_.GPUEndTime - buffer_.GPUStartTime) * 1000 : 0; }
 std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
     NSUInteger level, NSUInteger slice, NSUInteger depth_plane) {
+  if(!t||(t.pixelFormat!=MTLPixelFormatRGBA8Unorm&&t.pixelFormat!=MTLPixelFormatBGRA8Unorm)) {
+    error="Unsupported direct Metal RGBA8 readback";return {};
+  }
+  auto bytes=ReadColorBytes(t,error,level,slice,depth_plane);
+  if(t.pixelFormat==MTLPixelFormatBGRA8Unorm)
+    for(size_t i=0;i<bytes.size();i+=4)std::swap(bytes[i],bytes[i+2]);
+  return bytes;
+}
+std::vector<uint8_t> Renderer::ReadColorBytes(id<MTLTexture> t,std::string& error,
+    NSUInteger level,NSUInteger slice,NSUInteger depth_plane) {
+  NSUInteger pixel_bytes=0;
+  switch(t.pixelFormat) {
+    case MTLPixelFormatR8Unorm:pixel_bytes=1;break;
+    case MTLPixelFormatRG8Unorm:case MTLPixelFormatR16Unorm:case MTLPixelFormatR16Float:pixel_bytes=2;break;
+    case MTLPixelFormatRGBA8Unorm:case MTLPixelFormatRGBA8Unorm_sRGB:
+    case MTLPixelFormatBGRA8Unorm:case MTLPixelFormatBGRA8Unorm_sRGB:
+    case MTLPixelFormatRG16Unorm:case MTLPixelFormatRG16Float:
+    case MTLPixelFormatR32Float:case MTLPixelFormatRGB10A2Unorm:pixel_bytes=4;break;
+    case MTLPixelFormatRGBA16Unorm:case MTLPixelFormatRGBA16Float:case MTLPixelFormatRG32Float:pixel_bytes=8;break;
+    case MTLPixelFormatRGBA32Float:pixel_bytes=16;break;
+    default:break;
+  }
   const auto type=t.textureType;
   const bool cube=type==MTLTextureTypeCube || type==MTLTextureTypeCubeArray;
   const bool array=type==MTLTextureType2DArray || type==MTLTextureTypeCubeArray;
   const bool volume=type==MTLTextureType3D;
   const NSUInteger slices=cube ? t.arrayLength*6 : array ? t.arrayLength : 1;
   if (!Ready() || !t || t.framebufferOnly || (!cube && !array && !volume && type!=MTLTextureType2D) || t.sampleCount != 1 ||
-      (t.pixelFormat != MTLPixelFormatRGBA8Unorm && t.pixelFormat != MTLPixelFormatBGRA8Unorm) ||
+      !pixel_bytes ||
       t.width > 16384 || t.height > 16384 ||
       level>=t.mipmapLevelCount || slice>=slices ||
       depth_plane>=(volume ? std::max(NSUInteger(1),t.depth>>level) : 1)) {
     error = "Unsupported direct Metal validation readback"; return {};
   }
   const NSUInteger width=std::max(NSUInteger(1),t.width>>level),height=std::max(NSUInteger(1),t.height>>level);
-  const NSUInteger stride = (width * 4 + 255) & ~NSUInteger(255);
+  const NSUInteger stride = (width * pixel_bytes + 255) & ~NSUInteger(255);
+  if(stride*height>64*1024*1024){error="Metal color readback exceeds its bounded transfer budget";return {};}
   auto out = [Device() newBufferWithLength:stride * height options:MTLResourceStorageModeShared];
   auto command = [impl_->queue commandBuffer];
   if (!out || !command) { error = "Metal readback allocation failed"; return {}; }
@@ -459,11 +482,10 @@ std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
       destinationBytesPerRow:stride destinationBytesPerImage:stride*height];
   [blit endEncoding]; [command commit]; [command waitUntilCompleted];
   if (command.status != MTLCommandBufferStatusCompleted) { error = Description(command.error); return {}; }
-  std::vector<uint8_t> bytes(width * height * 4);
+  std::vector<uint8_t> bytes(width * height * pixel_bytes);
   for (NSUInteger y = 0; y < height; ++y)
-    memcpy(bytes.data() + y * width * 4, static_cast<const uint8_t*>(out.contents) + y * stride, width * 4);
-  if(t.pixelFormat == MTLPixelFormatBGRA8Unorm)
-    for(size_t i=0;i<bytes.size();i+=4)std::swap(bytes[i],bytes[i+2]);
+    memcpy(bytes.data() + y * width * pixel_bytes, static_cast<const uint8_t*>(out.contents) + y * stride, width * pixel_bytes);
+  error.clear();
   return bytes;
 }
 }

@@ -1879,7 +1879,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
                      const std::shared_ptr<const NativeTextureResource>& present_source,
                      NativeTextureImage* high_precision_source, bool hdr_output, float hdr_headroom,
                      bool& transfer_written);
-  bool ReadbackTextureToGuest(const TextureLockCommand& command, TextureLockResult& result);
+  bool ReadbackTextureToGuest(const TextureLockCommand& command,TextureLockResult& result,
+                             const std::shared_ptr<const NativeTextureResource>& captured={});
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  bool ReadNativeMetalTextureToGuest(const std::shared_ptr<const NativeTextureResource>&,
+                                    const TextureLockCommand&,TextureLockResult&);
+#endif
   void DestroyTextureReadbackObjects();
   void DestroyNativeRendererObjects();
   void DestroyVulkanWorkerObjects();

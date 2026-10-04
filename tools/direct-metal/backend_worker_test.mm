@@ -371,6 +371,35 @@ int main(int argc,char** argv) {
       assert(pixels[center]==(enabled?64:255));assert(pixels[center+3]==255);
     }
     std::cout<<"Live effects builder: zero/full DOF, odd extents, sun chain, all SMAA qualities, scaled presentation and masked stipple passed\n";
+    // Guest readback preserves native storage (BGRA, packed 10-bit and float)
+    // instead of passing through the display-oriented RGBA8 conversion.
+    for(auto format:{render::Format::BGRA8Unorm,render::Format::R16Unorm,
+                    render::Format::R32Float,render::Format::RGBA16Float,render::Format::RGB10A2Unorm}) {
+      auto owner=std::make_shared<render::Surface>();owner->key={++utility_id,1};
+      owner->width=33;owner->height=17;owner->levels=3;owner->format=format;
+      auto frame=Clear(owner,++utility_generation,0.25);
+      auto& clear=std::get<render::Pass>(frame->commands[0]);clear.colors[0]->view.level=2;
+      frame->output=clear.colors[0]->view;
+      assert(backend->Submit(frame,false,error));render::ColorReadback raw;
+      assert(backend->ReadColor(*frame,*frame->output,raw,error));
+      assert(raw.width==8&&raw.height==4&&raw.format==format&&raw.bytes.size()==raw.row_bytes*4);
+      const auto pixel_bytes=raw.row_bytes/8;
+      for(size_t at=0;at<raw.bytes.size();at+=pixel_bytes) {
+        const auto* p=raw.bytes.data()+at;
+        if(format==render::Format::BGRA8Unorm)assert(p[0]==128&&p[1]==64&&p[2]==64&&p[3]==255);
+        if(format==render::Format::R16Unorm){uint16_t v;std::memcpy(&v,p,2);assert(v==16384);}
+        if(format==render::Format::R32Float){float v;std::memcpy(&v,p,4);assert(v==0.25f);}
+        if(format==render::Format::RGBA16Float){std::array<uint16_t,4> v;std::memcpy(v.data(),p,8);assert((v==std::array<uint16_t,4>{0x3400,0x3400,0x3800,0x3c00}));}
+        if(format==render::Format::RGB10A2Unorm){uint32_t v;std::memcpy(&v,p,4);assert(v==(256u|(256u<<10)|(512u<<20)|(3u<<30)));}
+      }
+      const auto saved=raw;auto undefined=*frame->output;undefined.level=1;
+      assert(!backend->ReadColor(*frame,undefined,raw,error));assert(raw.bytes==saved.bytes&&raw.format==saved.format);
+      if(format==render::Format::BGRA8Unorm) {
+        assert(backend->ReadRGBA8(*frame,*frame->output,pixels,error));
+        assert(pixels[0]==64&&pixels[1]==64&&pixels[2]==128&&pixels[3]==255);
+      }
+    }
+    std::cout<<"Native color storage readback: BGRA, R16, R32F, RGBA16F, RGB10A2, mip selection and undefined rejection passed\n";
     auto noncolor=*partial->output;noncolor.aspect=render::Aspect::Depth;
     const auto saved=pixels;assert(!backend->ReadRGBA8(*partial,noncolor,pixels,error));assert(pixels==saved);
     backend->Close();assert(!backend->Submit(first,false,error));assert(!backend->Open(error));

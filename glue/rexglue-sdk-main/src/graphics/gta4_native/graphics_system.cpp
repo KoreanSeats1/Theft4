@@ -112,6 +112,7 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_buffer_metadata.h"
 #include "native_descriptor_tuple_cache.h"
 #include "native_texture_content_key.h"
+#include "native_color_readback.h"
 #include "native_texture_block_conversion.h"
 #include "native_fixed_function_policy.h"
 #include "native_shader_booleans.h"
@@ -4934,6 +4935,15 @@ bool Gta4NativeGraphicsSystem::ExecuteTitleCommand(uint32_t title_id, uint32_t a
 #endif
   NativeCommand& native_command = NativeQueueCommand(queued_command);
   native_command.type = CommandType::kTextureLock;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(frame_backend_) {
+    // Pin the producer's exact generation for this synchronous command. Later
+    // registrations must not replace it while the worker flushes earlier work.
+    std::lock_guard lock(texture_resource_mutex_);
+    const auto found=texture_resources_.find(lock_command.texture);
+    if(found!=texture_resources_.end())CaptureRecordResource(native_command,native_command.present_source,found->second);
+  }
+#endif
   native_command.bytes.resize(sizeof(lock_command));
   std::memcpy(native_command.bytes.data(), &lock_command, sizeof(lock_command));
   native_command.synchronous = std::make_shared<SynchronousCommand>();
@@ -7801,7 +7811,8 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         }
         TextureLockResult result{};
         if (succeeded) {
-          succeeded = ReadbackTextureToGuest(lock_command, result);
+          succeeded = ReadbackTextureToGuest(lock_command,result,
+              NativeResourceView<NativeTextureResource>(command.present_source).Share());
         }
         ClearNativeFrameCommands();
         startup_present_follows_texture_lock_flush = flushed_pending_frame;
@@ -28853,7 +28864,13 @@ bool Gta4NativeGraphicsSystem::RecordPresent(
 }
 
 bool Gta4NativeGraphicsSystem::ReadbackTextureToGuest(const TextureLockCommand& command,
-                                                      TextureLockResult& result) {
+    TextureLockResult& result,const std::shared_ptr<const NativeTextureResource>& captured) {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(frame_backend_) {
+    result.generation=captured?captured->generation:0;
+    return !captured||!captured->gpu_produced||ReadNativeMetalTextureToGuest(captured,command,result);
+  }
+#endif
   std::shared_ptr<const NativeTextureResource> texture;
   {
     std::lock_guard lock(texture_resource_mutex_);
@@ -28867,12 +28884,6 @@ bool Gta4NativeGraphicsSystem::ReadbackTextureToGuest(const TextureLockCommand& 
   if (!texture->gpu_produced) {
     return true;
   }
-#ifdef THEFT4_DIRECT_METAL_BACKEND
-  if (frame_backend_) {
-    REXLOG_ERROR("gta4-metal: guest texture readback awaits resolve/resource lowering");
-    return false;
-  }
-#endif
   if (command.array_index || command.dimension != TextureLockDimension::k2D) {
     REXLOG_ERROR("gta4-native: unresolved native texture lock dimension {} array {}",
                  uint32_t(command.dimension), command.array_index);

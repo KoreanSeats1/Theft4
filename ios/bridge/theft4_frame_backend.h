@@ -16,6 +16,12 @@ struct PresentationTarget {
   uint32_t width=0,height=0;
   Format format=Format::Invalid;
 };
+struct ColorReadback {
+  Format format=Format::Invalid;
+  uint32_t width=0,height=0;
+  uint64_t row_bytes=0;
+  std::vector<uint8_t> bytes;
+};
 class FrameBackend {
  public:
   virtual ~FrameBackend()=default;
@@ -32,5 +38,9 @@ class FrameBackend {
   // Explicit guest/validation readback only; never called by normal publication.
   virtual bool ReadRGBA8(const FramePlan&,SurfaceView,std::vector<uint8_t>&,
                         std::string& error)=0;
+  // Native storage bytes, without channel or transfer-function conversion.
+  // Guest locks apply their own format, endian and tiled-layout contract.
+  virtual bool ReadColor(const FramePlan&,SurfaceView,ColorReadback&,
+                         std::string& error)=0;
 };
 }

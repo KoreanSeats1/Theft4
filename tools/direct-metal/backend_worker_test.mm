@@ -244,6 +244,16 @@ int main(int argc,char** argv) {
       assert(expected==pixels);size_t partial_samples=0;
       for(size_t i=0;i<expected.size();i+=4)partial_samples+=expected[i]>0&&expected[i]<255;
       assert(partial_samples>0);
+      // Live frontend may discard a malformed title draw, but the GPU backend
+      // must never admit it or alter already-presented content. Classification
+      // is not permission to bypass immutable buffer bounds.
+      auto invalid=std::make_shared<render::Capture>(*c);invalid->draw.vertices[0].length=16;
+      render::DrawValidationIssue issue;
+      assert(!render::Validate(*invalid,error,&issue)&&issue==render::DrawValidationIssue::VertexRange);
+      auto rejected=Clear(output,120+samples,1);auto& invalid_pass=std::get<render::Pass>(rejected->commands[0]);
+      invalid->draw.pipeline.samples=1;invalid_pass.commands={render::FrameDraw{invalid,{}}};
+      assert(!backend->Submit(rejected,false,error));
+      std::vector<uint8_t> unchanged;assert(backend->ReadRGBA8(*f,*f->output,unchanged,error));assert(unchanged==pixels);
       std::cout<<"Direct per-sample materialization preserved "<<samples<<"x title-shader edges: "<<partial_samples<<" partially covered pixels\n";
     }
     const auto depth_surface=[&](uint64_t id,uint32_t samples=1) {

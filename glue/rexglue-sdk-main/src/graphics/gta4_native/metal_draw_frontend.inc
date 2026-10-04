@@ -411,6 +411,25 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     draw.fetches[slot].image=fetch.image;draw.fetches[slot].sampler=fetch.sampler;
     result.produced[slot]=fetch.produced;
   }
-  if(!r::Validate(*capture,error))return false;
+  r::DrawValidationIssue validation_issue;
+  if(!r::Validate(*capture,error,&validation_issue)) {
+    if(validation_issue!=r::DrawValidationIssue::VertexRange)return false;
+    // RecordPrimitive already discards title draws exceeding captured buffers.
+    // Match that admission policy without letting one malformed particle draw
+    // freeze every valid scene draw. Do not pad, truncate, submit or claim any
+    // attachment content for the rejected draw. Backend validation stays strict.
+    static std::map<std::pair<uint64_t,uint64_t>,uint64_t> rejected_ranges;
+    const auto shader_pair=std::pair{draw.pipeline.vertex.hash,draw.pipeline.fragment.hash};
+    if(rejected_ranges.size()<32||rejected_ranges.contains(shader_pair)) {
+      auto& failures=rejected_ranges[shader_pair];++failures;
+      if(failures==1||failures%1024==0) {
+        REXLOG_WARN("gta4-metal-draw-rejected: count={} type={} primitive={} guest-first={} guest-count={} "
+            "vs={:016X} ps={:016X} reason={} action=discard-draw-only",
+            failures,uint32_t(command.type),primitive,first,count,
+            draw.pipeline.vertex.hash,draw.pipeline.fragment.hash,error);
+      }
+    }
+    output={};error.clear();return true;
+  }
   result.capture=std::move(capture);output=std::move(result);error.clear();return true;
 }

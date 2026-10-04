@@ -155,7 +155,8 @@ bool ValidateImage(const Image& i,std::string& error) {
     return Error(error,"Invalid game image mip payload");
   error.clear();return true;
 }
-bool Validate(const Capture& capture, std::string& error) {
+bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue) {
+  if(issue)*issue=DrawValidationIssue::None;
   const auto& d=capture.draw;const auto& p=d.pipeline;
   if(!capture.width||!capture.height||capture.width>16384||capture.height>16384||!p.vertex.hash||
       p.vertex.variant>3||p.fragment.variant>3||p.attributes.size()>31||
@@ -209,6 +210,10 @@ bool Validate(const Capture& capture, std::string& error) {
     const uint64_t needed=last*s.stride+a.offset+Width(a.format);
     if(!View(d.vertices[a.stream],needed)) {
       const auto& buffer=d.vertices[a.stream];
+      // Only an otherwise valid immutable view can be classified as a title
+      // range fault. Missing owners, malformed offsets and payloads remain
+      // fatal validation errors in both live admission and offline replay.
+      if(issue&&View(buffer,0)&&needed>buffer.length)*issue=DrawValidationIssue::VertexRange;
       return Error(error,"Game vertex view is shorter than the draw's actual index range: command="+
           std::to_string(capture.command)+" vs="+std::to_string(p.vertex.hash)+" ps="+std::to_string(p.fragment.hash)+
           " stream="+std::to_string(a.stream)+" location="+std::to_string(a.location)+

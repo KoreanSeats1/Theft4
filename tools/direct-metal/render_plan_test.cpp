@@ -156,9 +156,18 @@ int main(int argc, char** argv) {
     const std::filesystem::path root(argv[1]); std::filesystem::create_directories(root);
     auto c = Fixture(); std::string error; Require(Validate(c, error), error);
     auto short_vertex=c;short_vertex.draw.vertices[0].length=16;
-    Require(!Validate(short_vertex,error)&&error.find("command=93")!=std::string::npos&&
+    DrawValidationIssue issue;
+    Require(!Validate(short_vertex,error,&issue)&&issue==DrawValidationIssue::VertexRange&&error.find("command=93")!=std::string::npos&&
         error.find("maximum=2")!=std::string::npos&&error.find("needed=48")!=std::string::npos,
         "Rejected draw lost its exact vertex-range diagnostics");
+    auto invalid_owner=c;invalid_owner.draw.vertices[0].source.reset();
+    Require(!Validate(invalid_owner,error,&issue)&&issue==DrawValidationIssue::None,
+        "Missing vertex owner was treated as a recoverable title range fault");
+    invalid_owner=c;invalid_owner.draw.vertices[0].offset=UINT64_MAX;
+    Require(!Validate(invalid_owner,error,&issue)&&issue==DrawValidationIssue::None,
+        "Malformed vertex offset was treated as a recoverable title range fault");
+    Require(Validate(c,error,&issue)&&issue==DrawValidationIssue::None,
+        "Valid draw retained a stale vertex range fault");
     {
       auto prepared = CpuPipelineFixture();
       Require(prepared.Valid() && !prepared.layout && !prepared.modules[0] && !prepared.modules[1],

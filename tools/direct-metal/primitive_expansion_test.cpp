@@ -40,4 +40,37 @@ int main() {
   const auto saved_bytes=expanded;
   assert(!ExpandGuestRectangles(bytes,sizeof(Vertex),fields,sizeof(Vertex)-4,expanded,error));assert(expanded==saved_bytes);
   assert(!ExpandGuestRectangles(bytes.subspan(1),sizeof(Vertex),fields,0,expanded,error));assert(expanded==saved_bytes);
+  // Buffered/indexed rectangles use a shared corner order across streams.
+  // Padding records and a signed base ensure the index is applied exactly once.
+  struct Position {float x,y;};struct Varying {float u,v;uint32_t packed;};
+  const Position positions[]{{-99,-99},{2,0},{0,4},{0,0},{-88,-88}};
+  const Varying varying[]{{9,9,9},{1,0,2},{0,1,3},{0,0,1},{8,8,8}};
+  const FloatVertexField pos_fields[]{{0,2}},uv_fields[]{{0,2}};
+  const RectangleVertexStream streams[]{
+    {{reinterpret_cast<const uint8_t*>(positions),sizeof(positions)},sizeof(Position),pos_fields,0},
+    {{reinterpret_cast<const uint8_t*>(varying),sizeof(varying)},sizeof(Varying),uv_fields,UINT32_MAX}};
+  const uint32_t selection[]{2,3,4,4,2,3};
+  std::vector<std::vector<uint8_t>> gathered;
+  assert(ExpandGuestRectangleStreams(streams,selection,-1,gathered,error));
+  assert(gathered.size()==2&&gathered[0].size()==8*sizeof(Position));
+  for(size_t rectangle=0;rectangle<2;++rectangle) {
+    Position first_pos,last_pos;Varying first_uv,last_uv;
+    std::memcpy(&first_pos,gathered[0].data()+rectangle*4*sizeof(Position),sizeof(Position));
+    std::memcpy(&last_pos,gathered[0].data()+(rectangle*4+3)*sizeof(Position),sizeof(Position));
+    std::memcpy(&first_uv,gathered[1].data()+rectangle*4*sizeof(Varying),sizeof(Varying));
+    std::memcpy(&last_uv,gathered[1].data()+(rectangle*4+3)*sizeof(Varying),sizeof(Varying));
+    assert(first_pos.x==0&&first_pos.y==0&&first_uv.u==0&&first_uv.v==0);
+    assert(last_pos.x==2&&last_pos.y==4&&last_uv.u==1&&last_uv.v==1&&last_uv.packed==3);
+  }
+  const auto saved_streams=gathered;
+  const uint32_t negative[]{0,1,2},outside[]{1,2,99};
+  assert(!ExpandGuestRectangleStreams(streams,negative,-1,gathered,error));assert(gathered==saved_streams);
+  assert(!ExpandGuestRectangleStreams(streams,outside,0,gathered,error));assert(gathered==saved_streams);
+  assert(!ExpandGuestRectangleStreams(streams,{selection,4},0,gathered,error));assert(gathered==saved_streams);
+  auto invalid_streams=std::vector<RectangleVertexStream>(std::begin(streams),std::end(streams));
+  invalid_streams[1].position_offset=0;
+  assert(!ExpandGuestRectangleStreams(invalid_streams,selection,-1,gathered,error));assert(gathered==saved_streams);
+  invalid_streams[1].position_offset=UINT32_MAX;invalid_streams[1].stride=0;
+  assert(!ExpandGuestRectangleStreams(invalid_streams,selection,-1,gathered,error));assert(gathered==saved_streams);
+
 }

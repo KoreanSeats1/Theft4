@@ -137,8 +137,6 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   if(!count){output={};error.clear();return true;}
   if(!state.vertex_shader_resource || !state.vertex_declaration_resource)
     return reject("Metal vertex shader or declaration unavailable");
-  if(primitive==uint32_t(xenos::PrimitiveType::kRectangleList)&&!up_stride)
-    return reject("Indexed/buffered guest rectangle expansion unavailable");
 
   // Invisible draws need no upload, allocation or texture preparation.
   struct ViewportLimits {uint32_t maxViewportDimensions[2];float viewportBoundsRange[2];};
@@ -175,7 +173,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     NativeShaderSelection chosen;chosen.shader=shader;if(!shader)return chosen;
     chosen.has_early=shader->module_code_hashes[0]!=0;chosen.has_late=shader->module_code_hashes[1]!=0;
     chosen.specialization_constants_mask=shader->specialization_constants_mask;
-    chosen.used_texture_mask=shader->used_texture_mask;chosen.specialization_constants_mask=shader->specialization_constants_mask;
+    chosen.used_texture_mask=shader->used_texture_mask;
     chosen.filename=shader->filename.c_str();return chosen;
   };
   auto description=PrepareNativePipelineDescription(state,fixed,key,capabilities,
@@ -314,6 +312,49 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       auto bytes=std::make_shared<r::Bytes>();bytes->generation=1;bytes->conversion={0x44454641554c54ull};
       bytes->value.resize(kNativeDefaultVertexRecordSize);return std::shared_ptr<const r::Bytes>(bytes);
     }();draw.vertices[kDefaultVertexBinding]={defaults,0,defaults->value.size()};
+  }
+  if(primitive==uint32_t(xenos::PrimitiveType::kRectangleList)&&!up_stride) {
+    if(count%3||count>16*1024*1024)return reject("Metal buffered rectangle count");
+    std::vector<uint32_t> selected(count);
+    if(indexed) {
+      const auto& resource=command.index_buffer;
+      const bool index32=(resource->flags&kIndex32Flag)!=0;const size_t element=index32?4:2;
+      if((uint64_t(start_index)+count)*element>resource->payload.size())return reject("Metal rectangle index bounds");
+      auto& host=index32?resource->host_index32_payload:resource->host_index16_payload;
+      if(host.empty()){host.resize(resource->payload.size());CopyGuestIndicesToHost(host.data(),resource->payload.data(),host.size(),index32);}
+      for(uint32_t i=0;i<count;++i) {
+        if(index32)std::memcpy(&selected[i],host.data()+(size_t(start_index)+i)*4,4);
+        else {uint16_t value;std::memcpy(&value,host.data()+(size_t(start_index)+i)*2,2);selected[i]=value;}
+      }
+    } else {
+      if(uint64_t(first)+count>uint64_t(UINT32_MAX)+1)return reject("Metal rectangle first vertex overflow");
+      for(uint32_t i=0;i<count;++i)selected[i]=first+i;
+    }
+    std::array<std::vector<r::FloatVertexField>,kVertexStreamCount> fields;
+    std::vector<r::RectangleVertexStream> inputs;std::vector<uint32_t> slots;
+    bool has_position=false;
+    for(uint32_t slot=0;slot<kVertexStreamCount;++slot) {
+      const auto& buffer=draw.vertices[slot];const auto& stream=draw.pipeline.streams[slot];
+      if(!buffer.source||stream.per_instance)continue;
+      uint32_t position=UINT32_MAX;
+      for(const auto& element:state.vertex_declaration_resource->elements)if(element.stream==slot) {
+        const uint32_t components=GetFloat32VertexElementComponentCount(element.type);
+        if(components&&uint64_t(element.offset)+components*4<=stream.stride)
+          fields[slot].push_back({element.offset,components});
+        if(!has_position&&components>=2&&ConvertVertexUsageToLocation(element.usage,element.usage_index)==0&&
+           uint64_t(element.offset)+8<=stream.stride) {position=element.offset;has_position=true;}
+      }
+      inputs.push_back({std::span<const uint8_t>(buffer.source->value).subspan(buffer.offset,buffer.length),
+                        stream.stride,fields[slot],position});slots.push_back(slot);
+    }
+    std::vector<std::vector<uint8_t>> expanded;
+    if(!r::ExpandGuestRectangleStreams(inputs,selected,indexed?base_vertex:0,expanded,error))return false;
+    for(size_t i=0;i<slots.size();++i) {
+      auto bytes=make_bytes(expanded[i],{primitive,slots[i],count,uint32_t(base_vertex)});
+      if(!bytes)return reject("Metal rectangle vertex packet allocation failed");
+      draw.vertices[slots[i]]={bytes,0,bytes->value.size()};
+    }
+    count=count/3*4;first=0;indexed=false;base_vertex=0;draw.base_vertex=0;
   }
   if(indexed) {
     const auto& resource=command.index_buffer;const bool index32=(resource->flags&kIndex32Flag)!=0;

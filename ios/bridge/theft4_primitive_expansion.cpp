@@ -85,4 +85,75 @@ bool ExpandGuestRectangles(std::span<const uint8_t> vertices,uint32_t stride,
   }
   output=std::move(next);error.clear();return true;
 }
+bool ExpandGuestRectangleStreams(std::span<const RectangleVertexStream> streams,
+                                std::span<const uint32_t> indices, int32_t base_vertex,
+                                std::vector<std::vector<uint8_t>>& output,
+                                std::string& error) {
+  const auto reject = [&](const char* message) { error = message; return false; };
+  constexpr uint64_t budget = 64 * 1024 * 1024;
+  if (streams.empty() || indices.empty() || indices.size() % 3)
+    return reject("Invalid buffered rectangle extent");
+  uint64_t total = 0;
+  size_t position_stream = streams.size();
+  for (size_t i = 0; i < streams.size(); ++i) {
+    const auto& stream = streams[i];
+    if (!stream.stride || stream.vertices.size() < stream.stride)
+      return reject("Invalid buffered rectangle stream");
+    const uint64_t size = uint64_t(indices.size() / 3) * 4 * stream.stride;
+    if (size > budget || total > budget - size)
+      return reject("Buffered rectangle upload budget exceeded");
+    total += size;
+    if (stream.position_offset != UINT32_MAX) {
+      if (position_stream != streams.size() || stream.position_offset > stream.stride ||
+          stream.stride - stream.position_offset < 8)
+        return reject("Invalid buffered rectangle position stream");
+      position_stream = i;
+    }
+    for (const auto& field : stream.fields)
+      if (!field.components || field.components > 4 || field.offset > stream.stride ||
+          field.components * 4 > stream.stride - field.offset)
+        return reject("Invalid buffered rectangle field");
+    for (const auto index : indices) {
+      const int64_t vertex = int64_t(index) + base_vertex;
+      if (vertex < 0 || uint64_t(vertex) >= stream.vertices.size() / stream.stride)
+        return reject("Buffered rectangle vertex outside captured stream");
+    }
+  }
+  std::vector<std::vector<uint8_t>> gathered(streams.size());
+  for (size_t i = 0; i < streams.size(); ++i)
+    gathered[i].resize(indices.size() * streams[i].stride);
+  for (size_t rectangle = 0; rectangle < indices.size() / 3; ++rectangle) {
+    uint32_t corner = 0;
+    if (position_stream < streams.size()) {
+      const auto& stream = streams[position_stream];
+      std::array<std::array<float, 2>, 3> positions;
+      for (size_t c = 0; c < 3; ++c) {
+        const auto vertex = uint64_t(int64_t(indices[rectangle * 3 + c]) + base_vertex);
+        std::memcpy(positions[c].data(), stream.vertices.data() + vertex * stream.stride +
+                    stream.position_offset, 8);
+      }
+      float longest = -1;
+      for (uint32_t c = 0; c < 3; ++c) {
+        const float x = positions[(c + 1) % 3][0] - positions[(c + 2) % 3][0];
+        const float y = positions[(c + 1) % 3][1] - positions[(c + 2) % 3][1];
+        const float length = x * x + y * y;
+        if (length > longest) { longest = length; corner = c; }
+      }
+    }
+    for (size_t i = 0; i < streams.size(); ++i) {
+      const auto& stream = streams[i];
+      for (size_t c = 0; c < 3; ++c) {
+        const auto vertex = uint64_t(int64_t(indices[rectangle * 3 + (corner + c) % 3]) + base_vertex);
+        std::memcpy(gathered[i].data() + (rectangle * 3 + c) * stream.stride,
+                    stream.vertices.data() + vertex * stream.stride, stream.stride);
+      }
+    }
+  }
+  std::vector<std::vector<uint8_t>> next(streams.size());
+  for (size_t i = 0; i < streams.size(); ++i)
+    if (!ExpandGuestRectangles(gathered[i], streams[i].stride, streams[i].fields,
+                              UINT32_MAX, next[i], error)) return false;
+  output = std::move(next); error.clear(); return true;
+}
+
 }

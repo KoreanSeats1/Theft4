@@ -12,6 +12,8 @@
 #include "native_shared_frame_arena.h"
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <stdexcept>
 #ifndef THEFT4_METAL_SOURCE_REVISION
@@ -693,6 +695,37 @@ struct Probe {
       @"first_use_transparent_black":@YES,@"later_capture_replaces_fallback":@YES,
       @"skipped_update_preserves_capture":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void IdentityCopyAndLoadElision() {
+    namespace r=theft4::render;FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    auto source=std::make_shared<r::Surface>();source->key={901,1};source->format=r::Format::BGRA8Unorm;source->width=64;source->height=32;
+    auto target=std::make_shared<r::Surface>(*source);target->key={902,1};
+    auto plan=std::make_shared<r::FramePlan>();plan->sequence=1;plan->surfaces={source,target};
+    const auto clear=[&](r::SurfaceKey key,std::array<double,4> color){r::Pass p;r::Attachment a;a.view={key,0,0,r::Aspect::Color};
+      a.load=r::Load::Clear;a.store=r::Store::Store;a.clear_color=color;p.colors[0]=a;plan->commands.push_back(p);};
+    clear(target->key,{1,1,0,1});clear(source->key,{0.2,0.4,0.6,0.8});
+    r::HostDraw host;host.program=r::HostProgram::Resolve;host.pipeline.colors[0]=target->format;host.scissor={0,0,64,32};
+    host.fetches[0].produced=r::SurfaceView{source->key,0,0,r::Aspect::Color};host.fetches[0].sampler=std::make_shared<r::Sampler>();
+    auto bank=std::make_shared<r::Bytes>();bank->generation=1;std::array<uint32_t,16> fields{};
+    fields[8]=1;fields[11]=2;fields[12]=fields[14]=64;fields[13]=fields[15]=32;bank->value.resize(64);std::memcpy(bank->value.data(),fields.data(),64);
+    host.constants={bank,0,64};r::Pass copy;r::Attachment a;a.view={target->key,0,0,r::Aspect::Color};a.load=r::Load::Load;a.store=r::Store::Store;
+    copy.colors[0]=a;copy.commands.push_back(host);plan->commands.push_back(copy);
+    plan->output=r::SurfaceView{target->key,0,0,r::Aspect::Color};
+    auto receipt=adapter.Submit(plan,error,nullptr,true);Require(bool(receipt));Require(receipt.Wait(error));
+    Require(adapter.LastTiming().native_identity_copies==1&&adapter.LastTiming().avoided_attachment_stores==1);
+    auto src=adapter.SampledTexture(*plan,{r::SurfaceView{source->key,0,0,r::Aspect::Color}},error);Require(src);
+    auto dst=adapter.Output(*plan,error);Require(dst);Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
+    // Force the specialized shader path with a neutral runtime exponent flag.
+    // Its pixels must still match the identity copy and its prior LOAD is dead.
+    fields[11]=2|64; // An unused flag conservatively excludes native copy.
+    auto changed=std::make_shared<r::Bytes>(*bank);changed->generation=2;std::memcpy(changed->value.data(),fields.data(),64);
+    plan=std::make_shared<r::FramePlan>(*plan);
+    std::get<r::HostDraw>(std::get<r::Pass>(plan->commands[2]).commands[0]).constants={changed,0,64};
+    plan->sequence=2;receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
+    Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==1);
+    Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
+    [results addObject:@{@"case":@"identity_native_copy_full_overwrite_load_and_specialization",@"passed":@YES,
+      @"identity_pixels_equal":@YES,@"shader_pixels_equal":@YES,@"previous_store_elided":@YES,@"full_overwrite_load_elided":@YES}];
+  }
   void CalibratedPassTimings() {
     if(![renderer.Device() supportsFamily:MTLGPUFamilyApple1]||
        ![renderer.Device() supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])return;
@@ -704,13 +737,15 @@ struct Probe {
     auto vertices=Quad({0.5f,0.25f,0.75f,0.5f});draw.vertices[0]=Buffer(Bytes(vertices));
     draw.vertex_count=vertices.size();draw.viewport={0,0,1920,1080,0,1};draw.scissor={0,0,1920,1080};
     for(size_t trial=0;trial<3;++trial) {
-      auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.ProfilePasses(1));
+      auto frame=renderer.BeginFrame(error);Require(bool(frame));const std::array<size_t,1> mapping{7};
+      Require(frame.ProfilePasses(1,trial==1?std::span<const size_t>(mapping):std::span<const size_t>{}));
       auto pass=[MTLRenderPassDescriptor renderPassDescriptor];auto a=pass.colorAttachments[0];a.texture=texture;
       a.loadAction=MTLLoadActionClear;a.storeAction=MTLStoreActionStore;
       Require(frame.BeginPass(pass,error));
       for(size_t i=0;i<64;++i)Require(frame.Encode(draw,error));
       Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
       const auto gpu=receipt.GpuMilliseconds();const auto times=receipt.GpuPassTimings();Require(times.size()==1&&gpu>0);
+      Require(times[0].pass==(trial==1?7:0));
       Require(std::isfinite(times[0].vertex_ms)&&std::isfinite(times[0].fragment_ms));
       Require(times[0].vertex_ms>=0&&times[0].fragment_ms>0&&
         times[0].vertex_ms<=gpu*1.1+0.05&&times[0].fragment_ms<=gpu*1.1+0.05);
@@ -1140,6 +1175,28 @@ struct Probe {
     NSString* reversedFixture=[output stringByAppendingPathComponent:@"ReverseDepthFixture/reversed-depth.t4draw"];
     Require(r::WriteCapture(reversedFixture.UTF8String,reversed,error));
     reversed={};
+    // A second renderer restores real binary PSOs and prepares the exact
+    // raster recipe before its first draw. Invalid recipe data is optional.
+    const auto cache=std::string(output.UTF8String)+"/PipelineArchiveFixture";
+    {
+      Renderer cold;Require(cold.Ready());cold.ConfigurePipelineArchive(cache+"/pipelines.metalarc");
+      PlanAdapter first(cold);first.ConfigurePipelineCache(cache);Require(first.Open(libraries.UTF8String,error));
+      Draw packet;Require(first.Prepare(*immutable,packet,error));first.FlushPipelineCache();cold.FlushPipelineArchive();
+    }
+    {
+      Renderer restored;Require(restored.Ready());restored.ConfigurePipelineArchive(cache+"/pipelines.metalarc");
+      PlanAdapter second(restored);second.ConfigurePipelineCache(cache);Require(second.Open(libraries.UTF8String,error));
+      Require(second.PipelineCount()==1&&restored.PipelineArchiveHits()>=1);
+      Draw packet;Require(second.Prepare(*immutable,packet,error));Require(second.PipelineCount()==1);
+    }
+    {
+      std::ofstream broken(cache+"/recipes.json");broken<<"{broken";broken.close();
+      Renderer fallback;PlanAdapter third(fallback);third.ConfigurePipelineCache(cache);
+      Require(third.Open(libraries.UTF8String,error));Require(third.PipelineCount()==0);
+      Draw packet;Require(third.Prepare(*immutable,packet,error));third.FlushPipelineCache();
+    }
+    [results addObject:@{@"case":@"persistent_pipeline_archive_and_startup_preparation",@"passed":@YES,
+      @"restored_before_first_draw":@YES,@"binary_archive_hit":@YES,@"malformed_cache_falls_back":@YES}];
     auto prepared=adapter.Realize(immutable,error);Require(bool(prepared));
     const auto resources=adapter.ResourceStats();
     Require(adapter.Realize(immutable,error)==prepared);
@@ -1273,7 +1330,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

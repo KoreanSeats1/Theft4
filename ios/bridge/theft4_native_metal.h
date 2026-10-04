@@ -102,6 +102,7 @@ class Receipt {
   id<MTLCommandBuffer> buffer_ = nil;
   id<MTLCounterSampleBuffer> counters_ = nil;
   size_t profiled_passes_=0;
+  std::vector<size_t> pass_mapping_;
   MTLTimestamp cpu_reference_=0,gpu_reference_=0;
 };
 class Frame {
@@ -112,7 +113,7 @@ class Frame {
   bool BeginPass(MTLRenderPassDescriptor* pass, std::string& error);
   // Optional diagnostics. Unsupported counters or allocation failure leave
   // normal rendering untouched; sampling never introduces a completion wait.
-  bool ProfilePasses(size_t maximum_passes);
+  bool ProfilePasses(size_t maximum_passes,std::span<const size_t> pass_mapping={});
   bool Encode(const Draw& draw, std::string& error);
   bool ClearRectangle(const Clear&, std::string& error);
   bool CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,
@@ -139,7 +140,7 @@ class Renderer {
   id<MTLTexture> Texture(MTLTextureDescriptor* descriptor, std::string& error);
   Shader LoadShader(std::span<const uint8_t> library, Stage stage,
                     ShaderInterface interface, uint32_t specialization,
-                    std::string& error,const char* entry="theft4_shader");
+                    std::string& error,const char* entry="theft4_shader",std::span<const uint32_t> host_constants={});
   std::shared_ptr<const Pipeline> MakePipeline(
       const Shader& vertex, const Shader& fragment,
       MTLRenderPipelineDescriptor* fixed,
@@ -151,6 +152,10 @@ class Renderer {
   // pipeline and reflected resource ABI when only those tests change.
   std::shared_ptr<const Pipeline> MakeDepthVariant(const Pipeline& base,
       MTLDepthStencilDescriptor* depth,std::string& error);
+  // Persistent PSOs are optional. Failures fall back to normal compilation.
+  void ConfigurePipelineArchive(const std::string& path);
+  void FlushPipelineArchive();
+  uint64_t PipelineArchiveHits() const;
   Frame BeginFrame(std::string& error);
   // Readback is for validation/capture, never part of the normal draw path.
   std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error,

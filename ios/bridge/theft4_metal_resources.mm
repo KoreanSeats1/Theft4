@@ -5,6 +5,7 @@
 #include <limits>
 #include <list>
 #include <unordered_map>
+#include "theft4_bounded_cache_sweep.h"
 
 namespace theft4::metal {
 namespace {
@@ -141,14 +142,17 @@ struct ResourceCache::Impl {
   struct UniformEntry {std::weak_ptr<const void> owner;BufferView view;Allocations::iterator allocation;};
   std::unordered_map<Key,UniformEntry,KeyHash> uniforms;
   Allocations allocations;
+  Allocations::iterator sweep_allocation;
+  size_t buffer_bucket=0,texture_bucket=0,uniform_bucket=0;
   size_t buffer_budget;
   id<MTLBuffer> uniform_page=nil;
   NSUInteger uniform_used=0;
   Allocations::iterator current_page;
   std::unordered_map<Key,BufferEntry,KeyHash> buffers;
   std::unordered_map<Key,TextureEntry,KeyHash> textures;
-  explicit Impl(Renderer& value,size_t budget):renderer(value),buffer_budget(std::max(size_t(256*1024),budget)){}
+  explicit Impl(Renderer& value,size_t budget):renderer(value),sweep_allocation(allocations.end()),buffer_budget(std::max(size_t(256*1024),budget)){}
   void Release(Allocations::iterator allocation,bool eviction) {
+    if(sweep_allocation==allocation)++sweep_allocation;
     if(allocation->buffer==uniform_page){uniform_page=nil;uniform_used=0;}
     for(const auto& key:allocation->keys) {
       if(allocation->packed) {
@@ -258,22 +262,20 @@ BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<
   impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view,impl_->current_page});
   impl_->stats.uploaded_bytes+=bytes.size();error.clear();return view;
 }
-size_t ResourceCache::SweepRetired() {
+size_t ResourceCache::SweepRetired(bool bounded) {
   const auto retired_before=impl_->stats.retired;size_t removed=0;
-  for (auto i=impl_->buffers.begin();i!=impl_->buffers.end();) {
-    if(i->second.owner.expired()){i=impl_->buffers.erase(i);++removed;}else ++i;
-  }
-  for (auto i=impl_->textures.begin();i!=impl_->textures.end();) {
-    if(i->second.owner.expired()){i=impl_->textures.erase(i);++removed;}else ++i;
-  }
-  for(auto i=impl_->uniforms.begin();i!=impl_->uniforms.end();) {
-    if(i->second.owner.expired()){i=impl_->uniforms.erase(i);++removed;}else ++i;
-  }
+  const auto budget=bounded?size_t(1024):std::numeric_limits<size_t>::max();
+  const auto expired=[](const auto& entry){return entry.second.owner.expired();};
+  removed+=SweepCacheBuckets(impl_->buffers,impl_->buffer_bucket,budget,expired);
+  removed+=SweepCacheBuckets(impl_->uniforms,impl_->uniform_bucket,budget,expired);
+  removed+=SweepCacheBuckets(impl_->textures,impl_->texture_bucket,bounded?size_t(256):budget,expired);
   // A page remains resident only while at least one cached generation uses
   // it. The page keys can outlive an expired owner, so check the current entry
   // and allocation identity before deciding that the page is still live.
-  for(auto i=impl_->allocations.begin();i!=impl_->allocations.end();) {
-    const auto allocation=i++;
+  const auto allocations=std::min(impl_->allocations.size(),bounded?size_t(256):impl_->allocations.size());
+  for(size_t n=0;n<allocations&&!impl_->allocations.empty();++n) {
+    if(impl_->sweep_allocation==impl_->allocations.end())impl_->sweep_allocation=impl_->allocations.begin();
+    const auto allocation=impl_->sweep_allocation++;
     const bool live=std::any_of(allocation->keys.begin(),allocation->keys.end(),[&](const Key& key){
       if(allocation->packed){auto e=impl_->uniforms.find(key);return e!=impl_->uniforms.end()&&e->second.allocation==allocation;}
       auto e=impl_->buffers.find(key);return e!=impl_->buffers.end()&&e->second.allocation==allocation;
@@ -282,7 +284,7 @@ size_t ResourceCache::SweepRetired() {
   }
   impl_->stats.retired+=removed;return impl_->stats.retired-retired_before;
 }
-void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->allocations.clear();impl_->stats.resident_buffer_bytes=0;BeginUploadBatch();}
+void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->allocations.clear();impl_->sweep_allocation=impl_->allocations.end();impl_->buffer_bucket=impl_->texture_bucket=impl_->uniform_bucket=0;impl_->stats.resident_buffer_bytes=0;BeginUploadBatch();}
 size_t ResourceCache::BufferCount()const{return impl_->buffers.size()+impl_->uniforms.size();}
 size_t ResourceCache::TextureCount()const{return impl_->textures.size();}
 ResourceCacheStats ResourceCache::Stats()const{return impl_->stats;}

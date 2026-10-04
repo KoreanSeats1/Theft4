@@ -61,11 +61,26 @@ Json Export(const char* name,std::span<const uint32_t> code,const std::filesyste
     constants.push_back({{"buffer_index",0},{"bytes",compiler.get_declared_struct_size(compiler.get_type(push.base_type_id))}});
   }
   auto source=compiler.compile();
+  const bool resolve_specialization=std::string(name).find("gta4_native_resolve_convert_")==0;
+  if(resolve_specialization) {
+    const std::array<const char*,8> fields{"source_guest_sample_type","requested_guest_sample_type",
+      "destination_guest_sample_type","sample_select","mode","physical_source_sample_type","physical_destination_sample_type","flags"};
+    std::string declarations;
+    for(size_t i=0;i<fields.size();++i) {
+      const auto symbol="theft4_resolve_"+std::to_string(i);
+      declarations+="constant uint "+symbol+" [[function_constant("+std::to_string(i+1)+")]];\n";
+      const auto original="resolve_constants."+std::string(fields[i]);
+      const auto replacement="(is_function_constant_defined("+symbol+") ? "+symbol+" : "+original+")";
+      size_t at=0;while((at=source.find(original,at))!=std::string::npos){source.replace(at,original.size(),replacement);at+=replacement.size();}
+    }
+    const auto insertion=source.find("using namespace metal;");if(insertion==std::string::npos)throw std::runtime_error("Metal resolve namespace missing");
+    source.insert(insertion+std::string("using namespace metal;").size(),"\n"+declarations);
+  }
   std::ofstream out(root/(std::string(name)+".metal"));out<<source;
   if(!out)throw std::runtime_error("Could not save translated host shader");
   uint64_t hash=14695981039346656037ull;
   for(auto word:code)for(size_t b=0;b<4;++b){hash^=uint8_t(word>>(b*8));hash*=1099511628211ull;}
-  return {{"name",name},{"stage",stage==spv::ExecutionModelVertex ? "vertex" : "fragment"},
+  return {{"resolve_specialization",resolve_specialization},{"name",name},{"stage",stage==spv::ExecutionModelVertex ? "vertex" : "fragment"},
     {"entry","theft4_host_shader"},{"spirv_words",code.size()},{"spirv_fnv1a64",hash},
     {"textures",textures},{"constants",constants}};
 }

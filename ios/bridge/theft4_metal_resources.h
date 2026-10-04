@@ -45,7 +45,7 @@ class ResourceCache {
   // view is immutable; cache eviction releases ownership, never reuses bytes
   // in a buffer that an encoded or pending frame can still retain.
   BufferView UploadBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
-  size_t SweepRetired();
+  size_t SweepRetired(bool bounded=false);
   void Clear();
   size_t BufferCount() const;
   size_t TextureCount() const;

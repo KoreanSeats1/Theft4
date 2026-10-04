@@ -19,7 +19,7 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
       if(name.empty()||name.size()>80||name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_")!=std::string::npos||
          (stage!="vertex"&&stage!="fragment")||p.at("entry")!="theft4_host_shader")
         return Fail(error,"Invalid host shader identity");
-      HostShaderMetadata m;m.stage=stage=="vertex" ? Stage::Vertex : Stage::Fragment;
+      HostShaderMetadata m;m.resolve_specialization=p.value("resolve_specialization",false);m.stage=stage=="vertex" ? Stage::Vertex : Stage::Fragment;
       if(p.at("constants").size()>1||p.at("textures").size()>16)return Fail(error,"Host shader binding budget exceeded");
       for(const auto& c:p.at("constants")) {
         auto size=c.at("bytes").get<uint64_t>();
@@ -55,8 +55,9 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
 const HostShaderMetadata* HostShaderStore::Metadata(const std::string& name) const {
   auto it=catalog_.find(name);return it==catalog_.end() ? nullptr : &it->second;
 }
-Shader HostShaderStore::Resolve(const std::string& name,std::string& error) {
-  if(auto it=functions_.find(name);it!=functions_.end()){error.clear();return it->second;}
+Shader HostShaderStore::Resolve(const std::string& name,std::string& error,std::span<const uint32_t> constants) {
+  std::string key=name;for(auto value:constants)key+=":"+std::to_string(value);
+  if(auto it=functions_.find(key);it!=functions_.end()){error.clear();return it->second;}
   const auto* m=Metadata(name);if(!m){error="Unknown host utility shader";return {};}
   try {
     auto path=std::filesystem::path(directory_)/(name+".metallib");auto size=std::filesystem::file_size(path);
@@ -65,8 +66,8 @@ Shader HostShaderStore::Resolve(const std::string& name,std::string& error) {
     if(!stream){error="Could not read the complete host Metal library";return {};}
     ShaderInterface abi;abi.constant_bytes={m->constant_bytes,0,0};
     for(const auto& b:m->textures){abi.textures|=1u<<b.texture_index;abi.samplers|=1u<<b.sampler_index;abi.texture_types[b.texture_index]=b.type;}
-    auto shader=renderer_.LoadShader(bytes,m->stage,abi,0,error,"theft4_host_shader");
-    if(shader.function)functions_.emplace(name,shader);return shader;
+    auto shader=renderer_.LoadShader(bytes,m->stage,abi,0,error,"theft4_host_shader",constants);
+    if(shader.function)functions_.emplace(key,shader);return shader;
   }catch(const std::exception& e){error=std::string("Host Metal library: ")+e.what();return {};}
 }
 bool HostShaderStore::Bind(const std::string& name,std::span<const HostInput> inputs,

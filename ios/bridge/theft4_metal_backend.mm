@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <map>
+#include <TargetConditionals.h>
 namespace theft4::metal {
 namespace {
 class Backend final:public render::FrameBackend {
@@ -40,6 +41,12 @@ class Backend final:public render::FrameBackend {
       error="Metal worker device initialization failed";renderer_.reset();return false;
     }
     adapter_=std::make_unique<FrameAdapter>(*renderer_);
+    #if TARGET_OS_IOS
+    if(layer_) {
+      auto root=[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+      if(root)adapter_->ConfigurePipelineCache(std::string(root.path.UTF8String)+"/Theft4MetalPipelines-v1");
+    }
+    #endif
     if(!adapter_->Open(libraries_,error)){adapter_.reset();renderer_.reset();return false;}
     // The UI creates the layer before constructing the backend. Its device
     // must be the same device used to allocate the frame's retained resources.
@@ -104,8 +111,9 @@ class Backend final:public render::FrameBackend {
     if(present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
       const auto resources=adapter_->ImmutableStats();
-      std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu\n",
+      std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu avoided-loads=%llu native-identity-copies=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu\n",
         (unsigned long long)presentations_,(unsigned long long)t.avoided_attachment_stores,
+        (unsigned long long)t.avoided_attachment_loads,(unsigned long long)t.native_identity_copies,
         (unsigned long long)t.binding_storage_reuses,(unsigned long long)t.binding_storage_fresh);
       char message[1280];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu buffer-cache-bytes=%llu buffer-cache-peak=%llu buffer-evictions=%llu gpu-allocated-bytes=%llu buffer-offset-calls=%llu",
         (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
@@ -129,6 +137,7 @@ class Backend final:public render::FrameBackend {
       std::string completion_error;
       FinishOldest(completion_error);
     }
+    if(adapter_)adapter_->FlushPipelineCache();
     return Healthy(error);
   }
   void Close() override {
@@ -136,7 +145,7 @@ class Backend final:public render::FrameBackend {
     // Normal SDK teardown closes on the worker. Destructor fallback also waits
     // every accepted buffer after the worker has joined; it never encodes work.
     for(auto& submitted:pending_){std::string error;submitted.receipt.Wait(error);}
-    pending_.clear();adapter_.reset();renderer_.reset();
+    pending_.clear();if(adapter_)adapter_->FlushPipelineCache();adapter_.reset();renderer_.reset();
   }
   bool ReadRGBA8(const render::FramePlan& plan,render::SurfaceView view,
                 std::vector<uint8_t>& bytes,std::string& error) override {
@@ -180,6 +189,11 @@ class Backend final:public render::FrameBackend {
     auto submitted=std::move(pending_.front());pending_.pop_front();
     const bool okay=submitted.receipt.Wait(error);
     if(okay) {
+      if(submitted.present&&gpu_sample_count_%60==0) {
+        char context[256];std::snprintf(context,sizeof(context),"gta4-metal-device-context: thermal-state=%ld low-power=%d",
+          (long)NSProcessInfo.processInfo.thermalState,int(NSProcessInfo.processInfo.lowPowerModeEnabled));
+        if(diagnostic_)diagnostic_(context);else std::fprintf(stderr,"%s\n",context);
+      }
       last_gpu_ms_=submitted.receipt.GpuMilliseconds();
       frame_gpu_work_ms_+=last_gpu_ms_;
       if(submitted.present){gpu_samples_[gpu_sample_count_++%gpu_samples_.size()]=frame_gpu_work_ms_;frame_gpu_work_ms_=0;}
@@ -197,6 +211,7 @@ class Backend final:public render::FrameBackend {
         for(size_t i=0;i<submitted.owner->commands.size();++i)
           if(const auto* pass=std::get_if<render::Pass>(&submitted.owner->commands[i])){passes.push_back(pass);pass_commands.push_back(i);}
         const auto dead_stores=render::DeadAttachmentStores(*submitted.owner);
+        const auto redundant_loads=render::RedundantAttachmentLoads(*submitted.owner);
         char summary[512];std::snprintf(summary,sizeof(summary),
           "gta4-metal-gpu-profile: sequence=%llu command-buffer-ms=%.3f pass-samples=%zu passes=%zu copies=%zu detail-limit=12 stage-times-overlap=true color-pixel-format-view=false",
           (unsigned long long)submitted.owner->sequence,last_gpu_ms_,timings.size(),passes.size(),submitted.owner->commands.size()-passes.size());
@@ -229,6 +244,7 @@ class Backend final:public render::FrameBackend {
           };
           for(size_t slot=0;slot<4;++slot)describe(pass.colors[slot],slot);describe(pass.depth,4);describe(pass.stencil,5);
           stores&=~uint32_t(dead_stores[pass_commands[t.pass]]);
+          loads&=~uint32_t(redundant_loads[pass_commands[t.pass]]);
           char message[1152];std::snprintf(message,sizeof(message),
             "gta4-metal-gpu-pass: sequence=%llu rank=%zu pass=%zu vertex-ms=%.3f fragment-ms=%.3f draws=%zu target=%ux%u samples=%u vs=%016llx ps=%016llx shader-pairs=%zu dominant-draws=%zu host-draws=%zu clears=%zu vertices=%llu indices=%llu formats=%u,%u,%u,%u,%u,%u load-mask=%02x store-mask=%02x resolve-mask=%02x host-mask=%08x profiled=true",
             (unsigned long long)submitted.owner->sequence,rank,t.pass,t.vertex_ms,t.fragment_ms,draws,

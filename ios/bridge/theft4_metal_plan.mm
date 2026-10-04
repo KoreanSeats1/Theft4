@@ -1,4 +1,9 @@
 #include "theft4_metal_plan.h"
+#include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
+#include <cstdio>
+#include "theft4_bounded_cache_sweep.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -57,9 +62,77 @@ Draw PlanAdapter::AcquireDrawStorage() {
 void PlanAdapter::RecycleDrawStorage(Draw& draw) noexcept {
   binding_storage_.Recycle(draw.textures,draw.samplers);
 }
+namespace {
+using PipelineJson=nlohmann::json;
+PipelineJson PipelineRecipe(const render::Pipeline& p,render::Primitive primitive) {
+  PipelineJson attributes=PipelineJson::array(),streams=PipelineJson::array(),blends=PipelineJson::array();
+  for(const auto& a:p.attributes)attributes.push_back({a.location,a.stream,a.offset,uint32_t(a.format)});
+  for(const auto& a:p.streams)streams.push_back({a.stride,a.per_instance});
+  for(const auto& b:p.blends)blends.push_back({b.enabled,uint32_t(b.rgb),uint32_t(b.alpha),uint32_t(b.source_rgb),
+    uint32_t(b.destination_rgb),uint32_t(b.source_alpha),uint32_t(b.destination_alpha),b.write_mask});
+  std::array<uint32_t,4> colors{};for(size_t i=0;i<4;++i)colors[i]=uint32_t(p.colors[i]);
+  return {{"primitive",uint32_t(primitive)},{"vertex",{p.vertex.hash,p.vertex.variant,p.vertex.specialization}},
+    {"fragment",{p.fragment.hash,p.fragment.variant,p.fragment.specialization}},{"attributes",attributes},
+    {"streams",streams},{"colors",colors},{"blends",blends},{"depth",uint32_t(p.depth)},
+    {"stencil",uint32_t(p.stencil)},{"samples",p.samples},{"mask",p.sample_mask},{"negative_clip",p.negative_one_to_one}};
+}
+bool ReadPipelineRecipe(const PipelineJson& j,render::Pipeline& p,render::Primitive& primitive) {
+  const auto pr=j.at("primitive").get<uint32_t>();if(pr>=uint32_t(render::Primitive::Count))return false;
+  primitive=render::Primitive(pr);
+  const auto shader=[](const PipelineJson& a) {if(a.size()!=3)throw std::runtime_error("pipeline shader recipe");
+    return render::Shader{a.at(0).get<uint64_t>(),a.at(1).get<uint32_t>(),a.at(2).get<uint32_t>()};};
+  p.vertex=shader(j.at("vertex"));p.fragment=shader(j.at("fragment"));
+  if(j.at("attributes").size()>31||j.at("streams").size()!=p.streams.size()||j.at("colors").size()!=4||j.at("blends").size()!=4)return false;
+  for(const auto& a:j.at("attributes")) {
+    if(a.size()!=4)return false;render::Attribute value;value.location=a.at(0).get<uint32_t>();value.stream=a.at(1).get<uint32_t>();
+    value.offset=a.at(2).get<uint32_t>();value.format=render::VertexFormat(a.at(3).get<uint32_t>());
+    if(value.location>=31||value.stream>=p.streams.size()||value.format>=render::VertexFormat::Count)return false;
+    p.attributes.push_back(value);
+  }
+  for(size_t i=0;i<p.streams.size();++i){const auto& a=j.at("streams").at(i);if(a.size()!=2)return false;
+    p.streams[i]={a.at(0).get<uint32_t>(),a.at(1).get<bool>()};}
+  for(size_t i=0;i<4;++i) {
+    p.colors[i]=render::Format(j.at("colors").at(i).get<uint32_t>());const auto& b=j.at("blends").at(i);if(b.size()!=8)return false;
+    auto& o=p.blends[i];o.enabled=b.at(0).get<bool>();o.rgb=render::BlendOp(b.at(1).get<uint32_t>());o.alpha=render::BlendOp(b.at(2).get<uint32_t>());
+    o.source_rgb=render::BlendFactor(b.at(3).get<uint32_t>());o.destination_rgb=render::BlendFactor(b.at(4).get<uint32_t>());
+    o.source_alpha=render::BlendFactor(b.at(5).get<uint32_t>());o.destination_alpha=render::BlendFactor(b.at(6).get<uint32_t>());o.write_mask=b.at(7).get<uint32_t>();
+    if(p.colors[i]>=render::Format::Depth32Float||o.rgb>=render::BlendOp::Count||o.alpha>=render::BlendOp::Count||
+       o.source_rgb>=render::BlendFactor::Count||o.destination_rgb>=render::BlendFactor::Count||
+       o.source_alpha>=render::BlendFactor::Count||o.destination_alpha>=render::BlendFactor::Count||o.write_mask>15)return false;
+  }
+  p.depth=render::Format(j.at("depth").get<uint32_t>());p.stencil=render::Format(j.at("stencil").get<uint32_t>());
+  if(p.depth!=render::Format::Invalid&&p.depth!=render::Format::Depth32Float&&p.depth!=render::Format::Depth32FloatStencil8)return false;
+  if(p.stencil!=render::Format::Invalid&&p.stencil!=render::Format::Stencil8&&p.stencil!=render::Format::Depth32FloatStencil8)return false;
+  p.samples=j.at("samples").get<uint32_t>();p.sample_mask=j.at("mask").get<uint32_t>();p.negative_one_to_one=j.at("negative_clip").get<bool>();
+  return p.samples&&p.samples<=8&&std::has_single_bit(p.samples)&&p.vertex.hash&&p.vertex.variant<=1&&p.fragment.variant<=1;
+}
+}
+void PlanAdapter::FlushPipelineCache() {
+  if(!pipeline_cache_dirty_||pipeline_cache_directory_.empty()||render_pipelines_.size()>1024)return;
+  try {
+    PipelineJson rows=PipelineJson::array();for(const auto& [key,entry]:render_pipelines_)rows.push_back(PipelineRecipe(key.first,key.second));
+    const auto path=std::filesystem::path(pipeline_cache_directory_)/"recipes.json";const auto temporary=path.string()+".tmp";
+    std::filesystem::create_directories(path.parent_path());std::ofstream stream(temporary);stream<<PipelineJson{{"schema",1},{"pipelines",rows}};stream.close();
+    if(stream&&std::rename(temporary.c_str(),path.c_str())==0)pipeline_cache_dirty_=false;
+  }catch(...){} // A cache failure cannot reject an otherwise valid game frame.
+}
 bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
   if(!shaders_.Open(libraries,error))return false;
-  pipelines_.clear();render_pipelines_.clear();prepared_.clear();images_.clear();return true;
+  pipelines_.clear();render_pipelines_.clear();prepared_.clear();images_.clear();
+  if(!pipeline_cache_directory_.empty())try {
+    const auto path=std::filesystem::path(pipeline_cache_directory_)/"recipes.json";
+    if(std::filesystem::exists(path)&&std::filesystem::file_size(path)<=2*1024*1024) {
+      std::ifstream stream(path);const auto cached=PipelineJson::parse(stream);
+      if(cached.at("schema")==1&&cached.at("pipelines").size()<=1024)for(const auto& row:cached.at("pipelines")) {
+        try {render::Pipeline p;render::Primitive primitive;if(ReadPipelineRecipe(row,p,primitive)) {
+          std::string ignored;PipelineFor(p,primitive,ignored);
+        }}catch(...){}
+      }
+      std::fprintf(stderr,"gta4-metal-pipeline-preparation: prepared=%zu archive-hits=%llu before-gameplay=true\n",
+        render_pipelines_.size(),(unsigned long long)renderer_.PipelineArchiveHits());
+    }
+  }catch(...){}
+  pipeline_cache_dirty_=false;error.clear();return true;
 }
 MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
   using F=render::Format;
@@ -157,7 +230,7 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   Shader pixel{};
   if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,ps_specialization,error);if(!pixel.function)return {};}
   auto result=BuildFixedPipeline(renderer_,*effective,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
-  if(result){render_pipelines_.emplace(std::pair{std::move(raster),primitive},result);
+  if(result){pipeline_cache_dirty_=true;render_pipelines_.emplace(std::pair{std::move(raster),primitive},result);
     pipelines_.emplace(std::pair{*effective,primitive},result);}return result;
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
@@ -304,13 +377,13 @@ std::shared_ptr<const Draw> PlanAdapter::Realize(const std::shared_ptr<const ren
   auto draw=std::make_shared<Draw>();if(!Prepare(*capture,*draw,error))return {};
   prepared_[capture.get()]={capture,draw,capture->allocation_generation};return draw;
 }
-size_t PlanAdapter::RetireResources() {
-  for(auto it=prepared_.begin();it!=prepared_.end();) {
-    const auto owner=it->second.owner.lock();
-    if(!owner||owner->allocation_generation!=it->second.generation)it=prepared_.erase(it);else ++it;
-  }
-  std::erase_if(images_,[](const auto& e){return e.second.owner.expired();});
-  return resources_.SweepRetired();
+size_t PlanAdapter::RetireResources(bool bounded) {
+  const auto budget=bounded?size_t(512):std::numeric_limits<size_t>::max();
+  SweepCacheBuckets(prepared_,prepared_bucket_,budget,[](const auto& entry){
+    const auto owner=entry.second.owner.lock();return !owner||owner->allocation_generation!=entry.second.generation;
+  });
+  SweepCacheBuckets(images_,image_bucket_,bounded?size_t(256):budget,[](const auto& entry){return entry.second.owner.expired();});
+  return resources_.SweepRetired(bounded);
 }
 bool PlanAdapter::BindProduced(const render::Capture& capture,
     const std::array<id<MTLTexture>,26>& produced,Draw& draw,std::string& error) const {

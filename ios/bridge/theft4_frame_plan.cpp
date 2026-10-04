@@ -4,12 +4,14 @@
 #include <cmath>
 #include <iterator>
 #include <map>
+#include <cstring>
 
 namespace theft4::render {
 std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
   struct Pending {size_t command;uint8_t slot;};
   std::map<SurfaceKey,std::map<SurfaceView,Pending>> pending;
   std::vector<uint8_t> masks(f.commands.size(),0);
+  const auto overwritten_loads=RedundantAttachmentLoads(f);
   const auto read=[&](const SampledSurfaceView& view){
     auto found=pending.find(view.surface);if(found==pending.end())return;
     std::erase_if(found->second,[&](const auto& entry){return SampledViewContains(view,entry.first);});
@@ -37,7 +39,7 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
     }
     const auto attachment=[&](const std::optional<Attachment>& a,uint8_t slot){
       if(!a)return;
-      if(a->load==Load::Load)read(a->view);else overwrite(a->view);
+      if(a->load==Load::Load&&!(overwritten_loads[n]&(1u<<slot)))read(a->view);else overwrite(a->view);
       // Keep resolves, final stores and partially updated targets intact.
       if(a->store==Store::Store&&!a->resolve)pending[a->view.surface][a->view]={n,slot};
       else if(auto found=pending.find(a->view.surface);found!=pending.end())found->second.erase(a->view);
@@ -46,6 +48,56 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
     attachment(pass.depth,4);attachment(pass.stencil,5);
   }
   return masks;
+}
+namespace {
+bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& host) {
+  if(!pass.colors[0]||pass.depth||pass.stencil||host.pipeline.depth_test||host.pipeline.stencil_test||
+     host.pipeline.blends[0].enabled||host.pipeline.blends[0].write_mask!=15)return false;
+  for(size_t i=1;i<4;++i)if(pass.colors[i])return false;
+  const auto* target=FindSurface(f,pass.colors[0]->view.surface);if(!target)return false;
+  if(!target->samples||target->samples>8||host.pipeline.samples!=target->samples||
+     (host.pipeline.sample_mask&((1u<<target->samples)-1))!=((1u<<target->samples)-1))return false;
+  const auto w=std::max(1u,target->width>>pass.colors[0]->view.level),h=std::max(1u,target->height>>pass.colors[0]->view.level);
+  if(host.scissor!=std::array<uint32_t,4>{0,0,w,h})return false;
+  // These shaders contain no discard and always write the complete color.
+  switch(host.program) {
+    case HostProgram::Resolve:case HostProgram::ResolveMSAA:
+    case HostProgram::Present:case HostProgram::SplitPostFx:case HostProgram::SunShafts:
+    case HostProgram::SmaaNeighborhood:case HostProgram::SmaaPresent:
+    case HostProgram::SmaaHardwarePresent:case HostProgram::SmaaHardwareNeighborhood:return true;
+    default:return false;
+  }
+}
+}
+std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan& f) {
+  std::vector<uint8_t> masks(f.commands.size(),0);
+  for(size_t i=0;i<f.commands.size();++i)if(const auto* pass=std::get_if<Pass>(&f.commands[i]))
+    if(!pass->commands.empty())if(const auto* host=std::get_if<HostDraw>(&pass->commands.front()))
+      if(FullHostColorOverwrite(f,*pass,*host))masks[i]=1;
+  return masks;
+}
+std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass) {
+  if(pass.commands.size()!=1)return {};
+  const auto* host=std::get_if<HostDraw>(&pass.commands[0]);
+  if(!host||host->program!=HostProgram::Resolve||!FullHostColorOverwrite(f,pass,*host)||pass.colors[0]->resolve||
+     pass.colors[0]->store!=Store::Store||!host->fetches[0].produced)return {};
+  const auto& input=*host->fetches[0].produced;const auto& output=pass.colors[0]->view;
+  const auto* source=FindSurface(f,input.surface);const auto* target=FindSurface(f,output.surface);
+  const std::array identity{Swizzle::Red,Swizzle::Green,Swizzle::Blue,Swizzle::Alpha};
+  if(!source||!target||source->samples!=1||target->samples!=1||input.surface==output.surface||
+     input.aspect!=Aspect::Color||input.kind!=ImageKind::Texture2D||input.levels!=1||input.slices!=1||input.swizzle!=identity||
+     source->format!=target->format||(input.format!=Format::Invalid&&input.format!=source->format)||
+     (source->format!=Format::RGBA8Unorm&&source->format!=Format::BGRA8Unorm)||!host->constants.source)return {};
+  const auto& bank=host->constants;const auto& data=bank.source->value;
+  if(bank.offset>data.size()||bank.length<64||data.size()-bank.offset<64)return {};
+  std::array<uint32_t,16> c{};std::memcpy(c.data(),data.data()+bank.offset,64);
+  // Only the direct physical path with neutral exponent. No guest layout,
+  // scale filtering, Float16 sanitization or out-of-range texel behavior.
+  if(c[0]||c[1]||c[2]||c[3]||c[8]!=1||c[9]||c[10]||c[11]!=2)return {};
+  const std::array<uint32_t,2> extent{std::max(1u,target->width>>output.level),std::max(1u,target->height>>output.level)};
+  if(extent!=std::array<uint32_t,2>{std::max(1u,source->width>>input.level),std::max(1u,source->height>>input.level)}||
+     extent!=std::array<uint32_t,2>{c[12],c[13]}||extent!=std::array<uint32_t,2>{c[14],c[15]})return {};
+  return ImageCopy{{input.surface,input.level,input.slice,Aspect::Color},output,{},{},extent,false};
 }
 void AppendPass(FramePlan& frame,Pass next) {
   auto* previous=frame.commands.empty()?nullptr:std::get_if<Pass>(&frame.commands.back());

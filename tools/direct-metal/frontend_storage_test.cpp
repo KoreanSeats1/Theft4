@@ -2,12 +2,15 @@
 #include "native_shared_frame_arena.h"
 #include "theft4_frame_plan.h"
 #include "theft4_vector_storage_pool.h"
+#include "theft4_bounded_cache_sweep.h"
+#include <unordered_map>
 #include <cassert>
 #include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <random>
 #include <string_view>
+#include <cstring>
 
 using namespace rex::graphics::gta4_native;
 struct Record {
@@ -116,6 +119,50 @@ static void AttachmentChecks(){
     assert(r::ValidateFrame(optimized,{},actual,error));assert(actual==expected);
   }
 }
+static void BoundedSweepChecks() {
+  std::unordered_map<unsigned,std::weak_ptr<int>> cache;std::vector<std::shared_ptr<int>> owners;
+  for(unsigned i=0;i<20000;++i){owners.push_back(std::make_shared<int>(i));cache.emplace(i,owners.back());}
+  for(unsigned i=0;i<owners.size();i+=3)owners[i].reset();size_t cursor=0;
+  const auto expired=[](const auto& e){return e.second.expired();};
+  for(unsigned i=0;i<400;++i) {
+    if(i%7==0){auto key=50000+i;owners.push_back(std::make_shared<int>(key));cache.emplace(key,owners.back());}
+    theft4::SweepCacheBuckets(cache,cursor,128,expired);
+  }
+  for(const auto& [key,owner]:cache)assert(!owner.expired());
+  assert(cache.size()==20000-6667+58);
+  owners.clear();for(unsigned i=0;i<400;++i)theft4::SweepCacheBuckets(cache,cursor,128,expired);
+  assert(cache.empty());
+}
+static void HostOverwriteChecks() {
+  namespace r=theft4::render;r::FramePlan frame;
+  auto source=std::make_shared<r::Surface>();source->key={91,1};source->format=r::Format::RGBA8Unorm;source->width=16;source->height=8;
+  auto target=std::make_shared<r::Surface>(*source);target->key={92,1};frame.surfaces={source,target};
+  r::Pass pass;r::Attachment attachment;attachment.view={target->key,0,0,r::Aspect::Color};attachment.load=r::Load::Load;attachment.store=r::Store::Store;
+  pass.colors[0]=attachment;r::HostDraw host;host.program=r::HostProgram::Resolve;host.pipeline.colors[0]=target->format;host.scissor={0,0,16,8};
+  host.fetches[0].produced=r::SurfaceView{source->key,0,0,r::Aspect::Color};host.fetches[0].sampler=std::make_shared<r::Sampler>();
+  auto constants=std::make_shared<r::Bytes>();constants->generation=1;
+  std::array<uint32_t,16> fields{};fields[8]=1;fields[11]=2;fields[12]=fields[14]=16;fields[13]=fields[15]=8;
+  constants->value.resize(64);std::memcpy(constants->value.data(),fields.data(),64);host.constants={constants,0,64};pass.commands.push_back(host);frame.commands.push_back(pass);
+  assert(r::RedundantAttachmentLoads(frame)==std::vector<uint8_t>{1});assert(r::IdentityResolveCopy(frame,pass));
+  // Every conversion-sensitive field stays on the shader path.
+  for(size_t i:{0u,1u,2u,3u,8u,9u,10u,11u,12u,13u,14u,15u}) {
+    auto changed=fields;changed[i]^=1;std::memcpy(constants->value.data(),changed.data(),64);assert(!r::IdentityResolveCopy(frame,pass));
+  }
+  std::memcpy(constants->value.data(),fields.data(),64);
+  for(unsigned mutation=0;mutation<8;++mutation) {
+    auto changed=pass;auto& h=std::get<r::HostDraw>(changed.commands[0]);
+    switch(mutation){case 0:h.scissor[2]--;break;case 1:h.pipeline.blends[0].enabled=true;break;
+      case 2:h.pipeline.blends[0].write_mask=7;break;case 3:h.program=r::HostProgram::SmaaEdgeHigh;break;
+      case 4:h.pipeline.depth_test=true;break;case 5:changed.depth=attachment;break;
+      case 6:h.pipeline.sample_mask=0;break;case 7:h.pipeline.samples=4;break;}
+    auto candidate=frame;candidate.commands[0]=changed;assert(r::RedundantAttachmentLoads(candidate)==std::vector<uint8_t>{0});assert(!r::IdentityResolveCopy(candidate,changed));
+  }
+  // A full host overwrite consumes no previous destination pixels. Its old
+  // store may be discarded, but the source sampled by the host must survive.
+  r::Pass previous;previous.colors[0]=attachment;previous.colors[0]->load=r::Load::Clear;
+  frame.commands.insert(frame.commands.begin(),previous);
+  assert(r::DeadAttachmentStores(frame)==std::vector<uint8_t>({1,0}));
+}
 static void Benchmark(){
   using Clock=std::chrono::steady_clock;
   std::map<uint64_t,Record> original;NativeTransactionalMap<uint64_t,Record> journal;
@@ -142,4 +189,4 @@ static void Benchmark(){
   std::cout<<"draws=4000 capture_bytes="<<sizeof(r::Capture)<<" allocation_ms="<<ordinary[20]<<" arena_ms="<<pooled[20]<<" pages="<<arena.page_allocations<<" fallbacks="<<arena.fallback_objects<<" checksum="<<checksum<<"\n";
 
 }
-int main(int argc,char** argv){BindingStorageChecks();TransactionChecks();ArenaChecks();AttachmentChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}
+int main(int argc,char** argv){BindingStorageChecks();TransactionChecks();ArenaChecks();AttachmentChecks();HostOverwriteChecks();BoundedSweepChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}

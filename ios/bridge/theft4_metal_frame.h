@@ -6,7 +6,7 @@ namespace theft4::metal {
 struct FrameTiming {
   double validation_ms=0,preparation_ms=0,encoding_ms=0;
   uint64_t commands=0,draws=0,pipelines_created=0,buffers_created=0,textures_created=0,uploaded_bytes=0;
-  uint64_t avoided_attachment_stores=0;
+  uint64_t avoided_attachment_stores=0,avoided_attachment_loads=0,native_identity_copies=0;
   uint64_t binding_storage_reuses=0,binding_storage_fresh=0;
   EncoderStats encoder;
 };
@@ -19,6 +19,8 @@ class FrameAdapter {
  public:
   explicit FrameAdapter(Renderer&);
   ~FrameAdapter();
+  void ConfigurePipelineCache(const std::string& directory);
+  void FlushPipelineCache();
   bool Open(const std::string& libraries,std::string& error);
   Receipt Submit(const std::shared_ptr<const render::FramePlan>&,std::string& error,
                  render::SurfaceContents* published=nullptr,bool profile_gpu=false);
@@ -31,7 +33,7 @@ class FrameAdapter {
   // Retrieve a defined GPU alias of a retained frame allocation. This never
   // uploads pixels or creates a new backing allocation.
   id<MTLTexture> SampledTexture(const render::FramePlan&,const render::SampledSurfaceView&,std::string& error);
-  size_t RetireResources();
+  size_t RetireResources(bool bounded=false);
   FrameTiming LastTiming() const;
   FrameResourceStats Stats() const;
   ResourceCacheStats ImmutableStats() const;

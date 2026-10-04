@@ -14,6 +14,8 @@ std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer&,const render::Pipel
 class PlanAdapter {
  public:
   explicit PlanAdapter(Renderer& renderer);
+  void ConfigurePipelineCache(const std::string& directory) { pipeline_cache_directory_=directory; }
+  void FlushPipelineCache();
   bool Open(const std::string& libraries, std::string& error);
   bool Prepare(const render::Capture& capture, Draw& draw, std::string& error);
   std::shared_ptr<const Draw> Realize(const std::shared_ptr<const render::Capture>& capture,std::string& error);
@@ -26,7 +28,7 @@ class PlanAdapter {
   size_t PipelineCount() const { return render_pipelines_.size(); }
   size_t SamplerCount() const { return samplers_.size(); }
   ResourceCacheStats ResourceStats() const { return resources_.Stats(); }
-  size_t RetireResources();
+  size_t RetireResources(bool bounded=false);
   static MTLPixelFormat PixelFormat(render::Format format);
   void BeginUploadBatch() { resources_.BeginUploadBatch(); }
   BufferView ConstantFor(const render::Buffer&,std::string& error);
@@ -43,6 +45,9 @@ class PlanAdapter {
   Draw AcquireDrawStorage();
   void RecycleDrawStorage(Draw& draw) noexcept;
   theft4::VectorStoragePool<TextureBinding,SamplerBinding> binding_storage_;
+  std::string pipeline_cache_directory_;
+  bool pipeline_cache_dirty_=false;
+  size_t prepared_bucket_=0,image_bucket_=0;
   Renderer& renderer_;
   ShaderStore shaders_;
   ResourceCache resources_;

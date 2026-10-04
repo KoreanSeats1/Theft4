@@ -9,6 +9,7 @@ struct HostBinding {
 };
 struct HostShaderMetadata {
   Stage stage=Stage::Fragment;
+  bool resolve_specialization=false;
   size_t constant_bytes=0;
   std::vector<HostBinding> textures;
 };
@@ -19,7 +20,7 @@ class HostShaderStore {
  public:
   explicit HostShaderStore(Renderer& r):renderer_(r){}
   bool Open(const std::string& directory,std::string& error);
-  Shader Resolve(const std::string& name,std::string& error);
+  Shader Resolve(const std::string& name,std::string& error,std::span<const uint32_t> constants={});
   const HostShaderMetadata* Metadata(const std::string& name) const;
   bool Bind(const std::string& name,std::span<const HostInput> inputs,
             const BufferView& constants,Draw& draw,std::string& error) const;

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <filesystem>
 
 namespace theft4::metal {
 namespace {
@@ -34,6 +35,8 @@ NSUInteger FormatBytes(MTLVertexFormat f) {
 }
 }
 struct Renderer::Impl {
+  id<MTLBinaryArchive> archive=nil;
+  NSURL* archive_url=nil;bool archive_dirty=false;uint64_t archive_hits=0;
   struct ClearKey {
     std::array<MTLPixelFormat,6> formats{};
     NSUInteger samples=1;
@@ -97,6 +100,7 @@ struct Frame::Impl {
   EncoderStats stats;
   id<MTLCounterSampleBuffer> counters=nil;
   size_t profiled_passes=0;
+  std::vector<size_t> pass_mapping;
   MTLTimestamp cpu_reference=0,gpu_reference=0;
   ~Impl() { if (encoder) [encoder endEncoding]; }
 };
@@ -129,7 +133,7 @@ id<MTLTexture> Renderer::Texture(MTLTextureDescriptor* d, std::string& error) {
   return texture;
 }
 Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
-    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry) {
+    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry,std::span<const uint32_t> host_constants) {
   Shader result; result.stage = stage; result.interface = interface;
   if (!Ready() || bytes.empty() || (interface.textures & 0x80000000u) ||
       (interface.samplers & 0xffff0000u)) {
@@ -145,8 +149,12 @@ Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
   if(!entry||(std::string(entry)!="theft4_shader"&&specialization)) {
     error="Unsupported Metal entry point specialization";return result;
   }
+  if(host_constants.size()>8||(std::string(entry)=="theft4_shader"&&!host_constants.empty())) {
+    error="Invalid host shader function constants";return result;
+  }
+  for(size_t i=0;i<host_constants.size();++i)[values setConstantValue:&host_constants[i] type:MTLDataTypeUInt atIndex:i+1];
   NSString* name=[NSString stringWithUTF8String:entry];
-  result.function=std::string(entry)=="theft4_shader" ?
+  result.function=(std::string(entry)=="theft4_shader"||!host_constants.empty()) ?
     [library newFunctionWithName:name constantValues:values error:&e] : [library newFunctionWithName:name];
   if (!result.function) { error = Description(e); return result; }
   const auto expected = stage == Stage::Vertex ? MTLFunctionTypeVertex : MTLFunctionTypeFragment;
@@ -207,8 +215,23 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
     if(layout.stepFunction==MTLVertexStepFunctionPerInstance)p->instance_streams|=1u<<s;
     p->attribute_extents[s] = std::max(p->attribute_extents[s], a.offset + size);
   }
+  // Every admitted bank is an immutable snapshot through GPU completion.
+  for(size_t i=0;i<3;++i) {
+    if(p->vertex.constant_bytes[i])desc.vertexBuffers[i].mutability=MTLMutabilityImmutable;
+    if(p->fragment.constant_bytes[i])desc.fragmentBuffers[i].mutability=MTLMutabilityImmutable;
+  }
   NSError* e = nil;
-  p->state = [Device() newRenderPipelineStateWithDescriptor:desc error:&e];
+  if(impl_->archive) {
+    desc.binaryArchives=@[impl_->archive];
+    p->state=[Device() newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&e];
+    if(p->state)++impl_->archive_hits;
+    else {
+      // Compile the missing functions into the archive once. No disk IO is
+      // performed during drawing; persist only when the backend is drained.
+      e=nil;if([impl_->archive addRenderPipelineFunctionsWithDescriptor:desc error:&e])impl_->archive_dirty=true;
+    }
+  }
+  if(!p->state){e=nil;p->state=[Device() newRenderPipelineStateWithDescriptor:desc error:&e];}
   if (!p->state) { error = Description(e); return {}; }
   if (depth) {
     p->depth_stencil = impl_->DepthState(depth);
@@ -224,6 +247,27 @@ std::shared_ptr<const Pipeline> Renderer::MakeDepthVariant(const Pipeline& base,
   if(!result->depth_stencil){error="Metal depth state creation failed";return {};}
   error.clear();return result;
 }
+void Renderer::ConfigurePipelineArchive(const std::string& path) {
+  if(!Ready()||path.empty()||impl_->archive)return;
+  try {
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    auto descriptor=[MTLBinaryArchiveDescriptor new];
+    impl_->archive_url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    if(std::filesystem::exists(path)&&std::filesystem::file_size(path)<=256ull*1024*1024)descriptor.url=impl_->archive_url;
+    NSError* error=nil;impl_->archive=[Device() newBinaryArchiveWithDescriptor:descriptor error:&error];
+    if(!impl_->archive){descriptor.url=nil;impl_->archive=[Device() newBinaryArchiveWithDescriptor:descriptor error:&error];}
+  }catch(...){impl_->archive=nil;impl_->archive_url=nil;}
+}
+void Renderer::FlushPipelineArchive() {
+  if(!impl_->archive||!impl_->archive_dirty||!impl_->archive_url)return;
+  // An atomic rename leaves the last usable archive intact after interruption.
+  auto temporary=[NSURL fileURLWithPath:[impl_->archive_url.path stringByAppendingString:@".tmp"]];
+  NSError* error=nil;
+  if([impl_->archive serializeToURL:temporary error:&error]) {
+    if(std::rename(temporary.path.UTF8String,impl_->archive_url.path.UTF8String)==0)impl_->archive_dirty=false;
+  }
+}
+uint64_t Renderer::PipelineArchiveHits() const{return impl_->archive_hits;}
 Frame Renderer::BeginFrame(std::string& error) {
   if (!Ready()) { error = "Direct Metal renderer is unavailable"; return {}; }
   // Bounded wait. Aborted frames release the lease just like completed frames.
@@ -246,8 +290,10 @@ Frame::~Frame() = default;
 Frame::Frame(Frame&&) noexcept = default;
 Frame& Frame::operator=(Frame&&) noexcept = default;
 Frame::operator bool() const { return impl_ && !impl_->submitted && impl_->buffer; }
-bool Frame::ProfilePasses(size_t maximum_passes) {
+bool Frame::ProfilePasses(size_t maximum_passes,std::span<const size_t> pass_mapping) {
+  if(!pass_mapping.empty()&&pass_mapping.size()!=maximum_passes)return false;
   if(!*this||impl_->encoder||impl_->counters||!maximum_passes||maximum_passes>4096)return false;
+  impl_->pass_mapping.assign(pass_mapping.begin(),pass_mapping.end());
   auto device=impl_->renderer->device;
   // GPU timestamp clocks are hardware dependent. Capture a paired reference
   // before encoding; the receipt samples again after completion to calibrate
@@ -411,21 +457,41 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   }
   for(NSUInteger slot=0;slot<kGameVertexStreamCount;++slot)if(p.vertex_streams&(1u<<slot))
     buffer(Stage::Vertex,slot+8,d.vertices[slot]);
-  for(const auto& binding:d.textures) {
-    auto& previous=binding.stage==Stage::Vertex?cached.vertex_textures[binding.index]:cached.fragment_textures[binding.index];
-    const auto object=(__bridge const void*)binding.texture;
-    if(previous==object){++stats.avoided_calls;continue;}
-    if(binding.stage==Stage::Vertex)[e setVertexTexture:binding.texture atIndex:binding.index];
-    else [e setFragmentTexture:binding.texture atIndex:binding.index];
-    previous=object;++stats.texture_calls;
-  }
-  for(const auto& binding:d.samplers) {
-    auto& previous=binding.stage==Stage::Vertex?cached.vertex_samplers[binding.index]:cached.fragment_samplers[binding.index];
-    const auto object=(__bridge const void*)binding.sampler;
-    if(previous==object){++stats.avoided_calls;continue;}
-    if(binding.stage==Stage::Vertex)[e setVertexSamplerState:binding.sampler atIndex:binding.index];
-    else [e setFragmentSamplerState:binding.sampler atIndex:binding.index];
-    previous=object;++stats.sampler_calls;
+  // Batch each changed stage range in one driver call. The draw still owns
+  // and validates every texture/sampler; unused holes are explicitly nil.
+  for(Stage stage:{Stage::Vertex,Stage::Fragment}) {
+    id<MTLTexture> __unsafe_unretained textures[31]={};
+    auto& previous=stage==Stage::Vertex?cached.vertex_textures:cached.fragment_textures;
+    NSUInteger first_changed=31,last_changed=0;
+    for(const auto& binding:d.textures)if(binding.stage==stage) {
+      textures[binding.index]=binding.texture;
+      const auto object=(__bridge const void*)binding.texture;
+      if(previous[binding.index]==object){++stats.avoided_calls;continue;}
+      first_changed=std::min(first_changed,binding.index);last_changed=std::max(last_changed,binding.index);
+    }
+    if(first_changed!=31) {
+      const auto range=NSMakeRange(first_changed,last_changed-first_changed+1);
+      if(stage==Stage::Vertex)[e setVertexTextures:textures+first_changed withRange:range];
+      else [e setFragmentTextures:textures+first_changed withRange:range];
+      for(NSUInteger i=first_changed;i<=last_changed;++i)previous[i]=(__bridge const void*)textures[i];
+      ++stats.texture_calls;
+    }
+    id<MTLSamplerState> __unsafe_unretained samplers[16]={};
+    auto& old_samplers=stage==Stage::Vertex?cached.vertex_samplers:cached.fragment_samplers;
+    first_changed=16;last_changed=0;
+    for(const auto& binding:d.samplers)if(binding.stage==stage) {
+      samplers[binding.index]=binding.sampler;
+      const auto object=(__bridge const void*)binding.sampler;
+      if(old_samplers[binding.index]==object){++stats.avoided_calls;continue;}
+      first_changed=std::min(first_changed,binding.index);last_changed=std::max(last_changed,binding.index);
+    }
+    if(first_changed!=16) {
+      const auto range=NSMakeRange(first_changed,last_changed-first_changed+1);
+      if(stage==Stage::Vertex)[e setVertexSamplerStates:samplers+first_changed withRange:range];
+      else [e setFragmentSamplerStates:samplers+first_changed withRange:range];
+      for(NSUInteger i=first_changed;i<=last_changed;++i)old_samplers[i]=(__bridge const void*)samplers[i];
+      ++stats.sampler_calls;
+    }
   }
   cached.valid=true;++stats.draws;
   if (d.index_count) [e drawIndexedPrimitives:d.primitive indexCount:d.index_count indexType:d.index_type
@@ -545,7 +611,7 @@ Receipt Frame::Submit(std::string& error) {
   auto lease = impl_->lease;
   [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease; }];
   result.buffer_ = impl_->buffer;
-  result.counters_=impl_->counters;result.profiled_passes_=impl_->profiled_passes;
+  result.counters_=impl_->counters;result.profiled_passes_=impl_->profiled_passes;result.pass_mapping_=std::move(impl_->pass_mapping);
   result.cpu_reference_=impl_->cpu_reference;result.gpu_reference_=impl_->gpu_reference;
   impl_->submitted = true; impl_->lease.reset();
   [impl_->buffer commit]; return result;
@@ -580,7 +646,7 @@ std::vector<GpuPassTiming> Receipt::GpuPassTimings() const {
     // longer than its entire command buffer. Allow measurement granularity.
     const auto envelope=GpuMilliseconds()*1.1+0.05;
     if(vertex>envelope||fragment>envelope)continue;
-    result.push_back({i,vertex,fragment});
+    result.push_back({pass_mapping_.empty()?i:pass_mapping_[i],vertex,fragment});
   }
   return result;
 }

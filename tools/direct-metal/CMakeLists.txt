@@ -189,3 +189,8 @@ target_compile_options(metal_texture_usage_benchmark PRIVATE -fobjc-arc)
 target_compile_definitions(metal_texture_usage_benchmark PRIVATE
   "THEFT4_METAL_SOURCE_REVISION=\"${METAL_SOURCE_REVISION}\"")
 target_link_libraries(metal_texture_usage_benchmark PRIVATE "-framework Foundation" "-framework Metal")
+
+add_executable(metal_hardware_resolve_comparison hardware_resolve_comparison.mm)
+target_include_directories(metal_hardware_resolve_comparison PRIVATE "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_hardware_resolve_comparison PRIVATE -fobjc-arc)
+target_link_libraries(metal_hardware_resolve_comparison PRIVATE "-framework Foundation" "-framework Metal")

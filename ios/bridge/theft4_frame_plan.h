@@ -115,6 +115,12 @@ void AppendPass(FramePlan&,Pass);
 // After successful frame admission only: identify stores overwritten before
 // any read. Bits0..3=color,4=depth,5=stencil; final cross-frame stores survive.
 std::vector<uint8_t> DeadAttachmentStores(const FramePlan&);
+// Applied after admission. Only host utilities proven to overwrite every
+// color pixel can omit the preceding attachment load/clear.
+std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan&);
+// Exact, unscaled linear UNORM materialization can use a native image copy.
+// All conversions, sample mappings, HDR and partial coverage stay shaders.
+std::optional<ImageCopy> IdentityResolveCopy(const FramePlan&,const Pass&);
 using SurfaceContents=std::set<SurfaceView>;
 const Surface* FindSurface(const FramePlan&,SurfaceKey);
 uint32_t SurfaceSlices(const Surface&);

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <nlohmann/json.hpp>
@@ -22,7 +23,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Sampler, min_linear, mag_linear, mip_linear, 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mip, level, slice, width, height, depth, row_bytes, image_bytes, offset, size)
 namespace {
 constexpr size_t kFileLimit = 128 * 1024 * 1024, kBlobLimit = 64 * 1024 * 1024;
-bool Error(std::string& error, const char* text) { error=text;return false; }
+bool Error(std::string& error, std::string_view text) { error=text;return false; }
 template<class T> bool Enum(T value) { return uint32_t(value)<uint32_t(T::Count); }
 bool View(const Buffer& b, uint64_t required) {
   return b.source && b.source->generation && b.source->value.size()<=kBlobLimit &&
@@ -168,10 +169,13 @@ bool Validate(const Capture& capture, std::string& error) {
   for(double v:d.viewport)if(!std::isfinite(v))return Error(error,"Nonfinite game viewport");
   for(float v:d.blend_color)if(!std::isfinite(v))return Error(error,"Nonfinite game blend color");
   if(!std::isfinite(d.depth_bias)||!std::isfinite(d.slope_bias)||d.viewport[2]<=0||d.viewport[3]<=0||
-      d.viewport[4]<0||d.viewport[5]>1||d.viewport[4]>d.viewport[5]||
+      d.viewport[4]<0||d.viewport[4]>1||d.viewport[5]<0||d.viewport[5]>1||
       d.scissor[0]>capture.width||d.scissor[1]>capture.height||!d.scissor[2]||!d.scissor[3]||
       d.scissor[2]>capture.width-d.scissor[0]||d.scissor[3]>capture.height-d.scissor[1])
-    return Error(error,"Invalid game draw viewport/scissor");
+    return Error(error,"Invalid game draw viewport/scissor: target="+std::to_string(capture.width)+"x"+std::to_string(capture.height)+
+      " viewport="+std::to_string(d.viewport[0])+","+std::to_string(d.viewport[1])+","+std::to_string(d.viewport[2])+","+std::to_string(d.viewport[3])+
+      " depth="+std::to_string(d.viewport[4])+","+std::to_string(d.viewport[5])+
+      " scissor="+std::to_string(d.scissor[0])+","+std::to_string(d.scissor[1])+","+std::to_string(d.scissor[2])+","+std::to_string(d.scissor[3]));
   constexpr uint64_t sizes[]{4096,3584,1056};
   for(size_t i=0;i<3;++i)if(!View(d.constants[i],sizes[i])||d.constants[i].offset%16)
     return Error(error,"Invalid game constant bank");

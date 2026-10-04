@@ -138,6 +138,12 @@ int main(int argc, char** argv) {
             loaded.draw.vertices[0].source == loaded.draw.fetches[25].image->source &&
             loaded.draw.constants[0].source->conversion[0] == UINT64_MAX,
             "Lost immutable resource aliasing or conversion identity");
+    auto reversed=c;reversed.draw.viewport[4]=1;reversed.draw.viewport[5]=0;
+    Require(Validate(reversed,error), "Valid reversed viewport depth rejected");
+    for(const auto range:std::array<std::array<double,2>,4>{{{1.1,0},{1,-0.1},{-0.1,1},{0,1.1}}}) {
+      reversed.draw.viewport[4]=range[0];reversed.draw.viewport[5]=range[1];
+      Require(!Validate(reversed,error), "Out-of-range viewport depth accepted");
+    }
     auto bad = c; bad.draw.base_vertex = -2; Require(!Validate(bad, error), "Negative effective index accepted");
     bad = c; bad.draw.vertices[0].length = 31; Require(!Validate(bad, error), "Actual index exceeds vertex view");
     bad = c; bad.draw.vertices[16].length = 16; Require(!Validate(bad, error), "Second instance reads short stream");

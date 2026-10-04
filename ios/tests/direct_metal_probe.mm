@@ -521,6 +521,20 @@ struct Probe {
     [results addObject:@{@"case":@"game_depth_only_pipeline",@"passed":@YES,
         @"fragment_shader_omitted":@YES,@"stored_depth_reused":@YES}];
     frame={};
+    MTLDepthStencilDescriptor* reverse_state=[state copy];reverse_state.depthCompareFunction=MTLCompareFunctionGreater;
+    auto reverse_pipeline=renderer.MakeDepthPipeline(vs,fixed,reverse_state,error);Require(bool(reverse_pipeline));
+    frame=renderer.BeginFrame(error);Require(bool(frame));pass.depthAttachment.clearDepth=0;
+    near.pipeline=far.pipeline=reverse_pipeline;
+    near.viewport.znear=far.viewport.znear=1;near.viewport.zfar=far.viewport.zfar=0;
+    Require(frame.BeginPass(pass,error));Require(frame.Encode(near,error));Require(frame.Encode(far,error));Require(frame.EndPass(error));
+    Require(frame.BeginPass(shade,error));near.pipeline=far.pipeline=color_pipeline;
+    Require(frame.Encode(near,error));Require(frame.Encode(far,error));Require(frame.EndPass(error));
+    receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+    pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    for(size_t byte=0;byte<pixels.size();++byte)Require(pixels[byte]==red[byte%4]);
+    [results addObject:@{@"case":@"reversed_viewport_depth",@"passed":@YES,
+        @"greater_depth_occlusion":@YES,@"stored_depth_reused":@YES}];
+    frame={};
     auto fragment=ShaderFor({0x949ED69300FB92B7ull,false},Stage::Fragment);
     auto instanced=[MTLRenderPipelineDescriptor new];instanced.vertexDescriptor=VertexDeclaration(true);
     instanced.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;

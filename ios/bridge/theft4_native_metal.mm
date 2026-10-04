@@ -239,7 +239,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       !std::isfinite(d.viewport.width) || !std::isfinite(d.viewport.height) ||
       !std::isfinite(d.viewport.znear) || !std::isfinite(d.viewport.zfar) ||
       d.viewport.width <= 0 || d.viewport.height <= 0 || d.viewport.znear < 0 ||
-      d.viewport.zfar > 1 || d.viewport.znear > d.viewport.zfar ||
+      d.viewport.znear > 1 || d.viewport.zfar < 0 || d.viewport.zfar > 1 ||
       d.scissor.x > width || d.scissor.y > height || !d.scissor.width || !d.scissor.height ||
       d.scissor.width > width - d.scissor.x || d.scissor.height > height - d.scissor.y)
     return Error(error, "Invalid direct Metal viewport/scissor");

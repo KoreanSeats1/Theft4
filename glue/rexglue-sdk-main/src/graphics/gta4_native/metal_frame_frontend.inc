@@ -209,7 +209,11 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     uint32_t samples=uint32_t(ConvertSurfaceSamples(descriptor.sample_type));
     uint32_t width=descriptor.width,height=descriptor.height;
     if(!descriptor.handle||!width||!height||format==r::Format::Invalid||samples>8) {
-      error="Metal surface descriptor unsupported";return {};
+      error=fmt::format("Metal surface descriptor unsupported: cmd={} handle={:08X} address={:08X} "
+          "base={:08X} guest={}x{} raw-format={:08X} converted={} depth={} sample-type={} samples={}",
+          diagnostic_command_index_,descriptor.handle,descriptor.address,descriptor.base,width,height,
+          descriptor.format,uint32_t(ConvertSurfaceFormat(descriptor.format,depth)),depth,descriptor.sample_type,samples);
+      return {};
     }
     uint64_t virtual_lifetime=0;
     {

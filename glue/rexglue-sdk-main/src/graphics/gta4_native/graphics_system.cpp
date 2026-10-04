@@ -36209,7 +36209,50 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
   if (frame_backend_) {
     std::string error;
     const bool okay = PublishNativeMetalFrame(present, present_source, environmental_data, error);
-    if (!okay) REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
+    if (!okay) {
+      REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
+      // On the first rejection inspect the entire captured batch, including
+      // commands after the failing one. Bound diagnostics and keep them off the
+      // successful rendering path; inactive bindings are labelled explicitly.
+      static bool batch_audited=false;
+      if (!batch_audited) {
+        batch_audited=true;
+        std::set<std::array<uint64_t,8>> seen;
+        const auto report=[&](const SurfaceDescriptor& d,bool depth,bool active,size_t index,CommandType type) {
+          const std::array<uint64_t,8> key{d.handle,d.address,d.base,d.width,d.height,d.format,d.sample_type,uint64_t(depth)};
+          if(seen.size()>=128||!seen.insert(key).second)return;
+          const auto vk=ConvertSurfaceFormat(d.format,depth);
+          REXLOG_INFO("gta4-metal-batch-audit: cmd={} type={} active={} handle={:08X} address={:08X} base={:08X} "
+              "extent={}x{} raw-format={:08X} converted={} depth={} sample-type={} samples={}",
+              index,uint32_t(type),active,d.handle,d.address,d.base,d.width,d.height,d.format,uint32_t(vk),depth,
+              d.sample_type,uint32_t(ConvertSurfaceSamples(d.sample_type)));
+        };
+        size_t index=0;
+        for(const auto& command:current_frame_) {
+          if(command.pipeline_state) {
+            const auto usage=(command.type==CommandType::kClear&&command.bytes.size()!=sizeof(ClearCommand))?
+                NativeAttachmentUsage{}:GetRenderingTargetUsage(command);
+            for(uint32_t slot=0;slot<kRenderTargetCount;++slot)
+              report(command.pipeline_state->render_targets[slot],false,bool(usage.color_attachment_mask&(1u<<slot)),index,command.type);
+            report(command.pipeline_state->depth_stencil,true,bool(usage.depth_stencil_aspects),index,command.type);
+          }
+          if(command.type==CommandType::kResolve&&command.bytes.size()==sizeof(ResolveCommand)) {
+            ResolveCommand resolve;std::memcpy(&resolve,command.bytes.data(),sizeof(resolve));
+            report(resolve.source,(resolve.flags&7u)==4,true,index,command.type);
+          }
+          if(index==diagnostic_command_index_) {
+            REXLOG_INFO("gta4-metal-batch-audit: failing-command={} type={} phase={} batch-commands={} pipeline={}",
+                index,uint32_t(command.type),uint32_t(command.render_phase),current_frame_.size(),bool(command.pipeline_state));
+            if(command.type==CommandType::kResolve&&command.bytes.size()==sizeof(ResolveCommand)) {
+              ResolveCommand resolve;std::memcpy(&resolve,command.bytes.data(),sizeof(resolve));
+              REXLOG_INFO("gta4-metal-batch-audit: resolve-flags={:08X} parameters={} destination={:08X} level={} slice={}",
+                  resolve.flags,resolve.parameters_valid,resolve.destination_texture,resolve.destination_level,resolve.destination_slice_or_face);
+            }
+          }
+          ++index;
+        }
+      }
+    }
 #if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)
     if (okay && present.device) theft4_frame_counter_note_published();
 #endif

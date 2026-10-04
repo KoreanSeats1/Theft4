@@ -73,7 +73,7 @@ std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan& f) {
   std::vector<uint8_t> masks(f.commands.size(),0);
   for(size_t i=0;i<f.commands.size();++i)if(const auto* pass=std::get_if<Pass>(&f.commands[i]))
     if(!pass->commands.empty())if(const auto* host=std::get_if<HostDraw>(&pass->commands.front()))
-      if(FullHostColorOverwrite(f,*pass,*host))masks[i]=1;
+      if(FullHostColorOverwrite(f,*pass,*host)&&pass->colors[0]->load!=Load::Discard)masks[i]=1;
   return masks;
 }
 std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass) {

@@ -20,6 +20,7 @@ class ShaderStore {
   bool Bind(ShaderKey key, Stage stage, const std::array<FetchResources, 26>& fetches,
             Draw& packet, std::string& error) const;
   size_t LoadedFunctions() const { return functions_.size(); }
+  size_t LoadedLibraries() const { return libraries_.size(); }
   size_t CatalogSize() const { return catalog_.Size(); }
  private:
   struct FunctionKey {
@@ -36,5 +37,6 @@ class ShaderStore {
   ShaderCatalog catalog_;
   std::string directory_;
   std::unordered_map<FunctionKey, Shader, FunctionKeyHash> functions_;
+  std::unordered_map<ShaderKey,id<MTLLibrary>,ShaderKeyHash> libraries_;
 };
 }

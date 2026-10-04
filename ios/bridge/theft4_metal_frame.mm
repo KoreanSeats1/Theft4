@@ -53,6 +53,8 @@ struct FrameAdapter::Impl {
   PlanAdapter draws;
   HostShaderStore host;
   std::map<std::tuple<render::HostProgram,render::Pipeline,std::array<uint32_t,8>,bool>,std::shared_ptr<const Pipeline>> host_pipelines;
+  std::set<std::pair<render::HostProgram,std::array<uint32_t,8>>> resolve_specializations;
+  size_t maximum_resolve_specializations;
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
   FrameResourceStats stats;
@@ -60,7 +62,7 @@ struct FrameAdapter::Impl {
   using PreparedCommand=std::variant<Draw,Clear>;
   std::vector<std::vector<PreparedCommand>> prepared_storage;
   std::set<std::string> logged_preparation_errors;
-  explicit Impl(Renderer& r):renderer(r),draws(r),host(r){}
+  explicit Impl(Renderer& r,size_t maximum):renderer(r),draws(r),host(r),maximum_resolve_specializations(std::min(maximum,size_t(128))){}
   void Forget(render::SurfaceKey key) {
     for(auto it=contents.begin();it!=contents.end();) {
       if(it->surface==key)it=contents.erase(it);else ++it;
@@ -203,6 +205,10 @@ struct FrameAdapter::Impl {
        source.constants.source->value.size()-source.constants.offset>=64) {
       std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+16,32);specialize=true;
     }
+    const auto variant=std::pair{source.program,specialization};
+    if(specialize&&!resolve_specializations.contains(variant)&&resolve_specializations.size()>=maximum_resolve_specializations) {
+      specialize=false;specialization={};++stats.host_specialization_fallbacks;
+    }
     const auto key=std::tuple{source.program,source.pipeline,specialization,specialize};
     auto it=host_pipelines.find(key);
     if(it==host_pipelines.end()) {
@@ -210,6 +216,7 @@ struct FrameAdapter::Impl {
       if(!vs.function||!ps.function)return false;
       auto pipeline=BuildFixedPipeline(renderer,source.pipeline,render::Primitive::Triangle,vs,&ps,error);
       if(!pipeline)return false;it=host_pipelines.emplace(key,pipeline).first;
+      if(specialize){resolve_specializations.insert(variant);stats.host_specializations=resolve_specializations.size();}
     }
     Draw result=draws.AcquireDrawStorage();
     theft4::StorageCleanup cleanup{[&]{draws.RecycleDrawStorage(result);}};result.pipeline=it->second;result.vertex_count=3;
@@ -235,7 +242,7 @@ struct FrameAdapter::Impl {
     draw=std::move(result);return true;
   }
 };
-FrameAdapter::FrameAdapter(Renderer& renderer):impl_(std::make_unique<Impl>(renderer)){}
+FrameAdapter::FrameAdapter(Renderer& renderer,size_t maximum):impl_(std::make_unique<Impl>(renderer,maximum)){}
 FrameAdapter::~FrameAdapter()=default;
 void FrameAdapter::ConfigurePipelineCache(const std::string& directory) {
   impl_->draws.ConfigurePipelineCache(directory);
@@ -246,7 +253,8 @@ void FrameAdapter::FlushPipelineCache() {
 }
 bool FrameAdapter::Open(const std::string& libraries,std::string& error){
   if(!impl_->draws.Open(libraries,error)||!impl_->host.Open(libraries+"/Host",error))return false;
-  impl_->host_pipelines.clear();return true;
+  impl_->host_pipelines.clear();impl_->resolve_specializations.clear();
+  impl_->stats.host_specializations=impl_->stats.host_specialization_fallbacks=0;return true;
 }
 Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   return SubmitFrame(plan,{},nil,error,published,profile_gpu);
@@ -301,7 +309,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
   const auto dead_stores=render::DeadAttachmentStores(*plan);
   const auto redundant_loads=render::RedundantAttachmentLoads(*plan);
-  uint64_t avoided_stores=0,avoided_loads=0,native_copies=0;
+  uint64_t avoided_stores=0,avoided_loads=0,native_copies=0,render_passes=0,image_copies=0;
   size_t draw_range_index=0;
   const auto validated=Clock::now();
   for(const auto& surface:plan->surfaces)
@@ -399,10 +407,12 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   }
   for(const auto& command:ready) {
     if(const auto* copy=std::get_if<ReadyCopy>(&command)) {
+      ++image_copies;
       if(!frame.CopyTexture(copy->source,copy->destination,copy->src,copy->dst,copy->size,error,copy->combined_depth_stencil))return {};
       continue;
     }
     const auto& pass=std::get<ReadyPass>(command);
+    ++render_passes;
     if(!frame.BeginPass(pass.descriptor,error))return {};
     for(const auto& command:pass.commands) {
       if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
@@ -418,6 +428,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   const auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
   FrameTiming timing;timing.validation_ms=ms(begin,validated);timing.preparation_ms=ms(validated,prepared_at);
   timing.encoding_ms=ms(prepared_at,ended);timing.commands=plan->commands.size();timing.encoder=frame.Stats();timing.draws=timing.encoder.draws;
+  timing.render_passes=render_passes;timing.image_copies=image_copies;
   timing.pipelines_created=PipelineCount()-before_pipelines;
   timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
   timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;

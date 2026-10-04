@@ -108,9 +108,11 @@ bool ReadPipelineRecipe(const PipelineJson& j,render::Pipeline& p,render::Primit
 }
 }
 void PlanAdapter::FlushPipelineCache() {
-  if(!pipeline_cache_dirty_||pipeline_cache_directory_.empty()||render_pipelines_.size()>1024)return;
+  if(!pipeline_cache_dirty_||pipeline_cache_directory_.empty())return;
   try {
-    PipelineJson rows=PipelineJson::array();for(const auto& [key,entry]:render_pipelines_)rows.push_back(PipelineRecipe(key.first,key.second));
+    PipelineJson rows=PipelineJson::array();for(const auto& [key,entry]:render_pipelines_) {
+      if(rows.size()==1024)break;rows.push_back(PipelineRecipe(key.first,key.second));
+    }
     const auto path=std::filesystem::path(pipeline_cache_directory_)/"recipes.json";const auto temporary=path.string()+".tmp";
     std::filesystem::create_directories(path.parent_path());std::ofstream stream(temporary);stream<<PipelineJson{{"schema",1},{"pipelines",rows}};stream.close();
     if(stream&&std::rename(temporary.c_str(),path.c_str())==0)pipeline_cache_dirty_=false;
@@ -124,7 +126,7 @@ bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
     if(std::filesystem::exists(path)&&std::filesystem::file_size(path)<=2*1024*1024) {
       std::ifstream stream(path);const auto cached=PipelineJson::parse(stream);
       if(cached.at("schema")==1&&cached.at("pipelines").size()<=1024)for(const auto& row:cached.at("pipelines")) {
-        try {render::Pipeline p;render::Primitive primitive;if(ReadPipelineRecipe(row,p,primitive)) {
+        try {render::Pipeline p;render::Primitive primitive;if(ReadPipelineRecipe(row,p,primitive)&&render::ValidateFixedPipeline(p,error)) {
           std::string ignored;PipelineFor(p,primitive,ignored);
         }}catch(...){}
       }

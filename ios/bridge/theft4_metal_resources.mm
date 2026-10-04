@@ -127,7 +127,7 @@ bool Validate(const Shape& s,std::span<const uint8_t> bytes,std::span<const Text
 }
 }
 struct ResourceCache::Impl {
-  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false;};
+  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false;size_t live_entries=0;};
   using Allocations=std::list<Allocation>;
   struct BufferEntry { std::weak_ptr<const void> owner; id<MTLBuffer> buffer=nil; size_t size=0;Allocations::iterator allocation; };
   struct TextureEntry {
@@ -195,10 +195,14 @@ id<MTLBuffer> ResourceCache::Buffer(const ResourceVersion& version,std::span<con
     impl_->Touch(found->second.allocation);
     ++impl_->stats.buffer_hits;error.clear();return found->second.buffer;
   }
+  if(found!=impl_->buffers.end()) {
+    --found->second.allocation->live_entries;impl_->buffers.erase(found);++impl_->stats.retired;
+  }
   impl_->Reserve(bytes.size());
   auto buffer=impl_->renderer.ImmutableBuffer(bytes,error);if (!buffer)return nil;
   auto allocation=impl_->Add(buffer,false);allocation->keys.push_back(key);
   impl_->buffers.insert_or_assign(key,Impl::BufferEntry{version.owner,buffer,bytes.size(),allocation});
+  ++allocation->live_entries;
   ++impl_->stats.buffer_creates;impl_->stats.uploaded_bytes+=bytes.size();error.clear();return buffer;
 }
 id<MTLTexture> ResourceCache::Texture(const ResourceVersion& version,MTLTextureDescriptor* descriptor,
@@ -240,10 +244,14 @@ BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<
     auto buffer=Buffer(version,bytes,error);return {buffer,0,bytes.size()};
   }
   const auto key=Identity(version);
-  if(auto i=impl_->uniforms.find(key);i!=impl_->uniforms.end()&&SameOwner(i->second.owner,version.owner)) {
+  auto i=impl_->uniforms.find(key);
+  if(i!=impl_->uniforms.end()&&SameOwner(i->second.owner,version.owner)) {
     if(i->second.view.length!=bytes.size()){error="Metal uniform generation changed payload size";return {};}
     impl_->Touch(i->second.allocation);
     ++impl_->stats.buffer_hits;error.clear();return i->second.view;
+  }
+  if(i!=impl_->uniforms.end()) {
+    --i->second.allocation->live_entries;impl_->uniforms.erase(i);++impl_->stats.retired;
   }
   constexpr NSUInteger capacity=256*1024,alignment=256;
   const auto offset=(impl_->uniform_used+alignment-1)&~(alignment-1);
@@ -260,27 +268,27 @@ BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<
   impl_->uniform_used+=bytes.size();
   impl_->current_page->keys.push_back(key);impl_->Touch(impl_->current_page);
   impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view,impl_->current_page});
+  ++impl_->current_page->live_entries;
   impl_->stats.uploaded_bytes+=bytes.size();error.clear();return view;
 }
 size_t ResourceCache::SweepRetired(bool bounded) {
   const auto retired_before=impl_->stats.retired;size_t removed=0;
   const auto budget=bounded?size_t(1024):std::numeric_limits<size_t>::max();
-  const auto expired=[](const auto& entry){return entry.second.owner.expired();};
+  const auto expired=[](const auto& entry){
+    if(!entry.second.owner.expired())return false;
+    --entry.second.allocation->live_entries;return true;
+  };
   removed+=SweepCacheBuckets(impl_->buffers,impl_->buffer_bucket,budget,expired);
   removed+=SweepCacheBuckets(impl_->uniforms,impl_->uniform_bucket,budget,expired);
-  removed+=SweepCacheBuckets(impl_->textures,impl_->texture_bucket,bounded?size_t(256):budget,expired);
-  // A page remains resident only while at least one cached generation uses
-  // it. The page keys can outlive an expired owner, so check the current entry
-  // and allocation identity before deciding that the page is still live.
+  removed+=SweepCacheBuckets(impl_->textures,impl_->texture_bucket,bounded?size_t(256):budget,
+    [](const auto& entry){return entry.second.owner.expired();});
+  // Entry removal and owner replacement update exact page counts. Retiring
+  // a page needs no repeated search through its historical keys.
   const auto allocations=std::min(impl_->allocations.size(),bounded?size_t(256):impl_->allocations.size());
   for(size_t n=0;n<allocations&&!impl_->allocations.empty();++n) {
     if(impl_->sweep_allocation==impl_->allocations.end())impl_->sweep_allocation=impl_->allocations.begin();
     const auto allocation=impl_->sweep_allocation++;
-    const bool live=std::any_of(allocation->keys.begin(),allocation->keys.end(),[&](const Key& key){
-      if(allocation->packed){auto e=impl_->uniforms.find(key);return e!=impl_->uniforms.end()&&e->second.allocation==allocation;}
-      auto e=impl_->buffers.find(key);return e!=impl_->buffers.end()&&e->second.allocation==allocation;
-    });
-    if(!live)impl_->Release(allocation,false);
+    if(!allocation->live_entries)impl_->Release(allocation,false);
   }
   impl_->stats.retired+=removed;return impl_->stats.retired-retired_before;
 }

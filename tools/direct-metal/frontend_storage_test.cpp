@@ -144,6 +144,9 @@ static void HostOverwriteChecks() {
   std::array<uint32_t,16> fields{};fields[8]=1;fields[11]=2;fields[12]=fields[14]=16;fields[13]=fields[15]=8;
   constants->value.resize(64);std::memcpy(constants->value.data(),fields.data(),64);host.constants={constants,0,64};pass.commands.push_back(host);frame.commands.push_back(pass);
   assert(r::RedundantAttachmentLoads(frame)==std::vector<uint8_t>{1});assert(r::IdentityResolveCopy(frame,pass));
+  auto discarded=frame;std::get<r::Pass>(discarded.commands[0]).colors[0]->load=r::Load::Discard;
+  assert(r::RedundantAttachmentLoads(discarded)==std::vector<uint8_t>{0});
+  assert(r::IdentityResolveCopy(discarded,std::get<r::Pass>(discarded.commands[0])));
   // Every conversion-sensitive field stays on the shader path.
   for(size_t i:{0u,1u,2u,3u,8u,9u,10u,11u,12u,13u,14u,15u}) {
     auto changed=fields;changed[i]^=1;std::memcpy(constants->value.data(),changed.data(),64);assert(!r::IdentityResolveCopy(frame,pass));

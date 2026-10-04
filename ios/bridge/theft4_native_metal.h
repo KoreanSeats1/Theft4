@@ -138,6 +138,10 @@ class Renderer {
   id<MTLDevice> Device() const;
   id<MTLBuffer> ImmutableBuffer(std::span<const uint8_t> bytes, std::string& error);
   id<MTLTexture> Texture(MTLTextureDescriptor* descriptor, std::string& error);
+  id<MTLLibrary> LoadLibrary(std::span<const uint8_t> bytes,std::string& error);
+  Shader LoadShader(id<MTLLibrary> library, Stage stage,
+                    ShaderInterface interface,uint32_t specialization,
+                    std::string& error,const char* entry="theft4_shader",std::span<const uint32_t> host_constants={});
   Shader LoadShader(std::span<const uint8_t> library, Stage stage,
                     ShaderInterface interface, uint32_t specialization,
                     std::string& error,const char* entry="theft4_shader",std::span<const uint32_t> host_constants={});

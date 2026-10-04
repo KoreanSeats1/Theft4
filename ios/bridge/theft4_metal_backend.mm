@@ -111,10 +111,11 @@ class Backend final:public render::FrameBackend {
     if(present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
       const auto resources=adapter_->ImmutableStats();
-      std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu avoided-loads=%llu native-identity-copies=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu\n",
+      std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu avoided-loads=%llu native-identity-copies=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu host-specializations=%zu host-specialization-fallbacks=%zu\n",
         (unsigned long long)presentations_,(unsigned long long)t.avoided_attachment_stores,
         (unsigned long long)t.avoided_attachment_loads,(unsigned long long)t.native_identity_copies,
-        (unsigned long long)t.binding_storage_reuses,(unsigned long long)t.binding_storage_fresh);
+        (unsigned long long)t.binding_storage_reuses,(unsigned long long)t.binding_storage_fresh,
+        adapter_->Stats().host_specializations,adapter_->Stats().host_specialization_fallbacks);
       char message[1280];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu buffer-cache-bytes=%llu buffer-cache-peak=%llu buffer-evictions=%llu gpu-allocated-bytes=%llu buffer-offset-calls=%llu",
         (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
         t.validation_ms,t.preparation_ms,t.encoding_ms,last_gpu_ms_,(unsigned long long)t.commands,(unsigned long long)t.draws,
@@ -126,7 +127,8 @@ class Backend final:public render::FrameBackend {
         (unsigned long long)e.buffer_offset_calls);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
-    pending_.push_back({std::move(receipt),std::move(plan),present});
+    const auto timing=adapter_->LastTiming();
+    pending_.push_back({std::move(receipt),std::move(plan),present,timing.render_passes,timing.image_copies});
     error.clear();return true;
   }
   bool Drain(std::string& error) override {
@@ -176,7 +178,7 @@ class Backend final:public render::FrameBackend {
     output=std::move(result);error.clear();return true;
   }
  private:
-  struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;bool present=false;};
+  struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;bool present=false;uint64_t render_passes=0,image_copies=0;};
   bool Worker(std::string& error) const {
     if(!renderer_ || !adapter_){error="Metal worker is not open";return false;}
     if(worker_!=std::this_thread::get_id()){error="Metal encoding belongs to the render worker";return false;}
@@ -213,8 +215,9 @@ class Backend final:public render::FrameBackend {
         const auto dead_stores=render::DeadAttachmentStores(*submitted.owner);
         const auto redundant_loads=render::RedundantAttachmentLoads(*submitted.owner);
         char summary[512];std::snprintf(summary,sizeof(summary),
-          "gta4-metal-gpu-profile: sequence=%llu command-buffer-ms=%.3f pass-samples=%zu passes=%zu copies=%zu detail-limit=12 stage-times-overlap=true color-pixel-format-view=false",
-          (unsigned long long)submitted.owner->sequence,last_gpu_ms_,timings.size(),passes.size(),submitted.owner->commands.size()-passes.size());
+          "gta4-metal-gpu-profile: sequence=%llu command-buffer-ms=%.3f pass-samples=%zu passes=%llu copies=%llu original-passes=%zu detail-limit=12 stage-times-overlap=true color-pixel-format-view=false",
+          (unsigned long long)submitted.owner->sequence,last_gpu_ms_,timings.size(),
+          (unsigned long long)submitted.render_passes,(unsigned long long)submitted.image_copies,passes.size());
         if(diagnostic_)diagnostic_(summary);else std::fprintf(stderr,"%s\n",summary);
         std::sort(timings.begin(),timings.end(),[](const auto& a,const auto& b){return std::max(a.vertex_ms,a.fragment_ms)>std::max(b.vertex_ms,b.fragment_ms);});
         for(size_t rank=0;rank<std::min(size_t(12),timings.size());++rank) {

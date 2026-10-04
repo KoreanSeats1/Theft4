@@ -26,10 +26,12 @@ class HostShaderStore {
             const BufferView& constants,Draw& draw,std::string& error) const;
   size_t Size() const{return catalog_.size();}
   size_t LoadedFunctions() const{return functions_.size();}
+  size_t LoadedLibraries() const{return libraries_.size();}
  private:
   Renderer& renderer_;
   std::string directory_;
   std::map<std::string,HostShaderMetadata> catalog_;
   std::map<std::string,Shader> functions_;
+  std::map<std::string,id<MTLLibrary>> libraries_;
 };
 }

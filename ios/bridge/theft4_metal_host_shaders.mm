@@ -49,7 +49,7 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
       if(textures!=expected.textures||multisampled!=expected.multisampled)
         return Fail(error,"Host utility input ABI differs from the frame contract");
     }
-    catalog_=std::move(admitted);directory_=directory;functions_.clear();error.clear();return true;
+    catalog_=std::move(admitted);directory_=directory;functions_.clear();libraries_.clear();error.clear();return true;
   }catch(const std::exception& e){error=std::string("Host shader manifest admission: ")+e.what();return false;}
 }
 const HostShaderMetadata* HostShaderStore::Metadata(const std::string& name) const {
@@ -59,14 +59,21 @@ Shader HostShaderStore::Resolve(const std::string& name,std::string& error,std::
   std::string key=name;for(auto value:constants)key+=":"+std::to_string(value);
   if(auto it=functions_.find(key);it!=functions_.end()){error.clear();return it->second;}
   const auto* m=Metadata(name);if(!m){error="Unknown host utility shader";return {};}
+  if(!constants.empty()&&(!m->resolve_specialization||m->stage!=Stage::Fragment||
+     m->constant_bytes!=64||constants.size()!=8)) {error="Invalid host resolve specialization ABI";return {};}
   try {
-    auto path=std::filesystem::path(directory_)/(name+".metallib");auto size=std::filesystem::file_size(path);
-    if(!size||size>16*1024*1024){error="Host Metal library exceeds admission budget";return {};}
-    std::vector<uint8_t> bytes(size);std::ifstream stream(path,std::ios::binary);stream.read(reinterpret_cast<char*>(bytes.data()),size);
-    if(!stream){error="Could not read the complete host Metal library";return {};}
+    auto library=libraries_.find(name);
+    if(library==libraries_.end()) {
+      auto path=std::filesystem::path(directory_)/(name+".metallib");auto size=std::filesystem::file_size(path);
+      if(!size||size>16*1024*1024){error="Host Metal library exceeds admission budget";return {};}
+      std::vector<uint8_t> bytes(size);std::ifstream stream(path,std::ios::binary);stream.read(reinterpret_cast<char*>(bytes.data()),size);
+      if(!stream){error="Could not read the complete host Metal library";return {};}
+      auto loaded=renderer_.LoadLibrary(bytes,error);if(!loaded)return {};
+      library=libraries_.emplace(name,loaded).first;
+    }
     ShaderInterface abi;abi.constant_bytes={m->constant_bytes,0,0};
     for(const auto& b:m->textures){abi.textures|=1u<<b.texture_index;abi.samplers|=1u<<b.sampler_index;abi.texture_types[b.texture_index]=b.type;}
-    auto shader=renderer_.LoadShader(bytes,m->stage,abi,0,error,"theft4_host_shader",constants);
+    auto shader=renderer_.LoadShader(library->second,m->stage,abi,0,error,"theft4_host_shader",constants);
     if(shader.function)functions_.emplace(key,shader);return shader;
   }catch(const std::exception& e){error=std::string("Host Metal library: ")+e.what();return {};}
 }

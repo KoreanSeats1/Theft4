@@ -26,7 +26,7 @@ bool ShaderStore::Open(const std::string& directory, std::string& error) {
   }
   ShaderCatalog catalog;
   if (!catalog.Parse(manifest, error)) return false;
-  catalog_ = std::move(catalog); directory_ = directory; functions_.clear(); return true;
+  catalog_ = std::move(catalog); directory_ = directory; functions_.clear();libraries_.clear(); return true;
 }
 const ShaderMetadata* ShaderStore::Metadata(ShaderKey key, Stage stage) const {
   return catalog_.Find(key, stage);
@@ -46,14 +46,19 @@ Shader ShaderStore::Resolve(ShaderKey key, Stage stage, uint32_t specialization,
       interface.texture_types[binding.index] = TextureType(binding.kind);
     }
   }
-  NSString* path = [NSString stringWithUTF8String:
-      (std::filesystem::path(directory_) / (key.Name() + ".metallib")).c_str()];
-  NSDictionary* attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
-  const auto size = [attributes[NSFileSize] unsignedLongLongValue];
-  if (!size || size > 16 * 1024 * 1024) { error = "Missing or oversized offline Metal shader library"; return {}; }
-  NSData* library = [NSData dataWithContentsOfFile:path];
-  if (!library || library.length != size) { error = "Unable to read offline Metal shader library"; return {}; }
-  auto shader = renderer_.LoadShader({static_cast<const uint8_t*>(library.bytes), library.length},
+  auto library=libraries_.find(key);
+  if(library==libraries_.end()) {
+    NSString* path = [NSString stringWithUTF8String:
+        (std::filesystem::path(directory_) / (key.Name() + ".metallib")).c_str()];
+    NSDictionary* attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+    const auto size = [attributes[NSFileSize] unsignedLongLongValue];
+    if (!size || size > 16 * 1024 * 1024) { error = "Missing or oversized offline Metal shader library"; return {}; }
+    NSData* bytes = [NSData dataWithContentsOfFile:path];
+    if (!bytes || bytes.length != size) { error = "Unable to read offline Metal shader library"; return {}; }
+    auto loaded=renderer_.LoadLibrary({static_cast<const uint8_t*>(bytes.bytes),bytes.length},error);
+    if(!loaded)return {};library=libraries_.emplace(key,loaded).first;
+  }
+  auto shader = renderer_.LoadShader(library->second,
       stage, interface, function.specialization, error);
   if (!shader.function) return {};
   functions_.emplace(function, shader); error.clear(); return shader;

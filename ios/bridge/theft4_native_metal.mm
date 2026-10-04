@@ -132,35 +132,46 @@ id<MTLTexture> Renderer::Texture(MTLTextureDescriptor* d, std::string& error) {
   if (!texture) error = "Metal texture allocation failed";
   return texture;
 }
-Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
-    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry,std::span<const uint32_t> host_constants) {
-  Shader result; result.stage = stage; result.interface = interface;
-  if (!Ready() || bytes.empty() || (interface.textures & 0x80000000u) ||
-      (interface.samplers & 0xffff0000u)) {
-    error = "Invalid Metal shader interface"; return result;
-  }
+id<MTLLibrary> Renderer::LoadLibrary(std::span<const uint8_t> bytes,std::string& error) {
+  if(!Ready()||bytes.empty()){error="Invalid Metal library bytes";return nil;}
   dispatch_data_t data = dispatch_data_create(bytes.data(), bytes.size(), nullptr,
                                              DISPATCH_DATA_DESTRUCTOR_DEFAULT);
   NSError* e = nil;
   id<MTLLibrary> library = [Device() newLibraryWithData:data error:&e];
-  if (!library) { error = Description(e); return result; }
+  if(!library)error=Description(e);else error.clear();return library;
+}
+Shader Renderer::LoadShader(std::span<const uint8_t> bytes, Stage stage,
+    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry,std::span<const uint32_t> host_constants) {
+  return LoadShader(LoadLibrary(bytes,error),stage,interface,specialization,error,entry,host_constants);
+}
+Shader Renderer::LoadShader(id<MTLLibrary> library, Stage stage,
+    ShaderInterface interface, uint32_t specialization, std::string& error,const char* entry,std::span<const uint32_t> host_constants) {
+  Shader result; result.stage = stage; result.interface = interface;
+  if(!library){if(error.empty())error="Missing Metal shader library";return result;}
+  if(!Ready()||library.device!=Device()||(stage!=Stage::Vertex&&stage!=Stage::Fragment)||
+     (interface.textures&0x80000000u)||(interface.samplers&0xffff0000u)) {
+    error="Invalid Metal shader interface";return result;
+  }
+  NSError* e=nil;
   MTLFunctionConstantValues* values = [MTLFunctionConstantValues new];
-  [values setConstantValue:&specialization type:MTLDataTypeUInt atIndex:0];
   if(!entry||(std::string(entry)!="theft4_shader"&&specialization)) {
     error="Unsupported Metal entry point specialization";return result;
   }
+  if(std::string(entry)=="theft4_shader")[values setConstantValue:&specialization type:MTLDataTypeUInt atIndex:0];
   if(host_constants.size()>8||(std::string(entry)=="theft4_shader"&&!host_constants.empty())) {
     error="Invalid host shader function constants";return result;
   }
   for(size_t i=0;i<host_constants.size();++i)[values setConstantValue:&host_constants[i] type:MTLDataTypeUInt atIndex:i+1];
   NSString* name=[NSString stringWithUTF8String:entry];
-  result.function=(std::string(entry)=="theft4_shader"||!host_constants.empty()) ?
-    [library newFunctionWithName:name constantValues:values error:&e] : [library newFunctionWithName:name];
+  // Even undefined optional constants require a concrete specialized
+  // function. Plain lookup can return an abstract function that Metal
+  // rejects when creating the fallback render pipeline.
+  result.function=[library newFunctionWithName:name constantValues:values error:&e];
   if (!result.function) { error = Description(e); return result; }
   const auto expected = stage == Stage::Vertex ? MTLFunctionTypeVertex : MTLFunctionTypeFragment;
   if (result.function.functionType != expected) {
     result.function = nil; error = "Metal shader stage mismatch";
-  }
+  }else error.clear();
   return result;
 }
 std::shared_ptr<const Pipeline> Renderer::MakePipeline(const Shader& vs, const Shader& ps,
@@ -232,6 +243,12 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
     }
   }
   if(!p->state){e=nil;p->state=[Device() newRenderPipelineStateWithDescriptor:desc error:&e];}
+  if(!p->state&&impl_->archive) {
+    // Binary archives are optional. Retry without a failing archive before
+    // rejecting an otherwise valid pipeline, and stop consulting it.
+    desc.binaryArchives=nil;impl_->archive=nil;impl_->archive_dirty=false;
+    e=nil;p->state=[Device() newRenderPipelineStateWithDescriptor:desc error:&e];
+  }
   if (!p->state) { error = Description(e); return {}; }
   if (depth) {
     p->depth_stencil = impl_->DepthState(depth);
@@ -401,7 +418,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   for (const auto& b : d.textures) {
     const unsigned s = b.stage == Stage::Vertex ? 0 : 1;
     const auto& abi = s ? p.fragment : p.vertex;
-    if (b.index >= 31 || !b.texture || b.texture.framebufferOnly || !(abi.textures & (1u << b.index)) ||
+    if ((b.stage!=Stage::Vertex&&b.stage!=Stage::Fragment) || b.index >= 31 || !b.texture || b.texture.framebufferOnly || !(abi.textures & (1u << b.index)) ||
         (texture_masks[s] & (1u << b.index)) || b.texture.textureType != abi.texture_types[b.index])
       return Error(error, "Invalid Metal texture binding");
     texture_masks[s] |= 1u << b.index;
@@ -409,7 +426,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   for (const auto& b : d.samplers) {
     const unsigned s = b.stage == Stage::Vertex ? 0 : 1;
     const auto& abi = s ? p.fragment : p.vertex;
-    if (b.index >= 16 || !b.sampler || !(abi.samplers & (1u << b.index)) ||
+    if ((b.stage!=Stage::Vertex&&b.stage!=Stage::Fragment) || b.index >= 16 || !b.sampler || !(abi.samplers & (1u << b.index)) ||
         (sampler_masks[s] & (1u << b.index))) return Error(error, "Invalid Metal sampler binding");
     sampler_masks[s] |= 1u << b.index;
   }

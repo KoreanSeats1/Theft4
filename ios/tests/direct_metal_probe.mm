@@ -279,13 +279,15 @@ struct Probe {
     bad=good;bad.textures.push_back(bad.textures.front());Require(!frame.Encode(bad,error));
     bad=good;bad.samplers[0].index=16;Require(!frame.Encode(bad,error));
     bad=good;bad.scissor.width=W+1;Require(!frame.Encode(bad,error));
+    bad=good;bad.textures[0].stage=Stage(99);Require(!frame.Encode(bad,error));
+    bad=good;bad.samplers[0].stage=Stage(99);Require(!frame.Encode(bad,error));
     Require(!frame.Submit(error));
     error.clear();Require(frame.Encode(good,error));Require(frame.EndPass(error));
     auto receipt=frame.Submit(error);Require(bool(receipt));Require(!frame.Submit(error));
     error.clear();good={};bad={};p.reset();Require(receipt.Wait(error));
     frame={};auto next=renderer.BeginFrame(error);Require(bool(next));
     [results addObject:@{@"case":@"admission_and_gpu_lifetime",@"passed":@YES,
-      @"rejected_packets":@6,@"aborted_slot_reclaimed":@YES,@"completed_slot_reclaimed":@YES}];
+      @"rejected_packets":@8,@"aborted_slot_reclaimed":@YES,@"completed_slot_reclaimed":@YES}];
     auto bc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBC3_RGBA
         width:4 height:4 mipmapped:NO];bc.storageMode=MTLStorageModeShared;
     auto bc_texture=renderer.Texture(bc,error);
@@ -298,6 +300,16 @@ struct Probe {
     auto first=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex);
     auto reused=ShaderFor({0x048E49996734F6B5ull,false},Stage::Vertex,UINT32_MAX);
     Require(first.function==reused.function && shaders.LoadedFunctions()==loaded);
+    const auto fixture=std::filesystem::path(output.UTF8String)/"SharedGameLibraryFixture";
+    std::filesystem::create_directories(fixture);
+    std::filesystem::copy_file(std::filesystem::path(libraries.UTF8String)/"manifest.tsv",fixture/"manifest.tsv",std::filesystem::copy_options::overwrite_existing);
+    const ShaderKey late{0x949ED69300FB92B7ull,true};const auto filename=late.Name()+".metallib";
+    std::filesystem::copy_file(std::filesystem::path(libraries.UTF8String)/filename,fixture/filename,std::filesystem::copy_options::overwrite_existing);
+    ShaderStore shared(renderer);Require(shared.Open(fixture.string(),error));
+    Require(shared.Resolve(late,Stage::Fragment,0x602,error).function);
+    std::filesystem::remove(fixture/filename);
+    Require(shared.Resolve(late,Stage::Fragment,0x600,error).function);
+    Require(shared.LoadedLibraries()==1&&shared.LoadedFunctions()==2);
     auto alpha=ShaderFor({0x949ED69300FB92B7ull,true},Stage::Fragment,0x602u);
     auto alpha_reused=ShaderFor({0x949ED69300FB92B7ull,true},Stage::Fragment,0x80000602u);
     Require(alpha.function==alpha_reused.function && shaders.LoadedFunctions()==loaded);
@@ -325,7 +337,7 @@ struct Probe {
     [results addObject:@{@"case":@"game_shader_catalog_and_cache",@"passed":@YES,
         @"catalog_entries":@(shaders.CatalogSize()),@"functions_loaded":@(shaders.LoadedFunctions()),
         @"sparse_fetch_slots":@[@0,@15],@"metal_indices":@[@0,@1],
-        @"specialization_cache_reused":@YES,@"failed_binding_transaction_retained":@YES}];
+        @"specialization_cache_reused":@YES,@"library_reused_after_file_removal":@YES,@"failed_binding_transaction_retained":@YES}];
   }
   void ResourceGenerations() {
     ResourceCache cache(renderer);
@@ -723,8 +735,67 @@ struct Probe {
     plan->sequence=2;receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
     Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==1);
     Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
+    FrameAdapter capped(renderer,1);Require(capped.Open(libraries.UTF8String,error));
+    for(uint32_t flag:{64u,128u,64u,32768u}) {
+      fields[11]=2|flag;auto constants=std::make_shared<r::Bytes>(*bank);constants->generation=flag;
+      std::memcpy(constants->value.data(),fields.data(),64);
+      auto candidate=std::make_shared<r::FramePlan>(*plan);
+      std::get<r::HostDraw>(std::get<r::Pass>(candidate->commands[2]).commands[0]).constants={constants,0,64};
+      auto submitted=capped.Submit(candidate,error);Require(bool(submitted));Require(submitted.Wait(error));
+      Require(renderer.ReadRGBA8(capped.Output(*candidate,error),error)==renderer.ReadRGBA8(src,error));
+    }
+    Require(capped.Stats().host_specializations==1&&capped.Stats().host_specialization_fallbacks==2);
+    Require(capped.PipelineCount()==2); // One specialized PSO and one shared dynamic PSO.
     [results addObject:@{@"case":@"identity_native_copy_full_overwrite_load_and_specialization",@"passed":@YES,
-      @"identity_pixels_equal":@YES,@"shader_pixels_equal":@YES,@"previous_store_elided":@YES,@"full_overwrite_load_elided":@YES}];
+      @"identity_pixels_equal":@YES,@"shader_pixels_equal":@YES,@"previous_store_elided":@YES,@"full_overwrite_load_elided":@YES,
+      @"specialization_budget_preserves_pixels_and_reuses_dynamic_pipeline":@YES}];
+  }
+  void UploadPageRetirement() {
+    ResourceCache cache(renderer,8*1024*1024);std::vector<std::shared_ptr<int>> owners;
+    const std::array<uint8_t,16> bytes{7};
+    for(size_t i=0;i<10000;++i) {
+      owners.push_back(std::make_shared<int>(int(i)));
+      Require(cache.UploadBuffer({owners.back(),i+1,{}},bytes,error).buffer);
+    }
+    auto retained=owners[0];owners.clear();
+    for(size_t i=0;i<128;++i)cache.SweepRetired(true);
+    Require(cache.BufferCount()==1&&cache.Stats().resident_buffer_bytes==256*1024);
+    retained.reset();cache.SweepRetired();Require(cache.BufferCount()==0&&cache.Stats().resident_buffer_bytes==0);
+    // Distinct control blocks at the same pointer/generation must retire the
+    // old page entry once, without touching either retained immutable buffer.
+    auto anchor=std::make_shared<int>(1);auto alias=std::shared_ptr<const void>(anchor.get(),[](const void*){});
+    auto first=cache.UploadBuffer({anchor,1,{}},bytes,error);Require(first.buffer);
+    cache.BeginUploadBatch();auto replacement=cache.UploadBuffer({alias,1,{}},bytes,error);Require(replacement.buffer);
+    Require(first.buffer!=replacement.buffer&&cache.BufferCount()==1);
+    cache.SweepRetired();Require(cache.Stats().resident_buffer_bytes==256*1024);
+    auto direct=cache.Buffer({anchor,2,{}},bytes,error);Require(direct);
+    auto direct_replacement=cache.Buffer({alias,2,{}},bytes,error);Require(direct_replacement&&direct!=direct_replacement);
+    cache.SweepRetired();Require(cache.BufferCount()==2&&cache.Stats().resident_buffer_bytes==256*1024+16);
+    anchor.reset();alias.reset();cache.SweepRetired();Require(cache.BufferCount()==0&&cache.Stats().resident_buffer_bytes==0);
+    Require(std::memcmp(static_cast<const uint8_t*>(first.buffer.contents)+first.offset,bytes.data(),bytes.size())==0);
+    Require(std::memcmp(direct.contents,bytes.data(),bytes.size())==0);
+    [results addObject:@{@"case":@"bounded_upload_page_retirement_and_owner_replacement",@"passed":@YES,
+      @"live_entries":@10000,@"single_owner_keeps_only_its_page":@YES,@"distinct_control_blocks":@YES,@"retained_bytes_unchanged":@YES}];
+  }
+  void SharedHostLibraries() {
+    const auto fixture=std::filesystem::path(output.UTF8String)/"SharedHostLibraryFixture";
+    const auto original=std::filesystem::path(libraries.UTF8String)/"Host";std::filesystem::create_directories(fixture);
+    std::filesystem::copy_file(original/"HOST_SHADER_MANIFEST.json",fixture/"HOST_SHADER_MANIFEST.json",std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(original/"gta4_native_resolve_convert_ps.metallib",fixture/"gta4_native_resolve_convert_ps.metallib",std::filesystem::copy_options::overwrite_existing);
+    HostShaderStore store(renderer);Require(store.Open(fixture.string(),error));
+    const std::string name="gta4_native_resolve_convert_ps";
+    auto dynamic=store.Resolve(name,error);Require(dynamic.function&&store.LoadedLibraries()==1);
+    std::filesystem::remove(fixture/"gta4_native_resolve_convert_ps.metallib");
+    std::array<uint32_t,8> constants{0,0,0,0,1,0,0,2};
+    auto first=store.Resolve(name,error,constants);Require(first.function&&store.LoadedLibraries()==1);
+    Require(store.Resolve(name,error,constants).function==first.function);
+    constants[7]|=64;auto second=store.Resolve(name,error,constants);Require(second.function&&store.LoadedLibraries()==1);
+    Require(store.LoadedFunctions()==3);
+    Require(!store.Resolve("fullscreen_cw_vs",error,constants).function);error.clear();
+    Require(!store.Resolve(name,error,std::span<const uint32_t>(constants).first(7)).function);error.clear();
+    Require(store.Open(fixture.string(),error));Require(store.LoadedLibraries()==0&&store.LoadedFunctions()==0);
+    [results addObject:@{@"case":@"shared_host_libraries_and_specialization_abi",@"passed":@YES,
+      @"one_library_for_multiple_functions":@YES,@"library_reused_after_file_removal":@YES,@"invalid_constants_rejected":@YES,@"reopen_resets_cache":@YES}];
   }
   void CalibratedPassTimings() {
     if(![renderer.Device() supportsFamily:MTLGPUFamilyApple1]||
@@ -1330,7 +1401,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

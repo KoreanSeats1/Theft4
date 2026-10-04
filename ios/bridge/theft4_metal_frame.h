@@ -6,18 +6,20 @@ namespace theft4::metal {
 struct FrameTiming {
   double validation_ms=0,preparation_ms=0,encoding_ms=0;
   uint64_t commands=0,draws=0,pipelines_created=0,buffers_created=0,textures_created=0,uploaded_bytes=0;
+  uint64_t render_passes=0,image_copies=0;
   uint64_t avoided_attachment_stores=0,avoided_attachment_loads=0,native_identity_copies=0;
   uint64_t binding_storage_reuses=0,binding_storage_fresh=0;
   EncoderStats encoder;
 };
 struct FrameResourceStats {
   size_t surface_creates=0,view_creates=0,retired=0,allocated_bytes=0;
+  size_t host_specializations=0,host_specialization_fallbacks=0;
 };
 // One render worker, one Metal queue. Mutable targets persist by allocation
 // generation; submitted command buffers retain them after CPU owners retire.
 class FrameAdapter {
  public:
-  explicit FrameAdapter(Renderer&);
+  explicit FrameAdapter(Renderer&,size_t maximum_resolve_specializations=128);
   ~FrameAdapter();
   void ConfigurePipelineCache(const std::string& directory);
   void FlushPipelineCache();

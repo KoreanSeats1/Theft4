@@ -131,12 +131,16 @@ struct Probe {
   }
   std::shared_ptr<const Pipeline> PipelineFor(const Case& c, NSUInteger samples,
       MTLPixelFormat format=MTLPixelFormatRGBA8Unorm,
-      MTLCompareFunction depth_function=MTLCompareFunctionLess) {
+      MTLCompareFunction depth_function=MTLCompareFunctionLess,bool float_pair_mrt=false) {
     auto vs = ShaderFor({c.transform ? 0x2668E8F9BB250542ull : 0x048E49996734F6B5ull,false},Stage::Vertex);
     const uint32_t spec = c.alpha_test ? (2u | (6u << 8)) : 0;
     auto ps = ShaderFor(FragmentFor(c),Stage::Fragment,spec);
     auto fixed = [MTLRenderPipelineDescriptor new];
     fixed.rasterSampleCount=samples; fixed.colorAttachments[0].pixelFormat=format;
+    if(float_pair_mrt)for(size_t i=0;i<4;++i) {
+      fixed.colorAttachments[i].pixelFormat=MTLPixelFormatRG32Float;
+      fixed.colorAttachments[i].writeMask=MTLColorWriteMaskRed|MTLColorWriteMaskGreen;
+    }
     if(c.blend){
       auto b=fixed.colorAttachments[0]; b.blendingEnabled=YES;
       b.sourceRGBBlendFactor=MTLBlendFactorSourceAlpha;
@@ -617,6 +621,32 @@ struct Probe {
       @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
       @"gpu_retains_retired_targets":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void FloatPairTargets() {
+    std::array<id<MTLTexture>,4> targets;
+    auto pass=[MTLRenderPassDescriptor renderPassDescriptor];
+    for(size_t i=0;i<4;++i) {
+      auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
+          width:W height:H mipmapped:NO];
+      descriptor.storageMode=MTLStorageModePrivate;descriptor.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+      targets[i]=renderer.Texture(descriptor,error);Require(targets[i]);
+      auto a=pass.colorAttachments[i];a.texture=targets[i];a.loadAction=MTLLoadActionClear;a.storeAction=MTLStoreActionStore;
+      a.clearColor=MTLClearColorMake(-2.5-double(i),12345.125+double(i),0,0);
+    }
+    Case c{};auto pipeline=PipelineFor(c,1,MTLPixelFormatRG32Float,MTLCompareFunctionLess,true);
+    auto draw=Packet(c,pipeline,{0.25f,0.5f,0,1});
+    auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(pass,error));
+    Require(frame.Encode(draw,error));Require(frame.EndPass(error));
+    auto submitted=frame.Submit(error);Require(bool(submitted));Require(submitted.Wait(error));
+    for(size_t i=0;i<4;++i) {
+      auto bytes=renderer.ReadColorBytes(targets[i],error);Require(bytes.size()==W*H*8);
+      for(size_t p=0;p<bytes.size();p+=8) {
+        float r,g;memcpy(&r,bytes.data()+p,4);memcpy(&g,bytes.data()+p+4,4);
+        Require(r==(i? -2.5f-float(i):0.25f)&&g==(i?12345.125f+float(i):0.5f));
+      }
+    }
+    [results addObject:@{@"case":@"game_float_pair_mrt",@"passed":@YES,
+      @"four_rg32_targets":@YES,@"game_shader_draw":@YES,@"negative_and_hdr_precision":@YES}];
+  }
   void DeferredReflectionContent() {
     namespace r=theft4::render;
     FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -1067,7 +1097,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

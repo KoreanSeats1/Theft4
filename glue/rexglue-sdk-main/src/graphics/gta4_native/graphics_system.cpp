@@ -125,6 +125,7 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_color_output_spirv.h"
 #include "native_probe_region.h"
 #include "native_pipeline_policy.h"
+#include "native_surface_format.h"
 #include "native_shader_realization.h"
 #include "native_pipeline_compiler.h"
 #include "native_pipeline_recipe.h"
@@ -3620,27 +3621,7 @@ xenos::MsaaSamples ConvertHostSamplesToGuestSamples(VkSampleCountFlagBits sample
 }
 
 VkFormat ConvertSurfaceFormat(uint32_t raw_format, bool depth) {
-  if (depth) {
-    switch (raw_format) {
-      case kD3dFmtD24FS8:
-        return VK_FORMAT_D32_SFLOAT_S8_UINT;
-      default:
-        return VK_FORMAT_UNDEFINED;
-    }
-  }
-  switch (raw_format) {
-    case kD3dFmtA8R8G8B8:
-      return VK_FORMAT_R8G8B8A8_UNORM;
-    case kD3dFmtA16B16G16R16F2:
-      return VK_FORMAT_R16G16B16A16_SFLOAT;
-    case kD3dFmtR32F:
-      return VK_FORMAT_R32_SFLOAT;
-    case kD3dFmtG16R16F:
-    case kD3dFmtG16R16F2:
-      return VK_FORMAT_R16G16_SFLOAT;
-    default:
-      return VK_FORMAT_UNDEFINED;
-  }
+  return NativeSurfaceFormat(raw_format,depth);
 }
 
 uint32_t GetNativeColorFormatComponentMask(VkFormat format) {

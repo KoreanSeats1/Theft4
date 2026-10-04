@@ -156,7 +156,8 @@ struct NativeBlendConstantSelection {
 constexpr uint32_t NativeColorFormatComponentMask(VkFormat format) {
   switch (format) {
     case VK_FORMAT_R32_SFLOAT: return 0x1u;
-    case VK_FORMAT_R16G16_SFLOAT: return 0x3u;
+    case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R32G32_SFLOAT: return 0x3u;
     case VK_FORMAT_R8G8B8A8_UNORM:
     case VK_FORMAT_R16G16B16A16_SFLOAT: return 0xFu;
     default: return 0;

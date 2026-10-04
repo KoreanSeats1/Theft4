@@ -1,5 +1,7 @@
 #include "theft4_draw_capture.h"
 #include "theft4_render_plan_source.h"
+#include "native_surface_format.h"
+#include "native_pipeline_policy.h"
 #include <bit>
 #include <algorithm>
 #include <tuple>
@@ -107,6 +109,22 @@ Capture Fixture() {
 }
 int main(int argc, char** argv) {
   try {
+    namespace native=rex::graphics::gta4_native;
+    const std::array<VkFormat,4> float_pairs{VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT,
+        VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT};
+    Require(native::NativeSurfaceFormat(0x2D22ABA5,false)==VK_FORMAT_R32G32_SFLOAT &&
+        source::PixelFormat(native::NativeSurfaceFormat(0x2D22ABA5,false))==Format::RG32Float &&
+        native::NativeBlendWriteMask(0xFFFF,float_pairs)==0x3333,
+        "Live format37 MRTs lost precision or writable R/G channels");
+    Require(native::NativeSurfaceFormat(0x2D22ABA5,true)==VK_FORMAT_UNDEFINED &&
+        native::NativeSurfaceFormat(0x1A220197,true)==VK_FORMAT_D32_SFLOAT_S8_UINT &&
+        native::NativeSurfaceFormat(0x18280186,false)==VK_FORMAT_R8G8B8A8_UNORM &&
+        native::NativeSurfaceFormat(0x1A2201BF,false)==VK_FORMAT_R16G16B16A16_SFLOAT &&
+        native::NativeSurfaceFormat(0x2DA2ABA4,false)==VK_FORMAT_R32_SFLOAT &&
+        native::NativeSurfaceFormat(0x2D22AB9F,false)==VK_FORMAT_R16G16_SFLOAT &&
+        native::NativeSurfaceFormat(0x2D20AB8D,false)==VK_FORMAT_R16G16_SFLOAT &&
+        native::NativeSurfaceFormat(0xffffffff,false)==VK_FORMAT_UNDEFINED,
+        "Existing title surface formats or unknown/depth rejection changed");
     Require(argc == 2, "render_plan_test needs a private output directory");
     const std::filesystem::path root(argv[1]); std::filesystem::create_directories(root);
     auto c = Fixture(); std::string error; Require(Validate(c, error), error);

@@ -790,7 +790,23 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
            (source_record.is_reflection||metadata.is_reflection)) {
           if(!resolve_clears(command,resolve))return false;continue;
         }
-        return reject("Metal resolve source has no current written placement");
+        std::string aliases;
+        for(const auto& [id,record]:next.surfaces)if(record.descriptor.address==resolve.source.address) {
+          aliases+=fmt::format("{}{:08X}:allocation={}:extent={}x{}:format={}:samples={}:serial={}:depth={}:color={}",
+              aliases.empty()?"":",",record.descriptor.handle,id,record.owner->width,record.owner->height,
+              uint32_t(record.owner->format),record.owner->samples,record.materialized_serial,
+              next.contents.contains({record.owner->key,0,0,r::Aspect::Depth}),
+              next.contents.contains({record.owner->key,0,0,r::Aspect::Color}));
+        }
+        error=fmt::format("Metal resolve source has no current written placement: cmd={} source={:08X}/{:08X} "
+            "guest={}x{} format={} samples={} depth={} allocation={} serial={} writer={} defined={} "
+            "reflection={} destination={:08X}@{} mip={} slice={} resolved={} aliases=[{}]",
+            diagnostic_command_index_,resolve.source.handle,resolve.source.address,resolve.source.width,
+            resolve.source.height,uint32_t(resolve.source.format),uint32_t(resolve.source.sample_type),depth,
+            source_surface->key.id,source_record.materialized_serial,writer!=nullptr,next.contents.contains(source_view),
+            source_record.is_reflection,resolve.destination_texture,resource->generation,resolve.destination_level,
+            resolve.destination_slice_or_face,destination.resolved.contains({resolve.destination_level,resolve.destination_slice_or_face}),aliases);
+        return false;
       }
       if(!r::SupportsAspect(storage.format,source_view.aspect)||resolve.destination_level>=storage.levels||
          resolve.destination_slice_or_face>=r::SurfaceSlices(storage))

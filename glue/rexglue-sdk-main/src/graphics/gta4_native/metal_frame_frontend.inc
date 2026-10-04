@@ -182,6 +182,20 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
+  bool frontend_complete=false;
+  // Record after commit and destruction of the speculative state and temporary
+  // plan. Registry retirement is frame work too, rather than invisible cleanup.
+  const auto record_complete_budget=MakeScopeExit([&]{
+    if(!frontend_complete||!present.device||diagnostic_scan)return;
+    auto& state=*native_metal_frame_;
+    state.frontend_ms[(state.timed_presents-1)%state.frontend_ms.size()]=
+      double(tick()-began)*1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
+    if(state.timed_presents%state.frontend_ms.size()==0){
+      auto sorted=state.frontend_ms;std::sort(sorted.begin(),sorted.end());
+      REXLOG_INFO("gta4-metal-renderer-cpu-budget: samples=60 ceiling-ms=30 p50-ms={:.3f} p95-ms={:.3f} p99-ms={:.3f} max-ms={:.3f} over-budget={}",
+        sorted[29],sorted[56],sorted[59],sorted[59],std::count_if(sorted.begin(),sorted.end(),[](double ms){return ms>30;}));
+    }
+  });
   const auto finish_title_frame=MakeScopeExit([&] {
     if(present.device&&!diagnostic_scan)native_metal_frame_->continuity.EndGuestFrame();
   });
@@ -1123,15 +1137,6 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.masked_constant_fallbacks=native_metal_frame_->masked_constant_fallbacks;
   next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
   next.frontend_ms=native_metal_frame_->frontend_ms;
-  if(present.device) {
-    next.frontend_ms[(next.timed_presents-1)%next.frontend_ms.size()]=
-        double(tick()-began)*1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
-    if(next.timed_presents%next.frontend_ms.size()==0) {
-      auto sorted=next.frontend_ms;std::sort(sorted.begin(),sorted.end());
-      REXLOG_INFO("gta4-metal-renderer-cpu-budget: samples=60 ceiling-ms=30 p50-ms={:.3f} p95-ms={:.3f} p99-ms={:.3f} max-ms={:.3f} over-budget={}",
-        sorted[29],sorted[56],sorted[59],sorted[59],std::count_if(sorted.begin(),sorted.end(),[](double ms){return ms>30;}));
-    }
-  }
   if(present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
     REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={} pipeline-hits={} pipeline-misses={} cached-samplers={}",
@@ -1164,5 +1169,5 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       next.timed_presents,next.surfaces.CopiedEntries()+next.textures.CopiedEntries(),next.draw_arena->pooled_objects,
       next.draw_arena->page_allocations,next.draw_arena->recycled_objects,next.draw_arena->fallback_objects,next.draw_arena->AllocatedBytes());
   next.surfaces.Commit();next.textures.Commit();registry_committed=true;
-  reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
+  reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();frontend_complete=true;return true;
 }

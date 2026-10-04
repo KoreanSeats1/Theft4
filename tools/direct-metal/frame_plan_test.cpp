@@ -51,6 +51,10 @@ int main() {
   std::get<FrameDraw>(std::get<Pass>(rejected_admission.commands[0]).commands[1]).capture=bad_capture;
   assert(!ValidateFrame(rejected_admission,{},result,error,nullptr,&admitted));
   assert(admitted.size()==2&&admitted[1].capture==ordered.capture.get()); // Failed admission is transactional.
+  auto direct=joined;auto& append_target=AppendPass(direct,Pass{continuation});
+  append_target.commands.emplace_back(ordered);
+  assert(direct.commands.size()==1&&std::get<Pass>(direct.commands[0]).commands.size()==4);
+  assert(ValidateFrame(direct,{},result,error));
   auto boundary=joined;AppendPass(boundary,begin);assert(boundary.commands.size()==2);
   boundary=joined;auto changed=continuation;changed.colors[0]->view.surface={102,1};
   AppendPass(boundary,changed);assert(boundary.commands.size()==2);
@@ -154,7 +158,7 @@ int main() {
   host.constants={constants,0,44};host.fetches[0].produced=SurfaceView{{2,1},0,0,Aspect::Color};
   host.fetches[0].sampler=std::make_shared<Sampler>();hostPass.commands.push_back(host);
   assert(ValidateFrame(utilities,{},result,error));
-  const auto hostDraw=[](FramePlan& f)->HostDraw& {return std::get<HostDraw>(std::get<Pass>(f.commands[1]).commands[0]);};
+  const auto hostDraw=[](FramePlan& f)->HostDraw& {return (*GetHostDraw(std::get<Pass>(f.commands[1]).commands[0]));};
   auto fullscreen=utilities;std::get<Pass>(fullscreen.commands[1]).colors[0]->load=Load::Discard;
   assert(ValidateFrame(fullscreen,{},result,error));
   bad=fullscreen;hostDraw(bad).scissor={1,1,2,2};reject(bad);

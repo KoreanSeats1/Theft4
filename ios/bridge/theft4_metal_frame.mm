@@ -298,7 +298,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
           for(const auto& v:draw->produced)if(v&&v->surface==target) {
             error="Framebuffer-only drawable cannot be sampled";return {};
           }
-        if(const auto* host=std::get_if<render::HostDraw>(&command))
+        if(const auto* host=render::GetHostDraw(command))
           for(const auto& input:host->fetches)if(input.produced&&input.produced->surface==target) {
             error="Framebuffer-only drawable cannot be sampled by a host utility";return {};
           }
@@ -370,7 +370,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
           MTLScissorRect{clear->rectangle[0],clear->rectangle[1],clear->rectangle[2],clear->rectangle[3]},
           clear->color,clear->depth_value,clear->stencil_value});continue;
       }
-      if(const auto* host=std::get_if<render::HostDraw>(&command)) {
+      if(const auto* host=render::GetHostDraw(command)) {
         Draw draw;if(!impl_->PrepareHost(*host,prepared.descriptor,draw,error)) {failed_preparation(0,uint64_t(host->program));continue;}
         prepared.commands.push_back(std::move(draw));continue;
       }
@@ -381,7 +381,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       Draw draw;theft4::StorageCleanup draw_cleanup{[&]{impl_->draws.RecycleDrawStorage(draw);}};const bool base=impl_->draws.PrepareValidated(*item.capture,draw_ranges[draw_range_index++].maximum_vertex,draw,error);
       const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
       if(!base){fail_draw();continue;}
-      if(std::none_of(item.produced.begin(),item.produced.end(),[](const auto& v){return bool(v);})) {
+      if(!item.produced.HasViews()) {
         prepared.commands.push_back(std::move(draw));continue;
       }
       std::array<id<MTLTexture>,26> produced{};

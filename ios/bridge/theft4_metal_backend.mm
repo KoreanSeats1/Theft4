@@ -231,7 +231,7 @@ class Backend final:public render::FrameBackend {
               const auto key=std::pair{draw.pipeline.vertex.hash,draw.pipeline.fragment.hash};
               const auto count=++shaders[key];if(count>dominant_count){dominant_count=count;vertex=key.first;pixel=key.second;}
             }
-            if(const auto* h=std::get_if<render::HostDraw>(&c)){host|=1u<<uint32_t(h->program);++host_draws;}
+            if(const auto* h=render::GetHostDraw(c)){host|=1u<<uint32_t(h->program);++host_draws;}
             if(std::holds_alternative<render::RectClear>(c))++clears;
           }
           const render::Attachment* attachment=pass.depth?&*pass.depth:nullptr;

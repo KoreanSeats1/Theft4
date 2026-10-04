@@ -898,13 +898,14 @@ static void bootEvent(void *context, const char *event) {
         _depthOfField.on = NO;
         _anisotropicFiltering.on = NO;
         _reflectionQuality.selectedSegmentIndex = 0;
-        if (_modelDetail.selectedSegmentIndex > 1) _modelDetail.selectedSegmentIndex = 1;
-        if (_shadowQuality.selectedSegmentIndex > 1) _shadowQuality.selectedSegmentIndex = 1;
-        if (_drawDistance.selectedSegmentIndex > 1) _drawDistance.selectedSegmentIndex = 1;
+        _modelDetail.selectedSegmentIndex = 0;
+        _shadowQuality.selectedSegmentIndex = 0;
+        _drawDistance.selectedSegmentIndex = 0;
         _enhancedOutput.on = NO;
         _fsrBoost.on = NO;
-        [self record:@"frame-speed-first-test: render=1280x720 fsr=off aa=off motion-blur=off dof=off reflection=320x180 highest-lod=off"];
     }
+    const char *diagnosticCapture = getenv("THEFT4_DIAGNOSTIC_CAPTURE");
+    if (diagnosticCapture && strcmp(diagnosticCapture, "1") == 0) _performanceCapture.on = YES;
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
@@ -997,6 +998,10 @@ static void bootEvent(void *context, const char *event) {
     }
     [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
+    if (_bringupOverlay.renderResolution && frameSpeedFirst && strcmp(frameSpeedFirst, "1") == 0)
+        [self record:@"frame-speed-first-test: render=1280x720 fsr=off aa=off motion-blur=off dof=off reflection=320x180 model-lod=optimized shadows=optimized draw-distance=0.70"];
+    if (diagnosticCapture && strcmp(diagnosticCapture, "1") == 0)
+        [self record:@"diagnostic-test: long-performance-capture=armed"];
     [self createCore];
 #ifdef THEFT4_INTRO_TEST_BUILD
     [self runIntroTestImportSmokeIfRequested];

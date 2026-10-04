@@ -397,7 +397,10 @@ bool PlanAdapter::BindProduced(const render::Capture& capture,
     requested|=1u<<slot;
   }
   if(!requested){error.clear();return true;}
-  auto textures=draw.textures;
+  // Validate the complete replacement set before changing the draw, without
+  // copying/reallocating its texture vector for every GPU-produced fetch.
+  struct Replacement {size_t binding=0;id<MTLTexture> __unsafe_unretained texture=nil;};
+  std::array<Replacement,62> replacements{};size_t replacement_count=0;
   for(auto stage:{Stage::Vertex,Stage::Fragment}) {
     const auto& shader=stage==Stage::Vertex ? capture.draw.pipeline.vertex : capture.draw.pipeline.fragment;
     if(!shader.hash)continue;
@@ -406,14 +409,16 @@ bool PlanAdapter::BindProduced(const render::Capture& capture,
     for(const auto& binding:metadata->bindings) {
       auto texture=produced[binding.slot];const auto kind=size_t(binding.kind);
       if(!texture||kind>=4||texture.textureType!=kinds[kind])continue;
-      const auto it=std::find_if(textures.begin(),textures.end(),[&](const auto& b){
+      const auto it=std::find_if(draw.textures.begin(),draw.textures.end(),[&](const auto& b){
         return b.stage==stage&&b.index==binding.index;
       });
-      if(it==textures.end())return Error(error,"Missing prepared GPU-produced texture binding");
-      it->texture=texture;matched|=1u<<binding.slot;
+      if(it==draw.textures.end())return Error(error,"Missing prepared GPU-produced texture binding");
+      if(replacement_count==replacements.size())return Error(error,"Too many GPU-produced Metal texture bindings");
+      replacements[replacement_count++]={size_t(it-draw.textures.begin()),texture};matched|=1u<<binding.slot;
     }
   }
   if(matched!=requested)return Error(error,"GPU-produced texture has no matching shader fetch kind");
-  draw.textures=std::move(textures);error.clear();return true;
+  for(size_t i=0;i<replacement_count;++i)draw.textures[replacements[i].binding].texture=replacements[i].texture;
+  error.clear();return true;
 }
 }

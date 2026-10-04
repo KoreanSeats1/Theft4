@@ -520,7 +520,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     r::HostFetch fetch;if(!PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>(command.textures[slot]),
         command.texture_fetches[slot],frame_state,fetch,error))return false;
     draw.fetches[slot].image=fetch.image;draw.fetches[slot].sampler=fetch.sampler;
-    result.produced[slot]=fetch.produced;
+    result.produced.Set(slot,fetch.produced);
   }
   phase(timing.fetches);
   r::DrawValidationIssue validation_issue;

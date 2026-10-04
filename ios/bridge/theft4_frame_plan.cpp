@@ -35,7 +35,7 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
     const auto& pass=std::get<Pass>(f.commands[n]);
     for(const auto& c:pass.commands){
       if(const auto* draw=std::get_if<FrameDraw>(&c)){for(const auto& view:draw->produced)if(view)read(*view);}
-      else if(const auto* host=std::get_if<HostDraw>(&c)){for(const auto& input:host->fetches)if(input.produced)read(*input.produced);}
+      else if(const auto* host=GetHostDraw(c)){for(const auto& input:host->fetches)if(input.produced)read(*input.produced);}
     }
     const auto attachment=[&](const std::optional<Attachment>& a,uint8_t slot){
       if(!a)return;
@@ -72,13 +72,13 @@ bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& 
 std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan& f) {
   std::vector<uint8_t> masks(f.commands.size(),0);
   for(size_t i=0;i<f.commands.size();++i)if(const auto* pass=std::get_if<Pass>(&f.commands[i]))
-    if(!pass->commands.empty())if(const auto* host=std::get_if<HostDraw>(&pass->commands.front()))
+    if(!pass->commands.empty())if(const auto* host=GetHostDraw(pass->commands.front()))
       if(FullHostColorOverwrite(f,*pass,*host)&&pass->colors[0]->load!=Load::Discard)masks[i]=1;
   return masks;
 }
 std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass) {
   if(pass.commands.size()!=1)return {};
-  const auto* host=std::get_if<HostDraw>(&pass.commands[0]);
+  const auto* host=GetHostDraw(pass.commands[0]);
   if(!host||host->program!=HostProgram::Resolve||!FullHostColorOverwrite(f,pass,*host)||pass.colors[0]->resolve||
      pass.colors[0]->store!=Store::Store||!host->fetches[0].produced)return {};
   const auto& input=*host->fetches[0].produced;const auto& output=pass.colors[0]->view;
@@ -99,7 +99,7 @@ std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass
      extent!=std::array<uint32_t,2>{c[12],c[13]}||extent!=std::array<uint32_t,2>{c[14],c[15]})return {};
   return ImageCopy{{input.surface,input.level,input.slice,Aspect::Color},output,{},{},extent,false};
 }
-void AppendPass(FramePlan& frame,Pass next) {
+Pass& AppendPass(FramePlan& frame,Pass next) {
   auto* previous=frame.commands.empty()?nullptr:std::get_if<Pass>(&frame.commands.back());
   const auto compatible=[](const std::optional<Attachment>& a,const std::optional<Attachment>& b) {
     if(bool(a)!=bool(b))return false;
@@ -112,7 +112,9 @@ void AppendPass(FramePlan& frame,Pass next) {
   if(merge) {
     previous->commands.insert(previous->commands.end(),std::make_move_iterator(next.commands.begin()),
                               std::make_move_iterator(next.commands.end()));
-  } else frame.commands.push_back(std::move(next));
+    return *previous;
+  }
+  frame.commands.push_back(std::move(next));return std::get<Pass>(frame.commands.back());
 }
 const Surface* FindSurface(const FramePlan& f,SurfaceKey key) {
   for(const auto& s:f.surfaces)if(s&&s->key==key)return s.get();
@@ -338,7 +340,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         if(full&&clear->stencil)contents.insert(pass.stencil->view);
         continue;
       }
-      if(const auto* host=std::get_if<HostDraw>(&command)) {
+      if(const auto* host=GetHostDraw(command)) {
         const auto& p=host->pipeline;const auto& rect=host->scissor;
         if(host->program>=HostProgram::Count||p.vertex!=Shader{}||p.fragment!=Shader{}||!p.attributes.empty()||
            p.negative_one_to_one||p.samples!=samples||host->stencil_front_reference>255||host->stencil_back_reference>255||
@@ -391,6 +393,8 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
            rect==std::array<uint32_t,4>{0,0,width,height})contents.insert(pass.colors[0]->view);
         continue;
       }
+      if(std::holds_alternative<HostCommand>(command))
+        return Reject(error,"Ordered pass has a missing host utility draw");
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
       uint64_t maximum_vertex=0;

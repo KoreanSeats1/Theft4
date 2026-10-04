@@ -366,7 +366,7 @@ int main(int argc,char** argv) {
       assert(render::AppendSplitPostFx(*frame,contents,scene,fetch(depth),fetch(mask),split,allocate,utility_generation,error));
       size_t split_count=0;
       for(const auto& command:frame->commands)if(auto pass=std::get_if<render::Pass>(&command))
-        for(const auto& draw:pass->commands)if(auto host=std::get_if<render::HostDraw>(&draw)) {
+        for(const auto& draw:pass->commands)if(auto host=render::GetHostDraw(draw)) {
           if(host->program!=render::HostProgram::SplitPostFx)continue;++split_count;
           render::SplitConstants c;std::memcpy(&c,host->constants.source->value.data(),sizeof(c));
           if(c.pass==1||c.pass==2)assert(c.destination[0]==17&&c.destination[1]==9);

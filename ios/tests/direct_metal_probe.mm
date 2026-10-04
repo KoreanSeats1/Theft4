@@ -614,6 +614,18 @@ struct Probe {
     c.commands.push_back(r::FrameDraw{capture({1,0,0,0.5f},false,true,1),{}});plan->commands={a,b,c};
     auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
     auto target=adapter.Output(*plan,error);Require(target);
+    // A later unmatched fetch must not modify an earlier valid replacement.
+    // The successful path must preserve the binding vector's allocation.
+    PlanAdapter binding_adapter(renderer);Require(binding_adapter.Open(libraries.UTF8String,error));
+    auto textured=capture({1,1,1,1},true,false,1);Draw bound;
+    Require(binding_adapter.Prepare(*textured,bound,error));
+    const auto* binding_storage=bound.textures.data();const auto original_bindings=bound.textures;
+    std::array<id<MTLTexture>,26> replacements{};replacements[0]=target;replacements[25]=target;
+    Require(!binding_adapter.BindProduced(*textured,replacements,bound,error));error.clear();
+    Require(bound.textures.data()==binding_storage&&bound.textures.size()==original_bindings.size());
+    for(size_t i=0;i<bound.textures.size();++i)Require(bound.textures[i].texture==original_bindings[i].texture);
+    replacements[25]=nil;Require(binding_adapter.BindProduced(*textured,replacements,bound,error));
+    Require(bound.textures.data()==binding_storage);
     const auto oracle=[&](const uint8_t* expected) {
       auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
       for(size_t i=0;i<pixels.size();++i)Require(std::abs(int(pixels[i])-int(expected[i%4]))<=1);
@@ -649,7 +661,9 @@ struct Probe {
     [results addObject:@{@"case":@"ordered_game_frame_passes",@"passed":@YES,
       @"msaa_store_and_resolve":@YES,@"gpu_produced_fetch":@YES,@"mip_and_array_slice":@YES,
       @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
-      @"gpu_retains_retired_targets":@YES,@"all_preparation_errors_before_submission":@YES,@"synthetic_validation_geometry":@YES}];
+      @"gpu_retains_retired_targets":@YES,@"all_preparation_errors_before_submission":@YES,
+      @"failed_produced_binding_preserves_draw":@YES,@"produced_bindings_preserve_vector_storage":@YES,
+      @"synthetic_validation_geometry":@YES}];
   }
   void FloatPairTargets() {
     std::array<id<MTLTexture>,4> targets;
@@ -731,7 +745,7 @@ struct Probe {
     fields[11]=2|64; // An unused flag conservatively excludes native copy.
     auto changed=std::make_shared<r::Bytes>(*bank);changed->generation=2;std::memcpy(changed->value.data(),fields.data(),64);
     plan=std::make_shared<r::FramePlan>(*plan);
-    std::get<r::HostDraw>(std::get<r::Pass>(plan->commands[2]).commands[0]).constants={changed,0,64};
+    (*r::GetHostDraw(std::get<r::Pass>(plan->commands[2]).commands[0])).constants={changed,0,64};
     plan->sequence=2;receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
     Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==1);
     Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
@@ -740,7 +754,7 @@ struct Probe {
       fields[11]=2|flag;auto constants=std::make_shared<r::Bytes>(*bank);constants->generation=flag;
       std::memcpy(constants->value.data(),fields.data(),64);
       auto candidate=std::make_shared<r::FramePlan>(*plan);
-      std::get<r::HostDraw>(std::get<r::Pass>(candidate->commands[2]).commands[0]).constants={constants,0,64};
+      (*r::GetHostDraw(std::get<r::Pass>(candidate->commands[2]).commands[0])).constants={constants,0,64};
       auto submitted=capped.Submit(candidate,error);Require(bool(submitted));Require(submitted.Wait(error));
       Require(renderer.ReadRGBA8(capped.Output(*candidate,error),error)==renderer.ReadRGBA8(src,error));
     }
@@ -1039,7 +1053,7 @@ struct Probe {
     Require(adapter.ImmutableStats().buffer_creates==cold.buffer_creates&&adapter.PipelineCount()==2);
     Require(adapter.LastTiming().binding_storage_reuses==2&&adapter.LastTiming().binding_storage_fresh==0);
     auto invalid=std::make_shared<r::FramePlan>(*plan);
-    std::get<r::HostDraw>(std::get<r::Pass>(invalid->commands.back()).commands[0]).constants.length=43;
+    (*r::GetHostDraw(std::get<r::Pass>(invalid->commands.back()).commands[0])).constants.length=43;
     Require(!adapter.Submit(invalid,error));error.clear();check(false);
     // The same presentation command also consumes a prepared immutable ASTC
     // source; this must retain the older-device cache's compressed upload.

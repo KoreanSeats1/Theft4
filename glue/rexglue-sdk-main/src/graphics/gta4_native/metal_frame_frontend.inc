@@ -835,7 +835,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         if(pass.depth&&(writes_depth||writes_stencil||pass.depth->load==r::Load::Clear||
                         (pass.stencil&&pass.stencil->load==r::Load::Clear)))
           claim(next.surfaces.at(pass.depth->view.surface.id).owner);
-        pass.commands.push_back(std::move(draw));r::AppendPass(*plan,std::move(pass));
+        r::AppendPass(*plan,std::move(pass)).commands.emplace_back(std::move(draw));
       }
       return true;
     }

@@ -46,6 +46,34 @@ static void BindingStorageChecks(){
   theft4::VectorStoragePool<Ref,Ref> disabled(0,0);
   disabled.Recycle(overflow.first,overflow.second);assert(disabled.Entries()==0);
 }
+static void CompactPacketChecks(){
+  namespace r=theft4::render;
+  r::ProducedViews empty;empty.Set(4,std::nullopt);
+  const auto& inspect=empty;
+  assert(empty.AllocatedBytes()==0&&!inspect.HasViews()&&!inspect[4]);
+  assert(std::all_of(inspect.begin(),inspect.end(),[](const auto& v){return !v;}));
+  assert(empty.AllocatedBytes()==0); // Inspecting the static-image path stays allocation-free.
+  empty.Set(4,r::SurfaceView{{91,1},0,0,r::Aspect::Color});
+  auto copied=empty;copied[4]->surface.generation=2;
+  assert(inspect[4]->surface.generation==1&&copied[4]->surface.generation==2);
+  auto assigned=r::ProducedViews{};assigned=copied;assigned[4]->level=1;
+  assert(copied[4]->level==0);assigned=inspect;assigned=assigned;
+  assert(assigned[4]->surface.generation==1);
+  auto moved=std::move(empty);assert(moved.HasViews()&&!empty.HasViews());
+  moved.Set(4,std::nullopt);assert(!moved.HasViews());
+  assigned=r::ProducedViews{};assert(assigned.AllocatedBytes()==0);
+  r::HostDraw host;host.scissor={0,0,16,8};host.pipeline.attributes.resize(2);
+  r::PassCommand original=host,clone=original;
+  r::GetHostDraw(clone)->scissor[2]=4;r::GetHostDraw(clone)->pipeline.attributes.clear();
+  assert(r::GetHostDraw(original)->scissor[2]==16&&r::GetHostDraw(original)->pipeline.attributes.size()==2);
+  clone=original;r::GetHostDraw(clone)->stencil_front_reference=3;
+  assert(r::GetHostDraw(original)->stencil_front_reference==0);
+  auto retained=std::move(original);assert(r::GetHostDraw(retained)&&!r::GetHostDraw(original));
+  r::FramePlan invalid;invalid.sequence=1;r::Pass pass;pass.attachmentless_extent={16,8};
+  pass.commands.push_back(std::move(original));invalid.commands.push_back(std::move(pass));
+  std::string error;r::SurfaceContents result,before{{{99,1},0,0,r::Aspect::Color}};result=before;
+  assert(!r::ValidateFrame(invalid,before,result,error)&&result==before&&error.find("missing host")!=std::string::npos);
+}
 static void TransactionChecks(){
   NativeTransactionalMap<uint64_t,Record> registry;
   std::map<uint64_t,Record> expected;
@@ -153,7 +181,7 @@ static void HostOverwriteChecks() {
   }
   std::memcpy(constants->value.data(),fields.data(),64);
   for(unsigned mutation=0;mutation<8;++mutation) {
-    auto changed=pass;auto& h=std::get<r::HostDraw>(changed.commands[0]);
+    auto changed=pass;auto& h=(*r::GetHostDraw(changed.commands[0]));
     switch(mutation){case 0:h.scissor[2]--;break;case 1:h.pipeline.blends[0].enabled=true;break;
       case 2:h.pipeline.blends[0].write_mask=7;break;case 3:h.program=r::HostProgram::SmaaEdgeHigh;break;
       case 4:h.pipeline.depth_test=true;break;case 5:changed.depth=attachment;break;
@@ -190,6 +218,32 @@ static void Benchmark(){
   for(unsigned trial=0;trial<41;++trial){ordinary.push_back(draw_trial(false));pooled.push_back(draw_trial(true));}
   std::sort(ordinary.begin(),ordinary.end());std::sort(pooled.begin(),pooled.end());
   std::cout<<"draws=4000 capture_bytes="<<sizeof(r::Capture)<<" allocation_ms="<<ordinary[20]<<" arena_ms="<<pooled[20]<<" pages="<<arena.page_allocations<<" fallbacks="<<arena.fallback_objects<<" checksum="<<checksum<<"\n";
+  // Identical attachment/draw order, alternating trials. The legacy producer
+  // allocates a temporary vector for each draw before joining its pass.
+  auto capture=std::make_shared<r::Capture>();
+  auto assembly=[&](bool direct){
+    r::FramePlan frame;frame.commands.reserve(200);auto began=Clock::now();
+    for(unsigned n=0;n<4000;++n){r::Pass p;r::Attachment a;
+      a.view={{n/20+1,1},0,0,r::Aspect::Color};a.load=n%20?r::Load::Load:r::Load::Clear;a.store=r::Store::Store;p.colors[0]=a;
+      r::FrameDraw draw;draw.capture=capture;
+      if(n%10==0)draw.produced.Set(0,r::SurfaceView{{999,1},0,0,r::Aspect::Color});
+      if(direct)r::AppendPass(frame,std::move(p)).commands.emplace_back(std::move(draw));
+      else {p.commands.emplace_back(std::move(draw));r::AppendPass(frame,std::move(p));}
+    }
+    auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-began).count();
+    assert(frame.commands.size()==200);
+    for(const auto& c:frame.commands){const auto& pass=std::get<r::Pass>(c);assert(pass.commands.size()==20);
+      assert(pass.colors[0]->load==r::Load::Clear);checksum+=pass.commands.size();}
+    return elapsed;
+  };
+  std::vector<double> temporary,direct;assembly(false);assembly(true);
+  for(unsigned trial=0;trial<101;++trial){if(trial%2){direct.push_back(assembly(true));temporary.push_back(assembly(false));}
+    else{temporary.push_back(assembly(false));direct.push_back(assembly(true));}}
+  std::sort(temporary.begin(),temporary.end());std::sort(direct.begin(),direct.end());
+  std::cout<<"frame_draw_bytes="<<sizeof(r::FrameDraw)<<" host_draw_bytes="<<sizeof(r::HostDraw)
+    <<" pass_command_bytes="<<sizeof(r::PassCommand)<<" pass_bytes="<<sizeof(r::Pass)
+    <<" draws=4000 passes=200 produced_inputs=400 legacy_append_ms="<<temporary[50]
+    <<" direct_append_ms="<<direct[50]<<" checksum="<<checksum<<"\n";
 
 }
-int main(int argc,char** argv){BindingStorageChecks();TransactionChecks();ArenaChecks();AttachmentChecks();HostOverwriteChecks();BoundedSweepChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}
+int main(int argc,char** argv){CompactPacketChecks();BindingStorageChecks();TransactionChecks();ArenaChecks();AttachmentChecks();HostOverwriteChecks();BoundedSweepChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}

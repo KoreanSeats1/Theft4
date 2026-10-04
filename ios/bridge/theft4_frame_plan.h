@@ -1,6 +1,8 @@
 #pragma once
 #include "theft4_render_plan.h"
 #include "theft4_host_program.h"
+#include <algorithm>
+#include <memory>
 #include <optional>
 #include <set>
 #include <variant>
@@ -52,10 +54,39 @@ struct Attachment {
   double clear_depth=1;
   uint32_t clear_stencil=0;
 };
+// Most title draws sample static images only. Keep their produced-view packet
+// empty; allocate the dense interface only when a real GPU input is assigned.
+// Copies retain value semantics so editing a copied plan cannot mutate its
+// source. Const inspection never allocates, including the empty iterators.
+class ProducedViews {
+ public:
+  using Values=std::array<std::optional<SampledSurfaceView>,kFetchCount>;
+  ProducedViews()=default;
+  ProducedViews(const ProducedViews& other):values_(other.values_?std::make_unique<Values>(*other.values_):nullptr){}
+  ProducedViews& operator=(const ProducedViews& other) {
+    if(this!=&other)values_=other.values_?std::make_unique<Values>(*other.values_):nullptr;
+    return *this;
+  }
+  ProducedViews(ProducedViews&&) noexcept=default;
+  ProducedViews& operator=(ProducedViews&&) noexcept=default;
+  static constexpr size_t size(){return kFetchCount;}
+  const auto& operator[](size_t slot)const{return Read()[slot];}
+  auto& operator[](size_t slot){if(!values_)values_=std::make_unique<Values>();return (*values_)[slot];}
+  void Set(size_t slot,std::optional<SampledSurfaceView> value) {
+    if(value||values_)(*this)[slot]=std::move(value);
+  }
+  auto begin()const{return Read().begin();}
+  auto end()const{return Read().end();}
+  bool HasViews()const{return values_&&std::any_of(values_->begin(),values_->end(),[](const auto& v){return bool(v);});}
+  size_t AllocatedBytes()const{return values_?sizeof(Values):0;}
+ private:
+  const Values& Read()const {static const Values empty{};return values_?*values_:empty;}
+  std::unique_ptr<Values> values_;
+};
 struct FrameDraw {
   std::shared_ptr<const Capture> capture;
   // Only GPU-produced inputs appear here. Static images remain in Capture.
-  std::array<std::optional<SampledSurfaceView>,kFetchCount> produced{};
+  ProducedViews produced;
 };
 struct RectClear {
   // Attachment slots are independent of the current draw's color write mask.
@@ -82,7 +113,32 @@ struct HostDraw {
   std::array<float,4> blend_color{};
   uint32_t stencil_front_reference=0,stencil_back_reference=0;
 };
-using PassCommand=std::variant<FrameDraw,RectClear,HostDraw>;
+// Host utilities are rare compared with title draws. Box their larger packet
+// so every title command does not pay for its pipeline and four fetches.
+// Copies remain independent; a moved-from host command is rejected at admission.
+class HostCommand {
+ public:
+  HostCommand(const HostDraw& draw):draw_(std::make_unique<HostDraw>(draw)){}
+  HostCommand(HostDraw&& draw):draw_(std::make_unique<HostDraw>(std::move(draw))){}
+  HostCommand(const HostCommand& other):draw_(other.draw_?std::make_unique<HostDraw>(*other.draw_):nullptr){}
+  HostCommand& operator=(const HostCommand& other) {
+    if(this!=&other)draw_=other.draw_?std::make_unique<HostDraw>(*other.draw_):nullptr;
+    return *this;
+  }
+  HostCommand(HostCommand&&) noexcept=default;
+  HostCommand& operator=(HostCommand&&) noexcept=default;
+  HostDraw* Get(){return draw_.get();}
+  const HostDraw* Get()const{return draw_.get();}
+ private:
+  std::unique_ptr<HostDraw> draw_;
+};
+using PassCommand=std::variant<FrameDraw,RectClear,HostCommand>;
+inline HostDraw* GetHostDraw(PassCommand& command) {
+  auto* host=std::get_if<HostCommand>(&command);return host?host->Get():nullptr;
+}
+inline const HostDraw* GetHostDraw(const PassCommand& command) {
+  auto* host=std::get_if<HostCommand>(&command);return host?host->Get():nullptr;
+}
 struct Pass {
   // Explicit dimensions only for passes without attachments (one sample).
   std::array<uint32_t,2> attachmentless_extent{};
@@ -111,7 +167,9 @@ struct FramePlan {
 // Join consecutive draws only when their attachment storage is unchanged and
 // the new pass simply loads the previous stores. Clears/resolves and copies
 // remain explicit boundaries; this avoids an encoder per title draw.
-void AppendPass(FramePlan&,Pass);
+// The returned pass also lets a producer append one draw directly, avoiding
+// a temporary one-element vector when the attachment set can be joined.
+Pass& AppendPass(FramePlan&,Pass);
 // After successful frame admission only: identify stores overwritten before
 // any read. Bits0..3=color,4=depth,5=stencil; final cross-frame stores survive.
 std::vector<uint8_t> DeadAttachmentStores(const FramePlan&);

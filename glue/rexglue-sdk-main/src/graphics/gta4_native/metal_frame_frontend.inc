@@ -42,8 +42,13 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
     std::shared_ptr<NativeTextureImage> description;
     uint64_t used=0;
   };
-  std::map<std::array<uint64_t,8>,BytesRecord> buffers;
-  std::map<uint64_t,ImageRecord> images;
+  struct BytesKeyHash {
+    size_t operator()(const std::array<uint64_t,8>& key) const noexcept {
+      return size_t(XXH3_64bits(key.data(),sizeof(key)));
+    }
+  };
+  std::unordered_map<std::array<uint64_t,8>,BytesRecord,BytesKeyHash> buffers;
+  std::unordered_map<uint64_t,ImageRecord> images;
   struct PipelineTemplate {
     theft4::render::Pipeline pipeline;
     theft4::render::Primitive primitive;

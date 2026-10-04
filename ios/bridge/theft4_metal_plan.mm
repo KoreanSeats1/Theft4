@@ -234,9 +234,14 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
   const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex);
   const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
   const auto used=(vm ? vm->used_texture_mask : 0)|(pm ? pm->used_texture_mask : 0);
+  const auto placeholders=[&](const ShaderMetadata* metadata) {
+    if(metadata)for(const auto& binding:metadata->bindings)if(binding.kind!=FetchKind::Sampler)
+      fetches[binding.slot].images[size_t(binding.kind)]=dummy_images_[size_t(binding.kind)];
+  };
+  placeholders(vm);placeholders(pm);
   for(size_t i=0;i<fetches.size();++i) {
     if(!(used&(1u<<i)))continue;
-    fetches[i].images=dummy_images_;const auto& f=source.fetches[i];
+    const auto& f=source.fetches[i];
     if(f.image) {
       const auto kind=size_t(f.image->kind);
       if(kind>=4)return Error(error,"Game cube-array sampling needs a matching Metal shader interface");

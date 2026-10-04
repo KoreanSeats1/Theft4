@@ -105,6 +105,26 @@ int main(int argc,char** argv) {
         assert(pixels[i]==128&&pixels[i+1]==128&&pixels[i+2]==255&&pixels[i+3]==255);
       }
     }
+    // The title resolves floor(height/2) 4x views from odd-height 1x
+    // writers. A distinct final row must not stretch or bleed into the crop.
+    {
+      auto input=std::make_shared<render::Surface>(*surface);input->key={590,1};input->height=17;
+      auto output=std::make_shared<render::Surface>(*surface);output->key={591,1};output->width=16;output->height=8;
+      auto f=Clear(input,79,0);f->surfaces.push_back(output);
+      auto& producer=std::get<render::Pass>(f->commands[0]);producer.colors[0]->clear_color={0,1,0,1};
+      render::RectClear last;last.colors=1;last.rectangle={0,16,32,1};last.color={1,0,1,1};producer.commands={last};
+      auto pass=std::get<render::Pass>(Clear(output,79,0)->commands[0]);
+      const std::array<uint32_t,16> constants{0,0,0,0,0,2,0,6,0,0,0,4,32,16,16,8};
+      auto bytes=std::make_shared<render::Bytes>();bytes->generation=79;bytes->value.resize(sizeof(constants));
+      std::memcpy(bytes->value.data(),constants.data(),sizeof(constants));
+      render::HostDraw draw;draw.program=render::HostProgram::Resolve;draw.pipeline.colors[0]=output->format;
+      draw.constants={bytes,0,sizeof(constants)};draw.scissor={0,0,16,8};
+      draw.fetches[0].produced=*f->output;draw.fetches[0].sampler=std::make_shared<render::Sampler>();
+      pass.commands={draw};f->commands.push_back(pass);f->output=pass.colors[0]->view;
+      assert(backend->Submit(f,false,error));assert(backend->ReadRGBA8(*f,*f->output,pixels,error));
+      for(size_t i=0;i<pixels.size();i+=4)assert(pixels[i]==0&&pixels[i+1]==255&&pixels[i+2]==0&&pixels[i+3]==255);
+      std::cout<<"Odd-height sample-plane resolve excluded the unwritten crop row.\n";
+    }
     // Placement materialization uses mode 1 of the stock conversion ABI. Check
     // spatially distinct pixels across physical resizes and coherent sample
     // families, then load that allocation for a partial following write.

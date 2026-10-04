@@ -121,6 +121,22 @@ int main(int argc, char** argv) {
     private_depth.sample_type=1;
     Require(native::NativeSurfaceStorageOf(private_depth)==native::NativeSurfaceStorage::Invalid,
         "Malformed private sample topology was accepted");
+    struct SampleView {uint32_t placement_base_tiles,sample_pitch,sample_width,sample_height;bool depth;};
+    for(const auto [width,height]:{std::pair{2416u,1359u},std::pair{604u,339u}}) {
+      const SampleView writer{1,80,width,height,false},requested{1,80,width,height-1,false};
+      Require(native::NativeResolveContains(writer,requested),"Odd-height resolve crop lost its current writer");
+      Require(native::NativeResolveCoordinate((height-1)/2,2,height,height,true)==height-1&&
+          native::NativeResolveCoordinate(width/2,2,width,width,true)==width,
+          "Half-size resolve stretched into the unused last sample row");
+      auto wrong=requested;wrong.sample_pitch=40;
+      Require(!native::NativeResolveContains(writer,wrong),"Different-pitch writer aliased a resolve");
+      wrong=requested;wrong.placement_base_tiles=2;
+      Require(!native::NativeResolveContains(writer,wrong),"Different-base writer aliased a resolve");
+      wrong=requested;wrong.sample_height=height+1;
+      Require(!native::NativeResolveContains(writer,wrong),"Resolve exceeded the written footprint");
+      wrong=requested;wrong.depth=true;
+      Require(!native::NativeResolveContains(writer,wrong),"Color crop accepted a depth reinterpretation");
+    }
     const std::array<VkFormat,4> float_pairs{VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT,
         VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT};
     Require(native::NativeSurfaceFormat(0x2D22ABA5,false)==VK_FORMAT_R32G32_SFLOAT &&
@@ -139,6 +155,10 @@ int main(int argc, char** argv) {
     Require(argc == 2, "render_plan_test needs a private output directory");
     const std::filesystem::path root(argv[1]); std::filesystem::create_directories(root);
     auto c = Fixture(); std::string error; Require(Validate(c, error), error);
+    auto short_vertex=c;short_vertex.draw.vertices[0].length=16;
+    Require(!Validate(short_vertex,error)&&error.find("command=93")!=std::string::npos&&
+        error.find("maximum=2")!=std::string::npos&&error.find("needed=48")!=std::string::npos,
+        "Rejected draw lost its exact vertex-range diagnostics");
     {
       auto prepared = CpuPipelineFixture();
       Require(prepared.Valid() && !prepared.layout && !prepared.modules[0] && !prepared.modules[1],

@@ -36234,9 +36234,9 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
           ++index;
         }
       }
-      static bool commands_scanned=false;
-      if(!commands_scanned) {
-        commands_scanned=true;
+      static std::set<std::string> scanned_failure_classes;
+      const auto failure_class=error.substr(0,error.find(':'));
+      if(scanned_failure_classes.size()<8&&scanned_failure_classes.insert(failure_class).second) {
         const auto failed_index=diagnostic_command_index_;
         std::string diagnostic_error;
         PublishNativeMetalFrame(present,present_source,environmental_data,diagnostic_error,true);

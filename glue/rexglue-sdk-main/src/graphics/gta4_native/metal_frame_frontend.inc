@@ -273,6 +273,27 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     return surface!=next.surfaces.end()&&surface->second.materialized_serial==it->second.serial?
         &it->second:nullptr;
   };
+  const auto resolve_placement_owner=[&](const SurfaceDescriptor& descriptor,bool depth)
+      ->const NativeMetalFrameState::PlacementOwner* {
+    if(depth)return placement_owner(descriptor,true);
+    if(FindNativeReflectionSurface(reflections,descriptor,false))return nullptr;
+    GuestSurfaceView requested;if(!DecodeGuestSurfaceView(descriptor,false,requested))return nullptr;
+    const NativeMetalFrameState::PlacementOwner* latest=nullptr;
+    for(const auto& [key,writer]:next.placements) {
+      if(key.depth||key.placement_base_tiles!=requested.placement_base_tiles||
+         key.sample_pitch!=requested.sample_pitch||key.sample_width!=requested.sample_width)continue;
+      const auto found=next.surfaces.find(writer.surface);
+      if(found==next.surfaces.end()||found->second.is_reflection||
+         found->second.materialized_serial!=writer.serial)continue;
+      if(!latest||writer.serial>latest->serial)latest=&writer;
+    }
+    // A newer incompatible/shorter write must not expose an older allocation.
+    if(!latest||!NativeResolveContains(latest->view,requested))return nullptr;
+    const auto& record=next.surfaces.at(latest->surface);
+    if(record.owner->format!=r::source::PixelFormat(ConvertSurfaceFormat(descriptor.format,false))||
+       !next.contents.contains({record.owner->key,0,0,r::Aspect::Color}))return nullptr;
+    return latest;
+  };
   const auto claim=[&](const std::shared_ptr<const r::Surface>& surface) {
     auto& record=next.surfaces.at(surface->key.id);
     const uint64_t serial=++next_native_metal_content_serial_;
@@ -782,7 +803,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       const bool guest_placement=DecodeGuestSurfaceView(resolve.source,depth,guest_view);
       if(source_storage==NativeSurfaceStorage::Invalid||(!guest_placement&&source_storage!=NativeSurfaceStorage::PrivateTarget))
         return reject("Metal resolve sample storage invalid");
-      const auto* writer=placement_owner(resolve.source,depth);
+      const auto* writer=resolve_placement_owner(resolve.source,depth);
       const GuestSurfaceView content_view=writer?writer->view:guest_view;
       auto source_surface=writer?next.surfaces.at(writer->surface).owner:surface_for(resolve.source,depth);
       if(!source_surface)return false;retain(source_surface);
@@ -809,7 +830,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
           if(!resolve_clears(command,resolve))return false;return true;
         }
         std::string aliases;
-        for(const auto& [id,record]:next.surfaces)if(record.descriptor.address==resolve.source.address) {
+        for(const auto& [id,record]:next.surfaces)if((record.descriptor.address&0x7ffu)==(resolve.source.address&0x7ffu)) {
           aliases+=fmt::format("{}{:08X}:allocation={}:extent={}x{}:format={}:samples={}:serial={}:depth={}:color={}",
               aliases.empty()?"":",",record.descriptor.handle,id,record.owner->width,record.owner->height,
               uint32_t(record.owner->format),record.owner->samples,record.materialized_serial,
@@ -846,10 +867,12 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       const uint32_t copy_height=std::min(uint32_t(bottom-top),logical_mip_height-uint32_t(destination_y));
       if(!copy_width||!copy_height)return reject("Metal color resolve copy extent empty");
       NativeResolveConversionConstants constants;
-      constants.source_x=ScaleCoordinateFloor(left,logical_width,source_surface->width);
-      constants.source_y=ScaleCoordinateFloor(top,logical_height,source_surface->height);
-      constants.source_width=ScaleCoordinateCeil(left+copy_width,logical_width,source_surface->width)-constants.source_x;
-      constants.source_height=ScaleCoordinateCeil(top+copy_height,logical_height,source_surface->height)-constants.source_y;
+      const uint32_t sample_scale_x=GuestSampleScaleX(guest_view.msaa_samples);
+      const uint32_t sample_scale_y=GuestSampleScaleY(guest_view.msaa_samples);
+      constants.source_x=NativeResolveCoordinate(left,sample_scale_x,content_view.sample_width,source_surface->width);
+      constants.source_y=NativeResolveCoordinate(top,sample_scale_y,content_view.sample_height,source_surface->height);
+      constants.source_width=NativeResolveCoordinate(left+copy_width,sample_scale_x,content_view.sample_width,source_surface->width,true)-constants.source_x;
+      constants.source_height=NativeResolveCoordinate(top+copy_height,sample_scale_y,content_view.sample_height,source_surface->height,true)-constants.source_y;
       constants.destination_x=ScaleCoordinateFloor(destination_x,logical_mip_width,mip_width);
       constants.destination_y=ScaleCoordinateFloor(destination_y,logical_mip_height,mip_height);
       constants.destination_width=ScaleCoordinateCeil(destination_x+copy_width,logical_mip_width,mip_width)-constants.destination_x;

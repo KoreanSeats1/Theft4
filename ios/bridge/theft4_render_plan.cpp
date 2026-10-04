@@ -206,8 +206,21 @@ bool Validate(const Capture& capture, std::string& error) {
     if(!s.stride||s.stride>16384||uint64_t(a.offset)+Width(a.format)>s.stride)
       return Error(error,"Invalid game vertex layout");
     const uint64_t last=s.per_instance ? uint64_t(d.instances)-1 : maximum;
-    if(!View(d.vertices[a.stream],last*s.stride+a.offset+Width(a.format)))
-      return Error(error,"Game vertex view is shorter than the draw's actual index range");
+    const uint64_t needed=last*s.stride+a.offset+Width(a.format);
+    if(!View(d.vertices[a.stream],needed)) {
+      const auto& buffer=d.vertices[a.stream];
+      return Error(error,"Game vertex view is shorter than the draw's actual index range: command="+
+          std::to_string(capture.command)+" vs="+std::to_string(p.vertex.hash)+" ps="+std::to_string(p.fragment.hash)+
+          " stream="+std::to_string(a.stream)+" location="+std::to_string(a.location)+
+          " stride="+std::to_string(s.stride)+" attribute-offset="+std::to_string(a.offset)+
+          " width="+std::to_string(Width(a.format))+" per-instance="+std::to_string(s.per_instance)+
+          " maximum="+std::to_string(maximum)+" base="+std::to_string(d.base_vertex)+
+          " indices="+std::to_string(d.index_count)+" index-bytes="+std::to_string(d.index_bytes)+
+          " first="+std::to_string(d.first_vertex)+" vertices="+std::to_string(d.vertex_count)+
+          " offset="+std::to_string(buffer.offset)+" length="+std::to_string(buffer.length)+
+          " source-bytes="+std::to_string(buffer.source?buffer.source->value.size():0)+
+          " needed="+std::to_string(needed));
+    }
   }
   std::unordered_set<const Bytes*> sources;
   size_t total=0;

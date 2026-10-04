@@ -142,13 +142,13 @@ bool Gta4NativeGraphicsSystem::ReadNativeMetalTextureToGuest(
 
 bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
-    const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error) {
+    const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error,bool diagnostic_scan) {
   namespace r=theft4::render;
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
   const auto finish_title_frame=MakeScopeExit([&] {
-    if(present.device)native_metal_frame_->continuity.EndGuestFrame();
+    if(present.device&&!diagnostic_scan)native_metal_frame_->continuity.EndGuestFrame();
   });
   const uint32_t frame_identity=native_metal_frame_->continuity.frame_identity;
   // CPU ownership/content journals are speculative until the entire batch is
@@ -291,7 +291,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(record.is_reflection)return true;
     const bool depth=r::SupportsAspect(surface->format,r::Aspect::Depth);
     GuestSurfaceView view;
-    if(!DecodeGuestSurfaceView(record.descriptor,depth,view))return reject("Metal attachment guest placement invalid");
+    const auto storage=NativeSurfaceStorageOf(record.descriptor);
+    if(storage==NativeSurfaceStorage::PrivateTarget)return true;
+    if(storage==NativeSurfaceStorage::Invalid||!DecodeGuestSurfaceView(record.descriptor,depth,view))
+      return reject("Metal attachment storage descriptor invalid");
     const auto* current=placement_owner(record.descriptor,depth);
     if(!current) {forget_contents(surface->key);return true;}
     if(current->surface==surface->key.id)return true;
@@ -599,26 +602,28 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   };
   size_t command_index=0;
   diagnostic_submitted_frame_=present.submitted_frame;
+  std::set<std::string> scan_errors;
   for(const NativeCommand& command:current_frame_) {
     diagnostic_command_index_=command_index++;
+    const auto lower_command=[&]()->bool {
     if(command.type==CommandType::kRenderPhaseMarker) {
       // The worker already applies phase nesting and each draw captures its
       // effective phase. This marker performs no graphics-memory operation.
       if(command.bytes.size()!=sizeof(RenderPhaseMarkerCommand))return reject("Metal render phase marker malformed");
       RenderPhaseMarkerCommand marker;std::memcpy(&marker,command.bytes.data(),sizeof(marker));
-      postfx.ObserveMarker(marker.phase,marker.event);continue;
+      postfx.ObserveMarker(marker.phase,marker.event);return true;
     }
     if(command.type==CommandType::kRegisterVirtualResource) {
       if(!command.virtual_registration)return reject("Metal virtual registration lacks its captured identity");
       const auto& record=*command.virtual_registration;
       if(next.virtuals.ApplyCapturedRecord(record))next.Release(record.resource);
-      continue;
+      return true;
     }
     if(command.type==CommandType::kReleaseResource) {
       ReleaseResourceCommand release{};std::memcpy(&release,command.bytes.data(),sizeof(release));
       EraseNativeReflectionRegistration(reflections,release.resource);
       next.virtuals.Erase(release.resource);next.Release(release.resource);
-      continue;
+      return true;
     }
     if(command.type==CommandType::kDrawPrimitive || command.type==CommandType::kDrawPrimitiveUp ||
        command.type==CommandType::kDrawIndexedPrimitive) {
@@ -716,7 +721,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
           claim(next.surfaces.at(pass.depth->view.surface.id).owner);
         pass.commands.push_back(std::move(draw));r::AppendPass(*plan,std::move(pass));
       }
-      continue;
+      return true;
     }
     if(command.type==CommandType::kDepthSurfaceHandoff) {
       if(command.bytes.size()!=sizeof(DepthSurfaceHandoffCommand)||!command.depth_handoff_source)
@@ -762,7 +767,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
       r::Pass pass;pass.depth=depth;pass.stencil=stencil;pass.commands.push_back(std::move(draw));
       r::AppendPass(*plan,std::move(pass));next.contents.insert(depth.view);next.contents.insert(stencil.view);claim(destination);
-      continue;
+      return true;
     }
     if(command.type==CommandType::kResolve) {
       if(command.bytes.size()!=sizeof(ResolveCommand)||!command.resolve_destination)
@@ -773,7 +778,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       if(resolve.parameters_valid&&(resolve.flags&0x300u))
         return reject("Metal resolve-clear packing overrides are unrepresentable");
       GuestSurfaceView guest_view;
-      if(!DecodeGuestSurfaceView(resolve.source,depth,guest_view))return reject("Metal resolve guest sample view invalid");
+      const auto source_storage=NativeSurfaceStorageOf(resolve.source);
+      const bool guest_placement=DecodeGuestSurfaceView(resolve.source,depth,guest_view);
+      if(source_storage==NativeSurfaceStorage::Invalid||(!guest_placement&&source_storage!=NativeSurfaceStorage::PrivateTarget))
+        return reject("Metal resolve sample storage invalid");
       const auto* writer=placement_owner(resolve.source,depth);
       const GuestSurfaceView content_view=writer?writer->view:guest_view;
       auto source_surface=writer?next.surfaces.at(writer->surface).owner:surface_for(resolve.source,depth);
@@ -786,7 +794,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       auto& destination=next.textures.at(resource->generation);
       const auto& storage=*destination.owner;const auto& metadata=*destination.description;
       const bool current_source=source_record.is_reflection?
-          HasCurrentNativeReflectionCaptureContent(source_record.capture,frame_identity):writer!=nullptr;
+          HasCurrentNativeReflectionCaptureContent(source_record.capture,frame_identity):
+          source_storage==NativeSurfaceStorage::PrivateTarget?source_record.materialized_serial!=0:writer!=nullptr;
       if(!current_source||!next.contents.contains(source_view)) {
         // The title can request a reflection before its first capture, or skip
         // refreshing one on later frames. Preserve the explicitly initialized
@@ -797,7 +806,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
             resolve.destination_slice_or_face,source_view.aspect};
         if((source_record.is_reflection||metadata.is_reflection)&&
            next.contents.contains(preserved_view)) {
-          if(!resolve_clears(command,resolve))return false;continue;
+          if(!resolve_clears(command,resolve))return false;return true;
         }
         std::string aliases;
         for(const auto& [id,record]:next.surfaces)if(record.descriptor.address==resolve.source.address) {
@@ -904,7 +913,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
         if(!resolve.destination_level&&!resolve.destination_slice_or_face)destination.depth_resolved=true;
       }
       if(!resolve_clears(command,resolve))return false;
-      continue;
+      return true;
     }
     if(command.type!=CommandType::kClear) {
       error=fmt::format("Metal live command {} still needs CPU frame lowering",uint32_t(command.type));
@@ -926,6 +935,19 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       if((clear.flags&0x10u) && !clear_surface(surface,r::Aspect::Depth,clear,0))return false;
       if((clear.flags&0x20u) && !clear_surface(surface,r::Aspect::Stencil,clear,0))return false;
     }
+    return true;
+    };
+    if(!lower_command()) {
+      if(!diagnostic_scan)return false;
+      if(scan_errors.size()<32&&scan_errors.insert(error).second)
+        REXLOG_WARN("gta4-metal-command-scan: provisional cmd={} type={} reason={}",
+            diagnostic_command_index_,uint32_t(command.type),error);
+      error.clear();
+    }
+  }
+  if(diagnostic_scan) {
+    REXLOG_INFO("gta4-metal-command-scan: inspected={} unique-errors={} submitted=false",command_index,scan_errors.size());
+    return false;
   }
   if(present.device) {
     if(!source)return reject("Metal presentation source resource missing");

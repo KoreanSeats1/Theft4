@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <map>
+#include <cstdio>
 
 namespace theft4::metal {
 namespace {
@@ -54,6 +55,7 @@ struct FrameAdapter::Impl {
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
   FrameResourceStats stats;
+  std::set<std::string> logged_preparation_errors;
   explicit Impl(Renderer& r):renderer(r),draws(r),host(r){}
   void Forget(render::SurfaceKey key) {
     for(auto it=contents.begin();it!=contents.end();) {
@@ -273,6 +275,15 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
   struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;bool combined_depth_stencil;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
+  size_t preparation_errors=0;std::string first_preparation_error;
+  const auto failed_preparation=[&](uint64_t vertex,uint64_t fragment) {
+    ++preparation_errors;if(first_preparation_error.empty())first_preparation_error=error;
+    const auto key=std::to_string(vertex)+":"+std::to_string(fragment)+":"+error;
+    if(impl_->logged_preparation_errors.size()<32&&impl_->logged_preparation_errors.insert(key).second)
+      std::fprintf(stderr,"gta4-metal-preflight: vs=%016llx ps=%016llx reason=%s submitted=false\n",
+          (unsigned long long)vertex,(unsigned long long)fragment,error.c_str());
+    error.clear();
+  };
   for(const auto& command:plan->commands) {
     if(const auto* copy=std::get_if<render::ImageCopy>(&command)) {
       auto source=impl_->View(copy->source,error),destination=impl_->View(copy->destination,error);
@@ -292,19 +303,27 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
           clear->color,clear->depth_value,clear->stencil_value});continue;
       }
       if(const auto* host=std::get_if<render::HostDraw>(&command)) {
-        Draw draw;if(!impl_->PrepareHost(*host,prepared.descriptor,draw,error))return {};
+        Draw draw;if(!impl_->PrepareHost(*host,prepared.descriptor,draw,error)) {failed_preparation(0,uint64_t(host->program));continue;}
         prepared.commands.push_back(std::move(draw));continue;
       }
       const auto& item=std::get<render::FrameDraw>(command);
-      auto base=impl_->draws.Realize(item.capture,error);if(!base)return {};
+      auto base=impl_->draws.Realize(item.capture,error);
+      const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
+      if(!base){fail_draw();continue;}
       std::array<id<MTLTexture>,26> produced{};
+      bool inputs_valid=true;
       for(size_t slot=0;slot<produced.size();++slot)if(item.produced[slot]) {
-        produced[slot]=impl_->SampledView(*item.produced[slot],error);if(!produced[slot])return {};
+        produced[slot]=impl_->SampledView(*item.produced[slot],error);if(!produced[slot]){inputs_valid=false;break;}
       }
-      Draw draw=*base;if(!impl_->draws.BindProduced(*item.capture,produced,draw,error))return {};
+      if(!inputs_valid){fail_draw();continue;}
+      Draw draw=*base;if(!impl_->draws.BindProduced(*item.capture,produced,draw,error)){fail_draw();continue;}
       prepared.commands.push_back(std::move(draw));
     }
     ready.push_back(std::move(prepared));
+  }
+  if(preparation_errors) {
+    error=first_preparation_error+" ("+std::to_string(preparation_errors)+" draw preparations failed; frame not submitted)";
+    return {};
   }
   auto frame=impl_->renderer.BeginFrame(error);if(!frame)return {};
   for(const auto& command:ready) {

@@ -608,6 +608,19 @@ struct Probe {
     Require(cold.surface_creates==3&&cold.surface_creates==warm.surface_creates&&cold.view_creates==warm.view_creates&&
       immutable.buffer_creates==warmImmutable.buffer_creates&&immutable.uploaded_bytes==warmImmutable.uploaded_bytes&&
       pipelines==adapter.PipelineCount());
+    // Report every shader preparation failure in a batch, including later
+    // draws, while proving no clear/copy/draw from that rejected batch ran.
+    auto invalid_shaders=std::make_shared<r::FramePlan>(*plan);
+    auto& invalid_pass=std::get<r::Pass>(invalid_shaders->commands.front());
+    const auto original_draw=std::get<r::FrameDraw>(invalid_pass.commands.front());
+    for(uint64_t hash:{0xffffffffffffffe1ull,0xffffffffffffffe2ull}) {
+      auto missing=std::make_shared<r::Capture>(*original_draw.capture);missing->draw.pipeline.vertex.hash=hash;
+      invalid_pass.commands.push_back(r::FrameDraw{missing,{}});
+    }
+    invalid_pass.commands.push_back(original_draw);
+    Require(!adapter.Submit(invalid_shaders,error));
+    Require(error.find("2 draw preparations failed")!=std::string::npos);error.clear();oracle(firstExpected);
+    invalid_shaders.reset();
     auto next=std::make_shared<r::FramePlan>();next->sequence=2;next->surfaces={layered};next->output=outputView;
     r::Pass continued;continued.colors[0]=attachment(outputView,r::Load::Load);
     continued.commands.push_back(r::FrameDraw{capture({0,0,1,0.5f},false,true,1),{}});next->commands={continued};
@@ -619,7 +632,7 @@ struct Probe {
     [results addObject:@{@"case":@"ordered_game_frame_passes",@"passed":@YES,
       @"msaa_store_and_resolve":@YES,@"gpu_produced_fetch":@YES,@"mip_and_array_slice":@YES,
       @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
-      @"gpu_retains_retired_targets":@YES,@"synthetic_validation_geometry":@YES}];
+      @"gpu_retains_retired_targets":@YES,@"all_preparation_errors_before_submission":@YES,@"synthetic_validation_geometry":@YES}];
   }
   void FloatPairTargets() {
     std::array<id<MTLTexture>,4> targets;

@@ -126,6 +126,7 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #include "native_probe_region.h"
 #include "native_pipeline_policy.h"
 #include "native_surface_format.h"
+#include "native_surface_storage.h"
 #include "native_shader_realization.h"
 #include "native_pipeline_compiler.h"
 #include "native_pipeline_recipe.h"
@@ -36232,6 +36233,14 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
           }
           ++index;
         }
+      }
+      static bool commands_scanned=false;
+      if(!commands_scanned) {
+        commands_scanned=true;
+        const auto failed_index=diagnostic_command_index_;
+        std::string diagnostic_error;
+        PublishNativeMetalFrame(present,present_source,environmental_data,diagnostic_error,true);
+        diagnostic_command_index_=failed_index;
       }
     }
 #if defined(THEFT4_LAB_BUILD) && defined(__APPLE__) && defined(__MACH__)

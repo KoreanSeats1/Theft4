@@ -1910,7 +1910,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool native_metal_worker_open_succeeded_ = false;
   bool PublishNativeMetalFrame(const PresentCommand&,
       const std::shared_ptr<const NativeTextureResource>&,
-      const std::shared_ptr<const EnvironmentalDataV1>&,std::string& error);
+      const std::shared_ptr<const EnvironmentalDataV1>&,std::string& error,bool diagnostic_scan=false);
   bool PrepareNativeMetalFetch(NativeResourceView<NativeTextureResource>,
       const xenos::xe_gpu_texture_fetch_t&,const NativeMetalFrameState&,
       theft4::render::HostFetch&,std::string& error);

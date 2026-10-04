@@ -1,6 +1,7 @@
 #include "theft4_draw_capture.h"
 #include "theft4_render_plan_source.h"
 #include "native_surface_format.h"
+#include "native_surface_storage.h"
 #include "native_pipeline_policy.h"
 #include <bit>
 #include <algorithm>
@@ -110,6 +111,16 @@ Capture Fixture() {
 int main(int argc, char** argv) {
   try {
     namespace native=rex::graphics::gta4_native;
+    struct StorageDescriptor {uint32_t handle,address,base,width,height,sample_type;};
+    StorageDescriptor private_depth{0x40226980,0x10000,0x20000,1208,680,2};
+    Require(native::NativeSurfaceStorageOf(private_depth)==native::NativeSurfaceStorage::PrivateTarget &&
+        (private_depth.base&0x3fff)==0,"Private depth target lost independent backing storage");
+    auto guest_depth=private_depth;guest_depth.base|=0x50;
+    Require(native::NativeSurfaceStorageOf(guest_depth)==native::NativeSurfaceStorage::GuestPlacement,
+        "Valid guest placement lost its alias journal");
+    private_depth.sample_type=1;
+    Require(native::NativeSurfaceStorageOf(private_depth)==native::NativeSurfaceStorage::Invalid,
+        "Malformed private sample topology was accepted");
     const std::array<VkFormat,4> float_pairs{VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT,
         VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R32G32_SFLOAT};
     Require(native::NativeSurfaceFormat(0x2D22ABA5,false)==VK_FORMAT_R32G32_SFLOAT &&

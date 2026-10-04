@@ -784,10 +784,15 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       const bool current_source=source_record.is_reflection?
           HasCurrentNativeReflectionCaptureContent(source_record.capture,frame_identity):writer!=nullptr;
       if(!current_source||!next.contents.contains(source_view)) {
-        // First-use fallback initialization is not a successful resolve. Only a
-        // completed reflection texture may survive a frame without a new capture.
-        if(destination.resolved.contains({resolve.destination_level,resolve.destination_slice_or_face})&&
-           (source_record.is_reflection||metadata.is_reflection)) {
+        // The title can request a reflection before its first capture, or skip
+        // refreshing one on later frames. Preserve the explicitly initialized
+        // destination until a real capture exists. This is a deferred update,
+        // not a successful resolve: do not advance resolved/depth/content serials.
+        // Ordinary scene textures still require a current written source.
+        const r::SurfaceView preserved_view{storage.key,resolve.destination_level,
+            resolve.destination_slice_or_face,source_view.aspect};
+        if((source_record.is_reflection||metadata.is_reflection)&&
+           next.contents.contains(preserved_view)) {
           if(!resolve_clears(command,resolve))return false;continue;
         }
         std::string aliases;

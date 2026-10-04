@@ -617,6 +617,36 @@ struct Probe {
       @"load_preserves_previous_pass_and_frame":@YES,@"warm_targets_and_uploads_reused":@YES,
       @"gpu_retains_retired_targets":@YES,@"synthetic_validation_geometry":@YES}];
   }
+  void DeferredReflectionContent() {
+    namespace r=theft4::render;
+    FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
+    auto destination=std::make_shared<r::Surface>();destination->key={80,1};
+    destination->width=W;destination->height=H;destination->format=r::Format::RGBA8Unorm;
+    auto source=std::make_shared<r::Surface>(*destination);source->key={81,1};
+    const r::SurfaceView dst{destination->key,0,0,r::Aspect::Color},src{source->key,0,0,r::Aspect::Color};
+    const auto clear=[](r::SurfaceView view,std::array<double,4> color) {
+      r::Pass pass;r::Attachment a;a.view=view;a.load=r::Load::Clear;a.store=r::Store::Store;
+      a.clear_color=color;pass.colors[0]=a;return pass;
+    };
+    auto first=std::make_shared<r::FramePlan>();first->sequence=1;first->surfaces={destination};first->output=dst;
+    first->commands={clear(dst,{0,0,0,0})};
+    auto initialized=adapter.Submit(first,error);Require(bool(initialized));Require(initialized.Wait(error));
+    auto pixels=renderer.ReadRGBA8(adapter.Output(*first,error),error);
+    Require(pixels.size()==W*H*4&&std::all_of(pixels.begin(),pixels.end(),[](uint8_t v){return v==0;}));
+    auto captured=std::make_shared<r::FramePlan>();captured->sequence=2;captured->surfaces={source,destination};captured->output=dst;
+    r::ImageCopy copy;copy.source=src;copy.destination=dst;copy.extent={W,H};
+    captured->commands={clear(src,{0,1,0,1}),copy};
+    auto updated=adapter.Submit(captured,error);Require(bool(updated));Require(updated.Wait(error));
+    pixels=renderer.ReadRGBA8(adapter.Output(*captured,error),error);Require(pixels.size()==W*H*4);
+    for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==0&&pixels[i+1]==255&&pixels[i+2]==0&&pixels[i+3]==255);
+    auto deferred=std::make_shared<r::FramePlan>();deferred->sequence=3;deferred->surfaces={source,destination};deferred->output=dst;
+    deferred->commands={clear(src,{1,0,0,1})};
+    auto retained=adapter.Submit(deferred,error);Require(bool(retained));Require(retained.Wait(error));
+    auto unchanged=renderer.ReadRGBA8(adapter.Output(*deferred,error),error);Require(unchanged==pixels);
+    [results addObject:@{@"case":@"deferred_reflection_content",@"passed":@YES,
+      @"first_use_transparent_black":@YES,@"later_capture_replaces_fallback":@YES,
+      @"skipped_update_preserves_capture":@YES,@"synthetic_validation_geometry":@YES}];
+  }
   void SampledGameRanges() {
     namespace r=theft4::render;
     FrameAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -1037,7 +1067,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,
@@ -1064,7 +1094,7 @@ bool PresentDirectMetalPreview(CAMetalLayer* layer, NSString* libraries, NSStrin
       FrameAdapter adapter(probe.renderer);probe.Require(adapter.Open(libraries.UTF8String,probe.error));
       auto output=std::make_shared<r::Surface>();output->key={1,1};
       output->width=output->height=256;output->format=r::Format::BGRA8Unorm;
-      auto plan=std::make_shared<r::FramePlan>();plan->surfaces={output};
+      auto plan=std::make_shared<r::FramePlan>();plan->sequence=1;plan->surfaces={output};
       plan->output=r::SurfaceView{output->key,0,0,r::Aspect::Color};
       r::Attachment attachment;attachment.view=*plan->output;
       attachment.load=r::Load::Clear;attachment.store=r::Store::Store;

@@ -7,6 +7,7 @@ struct FrameTiming {
   double validation_ms=0,preparation_ms=0,encoding_ms=0;
   uint64_t commands=0,draws=0,pipelines_created=0,buffers_created=0,textures_created=0,uploaded_bytes=0;
   uint64_t avoided_attachment_stores=0;
+  uint64_t binding_storage_reuses=0,binding_storage_fresh=0;
   EncoderStats encoder;
 };
 struct FrameResourceStats {

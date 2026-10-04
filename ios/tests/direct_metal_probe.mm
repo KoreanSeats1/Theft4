@@ -1,3 +1,4 @@
+#include <source_location>
 #include "direct_metal_probe.h"
 #include "theft4_native_metal.h"
 #include "theft4_metal_shader_store.h"
@@ -37,8 +38,8 @@ struct Probe {
   NSString* output;
   std::string error;
   NSMutableArray* results = [NSMutableArray new];
-  void Require(bool truth) {
-    if (!truth) throw std::runtime_error(error.empty() ? "Metal validation assertion" : error);
+  void Require(bool truth,std::source_location location=std::source_location::current()) {
+    if (!truth) throw std::runtime_error(error.empty() ? std::string("Metal validation assertion at line ")+std::to_string(location.line()) : error);
   }
   Shader ShaderFor(ShaderKey key, Stage stage, uint32_t spec = 0) {
     if (!shaders.CatalogSize()) Require(shaders.Open(libraries.UTF8String,error));
@@ -892,6 +893,7 @@ struct Probe {
     const auto cold=adapter.ImmutableStats();Require(adapter.PipelineCount()==2);
     receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
     Require(adapter.ImmutableStats().buffer_creates==cold.buffer_creates&&adapter.PipelineCount()==2);
+    Require(adapter.LastTiming().binding_storage_reuses==2&&adapter.LastTiming().binding_storage_fresh==0);
     auto invalid=std::make_shared<r::FramePlan>(*plan);
     std::get<r::HostDraw>(std::get<r::Pass>(invalid->commands.back()).commands[0]).constants.length=43;
     Require(!adapter.Submit(invalid,error));error.clear();check(false);
@@ -1122,6 +1124,40 @@ struct Probe {
         width:W height:H mipmapped:NO];descriptor.usage=MTLTextureUsageRenderTarget;
     descriptor.storageMode=MTLStorageModePrivate;
     auto target=renderer.Texture(descriptor,error);Require(target);
+    // Strip/list share the compiled topology class, while draw topology stays exact.
+    auto strip=*immutable;strip.draw.primitive=r::Primitive::TriangleStrip;Draw strip_draw;
+    Require(adapter.Prepare(strip,strip_draw,error));
+    Require(strip_draw.pipeline==prepared->pipeline&&strip_draw.primitive==MTLPrimitiveTypeTriangleStrip);
+    auto tests=*immutable;tests.draw.pipeline.depth=tests.draw.pipeline.stencil=r::Format::Depth32FloatStencil8;
+    tests.draw.pipeline.depth_test=true;tests.draw.pipeline.depth_compare=r::Compare::Less;
+    Draw less,greater,stencil_reject,stencil_accept;Require(adapter.Prepare(tests,less,error));
+    tests.draw.pipeline.depth_compare=r::Compare::GreaterEqual;Require(adapter.Prepare(tests,greater,error));
+    tests.draw.pipeline.stencil_test=true;tests.draw.pipeline.front.compare=tests.draw.pipeline.back.compare=r::Compare::Equal;
+    tests.draw.stencil_front_reference=tests.draw.stencil_back_reference=1;Require(adapter.Prepare(tests,stencil_reject,error));
+    tests.draw.pipeline.front.compare=tests.draw.pipeline.back.compare=r::Compare::Always;Require(adapter.Prepare(tests,stencil_accept,error));
+    Require(less.pipeline->state==greater.pipeline->state&&greater.pipeline->state==stencil_reject.pipeline->state&&
+      stencil_reject.pipeline->state==stencil_accept.pipeline->state&&less.pipeline->depth_stencil!=greater.pipeline->depth_stencil);
+    auto depth_descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8 width:W height:H mipmapped:NO];
+    depth_descriptor.usage=MTLTextureUsageRenderTarget;depth_descriptor.storageMode=MTLStorageModePrivate;
+    auto depth_texture=renderer.Texture(depth_descriptor,error);Require(depth_texture);
+    const auto verify_tests=[&](const Draw& packet,bool visible) {
+      auto f=renderer.BeginFrame(error);Require(bool(f));auto p=Pass(target,nil,depth_texture);
+      p.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);p.depthAttachment.clearDepth=0.5;
+      p.stencilAttachment.texture=depth_texture;p.stencilAttachment.loadAction=MTLLoadActionClear;
+      p.stencilAttachment.storeAction=MTLStoreActionDontCare;p.stencilAttachment.clearStencil=0;
+      Require(f.BeginPass(p,error));Require(f.Encode(packet,error));Require(f.EndPass(error));
+      auto receipt=f.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+      auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+      for(size_t i=0;i<pixels.size();i+=4)Require(visible ? pixels[i]>0&&pixels[i+3]>0 : pixels[i]==0&&pixels[i+3]==0);
+    };
+    verify_tests(less,false);verify_tests(greater,true);verify_tests(stencil_reject,false);verify_tests(stencil_accept,true);
+    // The separate depth object also survives shader/PSO changes with exact state.
+    tests.draw.pipeline.blends[0].write_mask=15;Draw another_raster;
+    Require(adapter.Prepare(tests,another_raster,error));
+    Require(another_raster.pipeline->state!=stencil_accept.pipeline->state&&
+      another_raster.pipeline->depth_stencil==stencil_accept.pipeline->depth_stencil);
+    another_raster={};
+    strip={};tests={};strip_draw={};less={};greater={};stencil_reject={};stencil_accept={};
     auto frame=renderer.BeginFrame(error);Require(bool(frame));auto pass=Pass(target,nil,nil);
     pass.colorAttachments[0].clearColor=MTLClearColorMake(0.1,0.2,0.3,0.4);
     Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));
@@ -1153,6 +1189,7 @@ struct Probe {
     for(size_t i=0;i<pixels.size();++i)Require(std::abs(int(pixels[i])-int(expected[i%4]))<=1);
     [results addObject:@{@"case":@"immutable_game_draw_plan",@"passed":@YES,
         @"warm_pipeline_and_resource_reuse":@YES,@"indexed_range_derived":@YES,
+        @"shared_render_pipeline_preserves_depth_and_stencil_tests":@YES,@"strip_and_list_share_topology_class":@YES,
         @"rgba_write_mask_on_bgra":@YES,@"constant_color_blend":@YES,
         @"retired_before_submission":@YES,@"state_reuse_after_clear_and_new_pass":@YES,
         @"pass_shape_rejected_after_format_change":@YES,@"active_pass_descriptor_is_immutable":@YES,

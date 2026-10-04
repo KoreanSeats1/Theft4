@@ -76,7 +76,7 @@ bool HostShaderStore::Bind(const std::string& name,std::span<const HostInput> in
   if(m->constant_bytes&&(!constants.buffer||constants.offset%16||constants.offset>constants.buffer.length||
      constants.length>constants.buffer.length-constants.offset||m->constant_bytes>constants.length))
     return Fail(error,"Incomplete host utility constants");
-  std::vector<TextureBinding> textures;std::vector<SamplerBinding> samplers;
+  std::array<const HostInput*,16> admitted{};size_t count=0;
   for(const auto& binding:m->textures) {
     const HostInput* input=nullptr;
     for(const auto& i:inputs)if(i.binding==binding.binding) {
@@ -84,15 +84,18 @@ bool HostShaderStore::Bind(const std::string& name,std::span<const HostInput> in
     }
     if(!input||!input->texture||input->texture.textureType!=binding.type||!input->sampler)
       return Fail(error,"Invalid host utility texture or sampler type");
-    textures.push_back({m->stage,binding.texture_index,input->texture});
-    samplers.push_back({m->stage,binding.sampler_index,input->sampler});
+    admitted[count++]=input;
   }
   // Replace just this stage after complete admission; a failed binding leaves
   // the previously admitted draw unchanged.
   std::erase_if(draw.textures,[&](const auto& b){return b.stage==m->stage;});
   std::erase_if(draw.samplers,[&](const auto& b){return b.stage==m->stage;});
-  draw.textures.insert(draw.textures.end(),textures.begin(),textures.end());
-  draw.samplers.insert(draw.samplers.end(),samplers.begin(),samplers.end());
+  draw.textures.reserve(draw.textures.size()+count);draw.samplers.reserve(draw.samplers.size()+count);
+  for(size_t i=0;i<count;++i) {
+    const auto& binding=m->textures[i];const auto* input=admitted[i];
+    draw.textures.push_back({m->stage,binding.texture_index,input->texture});
+    draw.samplers.push_back({m->stage,binding.sampler_index,input->sampler});
+  }
   if(m->constant_bytes)draw.constants[0]=constants;error.clear();return true;
 }
 }

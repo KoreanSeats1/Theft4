@@ -1,6 +1,7 @@
 #include "native_transactional_map.h"
 #include "native_shared_frame_arena.h"
 #include "theft4_frame_plan.h"
+#include "theft4_vector_storage_pool.h"
 #include <cassert>
 #include <algorithm>
 #include <chrono>
@@ -21,6 +22,27 @@ struct ThrowingRecord {
   ThrowingRecord()=default;
   ThrowingRecord(const ThrowingRecord& o):value(o.value){if(fail)throw std::runtime_error("copy rejected");}
 };
+static void BindingStorageChecks(){
+  using Ref=std::shared_ptr<const int>;
+  theft4::VectorStoragePool<Ref,Ref> pool(4096,2);
+  std::vector<Ref> a,b;a.reserve(8);b.reserve(4);
+  auto owner=std::make_shared<const int>(42);std::weak_ptr<const int> weak=owner;
+  a.push_back(owner);b.push_back(owner);owner.reset();
+  auto* address=a.data();pool.Recycle(a,b);assert(weak.expired());
+  assert(pool.Entries()==1&&pool.Bytes()==12*sizeof(Ref));
+  auto entry=pool.Acquire();assert(entry.first.empty()&&entry.second.empty());
+  assert(entry.first.data()==address&&entry.first.capacity()==8&&entry.second.capacity()==4);
+  // A separately live packet cannot be reused, even after many batches.
+  entry.first.push_back(std::make_shared<const int>(99));auto pinned=entry.first.front();
+  for(int i=0;i<1000;++i){auto scratch=pool.Acquire();scratch.first.reserve(8);
+    scratch.first.push_back(std::make_shared<const int>(i));pool.Recycle(scratch.first,scratch.second);}
+  assert(*entry.first.front()==99&&entry.first.front()==pinned);
+  pool.Recycle(entry.first,entry.second);assert(pool.Entries()==2);
+  auto overflow=pool.Acquire();overflow.first.reserve(4097/sizeof(Ref)+1);
+  pool.Recycle(overflow.first,overflow.second);assert(overflow.first.empty()&&pool.Bytes()<=4096);
+  theft4::VectorStoragePool<Ref,Ref> disabled(0,0);
+  disabled.Recycle(overflow.first,overflow.second);assert(disabled.Entries()==0);
+}
 static void TransactionChecks(){
   NativeTransactionalMap<uint64_t,Record> registry;
   std::map<uint64_t,Record> expected;
@@ -120,4 +142,4 @@ static void Benchmark(){
   std::cout<<"draws=4000 capture_bytes="<<sizeof(r::Capture)<<" allocation_ms="<<ordinary[20]<<" arena_ms="<<pooled[20]<<" pages="<<arena.page_allocations<<" fallbacks="<<arena.fallback_objects<<" checksum="<<checksum<<"\n";
 
 }
-int main(int argc,char** argv){TransactionChecks();ArenaChecks();AttachmentChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}
+int main(int argc,char** argv){BindingStorageChecks();TransactionChecks();ArenaChecks();AttachmentChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}

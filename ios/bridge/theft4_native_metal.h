@@ -146,6 +146,10 @@ class Renderer {
   std::shared_ptr<const Pipeline> MakeDepthPipeline(
       const Shader& vertex, MTLRenderPipelineDescriptor* fixed,
       MTLDepthStencilDescriptor* depth, std::string& error);
+  // Depth/stencil tests are a separate Metal object; retain the exact render
+  // pipeline and reflected resource ABI when only those tests change.
+  std::shared_ptr<const Pipeline> MakeDepthVariant(const Pipeline& base,
+      MTLDepthStencilDescriptor* depth,std::string& error);
   Frame BeginFrame(std::string& error);
   // Readback is for validation/capture, never part of the normal draw path.
   std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error,

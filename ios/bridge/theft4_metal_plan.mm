@@ -50,9 +50,16 @@ ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
 }
 }
 PlanAdapter::PlanAdapter(Renderer& renderer):renderer_(renderer),shaders_(renderer),resources_(renderer){}
+Draw PlanAdapter::AcquireDrawStorage() {
+  auto storage=binding_storage_.Acquire();Draw draw;
+  draw.textures=std::move(storage.first);draw.samplers=std::move(storage.second);return draw;
+}
+void PlanAdapter::RecycleDrawStorage(Draw& draw) noexcept {
+  binding_storage_.Recycle(draw.textures,draw.samplers);
+}
 bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
   if(!shaders_.Open(libraries,error))return false;
-  pipelines_.clear();prepared_.clear();images_.clear();return true;
+  pipelines_.clear();render_pipelines_.clear();prepared_.clear();images_.clear();return true;
 }
 MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
   using F=render::Format;
@@ -74,6 +81,21 @@ MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
     case F::ASTC4x4:return MTLPixelFormatASTC_4x4_LDR;case F::ASTC4x4Srgb:return MTLPixelFormatASTC_4x4_sRGB;
     default:return MTLPixelFormatInvalid;
   }
+}
+namespace {
+MTLDepthStencilDescriptor* DepthDescriptor(const render::Pipeline& p) {
+  auto depth=[MTLDepthStencilDescriptor new];depth.depthCompareFunction=p.depth_test ? MTLCompareFunction(p.depth_compare) : MTLCompareFunctionAlways;
+  depth.depthWriteEnabled=p.depth_write;
+  if(p.stencil_test) {
+    const auto stencil=[](const render::Stencil& s) {
+      auto d=[MTLStencilDescriptor new];d.stencilCompareFunction=MTLCompareFunction(s.compare);
+      d.stencilFailureOperation=MTLStencilOperation(s.fail);d.depthStencilPassOperation=MTLStencilOperation(s.pass);
+      d.depthFailureOperation=MTLStencilOperation(s.depth_fail);d.readMask=s.read_mask;d.writeMask=s.write_mask;return d;
+    };
+    depth.frontFaceStencil=stencil(p.front);depth.backFaceStencil=stencil(p.back);
+  }
+  return depth;
+}
 }
 std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer& renderer,const render::Pipeline& p,
     render::Primitive primitive,const Shader& vertex,const Shader* pixel,std::string& error) {
@@ -99,20 +121,14 @@ std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer& renderer,const rend
     a.rgbBlendOperation=MTLBlendOperation(b.rgb);a.alphaBlendOperation=MTLBlendOperation(b.alpha);a.writeMask=WriteMask(b.write_mask);
   }
   descriptor.depthAttachmentPixelFormat=PlanAdapter::PixelFormat(p.depth);descriptor.stencilAttachmentPixelFormat=PlanAdapter::PixelFormat(p.stencil);
-  auto depth=[MTLDepthStencilDescriptor new];depth.depthCompareFunction=p.depth_test ? MTLCompareFunction(p.depth_compare) : MTLCompareFunctionAlways;
-  depth.depthWriteEnabled=p.depth_write;
-  if(p.stencil_test) {
-    const auto stencil=[](const render::Stencil& s) {
-      auto d=[MTLStencilDescriptor new];d.stencilCompareFunction=MTLCompareFunction(s.compare);
-      d.stencilFailureOperation=MTLStencilOperation(s.fail);d.depthStencilPassOperation=MTLStencilOperation(s.pass);
-      d.depthFailureOperation=MTLStencilOperation(s.depth_fail);d.readMask=s.read_mask;d.writeMask=s.write_mask;return d;
-    };
-    depth.frontFaceStencil=stencil(p.front);depth.backFaceStencil=stencil(p.back);
-  }
+  auto depth=DepthDescriptor(p);
   return pixel ? renderer.MakePipeline(vertex,*pixel,descriptor,depth,error) : renderer.MakeDepthPipeline(vertex,descriptor,depth,error);
 }
 std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline& source,render::Primitive primitive,std::string& error) {
   const auto& p=source;
+  // Metal compiles topology classes; list versus strip remains in each Draw.
+  if(primitive==render::Primitive::LineStrip)primitive=render::Primitive::Line;
+  if(primitive==render::Primitive::TriangleStrip)primitive=render::Primitive::Triangle;
   if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
   const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
   if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
@@ -129,12 +145,20 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   // Borrow the immutable declaration for hits. The previous value argument
   // and owning map lookup copied its attribute vector twice on every draw.
   if(auto it=pipelines_.find(PipelineLookup{*effective,primitive});it!=pipelines_.end()){error.clear();return it->second;}
+  render::Pipeline raster=*effective;
+  raster.depth_test=false;raster.depth_write=false;raster.stencil_test=false;
+  raster.depth_compare=render::Compare::Always;raster.front={};raster.back={};
+  if(auto found=render_pipelines_.find(PipelineLookup{raster,primitive});found!=render_pipelines_.end()) {
+    auto result=renderer_.MakeDepthVariant(*found->second,DepthDescriptor(*effective),error);
+    if(result)pipelines_.emplace(std::pair{*effective,primitive},result);return result;
+  }
   auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex,vs_specialization,error);
   if(!vertex.function)return {};
   Shader pixel{};
   if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,ps_specialization,error);if(!pixel.function)return {};}
   auto result=BuildFixedPipeline(renderer_,*effective,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
-  if(result)pipelines_.emplace(std::pair{*effective,primitive},result);return result;
+  if(result){render_pipelines_.emplace(std::pair{std::move(raster),primitive},result);
+    pipelines_.emplace(std::pair{*effective,primitive},result);}return result;
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
   if(!b.source)return {};
@@ -222,7 +246,8 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
   return PrepareValidated(capture,maximum,draw,error);
 }
 bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,Draw& draw,std::string& error) {
-  const auto& source=capture.draw;Draw result;result.maximum_vertex=NSUInteger(maximum);
+  const auto& source=capture.draw;Draw result=AcquireDrawStorage();
+  theft4::StorageCleanup cleanup{[&]{RecycleDrawStorage(result);}};result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
   result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
   result.vertex_count=source.vertex_count;result.instance_count=source.instances;result.base_vertex=source.base_vertex;

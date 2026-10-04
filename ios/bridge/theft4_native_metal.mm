@@ -44,6 +44,22 @@ struct Renderer::Impl {
   };
   struct ClearPipeline { id<MTLRenderPipelineState> pipeline;id<MTLDepthStencilState> depth; };
   std::map<ClearKey,ClearPipeline> clears;
+  std::map<std::array<uint32_t,16>,id<MTLDepthStencilState>> depth_states;
+  id<MTLDepthStencilState> DepthState(MTLDepthStencilDescriptor* descriptor) {
+    std::array<uint32_t,16> key{};key[0]=uint32_t(descriptor.depthCompareFunction);
+    key[1]=descriptor.depthWriteEnabled;size_t n=2;
+    for(auto stencil:{descriptor.frontFaceStencil,descriptor.backFaceStencil}) {
+      key[n++]=bool(stencil);
+      key[n++]=uint32_t(stencil.stencilCompareFunction);
+      key[n++]=uint32_t(stencil.stencilFailureOperation);
+      key[n++]=uint32_t(stencil.depthFailureOperation);
+      key[n++]=uint32_t(stencil.depthStencilPassOperation);
+      key[n++]=stencil.readMask;key[n++]=stencil.writeMask;
+    }
+    if(auto found=depth_states.find(key);found!=depth_states.end())return found->second;
+    auto state=[device newDepthStencilStateWithDescriptor:descriptor];
+    if(state)depth_states.emplace(key,state);return state;
+  }
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   id<MTLCommandQueue> queue = nil;
   dispatch_semaphore_t slots;
@@ -195,10 +211,18 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
   p->state = [Device() newRenderPipelineStateWithDescriptor:desc error:&e];
   if (!p->state) { error = Description(e); return {}; }
   if (depth) {
-    p->depth_stencil = [Device() newDepthStencilStateWithDescriptor:depth];
+    p->depth_stencil = impl_->DepthState(depth);
     if (!p->depth_stencil) { error = "Metal depth state creation failed"; return {}; }
   }
   return p;
+}
+std::shared_ptr<const Pipeline> Renderer::MakeDepthVariant(const Pipeline& base,
+    MTLDepthStencilDescriptor* depth,std::string& error) {
+  if(!Ready()||!base.state||base.state.device!=Device()||!depth){error="Invalid shared Metal render pipeline";return {};}
+  auto result=std::make_shared<Pipeline>(base);
+  result->depth_stencil=impl_->DepthState(depth);
+  if(!result->depth_stencil){error="Metal depth state creation failed";return {};}
+  error.clear();return result;
 }
 Frame Renderer::BeginFrame(std::string& error) {
   if (!Ready()) { error = "Direct Metal renderer is unavailable"; return {}; }

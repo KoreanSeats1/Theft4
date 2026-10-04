@@ -197,7 +197,8 @@ struct FrameAdapter::Impl {
       auto pipeline=BuildFixedPipeline(renderer,source.pipeline,render::Primitive::Triangle,vs,&ps,error);
       if(!pipeline)return false;it=host_pipelines.emplace(key,pipeline).first;
     }
-    Draw result;result.pipeline=it->second;result.vertex_count=3;
+    Draw result=draws.AcquireDrawStorage();
+    theft4::StorageCleanup cleanup{[&]{draws.RecycleDrawStorage(result);}};result.pipeline=it->second;result.vertex_count=3;
     id<MTLTexture> target=pass.depthAttachment.texture;
     if(!target)target=pass.stencilAttachment.texture;
     for(size_t i=0;i<4&&!target;++i)target=pass.colorAttachments[i].texture;
@@ -206,17 +207,17 @@ struct FrameAdapter::Impl {
     result.scissor={source.scissor[0],source.scissor[1],source.scissor[2],source.scissor[3]};
     result.stencil_reference=source.stencil_front_reference;result.stencil_back_reference=source.stencil_back_reference;
     result.blend_color=source.blend_color;
-    std::vector<HostInput> inputs;
+    std::array<HostInput,16> inputs{};size_t input_count=0;
     for(size_t slot=0;slot<source.fetches.size();++slot)if(info.textures&(1u<<slot)) {
       const auto& input=source.fetches[slot];
       auto texture=input.produced ? SampledView(*input.produced,error) : draws.ImageFor(input.image,error);
       if(!texture)return false;
       auto sampler=draws.SamplerFor(*input.sampler,error);if(!sampler)return false;
-      inputs.push_back({uint32_t(slot),texture,sampler});
+      inputs[input_count++]={uint32_t(slot),texture,sampler};
     }
     auto constants=info.constants ? draws.ConstantFor(source.constants,error) : BufferView{};
     if(info.constants&&!constants.buffer)return false;
-    if(!host.Bind(info.name,inputs,constants,result,error))return false;
+    if(!host.Bind(info.name,{inputs.data(),input_count},constants,result,error))return false;
     draw=std::move(result);return true;
   }
 };
@@ -239,6 +240,8 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   using Clock=std::chrono::steady_clock;
   const auto begin=Clock::now();
   const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
+  const auto before_bindings_reused=impl_->draws.binding_storage_.Hits();
+  const auto before_bindings_fresh=impl_->draws.binding_storage_.Misses();
   if(!plan){error="Missing ordered Metal frame plan";return {};}
   if(drawable) {
     if(!plan->output||*plan->output!=render::SurfaceView{target,0,0,render::Aspect::Color}) {
@@ -284,6 +287,10 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
   struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;bool combined_depth_stencil;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
+  theft4::StorageCleanup cleanup{[&]{
+    for(auto& command:ready)if(auto* pass=std::get_if<ReadyPass>(&command))
+      for(auto& item:pass->commands)if(auto* draw=std::get_if<Draw>(&item))impl_->draws.RecycleDrawStorage(*draw);
+  }};
   size_t preparation_errors=0;std::string first_preparation_error;
   const auto failed_preparation=[&](uint64_t vertex,uint64_t fragment) {
     ++preparation_errors;if(first_preparation_error.empty())first_preparation_error=error;
@@ -306,6 +313,9 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     }
     const auto& pass=std::get<render::Pass>(command);
     ReadyPass prepared{impl_->Pass(pass,error),{}};if(!prepared.descriptor)return {};
+    theft4::StorageCleanup pass_cleanup{[&]{
+      for(auto& item:prepared.commands)if(auto* draw=std::get_if<Draw>(&item))impl_->draws.RecycleDrawStorage(*draw);
+    }};
     for(size_t slot=0;slot<4;++slot)if(dead&(1u<<slot)){prepared.descriptor.colorAttachments[slot].storeAction=MTLStoreActionDontCare;++avoided_stores;}
     if(dead&16u){prepared.descriptor.depthAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
     if(dead&32u){prepared.descriptor.stencilAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
@@ -324,7 +334,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       if(draw_range_index>=draw_ranges.size()||draw_ranges[draw_range_index].capture!=item.capture.get()) {
         error="Immutable draw order changed after frame admission";return {};
       }
-      Draw draw;const bool base=impl_->draws.PrepareValidated(*item.capture,draw_ranges[draw_range_index++].maximum_vertex,draw,error);
+      Draw draw;theft4::StorageCleanup draw_cleanup{[&]{impl_->draws.RecycleDrawStorage(draw);}};const bool base=impl_->draws.PrepareValidated(*item.capture,draw_ranges[draw_range_index++].maximum_vertex,draw,error);
       const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
       if(!base){fail_draw();continue;}
       if(std::none_of(item.produced.begin(),item.produced.end(),[](const auto& v){return bool(v);})) {
@@ -373,6 +383,8 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
   timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;
   timing.avoided_attachment_stores=avoided_stores;
+  timing.binding_storage_reuses=impl_->draws.binding_storage_.Hits()-before_bindings_reused;
+  timing.binding_storage_fresh=impl_->draws.binding_storage_.Misses()-before_bindings_fresh;
   timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
   if(published)*published=std::move(final);
   return receipt;

@@ -2,6 +2,7 @@
 #include "theft4_render_plan.h"
 #include "theft4_metal_resources.h"
 #include "theft4_metal_shader_store.h"
+#include "theft4_vector_storage_pool.h"
 #include <map>
 #include <unordered_map>
 
@@ -22,7 +23,7 @@ class PlanAdapter {
   bool BindProduced(const render::Capture&,const std::array<id<MTLTexture>,26>&,
                     Draw&,std::string& error) const;
   render::IndexRangeCache& IndexRanges() { return index_ranges_; }
-  size_t PipelineCount() const { return pipelines_.size(); }
+  size_t PipelineCount() const { return render_pipelines_.size(); }
   size_t SamplerCount() const { return samplers_.size(); }
   ResourceCacheStats ResourceStats() const { return resources_.Stats(); }
   size_t RetireResources();
@@ -39,6 +40,9 @@ class PlanAdapter {
   // the SAME immutable capture in the SAME submission. Public Prepare remains
   // independently strict, and Metal packet validation still runs before encode.
   bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,Draw&,std::string& error);
+  Draw AcquireDrawStorage();
+  void RecycleDrawStorage(Draw& draw) noexcept;
+  theft4::VectorStoragePool<TextureBinding,SamplerBinding> binding_storage_;
   Renderer& renderer_;
   ShaderStore shaders_;
   ResourceCache resources_;
@@ -55,6 +59,9 @@ class PlanAdapter {
     bool operator()(const PipelineLookup& a,const Key& b)const{return Less(a.pipeline,a.primitive,b.first,b.second);}
   };
   std::map<std::pair<render::Pipeline,render::Primitive>,std::shared_ptr<const Pipeline>,PipelineLess> pipelines_;
+  // Key omits only the separate depth/stencil test object. Attachment formats,
+  // shader specializations, vertex ABI, blending and MSAA remain exact.
+  decltype(pipelines_) render_pipelines_;
   std::map<render::Sampler,id<MTLSamplerState>> samplers_;
   std::array<id<MTLTexture>,4> dummy_images_{};
   struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;uint64_t generation=0;};

@@ -107,3 +107,11 @@ target_include_directories(virtual_resource_journal_test PRIVATE
   "${ROOT}/glue/rexglue-sdk-main/include")
 target_compile_options(virtual_resource_journal_test PRIVATE -UNDEBUG)
 add_test(NAME virtual_resource_journal COMMAND virtual_resource_journal_test)
+
+add_executable(metal_frame_continuity_test metal_frame_continuity_test.cpp)
+target_include_directories(metal_frame_continuity_test PRIVATE
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
+  "${ROOT}/glue/rexglue-sdk-main/include"
+  "${ROOT}/glue/rexglue-sdk-main/thirdparty/vulkan-headers/include")
+target_compile_options(metal_frame_continuity_test PRIVATE -UNDEBUG)
+add_test(NAME metal_frame_continuity COMMAND metal_frame_continuity_test)

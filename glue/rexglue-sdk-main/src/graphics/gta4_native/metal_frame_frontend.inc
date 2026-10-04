@@ -30,6 +30,7 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   NativeReflectionRegistry reflections; // Snapshot for this speculative batch.
   NativeVirtualResourceRegistry virtuals; // Definitions at this batch position.
   NativeVirtualResourceJournal virtual_journal;
+  NativeMetalFrameContinuity continuity;
   struct BytesRecord {
     std::weak_ptr<const void> resource;
     std::shared_ptr<const theft4::render::Bytes> owner;
@@ -84,6 +85,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
     native_metal_frame_->virtual_journal.FinishBatch();
+    native_metal_frame_->continuity.EndGuestFrame();
     if(clear_registrations){native_metal_frame_->virtuals.Clear();native_metal_frame_->virtual_journal.Clear();}
   }
 }
@@ -145,6 +147,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
+  const auto finish_title_frame=MakeScopeExit([&] {
+    if(present.device)native_metal_frame_->continuity.EndGuestFrame();
+  });
+  const uint32_t frame_identity=native_metal_frame_->continuity.frame_identity;
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
@@ -172,6 +178,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.contents=native_metal_frame_->contents;next.utilities=native_metal_frame_->utilities;
   next.smaa_lookups=native_metal_frame_->smaa_lookups;
   next.virtuals=native_metal_frame_->virtual_journal.BatchBase();
+  next.continuity=native_metal_frame_->continuity;
   auto plan=std::make_shared<r::FramePlan>();plan->sequence=++next_native_metal_sequence_;
   const auto caps=frame_backend_->Capabilities();
   // Releases in this batch retire reflection aliases in command order. Failed
@@ -238,7 +245,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
          (!is_reflection||SameNativeReflectionRegistration(record.reflection,reflection))) {
         // Persistent resolved reflection textures are separate. An old capture
         // workspace must receive a real first-use clear before this frame uses it.
-        if(is_reflection&&!HasCurrentNativeReflectionCaptureContent(record.capture,present.submitted_frame))
+        if(is_reflection&&!HasCurrentNativeReflectionCaptureContent(record.capture,frame_identity))
           forget_contents(owner->key);
         retain(owner);return owner;
       }
@@ -267,7 +274,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const uint64_t serial=++next_native_metal_content_serial_;
     record.materialized_serial=serial;
     if(record.is_reflection) {
-      ClaimNativeReflectionCaptureContent(record.capture,serial,serial,present.submitted_frame,
+      ClaimNativeReflectionCaptureContent(record.capture,serial,serial,frame_identity,
                                            diagnostic_command_index_,0,0);
     } else {
       GuestSurfaceView view;
@@ -542,7 +549,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     }
     return true;
   };
-  PostFxScheduler postfx;postfx.BeginFrame();
+  auto& postfx=next.continuity.postfx;
   const auto host_fetch=[&](const NativeCommand& command,uint32_t slot,r::HostFetch& fetch) {
     const auto& resource=command.textures[slot];
     if(resource&&resource->gpu_produced&&!produced_fetch(NativeResourceView<NativeTextureResource>(resource).Share()))return false;
@@ -573,7 +580,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       if(!r::AppendSplitPostFx(*plan,next.contents,texture.owner,depth,mask,constants,utility_for,next_native_metal_allocation_,error))return false;
       texture.content_serial=++next_native_metal_content_serial_;captured=true;
       if(REXCVAR_GET(gta4_native_host_sun_shafts)) {
-        const auto parameters=BuildSunShaftParameters(environmental_data.get());
+        const auto parameters=BuildSunShaftParameters(command.environmental_data?command.environmental_data.get():environmental_data.get());
         if(parameters.valid) {
           r::SunConstants sun;sun.density=parameters.density;sun.decay=parameters.decay;
           sun.screen={parameters.screen_position[0],parameters.screen_position[1],parameters.intensity,parameters.horizon_fade};
@@ -775,7 +782,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       auto& destination=next.textures.at(resource->generation);
       const auto& storage=*destination.owner;const auto& metadata=*destination.description;
       const bool current_source=source_record.is_reflection?
-          HasCurrentNativeReflectionCaptureContent(source_record.capture,present.submitted_frame):writer!=nullptr;
+          HasCurrentNativeReflectionCaptureContent(source_record.capture,frame_identity):writer!=nullptr;
       if(!current_source||!next.contents.contains(source_view)) {
         // First-use fallback initialization is not a successful resolve. Only a
         // completed reflection texture may survive a frame without a new capture.

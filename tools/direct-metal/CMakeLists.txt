@@ -124,6 +124,7 @@ add_executable(metal_constant_projection_test metal_constant_projection_test.cpp
 add_executable(incremental_owner_cache_test incremental_owner_cache_test.cpp)
 add_executable(frontend_storage_test frontend_storage_test.cpp)
 target_include_directories(frontend_storage_test PRIVATE "${ROOT}/ios/bridge")
+target_link_libraries(frontend_storage_test PRIVATE render_plan)
 add_executable(exclusive_generation_retirement_test exclusive_generation_retirement_test.cpp)
 add_executable(masked_constant_replay_test "${ROOT}/ios/tests/masked_constant_replay_test.cpp")
 add_executable(constant_projection_test "${ROOT}/ios/tests/constant_projection_test.cpp")

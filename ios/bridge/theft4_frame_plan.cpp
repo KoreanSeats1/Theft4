@@ -6,6 +6,47 @@
 #include <map>
 
 namespace theft4::render {
+std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
+  struct Pending {size_t command;uint8_t slot;};
+  std::map<SurfaceKey,std::map<SurfaceView,Pending>> pending;
+  std::vector<uint8_t> masks(f.commands.size(),0);
+  const auto read=[&](const SampledSurfaceView& view){
+    auto found=pending.find(view.surface);if(found==pending.end())return;
+    std::erase_if(found->second,[&](const auto& entry){return SampledViewContains(view,entry.first);});
+  };
+  const auto overwrite=[&](SurfaceView view){
+    auto found=pending.find(view.surface);if(found==pending.end())return;
+    auto prior=found->second.find(view);if(prior==found->second.end())return;
+    masks[prior->second.command]|=uint8_t(1u<<prior->second.slot);found->second.erase(prior);
+  };
+  for(size_t n=0;n<f.commands.size();++n){
+    if(const auto* copy=std::get_if<ImageCopy>(&f.commands[n])){
+      read(copy->source);
+      if(copy->combined_depth_stencil){auto source=copy->source;source.aspect=Aspect::Stencil;read(source);}
+      const auto* target=FindSurface(f,copy->destination.surface);
+      const bool full=target&&copy->destination_origin==std::array<uint32_t,2>{0,0}&&
+        copy->extent==std::array<uint32_t,2>{std::max(1u,target->width>>copy->destination.level),std::max(1u,target->height>>copy->destination.level)};
+      if(full)overwrite(copy->destination);else read(copy->destination);
+      if(copy->combined_depth_stencil){auto destination=copy->destination;destination.aspect=Aspect::Stencil;if(full)overwrite(destination);else read(destination);}
+      continue;
+    }
+    const auto& pass=std::get<Pass>(f.commands[n]);
+    for(const auto& c:pass.commands){
+      if(const auto* draw=std::get_if<FrameDraw>(&c)){for(const auto& view:draw->produced)if(view)read(*view);}
+      else if(const auto* host=std::get_if<HostDraw>(&c)){for(const auto& input:host->fetches)if(input.produced)read(*input.produced);}
+    }
+    const auto attachment=[&](const std::optional<Attachment>& a,uint8_t slot){
+      if(!a)return;
+      if(a->load==Load::Load)read(a->view);else overwrite(a->view);
+      // Keep resolves, final stores and partially updated targets intact.
+      if(a->store==Store::Store&&!a->resolve)pending[a->view.surface][a->view]={n,slot};
+      else if(auto found=pending.find(a->view.surface);found!=pending.end())found->second.erase(a->view);
+    };
+    for(uint8_t slot=0;slot<4;++slot)attachment(pass.colors[slot],slot);
+    attachment(pass.depth,4);attachment(pass.stencil,5);
+  }
+  return masks;
+}
 void AppendPass(FramePlan& frame,Pass next) {
   auto* previous=frame.commands.empty()?nullptr:std::get_if<Pass>(&frame.commands.back());
   const auto compatible=[](const std::optional<Attachment>& a,const std::optional<Attachment>& b) {

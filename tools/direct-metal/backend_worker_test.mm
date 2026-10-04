@@ -443,6 +443,21 @@ int main(int argc,char** argv) {
     std::cout<<"Native color storage readback: BGRA, R16, R32F, RGBA16F, RGB10A2, mip selection and undefined rejection passed\n";
     auto noncolor=*partial->output;noncolor.aspect=render::Aspect::Depth;
     const auto saved=pixels;assert(!backend->ReadRGBA8(*partial,noncolor,pixels,error));assert(pixels==saved);
+    // Earlier clear stores are dead only when overwritten before a read. The
+    // final source store must survive its copy, and final destination survives.
+    auto a=std::make_shared<render::Surface>(*surface);a->key={9001,1};
+    auto b=std::make_shared<render::Surface>(*a);b->key={9002,1};
+    auto dead=Clear(a,9000,0.125);dead->surfaces.push_back(b);
+    dead->commands.push_back(Clear(b,1,0.875)->commands[0]);
+    dead->commands.push_back(Clear(a,1,0.5)->commands[0]);
+    render::ImageCopy overwrite;overwrite.source={a->key,0,0,render::Aspect::Color};
+    overwrite.destination={b->key,0,0,render::Aspect::Color};overwrite.extent={b->width,b->height};
+    dead->commands.push_back(overwrite);dead->output=overwrite.destination;
+    const auto masks=render::DeadAttachmentStores(*dead);assert(masks[0]==1&&masks[1]==1&&masks[2]==0);
+    assert(backend->Submit(dead,false,error));assert(backend->ReadRGBA8(*dead,*dead->output,pixels,error));
+    for(size_t n=0;n<pixels.size();n+=4){assert(pixels[n]==128&&pixels[n+1]==64&&pixels[n+2]==128&&pixels[n+3]==255);}
+    assert(backend->ReadRGBA8(*dead,overwrite.source,pixels,error));assert(pixels[0]==128);
+    std::cout<<"Dead attachment stores: overwritten clears discarded; copied and final contents preserved\n";
     backend->Close();assert(!backend->Submit(first,false,error));assert(!backend->Open(error));
     // Constructor may run on the UI thread; encoding/open/drain/close belong
     // to the render worker. The immutable capabilities remain available to HLE.

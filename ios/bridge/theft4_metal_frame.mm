@@ -275,6 +275,8 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   }
   RetireResources();impl_->draws.BeginUploadBatch();render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
+  const auto dead_stores=render::DeadAttachmentStores(*plan);
+  uint64_t avoided_stores=0;
   size_t draw_range_index=0;
   const auto validated=Clock::now();
   for(const auto& surface:plan->surfaces)
@@ -291,7 +293,9 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
           (unsigned long long)vertex,(unsigned long long)fragment,error.c_str());
     error.clear();
   };
+  size_t command_index=0;
   for(const auto& command:plan->commands) {
+    const auto dead=dead_stores[command_index++];
     if(const auto* copy=std::get_if<render::ImageCopy>(&command)) {
       auto source=impl_->View(copy->source,error),destination=impl_->View(copy->destination,error);
       if(!source||!destination)return {};
@@ -302,6 +306,9 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     }
     const auto& pass=std::get<render::Pass>(command);
     ReadyPass prepared{impl_->Pass(pass,error),{}};if(!prepared.descriptor)return {};
+    for(size_t slot=0;slot<4;++slot)if(dead&(1u<<slot)){prepared.descriptor.colorAttachments[slot].storeAction=MTLStoreActionDontCare;++avoided_stores;}
+    if(dead&16u){prepared.descriptor.depthAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
+    if(dead&32u){prepared.descriptor.stencilAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
     prepared.commands.reserve(pass.commands.size());
     for(const auto& command:pass.commands) {
       if(const auto* clear=std::get_if<render::RectClear>(&command)) {
@@ -365,6 +372,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   timing.pipelines_created=PipelineCount()-before_pipelines;
   timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
   timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;
+  timing.avoided_attachment_stores=avoided_stores;
   timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
   if(published)*published=std::move(final);
   return receipt;

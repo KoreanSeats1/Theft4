@@ -112,6 +112,9 @@ struct FramePlan {
 // the new pass simply loads the previous stores. Clears/resolves and copies
 // remain explicit boundaries; this avoids an encoder per title draw.
 void AppendPass(FramePlan&,Pass);
+// After successful frame admission only: identify stores overwritten before
+// any read. Bits0..3=color,4=depth,5=stencil; final cross-frame stores survive.
+std::vector<uint8_t> DeadAttachmentStores(const FramePlan&);
 using SurfaceContents=std::set<SurfaceView>;
 const Surface* FindSurface(const FramePlan&,SurfaceKey);
 uint32_t SurfaceSlices(const Surface&);

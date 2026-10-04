@@ -74,6 +74,26 @@ static void ArenaChecks(){
   assert(survivor->frame==999);
   assert(arena.AllocatedBytes()<=12*sizeof(r::Capture));
 }
+static void AttachmentChecks(){
+  namespace r=theft4::render;
+  std::mt19937 rng(55291);
+  for(unsigned trial=0;trial<300;++trial){
+    r::FramePlan plan;plan.sequence=trial+1;
+    for(unsigned n=0;n<8;++n){auto s=std::make_shared<r::Surface>();s->key={n+1,1};s->width=16;s->height=16;s->levels=3;s->format=r::Format::RGBA8Unorm;plan.surfaces.push_back(s);}
+    const auto clear=[&](unsigned id,unsigned mip){r::Pass pass;r::Attachment a;a.view={plan.surfaces[id]->key,mip,0,r::Aspect::Color};a.load=r::Load::Clear;a.store=r::Store::Store;pass.colors[0]=a;plan.commands.push_back(std::move(pass));};
+    for(unsigned id=0;id<8;++id)for(unsigned mip=0;mip<3;++mip)clear(id,mip);
+    for(unsigned n=0;n<100;++n){unsigned source=rng()%8,target=rng()%8,mip=rng()%3;
+      if(source==target||rng()%2){clear(target,mip);continue;}
+      r::ImageCopy copy;copy.source={plan.surfaces[source]->key,mip,0,r::Aspect::Color};copy.destination={plan.surfaces[target]->key,mip,0,r::Aspect::Color};
+      unsigned extent=16u>>mip;if(rng()%2)extent/=2;copy.extent={extent,extent};plan.commands.push_back(copy);
+    }
+    plan.output=r::SurfaceView{plan.surfaces[0]->key,0,0,r::Aspect::Color};
+    r::SurfaceContents expected,actual;std::string error;assert(r::ValidateFrame(plan,{},expected,error));
+    auto optimized=plan;const auto masks=r::DeadAttachmentStores(plan);
+    for(size_t n=0;n<masks.size();++n)if(masks[n]){auto& pass=std::get<r::Pass>(optimized.commands[n]);assert(masks[n]==1&&pass.colors[0]);pass.colors[0]->store=r::Store::Discard;}
+    assert(r::ValidateFrame(optimized,{},actual,error));assert(actual==expected);
+  }
+}
 static void Benchmark(){
   using Clock=std::chrono::steady_clock;
   std::map<uint64_t,Record> original;NativeTransactionalMap<uint64_t,Record> journal;
@@ -100,4 +120,4 @@ static void Benchmark(){
   std::cout<<"draws=4000 capture_bytes="<<sizeof(r::Capture)<<" allocation_ms="<<ordinary[20]<<" arena_ms="<<pooled[20]<<" pages="<<arena.page_allocations<<" fallbacks="<<arena.fallback_objects<<" checksum="<<checksum<<"\n";
 
 }
-int main(int argc,char** argv){TransactionChecks();ArenaChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}
+int main(int argc,char** argv){TransactionChecks();ArenaChecks();AttachmentChecks();if(argc>1&&std::string_view(argv[1])=="--benchmark")Benchmark();std::cout<<"frontend storage differential and lifetime checks passed\n";}

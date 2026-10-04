@@ -1,4 +1,7 @@
 #pragma once
+#if !__has_feature(objc_arc)
+#error "Theft4 Metal ownership requires Objective-C ARC"
+#endif
 // Direct Metal backend. The adapter supplies immutable, host-endian game
 // resources and final pass/draw state. No Vulkan handles enter this interface.
 #import <Metal/Metal.h>

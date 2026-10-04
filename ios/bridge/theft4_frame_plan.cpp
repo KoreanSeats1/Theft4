@@ -51,9 +51,8 @@ bool SampledViewDefined(const SampledSurfaceView& view,const SurfaceContents& co
       if(!contents.contains({view.surface,view.level+level,view.slice+slice,view.aspect}))return false;
   return true;
 }
-bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,std::string& error,bool allow_multisampled) {
+static bool ValidateSampledViewOf(const Surface* s,const SampledSurfaceView& view,std::string& error,bool allow_multisampled) {
   const auto reject=[&](const char* reason){error=reason;return false;};
-  const auto* s=FindSurface(frame,view.surface);
   if(!s||s->kind==ImageKind::Texture3D||s->kind>=ImageKind::Count||(!allow_multisampled&&s->samples!=1)||!view.levels||!view.slices||view.level>=s->levels||
      view.levels>s->levels-view.level||view.slice>=SurfaceSlices(*s)||
      view.slices>SurfaceSlices(*s)-view.slice||!SupportsAspect(s->format,view.aspect))
@@ -87,10 +86,12 @@ bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,s
   }
   error.clear();return true;
 }
+bool ValidateSampledView(const FramePlan& frame,const SampledSurfaceView& view,std::string& error,bool allow_multisampled) {
+  return ValidateSampledViewOf(FindSurface(frame,view.surface),view,error,allow_multisampled);
+}
 namespace {
 bool Reject(std::string& error,const char* message){error=message;return false;}
-bool View(const FramePlan& f,const SurfaceView& v) {
-  const auto* s=FindSurface(f,v.surface);
+bool View(const Surface* s,const SurfaceView& v) {
   return s&&v.level<s->levels&&v.slice<SurfaceSlices(*s)&&SupportsAspect(s->format,v.aspect);
 }
 uint32_t Width(const Surface& s,const SurfaceView& v){return std::max(1u,s.width>>v.level);}
@@ -100,7 +101,7 @@ bool SameStorage(const SurfaceView& a,const SurfaceView& b) {
 }
 }
 bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
-                   SurfaceContents& final,std::string& error) {
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices) {
   if(!f.sequence||f.surfaces.size()>4096||f.commands.empty()||f.commands.size()>4096)
     return Reject(error,"Invalid ordered frame size or sequence");
   std::map<SurfaceKey,const Surface*> declarations;
@@ -120,20 +121,27 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
     subresources+=uint64_t(SurfaceSlices(*s))*s->levels;
   }
   if(subresources>32768)return Reject(error,"Ordered frame subresource budget exceeded");
+  const auto find=[&](SurfaceKey key)->const Surface* {
+    const auto i=declarations.find(key);return i==declarations.end()?nullptr:i->second;
+  };
+  const auto view_valid=[&](const SurfaceView& v){return View(find(v.surface),v);};
+  const auto sampled_valid=[&](const SampledSurfaceView& v,std::string& e,bool ms=false) {
+    return ValidateSampledViewOf(find(v.surface),v,e,ms);
+  };
   SurfaceContents contents;
-  for(const auto& v:initial)if(FindSurface(f,v.surface)) {
-    if(!View(f,v))return Reject(error,"Initial frame content has an invalid view");
+  for(const auto& v:initial)if(find(v.surface)) {
+    if(!view_valid(v))return Reject(error,"Initial frame content has an invalid view");
     contents.insert(v);
   }
   size_t draw_count=0;
   for(const auto& command:f.commands) {
     if(const auto* copy=std::get_if<ImageCopy>(&command)) {
-      if(!View(f,copy->source)||!View(f,copy->destination)||
+      if(!view_valid(copy->source)||!view_valid(copy->destination)||
          !contents.contains(copy->source)||SameStorage(copy->source,copy->destination)||
          copy->source.aspect!=copy->destination.aspect)
         return Reject(error,"Image copy has an undefined source or aliased destination");
-      const auto* src=FindSurface(f,copy->source.surface);
-      const auto* dst=FindSurface(f,copy->destination.surface);
+      const auto* src=find(copy->source.surface);
+      const auto* dst=find(copy->destination.surface);
       const bool combined=src->format==Format::Depth32FloatStencil8;
       if(src->format!=dst->format||src->samples!=1||dst->samples!=1||
          combined!=copy->combined_depth_stencil||
@@ -174,12 +182,12 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
     if(!role(pass.depth,Aspect::Depth)||!role(pass.stencil,Aspect::Stencil))
       return Reject(error,"Invalid depth/stencil attachment aspect");
     for(const auto* a:attachments) {
-      if(!View(f,a->view)||a->load>=Load::Count||a->store>=Store::Count||
+      if(!view_valid(a->view)||a->load>=Load::Count||a->store>=Store::Count||
          !occupied.insert(a->view).second||!std::isfinite(a->clear_depth)||
          a->clear_depth<0||a->clear_depth>1||a->clear_stencil>255)
         return Reject(error,"Invalid ordered frame attachment");
       for(double c:a->clear_color)if(!std::isfinite(c))return Reject(error,"Nonfinite frame clear color");
-      const auto* s=FindSurface(f,a->view.surface);
+      const auto* s=find(a->view.surface);
       const auto w=Width(*s,a->view),h=Height(*s,a->view);
       if(!width){width=w;height=h;samples=s->samples;}
       if(width!=w||height!=h||samples!=s->samples)return Reject(error,"Ordered pass attachment dimensions differ");
@@ -197,18 +205,18 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
            (a->view.aspect==Aspect::Depth&&a->filter==ResolveFilter::Average)||
            (a->view.aspect==Aspect::Stencil&&a->filter!=ResolveFilter::Sample0))
           return Reject(error,"Unsupported ordered attachment resolve filter");
-        if(!View(f,*a->resolve)||a->resolve->aspect!=a->view.aspect||s->samples==1||
+        if(!view_valid(*a->resolve)||a->resolve->aspect!=a->view.aspect||s->samples==1||
            SameStorage(a->view,*a->resolve)||occupied.contains(*a->resolve))
           return Reject(error,"Invalid ordered pass resolve destination");
-        const auto* dst=FindSurface(f,a->resolve->surface);
+        const auto* dst=find(a->resolve->surface);
         if(dst->samples!=1||dst->format!=s->format||Width(*dst,*a->resolve)!=w||Height(*dst,*a->resolve)!=h)
           return Reject(error,"Ordered pass resolve format or extent differs");
         occupied.insert(*a->resolve);writes.push_back(*a->resolve);
       }
     }
     if(pass.depth&&pass.stencil) {
-      const auto* depth=FindSurface(f,pass.depth->view.surface);
-      const auto* stencil=FindSurface(f,pass.stencil->view.surface);
+      const auto* depth=find(pass.depth->view.surface);
+      const auto* stencil=find(pass.stencil->view.surface);
       if((depth->format==Format::Depth32FloatStencil8||stencil->format==Format::Depth32FloatStencil8)&&
          !SameStorage(pass.depth->view,pass.stencil->view))
         return Reject(error,"Combined depth/stencil views must share an allocation");
@@ -246,11 +254,11 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         for(const auto& stream:p.streams)if(stream!=Stream{})return Reject(error,"Host utility has an unexpected vertex stream");
         for(float value:host->blend_color)if(!std::isfinite(value))return Reject(error,"Nonfinite host blend color");
         for(size_t i=0;i<4;++i) {
-          const auto format=pass.colors[i] ? FindSurface(f,pass.colors[i]->view.surface)->format : Format::Invalid;
+          const auto format=pass.colors[i] ? find(pass.colors[i]->view.surface)->format : Format::Invalid;
           if(p.colors[i]!=format)return Reject(error,"Host utility color formats differ from its ordered pass");
         }
-        const auto depth=pass.depth ? FindSurface(f,pass.depth->view.surface)->format : Format::Invalid;
-        const auto stencil=pass.stencil ? FindSurface(f,pass.stencil->view.surface)->format : Format::Invalid;
+        const auto depth=pass.depth ? find(pass.depth->view.surface)->format : Format::Invalid;
+        const auto stencil=pass.stencil ? find(pass.stencil->view.surface)->format : Format::Invalid;
         if(p.depth!=depth||p.stencil!=stencil)return Reject(error,"Host utility depth/stencil differs from its ordered pass");
         const auto& info=kHostPrograms[size_t(host->program)];const auto& constants=host->constants;
         if(info.constants&&(!constants.source||!constants.source->generation||constants.offset%16||
@@ -272,8 +280,8 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
               return Reject(error,"Host static texture type differs from its ABI");
           }else {
             const auto& view=*input.produced;
-            if(!ValidateSampledView(f,view,error,multisampled)||view.kind!=ImageKind::Texture2D||view.levels!=1||view.slices!=1||
-               !SampledViewDefined(view,contents)||(FindSurface(f,view.surface)->samples>1)!=multisampled)
+            if(!sampled_valid(view,error,multisampled)||view.kind!=ImageKind::Texture2D||view.levels!=1||view.slices!=1||
+               !SampledViewDefined(view,contents)||(find(view.surface)->samples>1)!=multisampled)
               return Reject(error,"Host utility samples undefined or incorrectly sampled GPU content");
             for(const auto& attachment:writes)if(SampledViewContains(view,attachment))
               return Reject(error,"Host utility samples its active attachment");
@@ -289,19 +297,19 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       }
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
-      if(!Validate(*item.capture,error))return false;
+      if(!Validate(*item.capture,error,nullptr,indices))return false;
       const auto& c=*item.capture;const auto& p=c.draw.pipeline;
       if(c.width!=width||c.height!=height||p.samples!=samples)return Reject(error,"Draw extent differs from its ordered pass");
       for(size_t i=0;i<4;++i) {
-        const auto format=pass.colors[i] ? FindSurface(f,pass.colors[i]->view.surface)->format : Format::Invalid;
+        const auto format=pass.colors[i] ? find(pass.colors[i]->view.surface)->format : Format::Invalid;
         if(p.colors[i]!=format)return Reject(error,"Draw color formats differ from its ordered pass");
       }
-      const auto depth=pass.depth ? FindSurface(f,pass.depth->view.surface)->format : Format::Invalid;
-      const auto stencil=pass.stencil ? FindSurface(f,pass.stencil->view.surface)->format : Format::Invalid;
+      const auto depth=pass.depth ? find(pass.depth->view.surface)->format : Format::Invalid;
+      const auto stencil=pass.stencil ? find(pass.stencil->view.surface)->format : Format::Invalid;
       if(p.depth!=depth||p.stencil!=stencil)return Reject(error,"Draw depth/stencil differs from its ordered pass");
       for(size_t slot=0;slot<item.produced.size();++slot)if(item.produced[slot]) {
         const auto& view=*item.produced[slot];
-        if(!ValidateSampledView(f,view,error))return false;
+        if(!sampled_valid(view,error))return false;
         if(view.aspect==Aspect::Stencil||!SampledViewDefined(view,contents)||
            c.draw.fetches[slot].image||!c.draw.fetches[slot].sampler)
           return Reject(error,"Draw samples unavailable GPU-produced content");
@@ -319,8 +327,8 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       if(a->store==Store::Discard||a->store==Store::Resolve)contents.erase(a->view);
     }
   }
-  if(f.output&&(!View(f,*f.output)||f.output->aspect!=Aspect::Color||
-               FindSurface(f,f.output->surface)->samples!=1||!contents.contains(*f.output)))
+  if(f.output&&(!view_valid(*f.output)||f.output->aspect!=Aspect::Color||
+               find(f.output->surface)->samples!=1||!contents.contains(*f.output)))
     return Reject(error,"Frame output is unavailable or discarded");
   final=std::move(contents);error.clear();return true;
 }

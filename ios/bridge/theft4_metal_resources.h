@@ -35,6 +35,11 @@ class ResourceCache {
                          std::span<const uint8_t> bytes, std::span<const TextureUpload> uploads,
                          std::string& error);
   // Call at resource retirement boundaries, rather than scanning on each draw.
+  // Append-only pages reduce driver allocations for small immutable constants.
+  // BeginUploadBatch releases only the CPU's current page; encoded buffers and
+  // live resource versions retain their pages through GPU completion.
+  void BeginUploadBatch();
+  BufferView UniformBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
   size_t SweepRetired();
   void Clear();
   size_t BufferCount() const;

@@ -80,6 +80,9 @@ struct Clear {
   float depth_value=1;
   uint32_t stencil_value=0;
 };
+struct EncoderStats {
+  uint64_t draws=0,state_calls=0,buffer_calls=0,texture_calls=0,sampler_calls=0,avoided_calls=0;
+};
 class Receipt {
  public:
   bool Wait(std::string& error) const;
@@ -101,6 +104,7 @@ class Frame {
   bool CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,
                    MTLOrigin source_origin,MTLOrigin destination_origin,
                    MTLSize extent,std::string& error,bool combined_depth_stencil=false);
+  EncoderStats Stats() const;
   bool EndPass(std::string& error);
   bool Present(id<CAMetalDrawable> drawable, std::string& error);
   Receipt Submit(std::string& error);

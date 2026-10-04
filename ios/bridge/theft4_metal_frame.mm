@@ -1,6 +1,7 @@
 #include "theft4_metal_frame.h"
 #include "theft4_metal_host_shaders.h"
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <map>
 #include <cstdio>
@@ -55,6 +56,7 @@ struct FrameAdapter::Impl {
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
   FrameResourceStats stats;
+  FrameTiming timing;
   std::set<std::string> logged_preparation_errors;
   explicit Impl(Renderer& r):renderer(r),draws(r),host(r){}
   void Forget(render::SurfaceKey key) {
@@ -207,12 +209,12 @@ struct FrameAdapter::Impl {
     std::vector<HostInput> inputs;
     for(size_t slot=0;slot<source.fetches.size();++slot)if(info.textures&(1u<<slot)) {
       const auto& input=source.fetches[slot];
-      auto texture=input.produced ? SampledView(*input.produced,error) : draws.ImageFor(*input.image,error);
+      auto texture=input.produced ? SampledView(*input.produced,error) : draws.ImageFor(input.image,error);
       if(!texture)return false;
       auto sampler=draws.SamplerFor(*input.sampler,error);if(!sampler)return false;
       inputs.push_back({uint32_t(slot),texture,sampler});
     }
-    auto constants=info.constants ? draws.BufferFor(source.constants,error) : BufferView{};
+    auto constants=info.constants ? draws.ConstantFor(source.constants,error) : BufferView{};
     if(info.constants&&!constants.buffer)return false;
     if(!host.Bind(info.name,inputs,constants,result,error))return false;
     draw=std::move(result);return true;
@@ -234,6 +236,9 @@ Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::Frame
 }
 Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
                                  render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error) {
+  using Clock=std::chrono::steady_clock;
+  const auto begin=Clock::now();
+  const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
   if(!plan){error="Missing ordered Metal frame plan";return {};}
   if(drawable) {
     if(!plan->output||*plan->output!=render::SurfaceView{target,0,0,render::Aspect::Color}) {
@@ -268,11 +273,12 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       }
     }
   }
-  RetireResources();render::SurfaceContents final;
-  if(!render::ValidateFrame(*plan,impl_->contents,final,error))return {};
+  RetireResources();impl_->draws.BeginUploadBatch();render::SurfaceContents final;
+  if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges()))return {};
+  const auto validated=Clock::now();
   for(const auto& surface:plan->surfaces)
     if(!impl_->Ensure(surface,drawable&&surface->key==target ? drawable.texture : nil,error))return {};
-  struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
+  struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<std::shared_ptr<const Draw>,Draw,Clear>> commands; };
   struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;bool combined_depth_stencil;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
   size_t preparation_errors=0;std::string first_preparation_error;
@@ -310,6 +316,9 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       auto base=impl_->draws.Realize(item.capture,error);
       const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
       if(!base){fail_draw();continue;}
+      if(std::none_of(item.produced.begin(),item.produced.end(),[](const auto& v){return bool(v);})) {
+        prepared.commands.push_back(std::move(base));continue;
+      }
       std::array<id<MTLTexture>,26> produced{};
       bool inputs_valid=true;
       for(size_t slot=0;slot<produced.size();++slot)if(item.produced[slot]) {
@@ -325,6 +334,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     error=first_preparation_error+" ("+std::to_string(preparation_errors)+" draw preparations failed; frame not submitted)";
     return {};
   }
+  const auto prepared_at=Clock::now();
   auto frame=impl_->renderer.BeginFrame(error);if(!frame)return {};
   for(const auto& command:ready) {
     if(const auto* copy=std::get_if<ReadyCopy>(&command)) {
@@ -334,7 +344,8 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     const auto& pass=std::get<ReadyPass>(command);
     if(!frame.BeginPass(pass.descriptor,error))return {};
     for(const auto& command:pass.commands) {
-      if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
+      if(const auto* draw=std::get_if<std::shared_ptr<const Draw>>(&command)){if(!frame.Encode(**draw,error))return {};}
+      else if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
       else if(!frame.ClearRectangle(std::get<Clear>(command),error))return {};
     }
     if(!frame.EndPass(error))return {};
@@ -343,6 +354,14 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   auto receipt=frame.Submit(error);if(!receipt)return {};
   for(const auto& surface:plan->surfaces)impl_->Forget(surface->key);
   impl_->contents.insert(final.begin(),final.end());
+  const auto ended=Clock::now();const auto after_resources=ImmutableStats();
+  const auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
+  FrameTiming timing;timing.validation_ms=ms(begin,validated);timing.preparation_ms=ms(validated,prepared_at);
+  timing.encoding_ms=ms(prepared_at,ended);timing.commands=plan->commands.size();timing.encoder=frame.Stats();timing.draws=timing.encoder.draws;
+  timing.pipelines_created=PipelineCount()-before_pipelines;
+  timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
+  timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;
+  timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
   return receipt;
 }
 id<MTLTexture> FrameAdapter::Output(const render::FramePlan& plan,std::string& error) {
@@ -380,6 +399,7 @@ size_t FrameAdapter::RetireResources() {
   }
   return retired;
 }
+FrameTiming FrameAdapter::LastTiming() const{return impl_->timing;}
 FrameResourceStats FrameAdapter::Stats() const{return impl_->stats;}
 ResourceCacheStats FrameAdapter::ImmutableStats() const{return impl_->draws.ResourceStats();}
 size_t FrameAdapter::PipelineCount() const{return impl_->draws.PipelineCount()+impl_->host_pipelines.size();}

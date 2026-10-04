@@ -52,7 +52,7 @@ ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
 PlanAdapter::PlanAdapter(Renderer& renderer):renderer_(renderer),shaders_(renderer),resources_(renderer){}
 bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
   if(!shaders_.Open(libraries,error))return false;
-  pipelines_.clear();prepared_.clear();return true;
+  pipelines_.clear();prepared_.clear();images_.clear();return true;
 }
 MTLPixelFormat PlanAdapter::PixelFormat(render::Format format) {
   using F=render::Format;
@@ -133,6 +133,14 @@ BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
   auto buffer=resources_.Buffer(Version(b.source),b.source->value,error);
   return {buffer,NSUInteger(b.offset),NSUInteger(b.length)};
 }
+BufferView PlanAdapter::ConstantFor(const render::Buffer& b,std::string& error) {
+  if(!b.source)return {};
+  if(b.offset>b.source->value.size()||b.length>b.source->value.size()-b.offset){error="Invalid constant source range";return {};}
+  if(b.source->value.size()>64*1024)return BufferFor(b,error);
+  auto view=resources_.UniformBuffer(Version(b.source),b.source->value,error);
+  if(!view.buffer)return {};
+  view.offset+=NSUInteger(b.offset);view.length=NSUInteger(b.length);return view;
+}
 id<MTLTexture> PlanAdapter::ImageFor(const render::Image& image,std::string& error) {
   auto d=[MTLTextureDescriptor new];d.textureType=ImageType(image.kind);d.pixelFormat=PixelFormat(image.format);
   d.width=image.width;d.height=image.height;d.depth=image.depth;d.arrayLength=image.layers;d.mipmapLevelCount=image.levels;
@@ -147,6 +155,24 @@ id<MTLTexture> PlanAdapter::ImageFor(const render::Image& image,std::string& err
       NSUInteger(m.row_bytes),image.kind==render::ImageKind::Texture3D ? NSUInteger(m.image_bytes) : 0,
       size_t(m.offset),size_t(m.size)});
   return resources_.Texture(Version(image.source),d,image.source->value,uploads,error);
+}
+id<MTLTexture> PlanAdapter::ImageFor(const std::shared_ptr<const render::Image>& image,std::string& error) {
+  if(!image||!image->source){error="Missing immutable sampled image owner";return nil;}
+  if(auto i=images_.find(image.get());i!=images_.end()&&
+      !i->second.owner.owner_before(image)&&!image.owner_before(i->second.owner)) {
+    const auto& e=i->second;const auto& d=e.description;
+    if(e.source.owner_before(image->source)||image->source.owner_before(e.source)||
+       e.generation!=image->source->generation||e.conversion!=image->source->conversion||e.bytes!=image->source->value.size()||
+       d.format!=image->format||d.kind!=image->kind||d.width!=image->width||d.height!=image->height||
+       d.depth!=image->depth||d.layers!=image->layers||d.levels!=image->levels||d.swizzle!=image->swizzle||d.mips!=image->mips) {
+      error="Metal image owner changed upload/format identity";return nil;
+    }
+    error.clear();return e.texture;
+  }
+  auto texture=ImageFor(*image,error);if(!texture)return nil;
+  ImageEntry entry;entry.owner=image;entry.source=image->source;entry.description=*image;entry.description.source.reset();
+  entry.generation=image->source->generation;entry.conversion=image->source->conversion;entry.bytes=image->source->value.size();entry.texture=texture;
+  images_.insert_or_assign(image.get(),std::move(entry));return texture;
 }
 id<MTLSamplerState> PlanAdapter::SamplerFor(const render::Sampler& s,std::string& error) {
   if(auto it=samplers_.find(s);it!=samplers_.end()){error.clear();return it->second;}
@@ -181,27 +207,24 @@ bool PlanAdapter::EnsureDummyImages(std::string& error) {
   return true;
 }
 bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string& error) {
-  if(!render::Validate(capture,error))return false;const auto& source=capture.draw;Draw result;
+  uint64_t maximum=0;
+  if(!render::Validate(capture,error,nullptr,&index_ranges_,&maximum))return false;
+  const auto& source=capture.draw;Draw result;result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
   result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
   result.vertex_count=source.vertex_count;result.instance_count=source.instances;result.base_vertex=source.base_vertex;
-  for(size_t i=0;i<3;++i){result.constants[i]=BufferFor(source.constants[i],error);if(!result.constants[i].buffer)return false;}
+  for(size_t i=0;i<3;++i){result.constants[i]=ConstantFor(source.constants[i],error);if(!result.constants[i].buffer)return false;}
   for(size_t i=0;i<kGameVertexStreamCount;++i)if(result.pipeline->vertex_streams&(1u<<i)) {
     result.vertices[i]=BufferFor(source.vertices[i],error);if(!result.vertices[i].buffer)return false;
   }
   if(source.index_count) {
     result.indices=BufferFor(source.indices,error);if(!result.indices.buffer)return false;
     result.index_count=source.index_count;result.index_type=source.index_bytes==2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
-    const auto* bytes=source.indices.source->value.data()+source.indices.offset;
-    for(size_t i=0;i<source.index_count;++i) {
-      uint32_t index=0;if(source.index_bytes==2){uint16_t v;memcpy(&v,bytes+i*2,2);index=v;}else memcpy(&index,bytes+i*4,4);
-      const uint32_t restart=source.index_bytes==2 ? UINT16_MAX : UINT32_MAX;
-      if(index==restart) {
-        if(source.primitive_restart&&(source.primitive==render::Primitive::LineStrip||source.primitive==render::Primitive::TriangleStrip))continue;
-        return Error(error,"Metal fixed restart markers differ from this game index stream; frontend expansion is required");
-      }
-      result.maximum_vertex=std::max(result.maximum_vertex,NSUInteger(int64_t(index)+source.base_vertex));
-    }
+    render::IndexRange range;
+    if(!index_ranges_.Analyze(source.indices,source.index_count,source.index_bytes,range,error))return false;
+    if(range.has_restart&&!(source.primitive_restart&&
+        (source.primitive==render::Primitive::LineStrip||source.primitive==render::Primitive::TriangleStrip)))
+      return Error(error,"Metal fixed restart markers differ from this game index stream; frontend expansion is required");
   }
   if((result.pipeline->vertex.textures||result.pipeline->fragment.textures)&&!EnsureDummyImages(error))return false;
   std::array<FetchResources,26> fetches{};
@@ -214,7 +237,7 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
     if(f.image) {
       const auto kind=size_t(f.image->kind);
       if(kind>=4)return Error(error,"Game cube-array sampling needs a matching Metal shader interface");
-      fetches[i].images[kind]=ImageFor(*f.image,error);if(!fetches[i].images[kind])return false;
+      fetches[i].images[kind]=ImageFor(f.image,error);if(!fetches[i].images[kind])return false;
     }
     if(f.sampler){fetches[i].sampler=SamplerFor(*f.sampler,error);if(!fetches[i].sampler)return false;}
   }
@@ -242,11 +265,11 @@ size_t PlanAdapter::RetireResources() {
   for(auto it=prepared_.begin();it!=prepared_.end();) {
     if(it->second.owner.expired())it=prepared_.erase(it);else ++it;
   }
+  std::erase_if(images_,[](const auto& e){return e.second.owner.expired();});
   return resources_.SweepRetired();
 }
 bool PlanAdapter::BindProduced(const render::Capture& capture,
     const std::array<id<MTLTexture>,26>& produced,Draw& draw,std::string& error) const {
-  auto textures=draw.textures;
   uint32_t matched=0,requested=0;
   const MTLTextureType kinds[]{MTLTextureType2D,MTLTextureType2DArray,MTLTextureType3D,MTLTextureTypeCube};
   for(size_t slot=0;slot<produced.size();++slot)if(produced[slot]) {
@@ -254,6 +277,8 @@ bool PlanAdapter::BindProduced(const render::Capture& capture,
       return Error(error,"Invalid GPU-produced game fetch replacement");
     requested|=1u<<slot;
   }
+  if(!requested){error.clear();return true;}
+  auto textures=draw.textures;
   for(auto stage:{Stage::Vertex,Stage::Fragment}) {
     const auto& shader=stage==Stage::Vertex ? capture.draw.pipeline.vertex : capture.draw.pipeline.fragment;
     if(!shader.hash)continue;

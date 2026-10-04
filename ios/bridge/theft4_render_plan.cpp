@@ -155,7 +155,65 @@ bool ValidateImage(const Image& i,std::string& error) {
     return Error(error,"Invalid game image mip payload");
   error.clear();return true;
 }
-bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue) {
+bool AnalyzeIndices(const Buffer& buffer,uint32_t count,uint32_t index_bytes,IndexRange& result,std::string& error) {
+  if(!count||(index_bytes!=2&&index_bytes!=4)||!View(buffer,uint64_t(count)*index_bytes)||buffer.offset%index_bytes)
+    return Error(error,"Invalid game index view");
+  IndexRange range;
+  const auto* data=buffer.source->value.data()+buffer.offset;
+  const uint32_t marker=index_bytes==2?UINT16_MAX:UINT32_MAX;
+  for(uint32_t i=0;i<count;++i) {
+    uint32_t index;
+    if(index_bytes==2){uint16_t v;memcpy(&v,data+size_t(i)*2,2);index=v;}
+    else memcpy(&index,data+size_t(i)*4,4);
+    range.minimum=std::min(range.minimum,index);range.maximum=std::max(range.maximum,index);
+    if(index==marker)range.has_restart=true;
+    else {
+      range.has_non_restart=true;
+      range.minimum_without_restart=std::min(range.minimum_without_restart,index);
+      range.maximum_without_restart=std::max(range.maximum_without_restart,index);
+    }
+  }
+  result=range;error.clear();return true;
+}
+struct IndexRangeCache::Impl {
+  struct Key {
+    const Bytes* source;uint64_t generation,offset,size;
+    std::array<uint64_t,4> conversion;
+    uint32_t count,index_bytes;
+    bool operator==(const Key&) const=default;
+  };
+  struct Hash {
+    size_t operator()(const Key& k) const {
+      uint64_t h=reinterpret_cast<uintptr_t>(k.source);
+      const auto add=[&](uint64_t v){h^=v+0x9e3779b97f4a7c15ull+(h<<6)+(h>>2);};
+      add(k.generation);add(k.offset);add(k.size);for(auto v:k.conversion)add(v);
+      add(k.count);add(k.index_bytes);return size_t(h);
+    }
+  };
+  struct Entry {std::weak_ptr<const Bytes> owner;IndexRange range;};
+  std::unordered_map<Key,Entry,Hash> entries;
+  uint64_t scanned=0,hits=0;
+};
+IndexRangeCache::IndexRangeCache():impl_(std::make_unique<Impl>()){}
+IndexRangeCache::~IndexRangeCache()=default;
+IndexRangeCache::IndexRangeCache(IndexRangeCache&&) noexcept=default;
+IndexRangeCache& IndexRangeCache::operator=(IndexRangeCache&&) noexcept=default;
+bool IndexRangeCache::Analyze(const Buffer& b,uint32_t count,uint32_t index_bytes,IndexRange& range,std::string& error) {
+  if(!count||(index_bytes!=2&&index_bytes!=4)||!View(b,uint64_t(count)*index_bytes)||b.offset%index_bytes)
+    return Error(error,"Invalid game index view");
+  const Impl::Key key{b.source.get(),b.source->generation,b.offset,b.source->value.size(),b.source->conversion,count,index_bytes};
+  if(auto i=impl_->entries.find(key);i!=impl_->entries.end()&&
+      !i->second.owner.owner_before(b.source)&&!b.source.owner_before(i->second.owner)) {
+    range=i->second.range;++impl_->hits;error.clear();return true;
+  }
+  if(!AnalyzeIndices(b,count,index_bytes,range,error))return false;
+  impl_->scanned+=count;
+  if(impl_->entries.size()>=8192)impl_->entries.clear();
+  impl_->entries.insert_or_assign(key,Impl::Entry{b.source,range});return true;
+}
+uint64_t IndexRangeCache::ScannedIndices() const{return impl_->scanned;}
+uint64_t IndexRangeCache::Hits() const{return impl_->hits;}
+bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue,IndexRangeCache* indices,uint64_t* maximum_vertex) {
   if(issue)*issue=DrawValidationIssue::None;
   const auto& d=capture.draw;const auto& p=d.pipeline;
   if(!capture.width||!capture.height||capture.width>16384||capture.height>16384||!p.vertex.hash||
@@ -182,23 +240,19 @@ bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* is
     return Error(error,"Invalid game constant bank");
   uint64_t maximum=0;
   if(d.index_count) {
-    if((d.index_bytes!=2&&d.index_bytes!=4)||!View(d.indices,uint64_t(d.index_count)*d.index_bytes)||
-        d.indices.offset%d.index_bytes)return Error(error,"Invalid game index view");
-    const auto* data=d.indices.source->value.data()+d.indices.offset;bool any=false;
-    for(uint32_t i=0;i<d.index_count;++i) {
-      uint32_t index=0;
-      if(d.index_bytes==2){uint16_t small;memcpy(&small,data+size_t(i)*2,2);index=small;}
-      else memcpy(&index,data+size_t(i)*4,4);
-      if(d.primitive_restart&&index==(d.index_bytes==2 ? UINT16_MAX : UINT32_MAX))continue;
-      const int64_t vertex=int64_t(index)+d.base_vertex;
-      if(vertex<0)return Error(error,"Game index references a negative effective vertex");
-      maximum=std::max(maximum,uint64_t(vertex));any=true;
-    }
-    if(!any)return Error(error,"Game index view contains only restart markers");
+    IndexRange range;
+    if(!(indices?indices->Analyze(d.indices,d.index_count,d.index_bytes,range,error):
+                 AnalyzeIndices(d.indices,d.index_count,d.index_bytes,range,error)))return false;
+    if(d.primitive_restart&&!range.has_non_restart)return Error(error,"Game index view contains only restart markers");
+    const auto minimum=d.primitive_restart?range.minimum_without_restart:range.minimum;
+    const auto high=d.primitive_restart?range.maximum_without_restart:range.maximum;
+    if(int64_t(minimum)+d.base_vertex<0)return Error(error,"Game index references a negative effective vertex");
+    maximum=uint64_t(int64_t(high)+d.base_vertex);
   } else {
     if(!d.vertex_count)return Error(error,"Empty game draw");
     maximum=uint64_t(d.first_vertex)+d.vertex_count-1;
   }
+  if(maximum_vertex)*maximum_vertex=maximum;
   uint32_t locations=0;
   for(const auto& a:p.attributes) {
     if(a.location>=31||a.stream>=kStreamCount||!Width(a.format)||

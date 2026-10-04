@@ -1,6 +1,8 @@
 #include "theft4_native_metal.h"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <map>
 
@@ -56,6 +58,20 @@ struct Frame::Impl {
   bool submitted = false;
   id<MTLTexture> stored_color = nil;
   bool presented = false;
+  struct Bind {const void* object=nullptr;NSUInteger offset=0;};
+  struct State {
+    bool valid=false;
+    const void* pipeline=nullptr;const void* depth=nullptr;
+    MTLViewport viewport{};MTLScissorRect scissor{};
+    MTLCullMode cull{};MTLWinding winding{};
+    NSUInteger front=0,back=0;
+    std::array<float,4> blend{};float bias=0,slope=0;
+    bool clamp=false,lines=false;
+    std::array<Bind,31> vertex_buffers{},fragment_buffers{};
+    std::array<const void*,31> vertex_textures{},fragment_textures{};
+    std::array<const void*,16> vertex_samplers{},fragment_samplers{};
+  } state;
+  EncoderStats stats;
   ~Impl() { if (encoder) [encoder endEncoding]; }
 };
 Renderer::Renderer(NSUInteger maximum) {
@@ -138,7 +154,7 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
   MTLRenderPipelineDescriptor* desc = [fixed copy]; desc.vertexFunction = vs.function;
   desc.fragmentFunction = ps ? ps->function : nil;
   auto p = std::make_shared<Pipeline>(); p->vertex = vs.interface;
-  if(ps)p->fragment = ps->interface;
+  if(ps)p->fragment = ps->interface;else p->fragment.constant_bytes={};
   for(size_t i=0;i<3;++i)p->constant_bytes[i]=std::max(vs.interface.constant_bytes[i],ps ? ps->interface.constant_bytes[i] : 0ul);
   p->samples = desc.rasterSampleCount; p->depth = desc.depthAttachmentPixelFormat;
   p->stencil = desc.stencilAttachmentPixelFormat;
@@ -198,6 +214,7 @@ Frame& Frame::operator=(Frame&&) noexcept = default;
 Frame::operator bool() const { return impl_ && !impl_->submitted && impl_->buffer; }
 bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
   if (!*this || impl_->encoder || !pass) return Error(error, "Invalid direct Metal pass transition");
+  impl_->state={};
   impl_->pass = [pass copy];
   impl_->encoder = [impl_->buffer renderCommandEncoderWithDescriptor:impl_->pass];
   if (!impl_->encoder) return Error(error, "Metal render encoder allocation failed");
@@ -288,29 +305,56 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     return Error(error, "Incomplete Metal game resource bindings");
   // Admission is complete. No binding changes happen before every range and
   // interface has been checked, so a rejected packet cannot corrupt a later draw.
-  auto e = impl_->encoder;
-  [e setRenderPipelineState:p.state]; [e setDepthStencilState:p.depth_stencil];
-  [e setViewport:d.viewport]; [e setScissorRect:d.scissor];
-  [e setCullMode:d.cull]; [e setFrontFacingWinding:d.winding];
-  [e setStencilFrontReferenceValue:uint32_t(d.stencil_reference) backReferenceValue:uint32_t(d.stencil_back_reference)];
-  [e setBlendColorRed:d.blend_color[0] green:d.blend_color[1] blue:d.blend_color[2] alpha:d.blend_color[3]];
-  [e setDepthBias:d.depth_bias slopeScale:d.slope_bias clamp:0];
-  [e setDepthClipMode:d.depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
-  [e setTriangleFillMode:d.lines ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
-  for (NSUInteger i = 0; i < 3; ++i) if(p.constant_bytes[i]) {
-    [e setVertexBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
-    [e setFragmentBuffer:d.constants[i].buffer offset:d.constants[i].offset atIndex:i];
+  auto e = impl_->encoder;auto& cached=impl_->state;auto& stats=impl_->stats;
+  const bool first=!cached.valid;
+  const auto changed=[&](bool difference,auto&& apply) {
+    if(first||difference){apply();++stats.state_calls;}else ++stats.avoided_calls;
+  };
+  changed(cached.pipeline!=(__bridge const void*)p.state,[&]{[e setRenderPipelineState:p.state];cached.pipeline=(__bridge const void*)p.state;});
+  changed(cached.depth!=(__bridge const void*)p.depth_stencil,[&]{[e setDepthStencilState:p.depth_stencil];cached.depth=(__bridge const void*)p.depth_stencil;});
+  changed(std::memcmp(&cached.viewport,&d.viewport,sizeof(d.viewport))!=0,[&]{[e setViewport:d.viewport];cached.viewport=d.viewport;});
+  changed(std::memcmp(&cached.scissor,&d.scissor,sizeof(d.scissor))!=0,[&]{[e setScissorRect:d.scissor];cached.scissor=d.scissor;});
+  changed(cached.cull!=d.cull,[&]{[e setCullMode:d.cull];cached.cull=d.cull;});
+  changed(cached.winding!=d.winding,[&]{[e setFrontFacingWinding:d.winding];cached.winding=d.winding;});
+  changed(cached.front!=d.stencil_reference||cached.back!=d.stencil_back_reference,[&]{
+    [e setStencilFrontReferenceValue:uint32_t(d.stencil_reference) backReferenceValue:uint32_t(d.stencil_back_reference)];
+    cached.front=d.stencil_reference;cached.back=d.stencil_back_reference;
+  });
+  changed(std::memcmp(cached.blend.data(),d.blend_color.data(),sizeof(d.blend_color))!=0,[&]{[e setBlendColorRed:d.blend_color[0] green:d.blend_color[1] blue:d.blend_color[2] alpha:d.blend_color[3]];cached.blend=d.blend_color;});
+  changed(std::bit_cast<uint32_t>(cached.bias)!=std::bit_cast<uint32_t>(d.depth_bias)||std::bit_cast<uint32_t>(cached.slope)!=std::bit_cast<uint32_t>(d.slope_bias),[&]{[e setDepthBias:d.depth_bias slopeScale:d.slope_bias clamp:0];cached.bias=d.depth_bias;cached.slope=d.slope_bias;});
+  changed(cached.clamp!=d.depth_clamp,[&]{[e setDepthClipMode:d.depth_clamp?MTLDepthClipModeClamp:MTLDepthClipModeClip];cached.clamp=d.depth_clamp;});
+  changed(cached.lines!=d.lines,[&]{[e setTriangleFillMode:d.lines?MTLTriangleFillModeLines:MTLTriangleFillModeFill];cached.lines=d.lines;});
+  const auto buffer=[&](Stage stage,NSUInteger slot,const BufferView& view) {
+    auto& previous=stage==Stage::Vertex?cached.vertex_buffers[slot]:cached.fragment_buffers[slot];
+    const auto object=(__bridge const void*)view.buffer;
+    if(previous.object==object&&previous.offset==view.offset){++stats.avoided_calls;return;}
+    if(stage==Stage::Vertex)[e setVertexBuffer:view.buffer offset:view.offset atIndex:slot];
+    else [e setFragmentBuffer:view.buffer offset:view.offset atIndex:slot];
+    previous={object,view.offset};++stats.buffer_calls;
+  };
+  for(NSUInteger i=0;i<3;++i) {
+    if(p.vertex.constant_bytes[i])buffer(Stage::Vertex,i,d.constants[i]);
+    if(p.fragment.constant_bytes[i])buffer(Stage::Fragment,i,d.constants[i]);
   }
-  for (NSUInteger s = 0; s < kGameVertexStreamCount; ++s) if (p.vertex_streams & (1u << s))
-    [e setVertexBuffer:d.vertices[s].buffer offset:d.vertices[s].offset atIndex:s + 8];
-  for (const auto& b : d.textures) {
-    if (b.stage == Stage::Vertex) [e setVertexTexture:b.texture atIndex:b.index];
-    else [e setFragmentTexture:b.texture atIndex:b.index];
+  for(NSUInteger slot=0;slot<kGameVertexStreamCount;++slot)if(p.vertex_streams&(1u<<slot))
+    buffer(Stage::Vertex,slot+8,d.vertices[slot]);
+  for(const auto& binding:d.textures) {
+    auto& previous=binding.stage==Stage::Vertex?cached.vertex_textures[binding.index]:cached.fragment_textures[binding.index];
+    const auto object=(__bridge const void*)binding.texture;
+    if(previous==object){++stats.avoided_calls;continue;}
+    if(binding.stage==Stage::Vertex)[e setVertexTexture:binding.texture atIndex:binding.index];
+    else [e setFragmentTexture:binding.texture atIndex:binding.index];
+    previous=object;++stats.texture_calls;
   }
-  for (const auto& b : d.samplers) {
-    if (b.stage == Stage::Vertex) [e setVertexSamplerState:b.sampler atIndex:b.index];
-    else [e setFragmentSamplerState:b.sampler atIndex:b.index];
+  for(const auto& binding:d.samplers) {
+    auto& previous=binding.stage==Stage::Vertex?cached.vertex_samplers[binding.index]:cached.fragment_samplers[binding.index];
+    const auto object=(__bridge const void*)binding.sampler;
+    if(previous==object){++stats.avoided_calls;continue;}
+    if(binding.stage==Stage::Vertex)[e setVertexSamplerState:binding.sampler atIndex:binding.index];
+    else [e setFragmentSamplerState:binding.sampler atIndex:binding.index];
+    previous=object;++stats.sampler_calls;
   }
+  cached.valid=true;++stats.draws;
   if (d.index_count) [e drawIndexedPrimitives:d.primitive indexCount:d.index_count indexType:d.index_type
       indexBuffer:d.indices.buffer indexBufferOffset:d.indices.offset instanceCount:d.instance_count
       baseVertex:d.base_vertex baseInstance:0];
@@ -318,6 +362,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       instanceCount:d.instance_count];
   return true;
 }
+EncoderStats Frame::Stats() const{return impl_?impl_->stats:EncoderStats{};}
 bool Frame::EndPass(std::string& error) {
   if (!*this || !impl_->encoder) return Error(error, "No direct Metal pass to end");
   auto output = impl_->pass.colorAttachments[0];
@@ -390,6 +435,7 @@ bool Frame::ClearRectangle(const Clear& clear,std::string& error) {
     if(!ds)return Error(error,"Metal rectangular clear depth state creation failed");
     found=cache.emplace(key,Renderer::Impl::ClearPipeline{pipeline,ds}).first;
   }
+  impl_->state={};
   auto e=impl_->encoder;[e setRenderPipelineState:found->second.pipeline];[e setDepthStencilState:found->second.depth];
   [e setViewport:MTLViewport{0,0,double(width),double(height),0,1}];[e setScissorRect:r];
   [e setCullMode:MTLCullModeNone];[e setFrontFacingWinding:MTLWindingCounterClockwise];

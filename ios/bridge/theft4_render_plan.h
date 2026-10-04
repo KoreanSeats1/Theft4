@@ -108,6 +108,7 @@ struct Buffer {
 struct Mip {
   uint32_t level = 0, slice = 0, width = 0, height = 0, depth = 1;
   uint64_t row_bytes = 0, image_bytes = 0, offset = 0, size = 0;
+  bool operator==(const Mip&) const=default;
 };
 struct Image {
   std::shared_ptr<const Bytes> source;
@@ -150,8 +151,29 @@ struct Capture {
 // handles or process addresses. They must not be committed or published.
 bool WriteCapture(const std::string& path, const Capture& capture, std::string& error);
 bool ReadCapture(const std::string& path, Capture& capture, std::string& error);
+struct IndexRange {
+  uint32_t minimum=UINT32_MAX,maximum=0;
+  uint32_t minimum_without_restart=UINT32_MAX,maximum_without_restart=0;
+  bool has_restart=false,has_non_restart=false;
+};
+// Worker-local, bounded cache. Payloads are immutable; view bounds and draw
+// state are checked on every use. Weak ownership rejects recycled addresses.
+class IndexRangeCache {
+ public:
+  IndexRangeCache(); ~IndexRangeCache();
+  IndexRangeCache(IndexRangeCache&&) noexcept;
+  IndexRangeCache& operator=(IndexRangeCache&&) noexcept;
+  bool Analyze(const Buffer&,uint32_t count,uint32_t index_bytes,IndexRange&,std::string& error);
+  uint64_t ScannedIndices() const;
+  uint64_t Hits() const;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+bool AnalyzeIndices(const Buffer&,uint32_t count,uint32_t index_bytes,IndexRange&,std::string& error);
 enum class DrawValidationIssue { None, VertexRange };
-bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue=nullptr);
+bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue=nullptr,
+              IndexRangeCache* indices=nullptr,uint64_t* maximum_vertex=nullptr);
 bool ValidateFixedPipeline(const Pipeline&,std::string& error);
 bool ValidateSampler(const Sampler&,std::string& error);
 bool ValidateImage(const Image&,std::string& error);

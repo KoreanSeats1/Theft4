@@ -124,5 +124,5 @@ bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
 // reject before encoding. Draw coverage never proves whole-target definition:
 // a complete clear or an already defined loaded target is required.
 bool ValidateFrame(const FramePlan&,const SurfaceContents& initial,
-                   SurfaceContents& final,std::string& error);
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices=nullptr);
 }

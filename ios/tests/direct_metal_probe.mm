@@ -1059,7 +1059,20 @@ struct Probe {
     auto target=renderer.Texture(descriptor,error);Require(target);
     auto frame=renderer.BeginFrame(error);Require(bool(frame));auto pass=Pass(target,nil,nil);
     pass.colorAttachments[0].clearColor=MTLClearColorMake(0.1,0.2,0.3,0.4);
-    Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));Require(frame.EndPass(error));
+    Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));
+    auto invalid=*prepared;invalid.scissor.width=NSUIntegerMax;
+    Require(!frame.Encode(invalid,error));
+    for(size_t repeat=0;repeat<20;++repeat)Require(frame.Encode(*prepared,error));
+    Require(frame.Stats().state_calls==11&&frame.Stats().avoided_calls>=20*11);
+    Clear restore;restore.colors=1;restore.rectangle={0,0,W,H};restore.color={0.1f,0.2f,0.3f,0.4f};
+    Require(frame.ClearRectangle(restore,error));Require(frame.Encode(*prepared,error));
+    Require(frame.Stats().state_calls==22);
+    Require(frame.EndPass(error));Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));
+    Require(frame.Stats().state_calls==33);Require(frame.EndPass(error));
+    adapter.BeginUploadBatch();
+    auto new_bank=std::make_shared<r::Bytes>();new_bank->generation=2;new_bank->value.assign(4096,0xff);
+    auto next_uniform=adapter.ConstantFor({new_bank,0,4096},error);Require(next_uniform.buffer);
+    Require(next_uniform.buffer!=prepared->constants[0].buffer);
     immutable.reset();Require(adapter.RetireResources()>=5);prepared.reset();
     auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
     auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
@@ -1068,7 +1081,8 @@ struct Probe {
     [results addObject:@{@"case":@"immutable_game_draw_plan",@"passed":@YES,
         @"warm_pipeline_and_resource_reuse":@YES,@"indexed_range_derived":@YES,
         @"rgba_write_mask_on_bgra":@YES,@"constant_color_blend":@YES,
-        @"retired_before_submission":@YES}];
+        @"retired_before_submission":@YES,@"state_reuse_after_clear_and_new_pass":@YES,
+        @"avoided_state_calls":@(frame.Stats().avoided_calls),@"upload_batch_does_not_overwrite_inflight_constants":@YES}];
     auto replay=ReplayDirectMetalCaptures(libraries,[output stringByAppendingPathComponent:@"PlanFixture"],
         [output stringByAppendingPathComponent:@"PlanReplayValidation"]);
     Require([replay[@"passed"] boolValue]&&[replay[@"visible_draws"] unsignedIntegerValue]==1);

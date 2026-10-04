@@ -45,6 +45,8 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   std::map<std::array<uint64_t,8>,BytesRecord> buffers;
   std::map<uint64_t,ImageRecord> images;
   theft4::render::SurfaceContents contents;
+  theft4::render::IndexRangeCache index_ranges;
+  uint64_t timed_presents=0;
   void Release(uint32_t handle) {
     std::erase_if(images,[&](const auto& entry) {
       const auto owner=entry.second.resource.lock();return !owner||owner->handle==handle;
@@ -144,6 +146,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error,bool diagnostic_scan) {
   namespace r=theft4::render;
+  const auto tick=[] {return rex::chrono::Clock::QueryHostTickCount();};
+  const auto began=tick();uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
   if(!frame_backend_){error="Metal backend missing";return false;}
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
@@ -172,6 +176,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       resident-=i->second.owner->source->value.size();native_metal_frame_->images.erase(i);
     } else break;
   }
+  sweep_done=tick();
   NativeMetalFrameState next;
   next.surfaces=native_metal_frame_->surfaces;next.surface_buckets=native_metal_frame_->surface_buckets;
   next.placements=native_metal_frame_->placements;next.textures=native_metal_frame_->textures;
@@ -179,14 +184,17 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.smaa_lookups=native_metal_frame_->smaa_lookups;
   next.virtuals=native_metal_frame_->virtual_journal.BatchBase();
   next.continuity=native_metal_frame_->continuity;
+  copy_done=tick();
+  SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kFramePlanning);
   auto plan=std::make_shared<r::FramePlan>();plan->sequence=++next_native_metal_sequence_;
   const auto caps=frame_backend_->Capabilities();
   // Releases in this batch retire reflection aliases in command order. Failed
   // admission commits neither that registry nor placement/content ownership.
   next.reflections=reflection_resources_;auto& reflections=next.reflections;
   const auto reject=[&](const char* reason){error=reason;return false;};
+  std::set<r::SurfaceKey> retained;
   const auto retain=[&](const std::shared_ptr<const r::Surface>& surface) {
-    if(std::none_of(plan->surfaces.begin(),plan->surfaces.end(),[&](const auto& s){return s->key==surface->key;}))
+    if(retained.insert(surface->key).second)
       plan->surfaces.push_back(surface);
   };
   const uint32_t supported_samples=((caps.sample_counts&(1u<<1))?1u:0u)|
@@ -1004,23 +1012,35 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(!output||!r::AppendPresentation(*plan,next.contents,input,output,constants,quality,next.smaa_lookups,
                                      utility_for,next_native_metal_allocation_,error))return false;
   }
+  lower_done=tick();validate_done=submit_done=lower_done;
   if(!plan->commands.empty()) {
     r::SurfaceContents final;
-    if(!r::ValidateFrame(*plan,native_metal_frame_->contents,final,error))return false;
+    if(!r::ValidateFrame(*plan,native_metal_frame_->contents,final,error,&native_metal_frame_->index_ranges))return false;
+    validate_done=tick();
+    SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kQueueSubmission);
     if(!frame_backend_->Submit(plan,present.device!=0,error))return false;
-    std::erase_if(next.contents,[&](const auto& view){return r::FindSurface(*plan,view.surface)!=nullptr;});
+    submit_done=tick();
+    std::erase_if(next.contents,[&](const auto& view){return retained.contains(view.surface);});
     next.contents.insert(final.begin(),final.end());
   }
-  std::erase_if(next.contents,[&](const auto& view) {
-    return std::none_of(next.surfaces.begin(),next.surfaces.end(),[&](const auto& entry) {
-      return entry.second.owner->key==view.surface;
-    }) && std::none_of(next.textures.begin(),next.textures.end(),[&](const auto& entry) {
-      return entry.second.owner->key==view.surface;
-    }) && std::none_of(next.utilities.begin(),next.utilities.end(),[&](const auto& entry){return entry.second->key==view.surface;});
-  });
+  std::set<r::SurfaceKey> live;
+  for(const auto& [id,record]:next.surfaces)live.insert(record.owner->key);
+  for(const auto& [id,record]:next.textures)live.insert(record.owner->key);
+  for(const auto& [role,owner]:next.utilities)live.insert(owner->key);
+  std::erase_if(next.contents,[&](const auto& view){return !live.contains(view.surface);});
+  next.index_ranges=std::move(native_metal_frame_->index_ranges);
   next.buffers=std::move(native_metal_frame_->buffers);
   next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
   next.virtual_journal.FinishBatch();
   next.images=std::move(native_metal_frame_->images);
+  next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
+  if(present.device&&next.timed_presents%60==1) {
+    const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
+    REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={}",
+      next.timed_presents,(tick()-began)*scale,(sweep_done-began)*scale,(copy_done-sweep_done)*scale,
+      (lower_done-copy_done)*scale,(validate_done-lower_done)*scale,(submit_done-validate_done)*scale,
+      (tick()-submit_done)*scale,current_frame_.size(),plan->commands.size(),plan->surfaces.size(),next.buffers.size(),next.images.size(),
+      next.index_ranges.Hits(),next.index_ranges.ScannedIndices());
+  }
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

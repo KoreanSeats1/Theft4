@@ -364,42 +364,59 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     if(host.empty()){host.resize(resource->payload.size());CopyGuestIndicesToHost(host.data(),resource->payload.data(),host.size(),index32);}
     auto selected=std::span<const uint8_t>(host).subspan(size_t(start_index)*element,size_t(count)*element);
     bool sentinel=false;
-    if(!restart)for(uint32_t i=0;i<count;++i) {
-      uint32_t value=0;if(index32)std::memcpy(&value,selected.data()+i*4,4);
-      else {uint16_t v;std::memcpy(&v,selected.data()+i*2,2);value=v;}
-      sentinel|=value==(index32?UINT32_MAX:UINT16_MAX);
+    std::shared_ptr<const r::Bytes> original;
+    if(!expand) {
+      original=cached_bytes({2,resource->generation,index32},NativeResourceView<NativeBufferResource>(resource).Share(),host,{2,index32});
+      if(!original)return reject("Metal index packet allocation failed");
+      r::IndexRange range;
+      if(!native_metal_frame_->index_ranges.Analyze({original,size_t(start_index)*element,size_t(count)*element},count,uint32_t(element),range,error))return false;
+      sentinel=range.has_restart;
     }
     if(expand||sentinel) {
-      std::vector<uint32_t> input(count),expanded;
-      for(uint32_t i=0;i<count;++i)if(index32)std::memcpy(&input[i],selected.data()+i*4,4);
-        else {uint16_t v;std::memcpy(&v,selected.data()+i*2,2);input[i]=v;}
-      r::Primitive topology;
-      if(!r::ExpandGuestIndices(primitive,input,restart,marker,topology,expanded,error))return false;
-      if(expanded.empty()){output={};error.clear();return true;}
-      const auto data=std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(expanded.data()),expanded.size()*4);
-      auto bytes=cached_bytes({2,resource->generation,primitive,start_index,count,restart,marker},
-          NativeResourceView<NativeBufferResource>(resource).Share(),data,{primitive,start_index,count,marker});
+      const auto cache_key=std::array<uint64_t,8>{2,resource->generation,primitive,start_index,count,restart,marker};
+      auto found=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
+      if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
+        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+      } else {
+        std::vector<uint32_t> input(count),expanded;
+        for(uint32_t i=0;i<count;++i)if(index32)std::memcpy(&input[i],selected.data()+i*4,4);
+          else {uint16_t v;std::memcpy(&v,selected.data()+i*2,2);input[i]=v;}
+        r::Primitive topology;
+        if(!r::ExpandGuestIndices(primitive,input,restart,marker,topology,expanded,error))return false;
+        if(expanded.empty()){output={};error.clear();return true;}
+        bytes=cached_bytes(cache_key,NativeResourceView<NativeBufferResource>(resource).Share(),
+            {reinterpret_cast<const uint8_t*>(expanded.data()),expanded.size()*4},{primitive,start_index,count,marker});
+      }
       if(!bytes)return reject("Metal expanded index packet allocation failed");
-      draw.indices={bytes,0,data.size()};draw.index_bytes=4;draw.index_count=uint32_t(expanded.size());draw.primitive=topology;
+      draw.indices={bytes,0,bytes->value.size()};draw.index_bytes=4;draw.index_count=uint32_t(bytes->value.size()/4);
+      draw.primitive=primitive==2||primitive==3?r::Primitive::Line:r::Primitive::Triangle;
     } else {
-      auto bytes=cached_bytes({2,resource->generation,index32},NativeResourceView<NativeBufferResource>(resource).Share(),host,{2,index32});
-      if(!bytes)return reject("Metal index packet allocation failed");
-      draw.indices={bytes,size_t(start_index)*element,size_t(count)*element};draw.index_bytes=uint32_t(element);draw.index_count=count;
+      draw.indices={original,size_t(start_index)*element,size_t(count)*element};draw.index_bytes=uint32_t(element);draw.index_count=count;
     }
     draw.vertex_count=0;draw.first_vertex=0;draw.primitive_restart=false;
   } else if(expand) {
-    std::vector<uint32_t> input(count),expanded;for(uint32_t i=0;i<count;++i)input[i]=first+i;
-    r::Primitive topology;
-    if(primitive==8) {
-      if(count%4)return reject("Metal rectangle expansion count");
-      for(uint32_t i=0;i<count;i+=4)for(uint32_t corner:{0u,1u,2u,2u,1u,3u})expanded.push_back(i+corner);
-      topology=r::Primitive::Triangle;
-    } else if(!r::ExpandGuestIndices(primitive,input,false,0,topology,expanded,error))return false;
-    if(expanded.empty()){output={};error.clear();return true;}
-    auto bytes=make_bytes({reinterpret_cast<const uint8_t*>(expanded.data()),expanded.size()*4},{primitive,count});
+    if(uint64_t(first)+count>uint64_t(UINT32_MAX)+1)return reject("Metal expanded first vertex overflow");
+    const auto cache_key=std::array<uint64_t,8>{5,primitive,first,count};
+    auto found=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
+    if(found!=native_metal_frame_->buffers.end()) {
+      bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+    } else {
+      std::vector<uint32_t> input(count),expanded;for(uint32_t i=0;i<count;++i)input[i]=first+i;
+      r::Primitive topology;
+      if(primitive==8) {
+        if(count%4)return reject("Metal rectangle expansion count");
+        for(uint32_t i=0;i<count;i+=4)for(uint32_t corner:{0u,1u,2u,2u,1u,3u})expanded.push_back(i+corner);
+      } else if(!r::ExpandGuestIndices(primitive,input,false,0,topology,expanded,error))return false;
+      if(expanded.empty()){output={};error.clear();return true;}
+      // Procedural topology is independent of mutable game resource versions.
+      // It remains subject to the frontend's ordinary byte budget and eviction.
+      static const auto topology_owner=std::make_shared<const uint8_t>(0);
+      bytes=cached_bytes(cache_key,topology_owner,
+          {reinterpret_cast<const uint8_t*>(expanded.data()),expanded.size()*4},{primitive,first,count});
+    }
     if(!bytes)return reject("Metal immediate index allocation failed");
-    draw.indices={bytes,0,bytes->value.size()};draw.index_bytes=4;draw.index_count=uint32_t(expanded.size());
-    draw.first_vertex=draw.vertex_count=0;draw.primitive=topology;
+    draw.indices={bytes,0,bytes->value.size()};draw.index_bytes=4;draw.index_count=uint32_t(bytes->value.size()/4);
+    draw.first_vertex=draw.vertex_count=0;draw.primitive=r::Primitive::Triangle;
   }
 
   r::FrameDraw result;
@@ -412,7 +429,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     result.produced[slot]=fetch.produced;
   }
   r::DrawValidationIssue validation_issue;
-  if(!r::Validate(*capture,error,&validation_issue)) {
+  if(!r::Validate(*capture,error,&validation_issue,&native_metal_frame_->index_ranges)) {
     if(validation_issue!=r::DrawValidationIssue::VertexRange)return false;
     // RecordPrimitive already discards title draws exceeding captured buffers.
     // Match that admission policy without letting one malformed particle draw

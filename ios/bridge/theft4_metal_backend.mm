@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <deque>
 #include <thread>
+#include <chrono>
+#include <cstdio>
 namespace theft4::metal {
 namespace {
 class Backend final:public render::FrameBackend {
@@ -69,11 +71,13 @@ class Backend final:public render::FrameBackend {
     if(present && (!layer_ || !plan->output)) {
       error="Metal publication requires a layer and final output";return false;
     }
+    using Clock=std::chrono::steady_clock;const auto began=Clock::now();
     // Reap completed work and bound admission before acquiring a scarce drawable.
     while(!pending_.empty() && (pending_.front().receipt.Completed() || pending_.size()>=maximum_)) {
       if(!FinishOldest(error))return false;
     }
-    Receipt receipt;
+    const auto admitted=Clock::now();
+    double drawable_ms=0;Receipt receipt;
     @autoreleasepool {
       if(present) {
         render::PresentationTarget target;
@@ -85,12 +89,23 @@ class Backend final:public render::FrameBackend {
            plan->output->level || plan->output->slice || plan->output->aspect!=render::Aspect::Color) {
           error="Frame output does not match the current Metal drawable";return false;
         }
+        const auto drawable_begin=Clock::now();
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
+        drawable_ms=std::chrono::duration<double,std::milli>(Clock::now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
         receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error);
       } else receipt=adapter_->Submit(plan,error);
     }
     if(!receipt)return false;
+    if(present&&++presentations_%60==1) {
+      const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
+      std::fprintf(stderr,"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu\n",
+        (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
+        t.validation_ms,t.preparation_ms,t.encoding_ms,last_gpu_ms_,(unsigned long long)t.commands,(unsigned long long)t.draws,
+        (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,(unsigned long long)t.textures_created,
+        (unsigned long long)t.uploaded_bytes,(unsigned long long)(e.state_calls+e.buffer_calls+e.texture_calls+e.sampler_calls),
+        (unsigned long long)e.avoided_calls,adapter_->Stats().allocated_bytes);
+    }
     pending_.push_back({std::move(receipt),std::move(plan)});
     error.clear();return true;
   }
@@ -152,6 +167,7 @@ class Backend final:public render::FrameBackend {
   bool FinishOldest(std::string& error) {
     auto submitted=std::move(pending_.front());pending_.pop_front();
     const bool okay=submitted.receipt.Wait(error);
+    if(okay)last_gpu_ms_=submitted.receipt.GpuMilliseconds();
     if(!okay && failure_.empty())failure_=error.empty()?"Metal GPU completion failed":error;
     return okay;
   }
@@ -160,6 +176,7 @@ class Backend final:public render::FrameBackend {
   render::BackendCapabilities caps_;
   std::string libraries_,failure_;
   uint32_t maximum_;
+  uint64_t presentations_=0;double last_gpu_ms_=0;
   bool open_attempted_=false;
   std::thread::id worker_;
   std::unique_ptr<Renderer> renderer_;

@@ -202,6 +202,39 @@ int main(int argc, char** argv) {
       reversed.draw.viewport[4]=range[0];reversed.draw.viewport[5]=range[1];
       Require(!Validate(reversed,error), "Out-of-range viewport depth accepted");
     }
+    IndexRangeCache ranges;uint64_t maximum=99;
+    Require(Validate(c,error,nullptr,&ranges,&maximum)&&maximum==2,"Cached index maximum is incorrect");
+    const auto scanned=ranges.ScannedIndices();
+    Require(Validate(c,error,nullptr,&ranges)&&ranges.ScannedIndices()==scanned&&ranges.Hits()>0,"Immutable indices were rescanned");
+    auto cached_bad=c;cached_bad.draw.base_vertex=-2;
+    Require(!Validate(cached_bad,error,nullptr,&ranges),"Cached indices hid a negative effective vertex");
+    cached_bad=c;cached_bad.draw.vertices[0].length=31;
+    Require(!Validate(cached_bad,error,nullptr,&ranges),"Cached indices hid a shortened vertex view");
+    cached_bad=c;cached_bad.draw.indices.length=2;
+    Require(!Validate(cached_bad,error,nullptr,&ranges),"Cached indices hid a shortened index view");
+    cached_bad=c;cached_bad.draw.indices.offset=0;
+    Require(!Validate(cached_bad,error,nullptr,&ranges),"Different index subrange reused cached extrema");
+    auto replacement=std::make_shared<Bytes>(*c.draw.indices.source);replacement->generation++;
+    uint16_t larger=9;std::memcpy(replacement->value.data()+10,&larger,2);
+    cached_bad=c;cached_bad.draw.indices.source=replacement;
+    Require(!Validate(cached_bad,error,nullptr,&ranges),"New resource generation reused stale extrema");
+    IndexRange range;auto restart_owner=std::make_shared<Bytes>();restart_owner->generation=100;
+    const uint32_t restart_data[]{UINT32_MAX,4,1};restart_owner->value.resize(sizeof(restart_data));
+    std::memcpy(restart_owner->value.data(),restart_data,sizeof(restart_data));
+    Require(ranges.Analyze({restart_owner,0,sizeof(restart_data)},3,4,range,error)&&range.has_restart&&
+      range.minimum==1&&range.maximum==UINT32_MAX&&range.maximum_without_restart==4,"32-bit restart summary is incorrect");
+    // A recycled object address with a new shared owner must not hit old extrema.
+    alignas(Bytes) std::byte recycled[sizeof(Bytes)];
+    const auto recycled_owner=[&](uint16_t high) {
+      auto* bytes=std::construct_at(reinterpret_cast<Bytes*>(recycled));bytes->generation=400;
+      const uint16_t values[]{0,high};bytes->value.resize(sizeof(values));std::memcpy(bytes->value.data(),values,sizeof(values));
+      return std::shared_ptr<Bytes>(bytes,[](Bytes* b){std::destroy_at(b);});
+    };
+    auto first_owner=recycled_owner(3);const auto reused_address=first_owner.get();
+    Require(ranges.Analyze({first_owner,0,4},2,2,range,error)&&range.maximum==3,"First recycled allocation failed");
+    first_owner.reset();auto second_owner=recycled_owner(9);
+    Require(second_owner.get()==reused_address&&ranges.Analyze({second_owner,0,4},2,2,range,error)&&range.maximum==9,
+        "Recycled allocation address reused an expired control block's index extrema");
     auto bad = c; bad.draw.base_vertex = -2; Require(!Validate(bad, error), "Negative effective index accepted");
     bad = c; bad.draw.vertices[0].length = 31; Require(!Validate(bad, error), "Actual index exceeds vertex view");
     bad = c; bad.draw.vertices[16].length = 16; Require(!Validate(bad, error), "Second instance reads short stream");

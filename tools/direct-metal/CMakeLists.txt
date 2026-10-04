@@ -115,3 +115,14 @@ target_include_directories(metal_frame_continuity_test PRIVATE
   "${ROOT}/glue/rexglue-sdk-main/thirdparty/vulkan-headers/include")
 target_compile_options(metal_frame_continuity_test PRIVATE -UNDEBUG)
 add_test(NAME metal_frame_continuity COMMAND metal_frame_continuity_test)
+
+# Repeatable synthetic admission/submission comparison; requires a real Metal device.
+add_executable(metal_performance_benchmark performance_benchmark.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_metal_frame.mm" "${ROOT}/ios/bridge/theft4_metal_host_shaders.mm")
+target_include_directories(metal_performance_benchmark PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_performance_benchmark PRIVATE -fobjc-arc)
+target_compile_definitions(metal_performance_benchmark PRIVATE THEFT4_PERF_OPTIMIZED=1)
+target_link_libraries(metal_performance_benchmark PRIVATE metal_shader_catalog render_plan
+  "-framework Foundation" "-framework Metal" "-framework QuartzCore")

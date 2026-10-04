@@ -887,6 +887,24 @@ static void bootEvent(void *context, const char *event) {
     }
     [self applyLimitedMemoryCaps];
     if (_fsrBoost.on) _enhancedOutput.on = YES;
+    // A controlled performance run selects current launcher choices only.
+    // It does not migrate saved preferences or alter normal launches.
+    const char *frameSpeedFirst = getenv("THEFT4_FRAME_SPEED_FIRST");
+    if (_bringupOverlay.renderResolution && frameSpeedFirst && strcmp(frameSpeedFirst, "1") == 0) {
+        _bringupOverlay.renderResolution.selectedSegmentIndex = 1; // 720p
+        _bringupOverlay.fsrUpscaling.on = NO;
+        _antiAliasing.selectedSegmentIndex = 0;
+        _motionBlur.on = NO;
+        _depthOfField.on = NO;
+        _anisotropicFiltering.on = NO;
+        _reflectionQuality.selectedSegmentIndex = 0;
+        if (_modelDetail.selectedSegmentIndex > 1) _modelDetail.selectedSegmentIndex = 1;
+        if (_shadowQuality.selectedSegmentIndex > 1) _shadowQuality.selectedSegmentIndex = 1;
+        if (_drawDistance.selectedSegmentIndex > 1) _drawDistance.selectedSegmentIndex = 1;
+        _enhancedOutput.on = NO;
+        _fsrBoost.on = NO;
+        [self record:@"frame-speed-first-test: render=1280x720 fsr=off aa=off motion-blur=off dof=off reflection=320x180 highest-lod=off"];
+    }
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;

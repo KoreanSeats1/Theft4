@@ -19,10 +19,11 @@ struct TextureUpload {
 struct ResourceCacheStats {
   uint64_t buffer_creates = 0, texture_creates = 0;
   uint64_t buffer_hits = 0, texture_hits = 0, retired = 0, uploaded_bytes = 0;
+  uint64_t resident_buffer_bytes=0,peak_buffer_bytes=0,buffer_evictions=0;
 };
 class ResourceCache {
  public:
-  explicit ResourceCache(Renderer& renderer);
+  explicit ResourceCache(Renderer& renderer,size_t buffer_budget=128*1024*1024);
   ~ResourceCache();
   ResourceCache(const ResourceCache&) = delete;
   ResourceCache& operator=(const ResourceCache&) = delete;
@@ -40,6 +41,10 @@ class ResourceCache {
   // live resource versions retain their pages through GPU completion.
   void BeginUploadBatch();
   BufferView UniformBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
+  // Geometry and indices use the same append-only arena as constants. Every
+  // view is immutable; cache eviction releases ownership, never reuses bytes
+  // in a buffer that an encoded or pending frame can still retain.
+  BufferView UploadBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
   size_t SweepRetired();
   void Clear();
   size_t BufferCount() const;

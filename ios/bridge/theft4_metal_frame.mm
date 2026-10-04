@@ -226,16 +226,16 @@ bool FrameAdapter::Open(const std::string& libraries,std::string& error){
   if(!impl_->draws.Open(libraries,error)||!impl_->host.Open(libraries+"/Host",error))return false;
   impl_->host_pipelines.clear();return true;
 }
-Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error) {
-  return SubmitFrame(plan,{},nil,error);
+Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error,render::SurfaceContents* published) {
+  return SubmitFrame(plan,{},nil,error,published);
 }
 Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::FramePlan>& plan,
-                                      render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error) {
+                                      render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published) {
   if(!drawable||!target.id||!target.generation){error="Missing ordered Metal presentation target";return {};}
-  return SubmitFrame(plan,target,drawable,error);
+  return SubmitFrame(plan,target,drawable,error,published);
 }
 Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
-                                 render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error) {
+                                 render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published) {
   using Clock=std::chrono::steady_clock;
   const auto begin=Clock::now();
   const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
@@ -365,6 +365,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
   timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;
   timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
+  if(published)*published=std::move(final);
   return receipt;
 }
 id<MTLTexture> FrameAdapter::Output(const render::FramePlan& plan,std::string& error) {

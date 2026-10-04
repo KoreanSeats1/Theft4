@@ -3,6 +3,7 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <list>
 #include <unordered_map>
 
 namespace theft4::metal {
@@ -125,7 +126,9 @@ bool Validate(const Shape& s,std::span<const uint8_t> bytes,std::span<const Text
 }
 }
 struct ResourceCache::Impl {
-  struct BufferEntry { std::weak_ptr<const void> owner; id<MTLBuffer> buffer=nil; size_t size=0; };
+  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false;};
+  using Allocations=std::list<Allocation>;
+  struct BufferEntry { std::weak_ptr<const void> owner; id<MTLBuffer> buffer=nil; size_t size=0;Allocations::iterator allocation; };
   struct TextureEntry {
     std::weak_ptr<const void> owner;
     id<MTLTexture> texture=nil;
@@ -135,15 +138,46 @@ struct ResourceCache::Impl {
   };
   Renderer& renderer;
   ResourceCacheStats stats;
-  struct UniformEntry {std::weak_ptr<const void> owner;BufferView view;};
+  struct UniformEntry {std::weak_ptr<const void> owner;BufferView view;Allocations::iterator allocation;};
   std::unordered_map<Key,UniformEntry,KeyHash> uniforms;
+  Allocations allocations;
+  size_t buffer_budget;
   id<MTLBuffer> uniform_page=nil;
   NSUInteger uniform_used=0;
+  Allocations::iterator current_page;
   std::unordered_map<Key,BufferEntry,KeyHash> buffers;
   std::unordered_map<Key,TextureEntry,KeyHash> textures;
-  explicit Impl(Renderer& value):renderer(value){}
+  explicit Impl(Renderer& value,size_t budget):renderer(value),buffer_budget(std::max(size_t(256*1024),budget)){}
+  void Release(Allocations::iterator allocation,bool eviction) {
+    if(allocation->buffer==uniform_page){uniform_page=nil;uniform_used=0;}
+    for(const auto& key:allocation->keys) {
+      if(allocation->packed) {
+        auto i=uniforms.find(key);
+        if(i!=uniforms.end()&&i->second.allocation==allocation){uniforms.erase(i);++stats.retired;}
+      }else {
+        auto i=buffers.find(key);
+        if(i!=buffers.end()&&i->second.allocation==allocation){buffers.erase(i);++stats.retired;}
+      }
+    }
+    stats.resident_buffer_bytes-=allocation->buffer.length;
+    if(eviction)++stats.buffer_evictions;
+    allocations.erase(allocation);
+  }
+  void Reserve(size_t size) {
+    // One oversized source may exceed the budget. It is admitted intact;
+    // the next allocation evicts it. No clipping or in-flight overwrite.
+    while(!allocations.empty()&&stats.resident_buffer_bytes>buffer_budget-std::min(buffer_budget,size))
+      Release(allocations.begin(),true);
+  }
+  Allocations::iterator Add(id<MTLBuffer> buffer,bool packed) {
+    allocations.push_back({buffer,{},packed});auto i=std::prev(allocations.end());
+    stats.resident_buffer_bytes+=buffer.length;
+    stats.peak_buffer_bytes=std::max(stats.peak_buffer_bytes,stats.resident_buffer_bytes);
+    return i;
+  }
+  void Touch(Allocations::iterator allocation){allocations.splice(allocations.end(),allocations,allocation);}
 };
-ResourceCache::ResourceCache(Renderer& renderer):impl_(std::make_unique<Impl>(renderer)){}
+ResourceCache::ResourceCache(Renderer& renderer,size_t budget):impl_(std::make_unique<Impl>(renderer,budget)){}
 ResourceCache::~ResourceCache()=default;
 id<MTLBuffer> ResourceCache::Buffer(const ResourceVersion& version,std::span<const uint8_t> bytes,
                                    std::string& error) {
@@ -154,10 +188,13 @@ id<MTLBuffer> ResourceCache::Buffer(const ResourceVersion& version,std::span<con
   auto found=impl_->buffers.find(key);
   if (found!=impl_->buffers.end() && SameOwner(found->second.owner,version.owner)) {
     if (found->second.size!=bytes.size()) {error="Metal buffer generation changed its payload size";return nil;}
+    impl_->Touch(found->second.allocation);
     ++impl_->stats.buffer_hits;error.clear();return found->second.buffer;
   }
+  impl_->Reserve(bytes.size());
   auto buffer=impl_->renderer.ImmutableBuffer(bytes,error);if (!buffer)return nil;
-  impl_->buffers.insert_or_assign(key,Impl::BufferEntry{version.owner,buffer,bytes.size()});
+  auto allocation=impl_->Add(buffer,false);allocation->keys.push_back(key);
+  impl_->buffers.insert_or_assign(key,Impl::BufferEntry{version.owner,buffer,bytes.size(),allocation});
   ++impl_->stats.buffer_creates;impl_->stats.uploaded_bytes+=bytes.size();error.clear();return buffer;
 }
 id<MTLTexture> ResourceCache::Texture(const ResourceVersion& version,MTLTextureDescriptor* descriptor,
@@ -191,27 +228,38 @@ BufferView ResourceCache::UniformBuffer(const ResourceVersion& version,std::span
   if(!version.owner||!version.generation||bytes.empty()||bytes.size()>64*1024) {
     error="Invalid immutable Metal uniform generation";return {};
   }
+  return UploadBuffer(version,bytes,error);
+}
+BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<const uint8_t> bytes,std::string& error) {
+  if(!version.owner||!version.generation||bytes.empty()) {error="Invalid immutable Metal upload generation";return {};}
+  if(bytes.size()>64*1024) {
+    auto buffer=Buffer(version,bytes,error);return {buffer,0,bytes.size()};
+  }
   const auto key=Identity(version);
   if(auto i=impl_->uniforms.find(key);i!=impl_->uniforms.end()&&SameOwner(i->second.owner,version.owner)) {
     if(i->second.view.length!=bytes.size()){error="Metal uniform generation changed payload size";return {};}
+    impl_->Touch(i->second.allocation);
     ++impl_->stats.buffer_hits;error.clear();return i->second.view;
   }
   constexpr NSUInteger capacity=256*1024,alignment=256;
   const auto offset=(impl_->uniform_used+alignment-1)&~(alignment-1);
   if(!impl_->uniform_page||offset>capacity-bytes.size()) {
+    impl_->Reserve(capacity);
     impl_->uniform_page=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
     if(!impl_->uniform_page){error="Metal uniform page allocation failed";return {};}
-    impl_->uniform_page.label=@"Theft4 Immutable Constant Page";
+    impl_->uniform_page.label=@"Theft4 Immutable Upload Page";
+    impl_->current_page=impl_->Add(impl_->uniform_page,true);
     impl_->uniform_used=0;++impl_->stats.buffer_creates;
   }else impl_->uniform_used=offset;
   BufferView view{impl_->uniform_page,impl_->uniform_used,bytes.size()};
   std::memcpy(static_cast<uint8_t*>(impl_->uniform_page.contents)+view.offset,bytes.data(),bytes.size());
   impl_->uniform_used+=bytes.size();
-  impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view});
+  impl_->current_page->keys.push_back(key);impl_->Touch(impl_->current_page);
+  impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view,impl_->current_page});
   impl_->stats.uploaded_bytes+=bytes.size();error.clear();return view;
 }
 size_t ResourceCache::SweepRetired() {
-  size_t removed=0;
+  const auto retired_before=impl_->stats.retired;size_t removed=0;
   for (auto i=impl_->buffers.begin();i!=impl_->buffers.end();) {
     if(i->second.owner.expired()){i=impl_->buffers.erase(i);++removed;}else ++i;
   }
@@ -221,9 +269,20 @@ size_t ResourceCache::SweepRetired() {
   for(auto i=impl_->uniforms.begin();i!=impl_->uniforms.end();) {
     if(i->second.owner.expired()){i=impl_->uniforms.erase(i);++removed;}else ++i;
   }
-  impl_->stats.retired+=removed;return removed;
+  // A page remains resident only while at least one cached generation uses
+  // it. The page keys can outlive an expired owner, so check the current entry
+  // and allocation identity before deciding that the page is still live.
+  for(auto i=impl_->allocations.begin();i!=impl_->allocations.end();) {
+    const auto allocation=i++;
+    const bool live=std::any_of(allocation->keys.begin(),allocation->keys.end(),[&](const Key& key){
+      if(allocation->packed){auto e=impl_->uniforms.find(key);return e!=impl_->uniforms.end()&&e->second.allocation==allocation;}
+      auto e=impl_->buffers.find(key);return e!=impl_->buffers.end()&&e->second.allocation==allocation;
+    });
+    if(!live)impl_->Release(allocation,false);
+  }
+  impl_->stats.retired+=removed;return impl_->stats.retired-retired_before;
 }
-void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();BeginUploadBatch();}
+void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->allocations.clear();impl_->stats.resident_buffer_bytes=0;BeginUploadBatch();}
 size_t ResourceCache::BufferCount()const{return impl_->buffers.size()+impl_->uniforms.size();}
 size_t ResourceCache::TextureCount()const{return impl_->textures.size();}
 ResourceCacheStats ResourceCache::Stats()const{return impl_->stats;}

@@ -34,7 +34,8 @@ int main(int argc,char** argv) {
       foreign_submit=backend->Submit(first,false,local);foreign_drain=backend->Drain(local);
     });foreign.join();assert(!foreign_open && !foreign_submit && !foreign_drain);
     assert(!backend->Submit(nullptr,false,error));assert(!backend->Submit(first,true,error));
-    assert(backend->Submit(first,false,error));assert(backend->Drain(error));
+    render::SurfaceContents published;
+    assert(backend->Submit(first,false,error,&published));assert(published.contains(*first->output));assert(backend->Drain(error));
     std::vector<uint8_t> pixels;assert(backend->ReadRGBA8(*first,*first->output,pixels,error));
     assert(pixels.size()==32*16*4);
     for(size_t i=0;i<pixels.size();i+=4){assert(pixels[i]==32);assert(pixels[i+1]==64);assert(pixels[i+2]==128);assert(pixels[i+3]==255);}
@@ -43,7 +44,8 @@ int main(int argc,char** argv) {
     auto undefined=std::make_shared<render::Surface>(*surface);undefined->key={2,1};
     auto invalid=Clear(undefined,2,1);
     std::get<render::Pass>(invalid->commands[0]).colors[0]->load=render::Load::Load;
-    assert(!backend->Submit(invalid,false,error));assert(!error.empty());
+    const auto admitted=published;
+    assert(!backend->Submit(invalid,false,error,&published));assert(!error.empty());assert(published==admitted);
     assert(backend->ReadRGBA8(*first,*first->output,pixels,error));assert(pixels[0]==32);
     // Exact CPU owners stay alive for accepted work; submission admission
     // bounds retained plans and Drain retires all of them, even after rejections.

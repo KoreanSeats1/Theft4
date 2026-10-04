@@ -281,12 +281,18 @@ bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* is
           " needed="+std::to_string(needed));
     }
   }
-  std::unordered_set<const Bytes*> sources;
+  // A draw has a fixed maximum number of source views. Most use only four
+  // distinct payloads; a hash-set allocated several heap nodes on every draw
+  // at both frontend and backend admission. Preserve exact de-duplication
+  // with bounded stack storage instead.
+  std::array<const Bytes*,3+kStreamCount+1+kFetchCount> sources{};size_t source_count=0;
   size_t total=0;
   const auto add=[&](const std::shared_ptr<const Bytes>& b) {
     if(!b)return true;
     if(!b->generation||b->value.empty()||b->value.size()>kBlobLimit)return false;
-    if(sources.insert(b.get()).second)total+=b->value.size();
+    if(std::find(sources.begin(),sources.begin()+source_count,b.get())==sources.begin()+source_count) {
+      sources[source_count++]=b.get();total+=b->value.size();
+    }
     return total<=kFileLimit;
   };
   for(const auto& b:d.constants)if(!add(b.source))return Error(error,"Invalid game resource payload");

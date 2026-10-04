@@ -1013,6 +1013,58 @@ struct Probe {
     [results addObject:@{@"case":@"game_texture_pitch_adapter",@"passed":@YES,
       @"padded_rows_and_payload_offset":@YES,@"neutral_plane_pitch":@YES}];
   }
+  void PackedUploadLifetime() {
+    ResourceCache cache(renderer,1024*1024);
+    Case c{};
+    auto pipeline=PipelineFor(c,1);auto prototype=Packet(c,pipeline,{1,1,1,1});
+    auto target=Color();auto frame=renderer.BeginFrame(error);Require(bool(frame));
+    Require(frame.BeginPass(Pass(target,nil,nil),error));
+    std::vector<std::shared_ptr<const uint64_t>> owners;uint64_t generation=0;
+    BufferView first;NSUInteger last_offset=0;
+    const auto upload=[&](std::span<const uint8_t> data) {
+      auto owner=std::make_shared<const uint64_t>(++generation);owners.push_back(owner);
+      auto view=cache.UploadBuffer({owner,generation,{}},data,error);Require(view.buffer);return view;
+    };
+    // Alternate shader-visible constant values and geometry in ONE Metal
+    // allocation, then force eviction while the first encoded draw is pending.
+    for(size_t item=0;item<40;++item) {
+      auto draw=prototype;const float multiplier=item%2?0.75f:0.25f;
+      for(size_t bank=0;bank<3;++bank) {
+        const auto& source=prototype.constants[bank];
+        std::vector<uint8_t> data(source.length);
+        std::memcpy(data.data(),static_cast<const uint8_t*>(source.buffer.contents)+source.offset,data.size());
+        if(bank==2)for(size_t channel=0;channel<4;++channel)std::memcpy(data.data()+0x360+channel*4,&multiplier,4);
+        draw.constants[bank]=upload(data);
+      }
+      const auto vertices=Quad(item%2?std::array<float,4>{0,1,0,1}:std::array<float,4>{1,0,0,1});
+      draw.vertices[0]=upload(Bytes(vertices));
+      if(item==0)first=draw.constants[2];
+      if(item==1){Require(draw.constants[2].buffer==first.buffer);Require(draw.constants[2].offset!=first.offset);}
+      // Alternating invalid offsets must not change the cached encoder state.
+      auto invalid=draw;invalid.constants[2].offset=NSUIntegerMax;
+      Require(!frame.Encode(invalid,error));Require(frame.Encode(draw,error));
+      last_offset=draw.constants[2].offset;
+      if(item==20) {
+        Clear clear;clear.colors=1;clear.rectangle={0,0,W,H};clear.color={0,0,0,1};
+        Require(frame.ClearRectangle(clear,error));
+      }
+    }
+    Require(last_offset!=first.offset);Require(frame.Stats().buffer_offset_calls>40);
+    Require(frame.EndPass(error));
+    for(size_t batch=0;batch<12;++batch) {
+      cache.BeginUploadBatch();std::vector<uint8_t> filler(4096,uint8_t(batch));upload(filler);
+    }
+    Require(cache.Stats().buffer_evictions>0&&cache.Stats().resident_buffer_bytes<=1024*1024);
+    float first_multiplier=0;std::memcpy(&first_multiplier,static_cast<const uint8_t*>(first.buffer.contents)+first.offset+0x360,4);
+    Require(first_multiplier==0.25f);
+    owners.clear();cache.SweepRetired();cache.Clear();prototype={};first={};
+    auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+    const auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+    for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==0&&pixels[i+1]==191&&pixels[i+2]==0&&pixels[i+3]==191);
+    [results addObject:@{@"case":@"packed_upload_offsets_and_eviction_lifetime",@"passed":@YES,
+      @"shader_visible_pixel_constants":@YES,@"changing_geometry_offsets":@YES,@"pending_pages_never_overwritten":@YES,
+      @"rejected_packet_keeps_bindings":@YES,@"clear_resets_buffer_bindings":@YES}];
+  }
   void GameDrawPlan() {
     namespace r=theft4::render;
     PlanAdapter adapter(renderer);Require(adapter.Open(libraries.UTF8String,error));
@@ -1133,7 +1185,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

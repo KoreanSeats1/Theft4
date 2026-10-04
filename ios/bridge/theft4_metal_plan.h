@@ -43,7 +43,18 @@ class PlanAdapter {
   ShaderStore shaders_;
   ResourceCache resources_;
   render::IndexRangeCache index_ranges_;
-  std::map<std::pair<render::Pipeline,render::Primitive>,std::shared_ptr<const Pipeline>> pipelines_;
+  struct PipelineLookup {const render::Pipeline& pipeline;render::Primitive primitive;};
+  struct PipelineLess {
+    using is_transparent=void;
+    using Key=std::pair<render::Pipeline,render::Primitive>;
+    static bool Less(const render::Pipeline& a,render::Primitive ap,const render::Pipeline& b,render::Primitive bp) {
+      const auto order=a<=>b;return order!=0?order<0:ap<bp;
+    }
+    bool operator()(const Key& a,const Key& b)const{return Less(a.first,a.second,b.first,b.second);}
+    bool operator()(const Key& a,const PipelineLookup& b)const{return Less(a.first,a.second,b.pipeline,b.primitive);}
+    bool operator()(const PipelineLookup& a,const Key& b)const{return Less(a.pipeline,a.primitive,b.first,b.second);}
+  };
+  std::map<std::pair<render::Pipeline,render::Primitive>,std::shared_ptr<const Pipeline>,PipelineLess> pipelines_;
   std::map<render::Sampler,id<MTLSamplerState>> samplers_;
   std::array<id<MTLTexture>,4> dummy_images_{};
   struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;};
@@ -56,7 +67,7 @@ class PlanAdapter {
     id<MTLTexture> texture;
   };
   std::unordered_map<const render::Image*,ImageEntry> images_;
-  std::shared_ptr<const Pipeline> PipelineFor(render::Pipeline pipeline,render::Primitive primitive,std::string& error);
+  std::shared_ptr<const Pipeline> PipelineFor(const render::Pipeline& pipeline,render::Primitive primitive,std::string& error);
   bool EnsureDummyImages(std::string& error);
 };
 }

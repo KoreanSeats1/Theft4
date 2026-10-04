@@ -82,6 +82,7 @@ struct Clear {
 };
 struct EncoderStats {
   uint64_t draws=0,state_calls=0,buffer_calls=0,texture_calls=0,sampler_calls=0,avoided_calls=0;
+  uint64_t buffer_offset_calls=0;
 };
 class Receipt {
  public:

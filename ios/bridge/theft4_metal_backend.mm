@@ -65,7 +65,7 @@ class Backend final:public render::FrameBackend {
     target=result;error.clear();return true;
   }
   bool Submit(std::shared_ptr<const render::FramePlan> plan,bool present,
-              std::string& error) override {
+              std::string& error,render::SurfaceContents* published=nullptr) override {
     if(!Worker(error) || !Healthy(error))return false;
     if(!plan || plan->commands.empty()){error="Empty Metal frame submission rejected";return false;}
     if(present && (!layer_ || !plan->output)) {
@@ -93,18 +93,22 @@ class Backend final:public render::FrameBackend {
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
         drawable_ms=std::chrono::duration<double,std::milli>(Clock::now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
-        receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error);
-      } else receipt=adapter_->Submit(plan,error);
+        receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published);
+      } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
     if(present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
-      char message[1024];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu",
+      const auto resources=adapter_->ImmutableStats();
+      char message[1280];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu buffer-cache-bytes=%llu buffer-cache-peak=%llu buffer-evictions=%llu gpu-allocated-bytes=%llu buffer-offset-calls=%llu",
         (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
         t.validation_ms,t.preparation_ms,t.encoding_ms,last_gpu_ms_,(unsigned long long)t.commands,(unsigned long long)t.draws,
         (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,(unsigned long long)t.textures_created,
         (unsigned long long)t.uploaded_bytes,(unsigned long long)(e.state_calls+e.buffer_calls+e.texture_calls+e.sampler_calls),
-        (unsigned long long)e.avoided_calls,adapter_->Stats().allocated_bytes);
+        (unsigned long long)e.avoided_calls,adapter_->Stats().allocated_bytes,
+        (unsigned long long)resources.resident_buffer_bytes,(unsigned long long)resources.peak_buffer_bytes,
+        (unsigned long long)resources.buffer_evictions,(unsigned long long)device_.currentAllocatedSize,
+        (unsigned long long)e.buffer_offset_calls);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
     pending_.push_back({std::move(receipt),std::move(plan)});

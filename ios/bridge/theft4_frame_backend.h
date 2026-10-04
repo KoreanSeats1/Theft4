@@ -32,7 +32,11 @@ class FrameBackend {
   virtual bool Target(PresentationTarget&,std::string& error)=0;
   // present=true supplies the plan's final allocation from the native layer.
   // present=false commits an internal flush without acquiring a drawable.
-  virtual bool Submit(std::shared_ptr<const FramePlan>,bool present,std::string& error)=0;
+  // The backend validates the complete immutable frame once. Accepted content
+  // is returned only after submission succeeds; rejected frames leave the
+  // caller's journal untouched. Producers need no second frame-wide traversal.
+  virtual bool Submit(std::shared_ptr<const FramePlan>,bool present,std::string& error,
+                      SurfaceContents* published=nullptr)=0;
   virtual bool Drain(std::string& error)=0;
   virtual void Close()=0;
   // Explicit guest/validation readback only; never called by normal publication.

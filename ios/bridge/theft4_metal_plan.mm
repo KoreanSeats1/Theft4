@@ -111,27 +111,37 @@ std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer& renderer,const rend
   }
   return pixel ? renderer.MakePipeline(vertex,*pixel,descriptor,depth,error) : renderer.MakeDepthPipeline(vertex,descriptor,depth,error);
 }
-std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(render::Pipeline p,render::Primitive primitive,std::string& error) {
+std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline& source,render::Primitive primitive,std::string& error) {
+  const auto& p=source;
   if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
   const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
   if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
   const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex);
   const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
   if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
-  p.vertex.specialization=vs_meta->Specialization(p.vertex.specialization);
-  if(ps_meta)p.fragment.specialization=ps_meta->Specialization(p.fragment.specialization);
-  auto key=std::pair{p,primitive};if(auto it=pipelines_.find(key);it!=pipelines_.end()){error.clear();return it->second;}
-  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex,p.vertex.specialization,error);
+  const auto vs_specialization=vs_meta->Specialization(p.vertex.specialization);
+  const auto ps_specialization=ps_meta?ps_meta->Specialization(p.fragment.specialization):p.fragment.specialization;
+  render::Pipeline specialized;const auto* effective=&source;
+  if(vs_specialization!=p.vertex.specialization||ps_specialization!=p.fragment.specialization) {
+    specialized=source;specialized.vertex.specialization=vs_specialization;
+    specialized.fragment.specialization=ps_specialization;effective=&specialized;
+  }
+  // Borrow the immutable declaration for hits. The previous value argument
+  // and owning map lookup copied its attribute vector twice on every draw.
+  if(auto it=pipelines_.find(PipelineLookup{*effective,primitive});it!=pipelines_.end()){error.clear();return it->second;}
+  auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex,vs_specialization,error);
   if(!vertex.function)return {};
   Shader pixel{};
-  if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,p.fragment.specialization,error);if(!pixel.function)return {};}
-  auto result=BuildFixedPipeline(renderer_,p,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
-  if(result)pipelines_.emplace(std::move(key),result);return result;
+  if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,ps_specialization,error);if(!pixel.function)return {};}
+  auto result=BuildFixedPipeline(renderer_,*effective,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
+  if(result)pipelines_.emplace(std::pair{*effective,primitive},result);return result;
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
   if(!b.source)return {};
-  auto buffer=resources_.Buffer(Version(b.source),b.source->value,error);
-  return {buffer,NSUInteger(b.offset),NSUInteger(b.length)};
+  if(b.offset>b.source->value.size()||b.length>b.source->value.size()-b.offset){error="Invalid buffer source range";return {};}
+  auto view=resources_.UploadBuffer(Version(b.source),b.source->value,error);
+  if(!view.buffer)return {};
+  view.offset+=NSUInteger(b.offset);view.length=NSUInteger(b.length);return view;
 }
 BufferView PlanAdapter::ConstantFor(const render::Buffer& b,std::string& error) {
   if(!b.source)return {};

@@ -341,8 +341,14 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     auto& previous=stage==Stage::Vertex?cached.vertex_buffers[slot]:cached.fragment_buffers[slot];
     const auto object=(__bridge const void*)view.buffer;
     if(previous.object==object&&previous.offset==view.offset){++stats.avoided_calls;return;}
-    if(stage==Stage::Vertex)[e setVertexBuffer:view.buffer offset:view.offset atIndex:slot];
-    else [e setFragmentBuffer:view.buffer offset:view.offset atIndex:slot];
+    if(previous.object==object) {
+      if(stage==Stage::Vertex)[e setVertexBufferOffset:view.offset atIndex:slot];
+      else [e setFragmentBufferOffset:view.offset atIndex:slot];
+      ++stats.buffer_offset_calls;
+    }else {
+      if(stage==Stage::Vertex)[e setVertexBuffer:view.buffer offset:view.offset atIndex:slot];
+      else [e setFragmentBuffer:view.buffer offset:view.offset atIndex:slot];
+    }
     previous={object,view.offset};++stats.buffer_calls;
   };
   for(NSUInteger i=0;i<3;++i) {

@@ -137,6 +137,13 @@ target_link_libraries(constant_projection_corpus PRIVATE libzstd_static)
 add_test(NAME constant_projection_corpus COMMAND constant_projection_corpus)
 
 # Repeatable synthetic admission/submission comparison; requires a real Metal device.
+add_executable(metal_upload_stress_test upload_stress_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_upload_stress_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_upload_stress_test PRIVATE -fobjc-arc)
+target_compile_definitions(metal_upload_stress_test PRIVATE THEFT4_PACKED_UPLOAD_STRESS=1)
+target_link_libraries(metal_upload_stress_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
 add_executable(metal_performance_benchmark performance_benchmark.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
   "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"
@@ -144,5 +151,6 @@ add_executable(metal_performance_benchmark performance_benchmark.mm
 target_include_directories(metal_performance_benchmark PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
 target_compile_options(metal_performance_benchmark PRIVATE -fobjc-arc)
 target_compile_definitions(metal_performance_benchmark PRIVATE THEFT4_PERF_OPTIMIZED=1)
+target_compile_definitions(metal_performance_benchmark PRIVATE THEFT4_PACKED_UPLOAD_STATS=1)
 target_link_libraries(metal_performance_benchmark PRIVATE metal_shader_catalog render_plan
   "-framework Foundation" "-framework Metal" "-framework QuartzCore")

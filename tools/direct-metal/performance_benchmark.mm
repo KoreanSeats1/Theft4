@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -43,7 +44,8 @@ std::shared_ptr<render::FramePlan> Plan(std::shared_ptr<render::Surface> surface
   plan->commands={pass};plan->output=a.view;return plan;
 }
 int main(int argc,char** argv) {
-  if(argc!=3)return 2;
+  if(argc!=3&&argc!=4)return 2;
+  const bool streaming=argc==4&&std::string(argv[3])=="--streaming";
   try {@autoreleasepool {
     std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer};
     Require(renderer.Ready(),"Metal unavailable");Require(adapter.Open(argv[1],error),error);
@@ -73,14 +75,33 @@ int main(int argc,char** argv) {
     }
     prototype=Draw(200);
     uint64_t buffers_created=0,uploaded=0;
-    for(size_t frame=0;frame<22;++frame) {@autoreleasepool {
+    std::deque<std::shared_ptr<render::FramePlan>> retained_generations;
+    const auto frames=streaming?52u:22u;
+    const auto allocated_before=renderer.Device().currentAllocatedSize;
+    for(size_t frame=0;frame<frames;++frame) {@autoreleasepool {
       auto plan=Plan(surface,frame+2);auto& draws=std::get<render::Pass>(plan->commands[0]).commands;
       for(size_t i=0;i<1000;++i) {
         auto c=std::make_shared<render::Capture>(*prototype);
         // Per-object constants change, while vertices and other banks stay static.
         std::vector<uint8_t> data(4096);const uint32_t value=uint32_t(i);
         std::memcpy(data.data(),&value,4);c->draw.constants[0]=Bytes(data,1000+frame*1000+i);
+        if(streaming) {
+          const auto& source=prototype->draw.vertices[0].source->value;
+          c->draw.vertices[0]=Bytes(source,100000+frame*1000+i);
+        }
         draws.push_back(render::FrameDraw{c,{}});
+      }
+      if(streaming) {
+        // The live game publishes hundreds of passes and retains CPU source
+        // generations beyond one frame. Exercise both behaviors, not only one
+        // static triangle and one pass. LOAD preserves the previous pass.
+        auto original=std::move(draws);auto base=std::get<render::Pass>(plan->commands[0]);
+        plan->commands.clear();
+        for(size_t group=0;group<200;++group) {
+          auto split=base;if(group)split.colors[0]->load=render::Load::Load;
+          for(size_t item=0;item<5;++item)split.commands.push_back(std::move(original[group*5+item]));
+          plan->commands.push_back(std::move(split));
+        }
       }
       const auto before=adapter.ImmutableStats();const auto began=Clock::now();
       auto receipt=adapter.Submit(plan,error);Require(bool(receipt),error);
@@ -90,10 +111,11 @@ int main(int argc,char** argv) {
         submit_ms.push_back(elapsed);const auto after=adapter.ImmutableStats();
         buffers_created+=after.buffer_creates-before.buffer_creates;uploaded+=after.uploaded_bytes-before.uploaded_bytes;
       }
-      if(frame==21) {
+      if(frame==frames-1) {
         auto pixels=renderer.ReadRGBA8(adapter.Output(*plan,error),error);Require(pixels.size()==8*8*4,error);
         for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==255&&pixels[i+1]==0&&pixels[i+2]==0&&pixels[i+3]==255,"Benchmark render parity failed");
       }
+      if(streaming){retained_generations.push_back(plan);if(retained_generations.size()>40)retained_generations.pop_front();}
     }}
     const auto median=[](auto v){std::sort(v.begin(),v.end());return v[v.size()/2];};
     nlohmann::json report{{"optimized",bool(THEFT4_PERF_OPTIMIZED)},{"gpu",renderer.Device().name.UTF8String},
@@ -101,6 +123,13 @@ int main(int argc,char** argv) {
       {"synthetic_submission_draws",1000},{"submission_median_ms",median(submit_ms)},
       {"submission_samples_ms",submit_ms},{"validation_samples_ms",validation_ms},
       {"measured_frames",submit_ms.size()},{"buffer_allocations",buffers_created},{"uploaded_bytes",uploaded},{"pixel_parity",true}};
+    report["streaming_geometry"]=streaming;report["passes_per_frame"]=streaming?200:1;
+    report["gpu_allocated_growth_bytes"]=renderer.Device().currentAllocatedSize-allocated_before;
+#ifdef THEFT4_PACKED_UPLOAD_STATS
+    const auto stats=adapter.ImmutableStats();
+    report["buffer_cache_peak_bytes"]=stats.peak_buffer_bytes;report["buffer_cache_resident_bytes"]=stats.resident_buffer_bytes;
+    report["buffer_evictions"]=stats.buffer_evictions;
+#endif
 #if THEFT4_PERF_OPTIMIZED
     report["index_scanned"]=ranges.ScannedIndices();report["index_cache_hits"]=ranges.Hits();
 #endif

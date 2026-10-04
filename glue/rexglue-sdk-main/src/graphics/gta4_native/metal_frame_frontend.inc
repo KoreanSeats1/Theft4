@@ -188,16 +188,21 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   for(const auto& entry:native_metal_frame_->buffers)resident+=entry.second.owner->value.size();
   for(const auto& entry:native_metal_frame_->images)resident+=entry.second.owner->source->value.size();
   constexpr size_t budget=256*1024*1024;
-  while(resident>budget) {
-    auto b=std::min_element(native_metal_frame_->buffers.begin(),native_metal_frame_->buffers.end(),
-        [](const auto& a,const auto& b){return a.second.used<b.second.used;});
-    auto i=std::min_element(native_metal_frame_->images.begin(),native_metal_frame_->images.end(),
-        [](const auto& a,const auto& b){return a.second.used<b.second.used;});
-    if(b!=native_metal_frame_->buffers.end()&&(i==native_metal_frame_->images.end()||b->second.used<=i->second.used)) {
-      resident-=b->second.owner->value.size();native_metal_frame_->buffers.erase(b);
-    } else if(i!=native_metal_frame_->images.end()) {
-      resident-=i->second.owner->source->value.size();native_metal_frame_->images.erase(i);
-    } else break;
+  if(resident>budget) {
+    // Sort eviction candidates once. Repeated minimum searches turned a burst
+    // of streamed resources into quadratic work at the cache-budget boundary.
+    struct Candidate {uint64_t used;size_t bytes;bool image;std::array<uint64_t,8> key;};
+    std::vector<Candidate> candidates;candidates.reserve(native_metal_frame_->buffers.size()+native_metal_frame_->images.size());
+    for(const auto& [key,entry]:native_metal_frame_->buffers)
+      candidates.push_back({entry.used,entry.owner->value.size(),false,key});
+    for(const auto& [key,entry]:native_metal_frame_->images)
+      candidates.push_back({entry.used,entry.owner->source->value.size(),true,{key}});
+    std::sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.used<b.used;});
+    for(const auto& entry:candidates) {
+      if(resident<=budget)break;
+      if(entry.image)native_metal_frame_->images.erase(entry.key[0]);else native_metal_frame_->buffers.erase(entry.key);
+      resident-=entry.bytes;
+    }
   }
   sweep_done=tick();
   NativeMetalFrameState next;
@@ -1038,10 +1043,11 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   lower_done=tick();validate_done=submit_done=lower_done;
   if(!plan->commands.empty()) {
     r::SurfaceContents final;
-    if(!r::ValidateFrame(*plan,native_metal_frame_->contents,final,error,&native_metal_frame_->index_ranges))return false;
-    validate_done=tick();
     SetNativeWorkerDiagnosticPhase(NativeWorkerDiagnosticPhase::kQueueSubmission);
-    if(!frame_backend_->Submit(plan,present.device!=0,error))return false;
+    // The Metal backend owns complete frame admission and returns its accepted
+    // content journal. Per-draw source admission above still rejects malformed
+    // title draws before they enter this plan; no frame-wide check is skipped.
+    if(!frame_backend_->Submit(plan,present.device!=0,error,&final))return false;
     submit_done=tick();
     std::erase_if(next.contents,[&](const auto& view){return retained.contains(view.surface);});
     next.contents.insert(final.begin(),final.end());

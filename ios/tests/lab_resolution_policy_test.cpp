@@ -9,22 +9,32 @@
 #include <utility>
 
 int main() {
-    // Exercise the same aspect fitting and 1.5x calculation used by the native
-    // resolution hooks, not just the policy's declared render dimensions.
-    // Changing the display, FSR or an old Boost preference must not shrink the
-    // selected scene budget back to 720p.
+    // Exercise the launcher's centered 16:9 contract and the 1.5x calculation
+    // used by the native resolution hooks. Display size and FSR must not
+    // silently change the selected scene budget.
+    struct DisplayCase {
+        unsigned width, height;
+        unsigned fsr_width, fsr_height;
+        unsigned native_width, native_height;
+    };
+    constexpr DisplayCase displays[] = {
+        {2420,1668,2416,1359,2416,1359},
+        {2752,2064,2752,1548,2752,1548},
+        {0,0,1920,1080,1920,1080},
+        {1024,768,1920,1080,1024,576},
+        {1668,2420,1920,1080,1664,936},
+        {7680,4320,3840,2160,7680,4320},
+    };
     for (const unsigned scene_height : {540u, 720u, 900u, 1080u}) {
         for (bool fsr : {false, true}) {
-            for (const auto display : {std::pair<unsigned,unsigned>{2420,1668}, {2752,2064},
-                                       {0,0}, {1024,768}, {1668,2420}, {7680,4320}}) {
+            for (const auto display : displays) {
                 const auto p = theft4_output_policy_for_lab(
-                    scene_height, fsr, display.first, display.second);
-                const unsigned scene_width = theft4_width_for_native_aspect(
-                    scene_height, display.first, display.second);
+                    scene_height, fsr, display.width, display.height);
+                const unsigned scene_width = scene_height * 16 / 9;
                 assert(p.render_width == scene_width && p.render_height == scene_height);
                 assert(p.fsr1 == fsr);
                 const auto logical = gta4::aspect::resolution::Select(
-                    {p.video_width,p.video_height}, "auto", {display.first,display.second});
+                    {p.video_width,p.video_height}, "16:9", {display.width,display.height});
                 const int resolved_width = int(std::round(logical.width / (fsr ? 1.5 : 1.0)));
                 const int resolved_height = int(std::round(logical.height / (fsr ? 1.5 : 1.0)));
                 // Integer render targets can differ by one pixel when the
@@ -33,13 +43,8 @@ int main() {
                 assert(std::abs(resolved_width - int(scene_width)) <= 1);
                 assert(std::abs(resolved_height - int(scene_height)) <= 1);
                 if (fsr) {
-                    if (display.first && display.second) {
-                        assert(p.output_width == display.first);
-                        assert(p.output_height == display.second);
-                    } else {
-                        assert(p.output_width == scene_width * 3 / 2);
-                        assert(p.output_height == scene_height * 3 / 2);
-                    }
+                    assert(p.output_width == display.fsr_width);
+                    assert(p.output_height == display.fsr_height);
                 } else {
                     assert(p.output_width == scene_width && p.output_height == scene_height);
                 }
@@ -88,14 +93,11 @@ int main() {
     assert(full_ipad.output_height == 1080);
     assert(full_ipad.output_width == theft4_width_for_native_aspect(1080, 2420, 1668));
 
-    for (const auto display : {std::pair<unsigned,unsigned>{2420,1668},
-                               {2736,1260}, {0,0}}) {
+    for (const auto display : displays) {
         const auto native = theft4_output_policy_for_lab(
-            THEFT4_LAB_NATIVE_16_9, true, display.first, display.second);
-        const unsigned expected_width = display.first ? display.first : 1920;
-        const unsigned expected_height = display.second ? display.second : 1080;
-        assert(native.render_width == expected_width);
-        assert(native.render_height == expected_height);
+            THEFT4_LAB_NATIVE_16_9, true, display.width, display.height);
+        assert(native.render_width == display.native_width);
+        assert(native.render_height == display.native_height);
         assert(native.output_width == native.render_width);
         assert(native.output_height == native.render_height);
         assert(native.video_width == native.render_width);
@@ -103,5 +105,5 @@ int main() {
         assert(!native.fsr1);
     }
 
-    puts("Lab 540p/720p/900p/1080p/native-pixel full-aspect + FSR policies passed");
+    puts("Lab 540p/720p/900p/1080p/native-pixel centered-16:9 + FSR policies passed");
 }

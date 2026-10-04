@@ -89,11 +89,16 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
     const auto unborrow=MakeScopeExit([&]{if(metadata)metadata->source.reset();});
     const auto format=metadata?metadata->format:VK_FORMAT_R8G8B8A8_UNORM;
     const bool linear=caps.float32_filtering||(format!=VK_FORMAT_R32_SFLOAT&&format!=VK_FORMAT_R32G32_SFLOAT&&format!=VK_FORMAT_R32G32B32A32_SFLOAT);
-    NativeSamplerKey sampler_key;VkSamplerCreateInfo sampler_info;auto sampler=std::make_shared<r::Sampler>();
+    NativeSamplerKey sampler_key;VkSamplerCreateInfo sampler_info;r::Sampler sampler;
     if(!PrepareNativeSampler(fetch,metadata.get(),
         {caps.mirror_clamp_to_edge,true,float(caps.maximum_anisotropy)},linear,sampler_key,sampler_info)||
-        !r::source::DecodeSampler(sampler_info,*sampler,error))return reject("Metal effective sampler preparation failed");
-    packet.fetch.sampler=std::move(sampler);
+        !r::source::DecodeSampler(sampler_info,sampler,error))return reject("Metal effective sampler preparation failed");
+    if(auto i=native_metal_frame_->samplers.find(sampler);i!=native_metal_frame_->samplers.end())packet.fetch.sampler=i->second;
+    else {
+      if(native_metal_frame_->samplers.size()>=2048)native_metal_frame_->samplers.clear();
+      packet.fetch.sampler=std::make_shared<const r::Sampler>(sampler);
+      native_metal_frame_->samplers.emplace(sampler,packet.fetch.sampler);
+    }
 
   output.produced=packet.produced;output.image=packet.fetch.image;output.sampler=packet.fetch.sampler;
   error.clear();return true;
@@ -156,6 +161,14 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   const uint32_t bottom=ScaleCoordinateCeil(logical_bottom,target.logical_height,target.height);
   if(viewport.empty||right==left||bottom==top){output={};error.clear();return true;}
 
+  // Fine timings sample one frame in 60, with no clock calls on other draws.
+  const bool sample=native_metal_frame_->sample_draw_timing;
+  uint64_t phase_tick=sample?rex::chrono::Clock::QueryHostTickCount():0;
+  const auto phase=[&](uint64_t& accumulated) {
+    if(sample){const auto now=rex::chrono::Clock::QueryHostTickCount();accumulated+=now-phase_tick;phase_tick=now;}
+  };
+  auto& timing=native_metal_frame_->draw_timing;
+
   const auto selection=ResolvePipelineShaderOverrides(state.vertex_shader_resource,state.pixel_shader_resource,target.samples);
   if(selection.vertex_override||selection.pixel_override)return reject("Metal override shader library lowering unavailable");
   NativePipelineCapabilities capabilities;
@@ -176,14 +189,36 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     chosen.used_texture_mask=shader->used_texture_mask;
     chosen.filename=shader->filename.c_str();return chosen;
   };
-  auto description=PrepareNativePipelineDescription(state,fixed,key,capabilities,
-      select_shader(state.vertex_shader_resource),select_shader(state.pixel_shader_resource),error);
-  if(!description)return false;
-  if(!description->snapshot)return reject("Metal effective pipeline snapshot unavailable");
   auto capture=std::make_shared<r::Capture>();capture->frame=diagnostic_submitted_frame_;
   capture->command=uint32_t(std::min(diagnostic_command_index_,size_t(UINT32_MAX)));
   capture->width=target.width;capture->height=target.height;
-  auto& draw=capture->draw;if(!r::source::Pipeline(*description->snapshot,draw,error))return false;
+  // Preserve every field consumed by CPU snapshot construction, including
+  // disabled state that the Vulkan PSO key intentionally canonicalizes away.
+  // Dynamic masks, references, viewport and bias are applied below each draw.
+  auto cpu_key=key;
+  cpu_key.depth_function=fixed.depth_function;cpu_key.depth_write_enable=fixed.depth_write_enable;
+  cpu_key.alpha_function=fixed.alpha_function;cpu_key.alpha_to_mask_enable=fixed.alpha_to_mask;
+  cpu_key.two_sided_stencil=fixed.two_sided_stencil;
+  cpu_key.stencil_fail=fixed.stencil_fail;cpu_key.stencil_depth_fail=fixed.stencil_depth_fail;
+  cpu_key.stencil_pass=fixed.stencil_pass;cpu_key.stencil_function=fixed.stencil_function;
+  cpu_key.ccw_stencil_fail=fixed.ccw_stencil_fail;cpu_key.ccw_stencil_depth_fail=fixed.ccw_stencil_depth_fail;
+  cpu_key.ccw_stencil_pass=fixed.ccw_stencil_pass;cpu_key.ccw_stencil_function=fixed.ccw_stencil_function;
+  auto& draw=capture->draw;
+  if(auto found=native_metal_frame_->pipelines.find(cpu_key);found!=native_metal_frame_->pipelines.end()) {
+    const auto& p=found->second;draw.pipeline=p.pipeline;draw.primitive=p.primitive;
+    draw.cull=p.cull;draw.clockwise=p.clockwise;draw.lines=p.lines;draw.depth_clamp=p.depth_clamp;
+    draw.primitive_restart=p.primitive_restart;++native_metal_frame_->pipeline_hits;
+  } else {
+    auto description=PrepareNativePipelineDescription(state,fixed,key,capabilities,
+        select_shader(state.vertex_shader_resource),select_shader(state.pixel_shader_resource),error);
+    if(!description)return false;
+    if(!description->snapshot)return reject("Metal effective pipeline snapshot unavailable");
+    if(!r::source::Pipeline(*description->snapshot,draw,error))return false;
+    if(native_metal_frame_->pipelines.size()>=4096)native_metal_frame_->pipelines.clear();
+    native_metal_frame_->pipelines.emplace(std::move(cpu_key),NativeMetalFrameState::PipelineTemplate{
+        draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,draw.primitive_restart});
+    ++native_metal_frame_->pipeline_misses;
+  }
   draw.first_vertex=first;draw.vertex_count=indexed?0:count;draw.base_vertex=base_vertex;
   const auto& v=viewport.viewport;
   draw.viewport={v.x,v.y,v.width,v.height,v.minDepth,v.maxDepth};draw.scissor={left,top,right-left,bottom-top};
@@ -200,6 +235,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     draw.slope_bias=std::bit_cast<float>(fixed.slope_scaled_depth_bias_bits)*
         xenos::kPolygonOffsetScaleSubpixelUnit*NativeResolutionDepthBiasScale(sx,sy);
   }
+  phase(timing.pipeline);
   const auto make_bytes=[&](std::span<const uint8_t> data,std::array<uint64_t,4> conversion)->std::shared_ptr<const r::Bytes> {
     if(data.empty()||data.size()>64*1024*1024)return {};
     auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
@@ -221,11 +257,33 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   };
   const std::array<std::shared_ptr<const ConstantStateVersion>,2> versions{
       command.shader_state->vertex_constants,command.shader_state->pixel_constants};
+  auto constant_usage=state.vertex_shader_resource->constant_usage;
+  if(state.pixel_shader_resource)constant_usage.Merge(state.pixel_shader_resource->constant_usage);
+  if(!NativeConstantProjectionEnabled()||REXCVAR_GET(gta4_validate_native_hot_caches))constant_usage.known=false;
+  if(!native_metal_frame_->projected_constants)
+    native_metal_frame_->projected_constants=std::make_unique<NativeMetalConstantProjection<r::Bytes>>();
+  auto& projected_constants=*native_metal_frame_->projected_constants;
   for(size_t bank=0;bank<2;++bank) {
     const auto& version=versions[bank];const size_t required=bank?kPixelConstantsSize:kVertexConstantsSize;
     if(!version||version->byte_size!=required)return reject("Metal authoritative constant bank unavailable");
+    std::shared_ptr<const r::Bytes> bytes;
+    if(constant_usage.known&&std::all_of(constant_usage.banks[bank].begin(),constant_usage.banks[bank].end(),
+        [](uint64_t mask){return !mask;})) {
+      static const auto unused_bank_owner=std::make_shared<const uint8_t>(0);
+      auto found=native_metal_frame_->buffers.find({6,bank});
+      if(found!=native_metal_frame_->buffers.end()){bytes=found->second.owner;found->second.used=next_native_metal_sequence_;}
+      else {
+        const std::vector<uint8_t> zero(required);
+        bytes=cached_bytes({6,bank},unused_bank_owner,zero,{6,bank,required});
+      }
+      ++native_metal_frame_->unused_constant_banks;native_metal_frame_->constant_bytes_avoided+=required;
+    } else {
+      bytes=projected_constants.Find(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage);
+      if(bytes)native_metal_frame_->constant_bytes_avoided+=required;
+    }
+    if(bytes){draw.constants[bank]={bytes,0,required};continue;}
     const auto cache_key=std::array<uint64_t,8>{3,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank};
-    auto it=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
+    auto it=native_metal_frame_->buffers.find(cache_key);
     if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
       bytes=it->second.owner;it->second.used=next_native_metal_sequence_;
     } else {
@@ -235,6 +293,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       bytes=cached_bytes(cache_key,version,host,{3,bank,version->token.revision,required});
     }
     if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,required};
+    projected_constants.Remember(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage,bytes);
   }
   NativeSharedConstants shared;
   // Descriptor arrays remain zero: offline Metal lowering binds each reflected
@@ -262,9 +321,14 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   }
   const auto shared_data=std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&shared),sizeof(shared));
   const uint64_t shared_hash=XXH3_64bits(shared_data.data(),shared_data.size());
-  auto shared_bytes=cached_bytes({4,shared_hash},versions[0],shared_data,{4,shared_hash},true);
+  // Shared shader policy is content-addressed, not owned by a per-object
+  // matrix bank. Compare the entire payload on hits to handle hash collisions.
+  // Ordinary frontend byte-budget eviction bounds this independent ownership.
+  static const auto shared_policy_owner=std::make_shared<const uint8_t>(0);
+  auto shared_bytes=cached_bytes({4,shared_hash},shared_policy_owner,shared_data,{4,shared_hash},true);
   if(!shared_bytes)return reject("Metal shared constant allocation failed");
   draw.constants[2]={shared_bytes,0,sizeof(shared)};
+  phase(timing.constants);
 
   if(up_stride) {
     auto bytes=std::make_shared<r::Bytes>();bytes->generation=++next_native_metal_allocation_;
@@ -356,6 +420,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     }
     count=count/3*4;first=0;indexed=false;base_vertex=0;draw.base_vertex=0;
   }
+  phase(timing.vertices);
   if(indexed) {
     const auto& resource=command.index_buffer;const bool index32=(resource->flags&kIndex32Flag)!=0;
     const size_t element=index32?4:2;
@@ -419,6 +484,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     draw.first_vertex=draw.vertex_count=0;draw.primitive=r::Primitive::Triangle;
   }
 
+  phase(timing.indices);
   r::FrameDraw result;
   const uint32_t used=state.vertex_shader_resource->used_texture_mask|
       (state.pixel_shader_resource?state.pixel_shader_resource->used_texture_mask:0);
@@ -428,6 +494,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     draw.fetches[slot].image=fetch.image;draw.fetches[slot].sampler=fetch.sampler;
     result.produced[slot]=fetch.produced;
   }
+  phase(timing.fetches);
   r::DrawValidationIssue validation_issue;
   if(!r::Validate(*capture,error,&validation_issue,&native_metal_frame_->index_ranges)) {
     if(validation_issue!=r::DrawValidationIssue::VertexRange)return false;
@@ -448,5 +515,6 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     }
     output={};error.clear();return true;
   }
+  phase(timing.validate);
   result.capture=std::move(capture);output=std::move(result);error.clear();return true;
 }

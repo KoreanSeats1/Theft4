@@ -42,6 +42,15 @@ int main() {
   assert(std::get<Pass>(joined.commands[0]).colors[0]->load==Load::Clear);
   assert(std::get<Pass>(joined.commands[0]).colors[0]->clear_color[0]==0.25);
   assert(ValidateFrame(joined,{},result,error));
+  DrawVertexRanges admitted;
+  assert(ValidateFrame(joined,{},result,error,nullptr,&admitted));
+  assert(admitted.size()==2&&admitted[0].capture==ordered.capture.get()&&
+         admitted[1].capture==ordered.capture.get()&&admitted[0].maximum_vertex==2);
+  auto rejected_admission=joined;
+  auto bad_capture=std::make_shared<Capture>(*ordered.capture);bad_capture->draw.scissor[2]=99;
+  std::get<FrameDraw>(std::get<Pass>(rejected_admission.commands[0]).commands[1]).capture=bad_capture;
+  assert(!ValidateFrame(rejected_admission,{},result,error,nullptr,&admitted));
+  assert(admitted.size()==2&&admitted[1].capture==ordered.capture.get()); // Failed admission is transactional.
   auto boundary=joined;AppendPass(boundary,begin);assert(boundary.commands.size()==2);
   boundary=joined;auto changed=continuation;changed.colors[0]->view.surface={102,1};
   AppendPass(boundary,changed);assert(boundary.commands.size()==2);

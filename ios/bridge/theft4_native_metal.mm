@@ -9,8 +9,9 @@
 namespace theft4::metal {
 namespace {
 bool ViewValid(const BufferView& v, NSUInteger required) {
-  return v.buffer && v.offset <= v.buffer.length &&
-      v.length <= v.buffer.length - v.offset && required <= v.length;
+  if(!v.buffer)return false;
+  const NSUInteger allocation=v.buffer.length;
+  return v.offset<=allocation&&v.length<=allocation-v.offset&&required<=v.length;
 }
 bool Error(std::string& error, const char* text) { error = text; return false; }
 std::string Description(NSError* e) {
@@ -71,6 +72,12 @@ struct Frame::Impl {
     std::array<const void*,31> vertex_textures{},fragment_textures{};
     std::array<const void*,16> vertex_samplers{},fragment_samplers{};
   } state;
+  struct PassShape {
+    std::array<MTLPixelFormat,4> colors{};
+    std::array<NSUInteger,4> color_samples{};
+    MTLPixelFormat depth=MTLPixelFormatInvalid,stencil=MTLPixelFormatInvalid;
+    NSUInteger depth_samples=0,stencil_samples=0,width=0,height=0,default_samples=0;
+  } shape;
   EncoderStats stats;
   ~Impl() { if (encoder) [encoder endEncoding]; }
 };
@@ -216,6 +223,25 @@ bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
   if (!*this || impl_->encoder || !pass) return Error(error, "Invalid direct Metal pass transition");
   impl_->state={};
   impl_->pass = [pass copy];
+  // Attachment properties are immutable for this encoder's copied descriptor.
+  // Read them once instead of messaging every Metal object for every draw.
+  impl_->shape={};auto& shape=impl_->shape;
+  for(size_t i=0;i<4;++i) {
+    auto texture=impl_->pass.colorAttachments[i].texture;
+    if(texture) {
+      shape.colors[i]=texture.pixelFormat;shape.color_samples[i]=texture.sampleCount;
+      shape.width=texture.width;shape.height=texture.height;
+    }
+  }
+  auto depth=impl_->pass.depthAttachment.texture,stencil=impl_->pass.stencilAttachment.texture;
+  if(depth){shape.depth=depth.pixelFormat;shape.depth_samples=depth.sampleCount;
+    if(!shape.width){shape.width=depth.width;shape.height=depth.height;}}
+  if(stencil){shape.stencil=stencil.pixelFormat;shape.stencil_samples=stencil.sampleCount;
+    if(!shape.width){shape.width=stencil.width;shape.height=stencil.height;}}
+  if(!shape.width&&!depth&&!stencil) {
+    shape.width=impl_->pass.renderTargetWidth;shape.height=impl_->pass.renderTargetHeight;
+  }
+  shape.default_samples=impl_->pass.defaultRasterSampleCount;
   impl_->encoder = [impl_->buffer renderCommandEncoderWithDescriptor:impl_->pass];
   if (!impl_->encoder) return Error(error, "Metal render encoder allocation failed");
   return true;
@@ -224,34 +250,21 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   if (!*this || !impl_->encoder || !d.pipeline || !d.pipeline->state || !d.instance_count)
     return Error(error, "Invalid direct Metal draw state");
   const auto& p = *d.pipeline;
-  NSUInteger width = 0, height = 0;
+  const auto& shape=impl_->shape;
+  const NSUInteger width=shape.width,height=shape.height;
   for (NSUInteger i = 0; i < 4; ++i) {
-    auto texture = impl_->pass.colorAttachments[i].texture;
-    if ((texture ? texture.pixelFormat : MTLPixelFormatInvalid) != p.colors[i])
+    if(shape.colors[i]!=p.colors[i])
       return Error(error, "Metal pipeline color target does not match its pass");
-    if (texture) {
-      if (texture.sampleCount != p.samples) return Error(error, "Metal color sample count mismatch");
-      width = texture.width; height = texture.height;
-    }
+    if(shape.color_samples[i]&&shape.color_samples[i]!=p.samples)
+      return Error(error,"Metal color sample count mismatch");
   }
-  auto depth = impl_->pass.depthAttachment.texture;
-  auto stencil = impl_->pass.stencilAttachment.texture;
-  if ((depth ? depth.pixelFormat : MTLPixelFormatInvalid) != p.depth ||
-      (stencil ? stencil.pixelFormat : MTLPixelFormatInvalid) != p.stencil)
+  if(shape.depth!=p.depth||shape.stencil!=p.stencil)
     return Error(error, "Metal depth/stencil target does not match its pipeline");
-  if (depth) {
-    if (depth.sampleCount != p.samples) return Error(error, "Metal depth sample count mismatch");
-    if (!width) { width = depth.width; height = depth.height; }
-  }
-  if (stencil) {
-    if (stencil.sampleCount != p.samples) return Error(error, "Metal stencil sample count mismatch");
-    if (!width) { width = stencil.width; height = stencil.height; }
-  }
-  if (!width && !depth && !stencil) {
-    width=impl_->pass.renderTargetWidth;height=impl_->pass.renderTargetHeight;
-    if(p.samples!=impl_->pass.defaultRasterSampleCount)
-      return Error(error,"Metal attachmentless sample count mismatch");
-  }
+  if(shape.depth_samples&&shape.depth_samples!=p.samples)return Error(error,"Metal depth sample count mismatch");
+  if(shape.stencil_samples&&shape.stencil_samples!=p.samples)return Error(error,"Metal stencil sample count mismatch");
+  if(std::all_of(shape.color_samples.begin(),shape.color_samples.end(),[](NSUInteger s){return !s;})&&
+     !shape.depth_samples&&!shape.stencil_samples&&p.samples!=shape.default_samples)
+    return Error(error,"Metal attachmentless sample count mismatch");
   if (!width || !height || !std::isfinite(d.viewport.originX) || !std::isfinite(d.viewport.originY) ||
       !std::isfinite(d.viewport.width) || !std::isfinite(d.viewport.height) ||
       !std::isfinite(d.viewport.znear) || !std::isfinite(d.viewport.zfar) ||

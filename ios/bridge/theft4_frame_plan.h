@@ -119,10 +119,13 @@ bool SupportsAspect(Format,Aspect);
 bool ValidateSampledView(const FramePlan&,const SampledSurfaceView&,std::string& error,bool allow_multisampled=false);
 bool SampledViewContains(const SampledSurfaceView&,const SurfaceView&);
 bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
+struct DrawVertexRange {const Capture* capture=nullptr;uint64_t maximum_vertex=0;};
+using DrawVertexRanges=std::vector<DrawVertexRange>;
 // Admission is transactional. Reads/loads of discarded or undefined content,
 // render/sample feedback, mismatched resolves and incompatible draw targets
 // reject before encoding. Draw coverage never proves whole-target definition:
 // a complete clear or an already defined loaded target is required.
 bool ValidateFrame(const FramePlan&,const SurfaceContents& initial,
-                   SurfaceContents& final,std::string& error,IndexRangeCache* indices=nullptr);
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices=nullptr,
+                   DrawVertexRanges* validated_draws=nullptr);
 }

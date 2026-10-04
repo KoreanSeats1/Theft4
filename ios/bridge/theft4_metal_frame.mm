@@ -273,12 +273,13 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       }
     }
   }
-  RetireResources();impl_->draws.BeginUploadBatch();render::SurfaceContents final;
-  if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges()))return {};
+  RetireResources();impl_->draws.BeginUploadBatch();render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
+  if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
+  size_t draw_range_index=0;
   const auto validated=Clock::now();
   for(const auto& surface:plan->surfaces)
     if(!impl_->Ensure(surface,drawable&&surface->key==target ? drawable.texture : nil,error))return {};
-  struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<std::shared_ptr<const Draw>,Draw,Clear>> commands; };
+  struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<std::variant<Draw,Clear>> commands; };
   struct ReadyCopy {id<MTLTexture> source,destination;MTLOrigin src,dst;MTLSize size;bool combined_depth_stencil;};
   std::vector<std::variant<ReadyPass,ReadyCopy>> ready;ready.reserve(plan->commands.size());
   size_t preparation_errors=0;std::string first_preparation_error;
@@ -313,11 +314,14 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
         prepared.commands.push_back(std::move(draw));continue;
       }
       const auto& item=std::get<render::FrameDraw>(command);
-      auto base=impl_->draws.Realize(item.capture,error);
+      if(draw_range_index>=draw_ranges.size()||draw_ranges[draw_range_index].capture!=item.capture.get()) {
+        error="Immutable draw order changed after frame admission";return {};
+      }
+      Draw draw;const bool base=impl_->draws.PrepareValidated(*item.capture,draw_ranges[draw_range_index++].maximum_vertex,draw,error);
       const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
       if(!base){fail_draw();continue;}
       if(std::none_of(item.produced.begin(),item.produced.end(),[](const auto& v){return bool(v);})) {
-        prepared.commands.push_back(std::move(base));continue;
+        prepared.commands.push_back(std::move(draw));continue;
       }
       std::array<id<MTLTexture>,26> produced{};
       bool inputs_valid=true;
@@ -325,7 +329,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
         produced[slot]=impl_->SampledView(*item.produced[slot],error);if(!produced[slot]){inputs_valid=false;break;}
       }
       if(!inputs_valid){fail_draw();continue;}
-      Draw draw=*base;if(!impl_->draws.BindProduced(*item.capture,produced,draw,error)){fail_draw();continue;}
+      if(!impl_->draws.BindProduced(*item.capture,produced,draw,error)){fail_draw();continue;}
       prepared.commands.push_back(std::move(draw));
     }
     ready.push_back(std::move(prepared));
@@ -344,8 +348,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     const auto& pass=std::get<ReadyPass>(command);
     if(!frame.BeginPass(pass.descriptor,error))return {};
     for(const auto& command:pass.commands) {
-      if(const auto* draw=std::get_if<std::shared_ptr<const Draw>>(&command)){if(!frame.Encode(**draw,error))return {};}
-      else if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
+      if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
       else if(!frame.ClearRectangle(std::get<Clear>(command),error))return {};
     }
     if(!frame.EndPass(error))return {};

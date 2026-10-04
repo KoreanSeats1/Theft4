@@ -209,6 +209,9 @@ bool PlanAdapter::EnsureDummyImages(std::string& error) {
 bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string& error) {
   uint64_t maximum=0;
   if(!render::Validate(capture,error,nullptr,&index_ranges_,&maximum))return false;
+  return PrepareValidated(capture,maximum,draw,error);
+}
+bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,Draw& draw,std::string& error) {
   const auto& source=capture.draw;Draw result;result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
   result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
@@ -232,8 +235,8 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
   const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
   const auto used=(vm ? vm->used_texture_mask : 0)|(pm ? pm->used_texture_mask : 0);
   for(size_t i=0;i<fetches.size();++i) {
-    fetches[i].images=dummy_images_;const auto& f=source.fetches[i];
     if(!(used&(1u<<i)))continue;
+    fetches[i].images=dummy_images_;const auto& f=source.fetches[i];
     if(f.image) {
       const auto kind=size_t(f.image->kind);
       if(kind>=4)return Error(error,"Game cube-array sampling needs a matching Metal shader interface");

@@ -68,23 +68,29 @@ bool ShaderStore::Bind(ShaderKey key, Stage stage, const std::array<FetchResourc
   for (const auto& binding : packet.samplers) if (binding.stage == stage) {
     error = "The draw already contains sampler bindings for this stage"; return false;
   }
-  std::vector<TextureBinding> textures;
-  std::vector<SamplerBinding> samplers;
+  size_t texture_count=0,sampler_count=0;
+  // Validate the entire interface before appending. A missing final binding
+  // must leave preceding stages untouched; no temporary owning vectors needed.
   for (const auto& binding : metadata->bindings) {
     const auto& resource = fetches[binding.slot];
     if (binding.kind == FetchKind::Sampler) {
       if (!resource.sampler) { error = "Missing game sampler for a Metal fetch slot"; return false; }
-      samplers.push_back({stage, binding.index, resource.sampler});
+      ++sampler_count;
     } else {
       auto texture = resource.images[size_t(binding.kind)];
       if (!texture || texture.textureType != TextureType(binding.kind)) {
         error = "Missing or incompatible game texture for a Metal fetch slot"; return false;
       }
-      textures.push_back({stage, binding.index, texture});
+      ++texture_count;
     }
   }
-  packet.textures.insert(packet.textures.end(), textures.begin(), textures.end());
-  packet.samplers.insert(packet.samplers.end(), samplers.begin(), samplers.end());
+  packet.textures.reserve(packet.textures.size()+texture_count);
+  packet.samplers.reserve(packet.samplers.size()+sampler_count);
+  for(const auto& binding:metadata->bindings) {
+    const auto& resource=fetches[binding.slot];
+    if(binding.kind==FetchKind::Sampler)packet.samplers.push_back({stage,binding.index,resource.sampler});
+    else packet.textures.push_back({stage,binding.index,resource.images[size_t(binding.kind)]});
+  }
   error.clear(); return true;
 }
 }

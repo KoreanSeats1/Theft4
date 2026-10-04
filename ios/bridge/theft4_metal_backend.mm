@@ -9,9 +9,9 @@ namespace theft4::metal {
 namespace {
 class Backend final:public render::FrameBackend {
  public:
-  Backend(void* layer,std::string libraries,uint32_t maximum)
+  Backend(void* layer,std::string libraries,uint32_t maximum,void (*diagnostic)(const char*))
       :layer_((__bridge CAMetalLayer*)layer),libraries_(std::move(libraries)),
-       maximum_(std::clamp(maximum,1u,3u)) {
+       maximum_(std::clamp(maximum,1u,3u)),diagnostic_(diagnostic) {
     device_=MTLCreateSystemDefaultDevice();
     if(device_) {
       // All supported iOS deployment devices use Apple family 3 or newer.
@@ -99,12 +99,13 @@ class Backend final:public render::FrameBackend {
     if(!receipt)return false;
     if(present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
-      std::fprintf(stderr,"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu\n",
+      char message[1024];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu",
         (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
         t.validation_ms,t.preparation_ms,t.encoding_ms,last_gpu_ms_,(unsigned long long)t.commands,(unsigned long long)t.draws,
         (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,(unsigned long long)t.textures_created,
         (unsigned long long)t.uploaded_bytes,(unsigned long long)(e.state_calls+e.buffer_calls+e.texture_calls+e.sampler_calls),
         (unsigned long long)e.avoided_calls,adapter_->Stats().allocated_bytes);
+      if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
     pending_.push_back({std::move(receipt),std::move(plan)});
     error.clear();return true;
@@ -176,6 +177,7 @@ class Backend final:public render::FrameBackend {
   render::BackendCapabilities caps_;
   std::string libraries_,failure_;
   uint32_t maximum_;
+  void (*diagnostic_)(const char*)=nullptr;
   uint64_t presentations_=0;double last_gpu_ms_=0;
   bool open_attempted_=false;
   std::thread::id worker_;
@@ -185,7 +187,7 @@ class Backend final:public render::FrameBackend {
 };
 }
 std::unique_ptr<render::FrameBackend> CreateFrameBackend(
-    void* layer,std::string libraries,uint32_t maximum) {
-  return std::make_unique<Backend>(layer,std::move(libraries),maximum);
+    void* layer,std::string libraries,uint32_t maximum,void (*diagnostic)(const char*)) {
+  return std::make_unique<Backend>(layer,std::move(libraries),maximum,diagnostic);
 }
 }

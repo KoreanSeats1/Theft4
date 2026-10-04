@@ -44,6 +44,20 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   };
   std::map<std::array<uint64_t,8>,BytesRecord> buffers;
   std::map<uint64_t,ImageRecord> images;
+  struct PipelineTemplate {
+    theft4::render::Pipeline pipeline;
+    theft4::render::Primitive primitive;
+    uint32_t cull=0;
+    bool clockwise=false,lines=false,depth_clamp=false,primitive_restart=false;
+  };
+  std::unordered_map<NativePipelineKey,PipelineTemplate,NativePipelineKeyHash> pipelines;
+  std::map<theft4::render::Sampler,std::shared_ptr<const theft4::render::Sampler>> samplers;
+  uint64_t pipeline_hits=0,pipeline_misses=0;
+  struct DrawTiming {uint64_t pipeline=0,constants=0,vertices=0,indices=0,fetches=0,validate=0;};
+  DrawTiming draw_timing;
+  bool sample_draw_timing=false;
+  std::unique_ptr<NativeMetalConstantProjection<theft4::render::Bytes>> projected_constants;
+  uint64_t unused_constant_banks=0,constant_bytes_avoided=0;
   theft4::render::SurfaceContents contents;
   theft4::render::IndexRangeCache index_ranges;
   uint64_t timed_presents=0;
@@ -86,6 +100,8 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
     native_metal_frame_->utilities.clear();native_metal_frame_->smaa_lookups={};
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
+    native_metal_frame_->pipelines.clear();native_metal_frame_->samplers.clear();
+    native_metal_frame_->projected_constants.reset();
     native_metal_frame_->virtual_journal.FinishBatch();
     native_metal_frame_->continuity.EndGuestFrame();
     if(clear_registrations){native_metal_frame_->virtuals.Clear();native_metal_frame_->virtual_journal.Clear();}
@@ -155,6 +171,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     if(present.device&&!diagnostic_scan)native_metal_frame_->continuity.EndGuestFrame();
   });
   const uint32_t frame_identity=native_metal_frame_->continuity.frame_identity;
+  native_metal_frame_->draw_timing={};
+  native_metal_frame_->sample_draw_timing=present.device&&native_metal_frame_->timed_presents%60==0;
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
@@ -1033,14 +1051,27 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
   next.virtual_journal.FinishBatch();
   next.images=std::move(native_metal_frame_->images);
+  next.pipelines=std::move(native_metal_frame_->pipelines);
+  next.samplers=std::move(native_metal_frame_->samplers);
+  next.pipeline_hits=native_metal_frame_->pipeline_hits;next.pipeline_misses=native_metal_frame_->pipeline_misses;
+  next.projected_constants=std::move(native_metal_frame_->projected_constants);
+  next.unused_constant_banks=native_metal_frame_->unused_constant_banks;
+  next.constant_bytes_avoided=native_metal_frame_->constant_bytes_avoided;
   next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
   if(present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
-    REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={}",
+    REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={} pipeline-hits={} pipeline-misses={} cached-samplers={}",
       next.timed_presents,(tick()-began)*scale,(sweep_done-began)*scale,(copy_done-sweep_done)*scale,
       (lower_done-copy_done)*scale,(validate_done-lower_done)*scale,(submit_done-validate_done)*scale,
       (tick()-submit_done)*scale,current_frame_.size(),plan->commands.size(),plan->surfaces.size(),next.buffers.size(),next.images.size(),
-      next.index_ranges.Hits(),next.index_ranges.ScannedIndices());
+      next.index_ranges.Hits(),next.index_ranges.ScannedIndices(),next.pipeline_hits,next.pipeline_misses,next.samplers.size());
+    const auto& d=native_metal_frame_->draw_timing;
+    REXLOG_INFO("gta4-metal-draw-performance: present={} pipeline-ms={:.3f} constants-ms={:.3f} vertices-ms={:.3f} indices-ms={:.3f} fetches-ms={:.3f} validate-ms={:.3f}",
+      next.timed_presents,d.pipeline*scale,d.constants*scale,d.vertices*scale,d.indices*scale,d.fetches*scale,d.validate*scale);
+    REXLOG_INFO("gta4-metal-constant-performance: present={} projection-hits={} changed-version-hits={} unused-banks={} bytes-avoided={}",
+      next.timed_presents,next.projected_constants?next.projected_constants->hits:0,
+      next.projected_constants?next.projected_constants->changed_version_hits:0,
+      next.unused_constant_banks,next.constant_bytes_avoided);
   }
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

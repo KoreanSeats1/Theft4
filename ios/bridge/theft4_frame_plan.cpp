@@ -101,7 +101,9 @@ bool SameStorage(const SurfaceView& a,const SurfaceView& b) {
 }
 }
 bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
-                   SurfaceContents& final,std::string& error,IndexRangeCache* indices) {
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices,
+                   DrawVertexRanges* validated_draws) {
+  DrawVertexRanges draw_ranges;
   if(!f.sequence||f.surfaces.size()>4096||f.commands.empty()||f.commands.size()>4096)
     return Reject(error,"Invalid ordered frame size or sequence");
   std::map<SurfaceKey,const Surface*> declarations;
@@ -297,7 +299,9 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       }
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
-      if(!Validate(*item.capture,error,nullptr,indices))return false;
+      uint64_t maximum_vertex=0;
+      if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr))return false;
+      if(validated_draws)draw_ranges.push_back({item.capture.get(),maximum_vertex});
       const auto& c=*item.capture;const auto& p=c.draw.pipeline;
       if(c.width!=width||c.height!=height||p.samples!=samples)return Reject(error,"Draw extent differs from its ordered pass");
       for(size_t i=0;i<4;++i) {
@@ -330,6 +334,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
   if(f.output&&(!view_valid(*f.output)||f.output->aspect!=Aspect::Color||
                find(f.output->surface)->samples!=1||!contents.contains(*f.output)))
     return Reject(error,"Frame output is unavailable or discarded");
-  final=std::move(contents);error.clear();return true;
+  final=std::move(contents);if(validated_draws)*validated_draws=std::move(draw_ranges);
+  error.clear();return true;
 }
 }

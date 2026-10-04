@@ -116,6 +116,26 @@ target_include_directories(metal_frame_continuity_test PRIVATE
 target_compile_options(metal_frame_continuity_test PRIVATE -UNDEBUG)
 add_test(NAME metal_frame_continuity COMMAND metal_frame_continuity_test)
 
+add_executable(metal_constant_projection_test metal_constant_projection_test.cpp)
+add_executable(constant_projection_test "${ROOT}/ios/tests/constant_projection_test.cpp")
+foreach(test_target metal_constant_projection_test constant_projection_test)
+  target_include_directories(${test_target} PRIVATE
+    "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native" "${ROOT}/glue/rexglue-sdk-main/include")
+  target_compile_options(${test_target} PRIVATE -UNDEBUG)
+endforeach()
+add_test(NAME metal_constant_projection COMMAND metal_constant_projection_test)
+add_test(NAME constant_projection_reflection COMMAND constant_projection_test)
+add_executable(constant_projection_corpus "${ROOT}/ios/tests/constant_projection_corpus.cpp"
+  $<TARGET_OBJECTS:metal_shader_corpus>)
+target_include_directories(constant_projection_corpus PRIVATE
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native" "${ROOT}/glue/rexglue-sdk-main/include"
+  "${ROOT}/LibertyRecompLib/shader" "${ROOT}/tools/XenosRecomp/thirdparty/smol-v/source"
+  "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib"
+  "${ROOT}/glue/rexglue-sdk-main/thirdparty/spirv-headers/include")
+target_compile_options(constant_projection_corpus PRIVATE -UNDEBUG)
+target_link_libraries(constant_projection_corpus PRIVATE libzstd_static)
+add_test(NAME constant_projection_corpus COMMAND constant_projection_corpus)
+
 # Repeatable synthetic admission/submission comparison; requires a real Metal device.
 add_executable(metal_performance_benchmark performance_benchmark.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"

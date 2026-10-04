@@ -34,6 +34,11 @@ class PlanAdapter {
   id<MTLTexture> ImageFor(const std::shared_ptr<const render::Image>& image,std::string& error);
   id<MTLSamplerState> SamplerFor(const render::Sampler& sampler,std::string& error);
  private:
+  friend class FrameAdapter;
+  // Only the frame adapter calls this after full transactional admission of
+  // the SAME immutable capture in the SAME submission. Public Prepare remains
+  // independently strict, and Metal packet validation still runs before encode.
+  bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,Draw&,std::string& error);
   Renderer& renderer_;
   ShaderStore shaders_;
   ResourceCache resources_;

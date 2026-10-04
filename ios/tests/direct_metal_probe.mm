@@ -1069,6 +1069,14 @@ struct Probe {
     Require(frame.Stats().state_calls==22);
     Require(frame.EndPass(error));Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));
     Require(frame.Stats().state_calls==33);Require(frame.EndPass(error));
+    auto wrong_target=Color();
+    Require(frame.BeginPass(Pass(wrong_target,nil,nil),error));
+    Require(!frame.Encode(*prepared,error));Require(frame.Stats().state_calls==33);
+    Require(frame.EndPass(error));
+    auto copied_pass=Pass(target,nil,nil);copied_pass.colorAttachments[0].clearColor=pass.colorAttachments[0].clearColor;
+    Require(frame.BeginPass(copied_pass,error));
+    copied_pass.colorAttachments[0].texture=wrong_target; // Caller mutation cannot change the active pass.
+    Require(frame.Encode(*prepared,error));Require(frame.Stats().state_calls==44);Require(frame.EndPass(error));
     adapter.BeginUploadBatch();
     auto new_bank=std::make_shared<r::Bytes>();new_bank->generation=2;new_bank->value.assign(4096,0xff);
     auto next_uniform=adapter.ConstantFor({new_bank,0,4096},error);Require(next_uniform.buffer);
@@ -1082,6 +1090,7 @@ struct Probe {
         @"warm_pipeline_and_resource_reuse":@YES,@"indexed_range_derived":@YES,
         @"rgba_write_mask_on_bgra":@YES,@"constant_color_blend":@YES,
         @"retired_before_submission":@YES,@"state_reuse_after_clear_and_new_pass":@YES,
+        @"pass_shape_rejected_after_format_change":@YES,@"active_pass_descriptor_is_immutable":@YES,
         @"avoided_state_calls":@(frame.Stats().avoided_calls),@"upload_batch_does_not_overwrite_inflight_constants":@YES}];
     auto replay=ReplayDirectMetalCaptures(libraries,[output stringByAppendingPathComponent:@"PlanFixture"],
         [output stringByAppendingPathComponent:@"PlanReplayValidation"]);

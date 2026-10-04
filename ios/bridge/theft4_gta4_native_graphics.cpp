@@ -241,7 +241,8 @@ theft4_create_gta4_metal_graphics() {
   void* layer=theft4_metal_bound_layer();
   if(!layer){REXLOG_ERROR("Theft4 direct Metal renderer has no bound CAMetalLayer");return nullptr;}
   rex::cvar::SetFlagByName("gta4_native_vector_fonts","false");
-  auto backend=theft4::metal::CreateFrameBackend(layer,theft4_metal_shader_library_directory(),2);
+  auto backend=theft4::metal::CreateFrameBackend(layer,theft4_metal_shader_library_directory(),2,
+      [](const char* message){REXLOG_INFO("{}",message);});
   if(!backend||!backend->Capabilities().max_image_dimension_2d) {
     REXLOG_ERROR("Theft4 direct Metal renderer rejected the Apple GPU");return nullptr;
   }

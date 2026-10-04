@@ -38,6 +38,11 @@ target_include_directories(metal_descriptor_contract_test PRIVATE
   "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib")
 target_link_libraries(metal_descriptor_contract_test PRIVATE spirv-cross-core libzstd_static)
 enable_testing()
+add_executable(lab_resolution_policy_test "${ROOT}/ios/tests/lab_resolution_policy_test.cpp")
+target_include_directories(lab_resolution_policy_test PRIVATE "${ROOT}/ios/bridge"
+  "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src")
+target_compile_options(lab_resolution_policy_test PRIVATE -UNDEBUG)
+add_test(NAME lab_resolution_policy COMMAND lab_resolution_policy_test)
 add_executable(shader_realization_test shader_realization_test.cpp)
 target_include_directories(shader_realization_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 add_test(NAME shader_realization_contract COMMAND shader_realization_test)

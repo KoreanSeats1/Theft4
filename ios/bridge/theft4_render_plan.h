@@ -172,8 +172,23 @@ class IndexRangeCache {
 };
 bool AnalyzeIndices(const Buffer&,uint32_t count,uint32_t index_bytes,IndexRange&,std::string& error);
 enum class DrawValidationIssue { None, VertexRange };
+// One admission batch only. Immutable image/sampler descriptors are fully
+// checked once per owner; each draw still validates its views and byte budget.
+// Exact pointer AND shared-owner identity protect against collisions/reuse.
+class DrawResourceValidationCache {
+ public:
+  bool CheckImage(const std::shared_ptr<const Image>&,std::string&);
+  bool CheckSampler(const std::shared_ptr<const Sampler>&,std::string&);
+  void Clear(){images_={};samplers_={};hits=checks=0;}
+  uint64_t hits=0,checks=0;
+ private:
+  template<class T> struct Entry {const T* pointer=nullptr;std::weak_ptr<const T> owner;};
+  std::array<Entry<Image>,512> images_{};
+  std::array<Entry<Sampler>,128> samplers_{};
+};
 bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue=nullptr,
-              IndexRangeCache* indices=nullptr,uint64_t* maximum_vertex=nullptr);
+              IndexRangeCache* indices=nullptr,uint64_t* maximum_vertex=nullptr,
+              DrawResourceValidationCache* resources=nullptr);
 bool ValidateFixedPipeline(const Pipeline&,std::string& error);
 bool ValidateSampler(const Sampler&,std::string& error);
 bool ValidateImage(const Image&,std::string& error);

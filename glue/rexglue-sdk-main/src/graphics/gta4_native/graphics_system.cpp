@@ -2,6 +2,8 @@
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "native_metal_frame_continuity.h"
 #include "native_metal_constant_projection.h"
+#include "native_incremental_owner_cache.h"
+#include "native_exclusive_generation_retirement.h"
 #endif
 #include "native_light_capture.h"
 #include <rex/diagnostics/frame_scheduling.h>

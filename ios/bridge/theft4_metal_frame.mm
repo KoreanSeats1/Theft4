@@ -226,16 +226,16 @@ bool FrameAdapter::Open(const std::string& libraries,std::string& error){
   if(!impl_->draws.Open(libraries,error)||!impl_->host.Open(libraries+"/Host",error))return false;
   impl_->host_pipelines.clear();return true;
 }
-Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error,render::SurfaceContents* published) {
-  return SubmitFrame(plan,{},nil,error,published);
+Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
+  return SubmitFrame(plan,{},nil,error,published,profile_gpu);
 }
 Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::FramePlan>& plan,
-                                      render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published) {
+                                      render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   if(!drawable||!target.id||!target.generation){error="Missing ordered Metal presentation target";return {};}
-  return SubmitFrame(plan,target,drawable,error,published);
+  return SubmitFrame(plan,target,drawable,error,published,profile_gpu);
 }
 Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
-                                 render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published) {
+                                 render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   using Clock=std::chrono::steady_clock;
   const auto begin=Clock::now();
   const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
@@ -340,6 +340,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   }
   const auto prepared_at=Clock::now();
   auto frame=impl_->renderer.BeginFrame(error);if(!frame)return {};
+  if(profile_gpu)frame.ProfilePasses(std::count_if(ready.begin(),ready.end(),[](const auto& c){return std::holds_alternative<ReadyPass>(c);}));
   for(const auto& command:ready) {
     if(const auto* copy=std::get_if<ReadyCopy>(&command)) {
       if(!frame.CopyTexture(copy->source,copy->destination,copy->src,copy->dst,copy->size,error,copy->combined_depth_stencil))return {};

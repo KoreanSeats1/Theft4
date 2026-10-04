@@ -77,6 +77,9 @@ class Backend final:public render::FrameBackend {
       if(!FinishOldest(error))return false;
     }
     const auto admitted=Clock::now();
+    const bool profile_gpu=present&&plan->commands.size()>=40&&
+        (!profile_attempted_||presentations_-last_profile_presentation_>=180);
+    if(profile_gpu){profile_attempted_=true;last_profile_presentation_=presentations_;}
     double drawable_ms=0;Receipt receipt;
     @autoreleasepool {
       if(present) {
@@ -93,7 +96,7 @@ class Backend final:public render::FrameBackend {
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
         drawable_ms=std::chrono::duration<double,std::milli>(Clock::now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
-        receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published);
+        receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published,profile_gpu);
       } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
@@ -111,7 +114,7 @@ class Backend final:public render::FrameBackend {
         (unsigned long long)e.buffer_offset_calls);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
-    pending_.push_back({std::move(receipt),std::move(plan)});
+    pending_.push_back({std::move(receipt),std::move(plan),present});
     error.clear();return true;
   }
   bool Drain(std::string& error) override {
@@ -160,7 +163,7 @@ class Backend final:public render::FrameBackend {
     output=std::move(result);error.clear();return true;
   }
  private:
-  struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;};
+  struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;bool present=false;};
   bool Worker(std::string& error) const {
     if(!renderer_ || !adapter_){error="Metal worker is not open";return false;}
     if(worker_!=std::this_thread::get_id()){error="Metal encoding belongs to the render worker";return false;}
@@ -172,7 +175,41 @@ class Backend final:public render::FrameBackend {
   bool FinishOldest(std::string& error) {
     auto submitted=std::move(pending_.front());pending_.pop_front();
     const bool okay=submitted.receipt.Wait(error);
-    if(okay)last_gpu_ms_=submitted.receipt.GpuMilliseconds();
+    if(okay) {
+      last_gpu_ms_=submitted.receipt.GpuMilliseconds();
+      frame_gpu_work_ms_+=last_gpu_ms_;
+      if(submitted.present){gpu_samples_[gpu_sample_count_++%gpu_samples_.size()]=frame_gpu_work_ms_;frame_gpu_work_ms_=0;}
+      if(submitted.present&&gpu_sample_count_%gpu_samples_.size()==0) {
+        auto sorted=gpu_samples_;std::sort(sorted.begin(),sorted.end());
+        char message[512];std::snprintf(message,sizeof(message),
+          "gta4-metal-gpu-work-budget: title-frames=60 ceiling-ms=30 p50-ms=%.3f p95-ms=%.3f p99-ms=%.3f max-ms=%.3f over-budget=%zu",
+          sorted[29],sorted[56],sorted[59],sorted[59],size_t(std::count_if(sorted.begin(),sorted.end(),[](double ms){return ms>30;})));
+        if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
+      }
+      auto timings=submitted.receipt.GpuPassTimings();
+      if(!timings.empty()) {
+        std::vector<const render::Pass*> passes;
+        for(const auto& c:submitted.owner->commands)if(const auto* pass=std::get_if<render::Pass>(&c))passes.push_back(pass);
+        std::sort(timings.begin(),timings.end(),[](const auto& a,const auto& b){return std::max(a.vertex_ms,a.fragment_ms)>std::max(b.vertex_ms,b.fragment_ms);});
+        for(size_t rank=0;rank<std::min(size_t(8),timings.size());++rank) {
+          const auto& t=timings[rank];if(t.pass>=passes.size())continue;const auto& pass=*passes[t.pass];
+          uint64_t vertex=0,pixel=0;uint32_t host=0;size_t draws=0;
+          for(const auto& c:pass.commands) {
+            if(const auto* d=std::get_if<render::FrameDraw>(&c)){++draws;if(!vertex){vertex=d->capture->draw.pipeline.vertex.hash;pixel=d->capture->draw.pipeline.fragment.hash;}}
+            if(const auto* h=std::get_if<render::HostDraw>(&c))host|=1u<<uint32_t(h->program);
+          }
+          const render::Attachment* attachment=pass.depth?&*pass.depth:nullptr;
+          for(const auto& color:pass.colors)if(color){attachment=&*color;break;}
+          const auto* surface=attachment?render::FindSurface(*submitted.owner,attachment->view.surface):nullptr;
+          char message[768];std::snprintf(message,sizeof(message),
+            "gta4-metal-gpu-pass: sequence=%llu rank=%zu pass=%zu vertex-ms=%.3f fragment-ms=%.3f draws=%zu target=%ux%u samples=%u vs=%016llx ps=%016llx host-mask=%08x profiled=true",
+            (unsigned long long)submitted.owner->sequence,rank,t.pass,t.vertex_ms,t.fragment_ms,draws,
+            surface?surface->width:0,surface?surface->height:0,surface?surface->samples:1,
+            (unsigned long long)vertex,(unsigned long long)pixel,host);
+          if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
+        }
+      }
+    }
     if(!okay && failure_.empty())failure_=error.empty()?"Metal GPU completion failed":error;
     return okay;
   }
@@ -183,6 +220,9 @@ class Backend final:public render::FrameBackend {
   uint32_t maximum_;
   void (*diagnostic_)(const char*)=nullptr;
   uint64_t presentations_=0;double last_gpu_ms_=0;
+  std::array<double,60> gpu_samples_{};size_t gpu_sample_count_=0;
+  double frame_gpu_work_ms_=0;
+  bool profile_attempted_=false;uint64_t last_profile_presentation_=0;
   bool open_attempted_=false;
   std::thread::id worker_;
   std::unique_ptr<Renderer> renderer_;

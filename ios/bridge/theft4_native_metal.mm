@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <mach/mach_time.h>
 
 namespace theft4::metal {
 namespace {
@@ -79,6 +80,8 @@ struct Frame::Impl {
     NSUInteger depth_samples=0,stencil_samples=0,width=0,height=0,default_samples=0;
   } shape;
   EncoderStats stats;
+  id<MTLCounterSampleBuffer> counters=nil;
+  size_t profiled_passes=0;
   ~Impl() { if (encoder) [encoder endEncoding]; }
 };
 Renderer::Renderer(NSUInteger maximum) {
@@ -219,6 +222,24 @@ Frame::~Frame() = default;
 Frame::Frame(Frame&&) noexcept = default;
 Frame& Frame::operator=(Frame&&) noexcept = default;
 Frame::operator bool() const { return impl_ && !impl_->submitted && impl_->buffer; }
+bool Frame::ProfilePasses(size_t maximum_passes) {
+  if(!*this||impl_->encoder||impl_->counters||!maximum_passes||maximum_passes>4096)return false;
+  auto device=impl_->renderer->device;
+  // Apple stage-boundary timestamps share the mach_absolute_time clock.
+  // Other GPU families need clock calibration and are deliberately excluded.
+  if(![device supportsFamily:MTLGPUFamilyApple1]||
+     ![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])return false;
+  id<MTLCounterSet> timestamps=nil;
+  for(id<MTLCounterSet> set in device.counterSets)if([set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+    for(id<MTLCounter> counter in set.counters)if([counter.name isEqualToString:MTLCommonCounterTimestamp])timestamps=set;
+  }
+  if(!timestamps)return false;
+  auto descriptor=[MTLCounterSampleBufferDescriptor new];descriptor.counterSet=timestamps;
+  descriptor.storageMode=MTLStorageModeShared;descriptor.sampleCount=maximum_passes*4;
+  descriptor.label=@"Theft4 Occasional Pass Timings";
+  NSError* error=nil;impl_->counters=[device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+  return impl_->counters!=nil;
+}
 bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
   if (!*this || impl_->encoder || !pass) return Error(error, "Invalid direct Metal pass transition");
   impl_->state={};
@@ -242,6 +263,12 @@ bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
     shape.width=impl_->pass.renderTargetWidth;shape.height=impl_->pass.renderTargetHeight;
   }
   shape.default_samples=impl_->pass.defaultRasterSampleCount;
+  if(impl_->counters&&impl_->profiled_passes<impl_->counters.sampleCount/4) {
+    auto attachment=impl_->pass.sampleBufferAttachments[0];attachment.sampleBuffer=impl_->counters;
+    const size_t first=impl_->profiled_passes++*4;
+    attachment.startOfVertexSampleIndex=first;attachment.endOfVertexSampleIndex=first+1;
+    attachment.startOfFragmentSampleIndex=first+2;attachment.endOfFragmentSampleIndex=first+3;
+  }
   impl_->encoder = [impl_->buffer renderCommandEncoderWithDescriptor:impl_->pass];
   if (!impl_->encoder) return Error(error, "Metal render encoder allocation failed");
   return true;
@@ -491,6 +518,7 @@ Receipt Frame::Submit(std::string& error) {
   auto lease = impl_->lease;
   [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease; }];
   result.buffer_ = impl_->buffer;
+  result.counters_=impl_->counters;result.profiled_passes_=impl_->profiled_passes;
   impl_->submitted = true; impl_->lease.reset();
   [impl_->buffer commit]; return result;
 }
@@ -503,6 +531,22 @@ bool Receipt::Wait(std::string& error) const {
 }
 bool Receipt::Completed() const { return buffer_ && buffer_.status == MTLCommandBufferStatusCompleted; }
 double Receipt::GpuMilliseconds() const { return Completed() ? (buffer_.GPUEndTime - buffer_.GPUStartTime) * 1000 : 0; }
+std::vector<GpuPassTiming> Receipt::GpuPassTimings() const {
+  std::vector<GpuPassTiming> result;
+  if(!Completed()||!counters_||!profiled_passes_)return result;
+  auto data=[counters_ resolveCounterRange:NSMakeRange(0,profiled_passes_*4)];
+  if(!data||data.length!=profiled_passes_*4*sizeof(MTLCounterResultTimestamp))return result;
+  mach_timebase_info_data_t timebase{};if(mach_timebase_info(&timebase)!=KERN_SUCCESS||!timebase.denom)return result;
+  const double scale=double(timebase.numer)/double(timebase.denom)/1e6;
+  const auto* timestamps=static_cast<const MTLCounterResultTimestamp*>(data.bytes);
+  for(size_t i=0;i<profiled_passes_;++i) {
+    const auto* t=timestamps+i*4;
+    bool valid=true;for(size_t j=0;j<4;++j)valid&=t[j].timestamp!=MTLCounterErrorValue;
+    if(!valid||t[1].timestamp<t[0].timestamp||t[3].timestamp<t[2].timestamp)continue;
+    result.push_back({i,double(t[1].timestamp-t[0].timestamp)*scale,double(t[3].timestamp-t[2].timestamp)*scale});
+  }
+  return result;
+}
 std::vector<uint8_t> Renderer::ReadRGBA8(id<MTLTexture> t, std::string& error,
     NSUInteger level, NSUInteger slice, NSUInteger depth_plane) {
   if(!t||(t.pixelFormat!=MTLPixelFormatRGBA8Unorm&&t.pixelFormat!=MTLPixelFormatBGRA8Unorm)) {

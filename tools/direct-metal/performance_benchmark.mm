@@ -2,6 +2,7 @@
 #include "theft4_metal_frame.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -44,8 +45,9 @@ std::shared_ptr<render::FramePlan> Plan(std::shared_ptr<render::Surface> surface
   plan->commands={pass};plan->output=a.view;return plan;
 }
 int main(int argc,char** argv) {
-  if(argc!=3&&argc!=4)return 2;
-  const bool streaming=argc==4&&std::string(argv[3])=="--streaming";
+  if(argc<3||argc>5)return 2;
+  bool streaming=false,profile_gpu=false;
+  for(int i=3;i<argc;++i){streaming|=std::string(argv[i])=="--streaming";profile_gpu|=std::string(argv[i])=="--profile";}
   try {@autoreleasepool {
     std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer};
     Require(renderer.Ready(),"Metal unavailable");Require(adapter.Open(argv[1],error),error);
@@ -74,7 +76,7 @@ int main(int argc,char** argv) {
       validation_ms.push_back(std::chrono::duration<double,std::milli>(Clock::now()-began).count());
     }
     prototype=Draw(200);
-    uint64_t buffers_created=0,uploaded=0;
+    uint64_t buffers_created=0,uploaded=0;std::vector<metal::GpuPassTiming> pass_timings;
     std::deque<std::shared_ptr<render::FramePlan>> retained_generations;
     const auto frames=streaming?52u:22u;
     const auto allocated_before=renderer.Device().currentAllocatedSize;
@@ -104,9 +106,16 @@ int main(int argc,char** argv) {
         }
       }
       const auto before=adapter.ImmutableStats();const auto began=Clock::now();
-      auto receipt=adapter.Submit(plan,error);Require(bool(receipt),error);
+      auto receipt=adapter.Submit(plan,error,nullptr,profile_gpu&&frame==frames-1);Require(bool(receipt),error);
       const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-began).count();
       Require(receipt.Wait(error),error);
+      if(profile_gpu&&frame==frames-1) {
+        pass_timings=receipt.GpuPassTimings();
+        if([renderer.Device() supportsFamily:MTLGPUFamilyApple1]&&[renderer.Device() supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+          Require(pass_timings.size()==(streaming?200u:1u),"GPU stage profile missing pass samples");
+          for(const auto& t:pass_timings)Require(std::isfinite(t.vertex_ms)&&std::isfinite(t.fragment_ms)&&t.vertex_ms>=0&&t.fragment_ms>=0,"GPU stage timestamp conversion invalid");
+        }
+      }
       if(frame>=2) {
         submit_ms.push_back(elapsed);const auto after=adapter.ImmutableStats();
         buffers_created+=after.buffer_creates-before.buffer_creates;uploaded+=after.uploaded_bytes-before.uploaded_bytes;
@@ -124,6 +133,10 @@ int main(int argc,char** argv) {
       {"submission_samples_ms",submit_ms},{"validation_samples_ms",validation_ms},
       {"measured_frames",submit_ms.size()},{"buffer_allocations",buffers_created},{"uploaded_bytes",uploaded},{"pixel_parity",true}};
     report["streaming_geometry"]=streaming;report["passes_per_frame"]=streaming?200:1;
+    if(profile_gpu) {
+      report["gpu_profile_samples"]=nlohmann::json::array();
+      for(const auto& t:pass_timings)report["gpu_profile_samples"].push_back({{"pass",t.pass},{"vertex_ms",t.vertex_ms},{"fragment_ms",t.fragment_ms}});
+    }
     report["gpu_allocated_growth_bytes"]=renderer.Device().currentAllocatedSize-allocated_before;
 #ifdef THEFT4_PACKED_UPLOAD_STATS
     const auto stats=adapter.ImmutableStats();

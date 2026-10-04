@@ -19,12 +19,12 @@ class FrameAdapter {
   ~FrameAdapter();
   bool Open(const std::string& libraries,std::string& error);
   Receipt Submit(const std::shared_ptr<const render::FramePlan>&,std::string& error,
-                 render::SurfaceContents* published=nullptr);
+                 render::SurfaceContents* published=nullptr,bool profile_gpu=false);
   // The output allocation is supplied by CAMetalLayer. Render and present
   // through one command buffer; no CPU copy or second submission is required.
   Receipt SubmitAndPresent(const std::shared_ptr<const render::FramePlan>&,
                            render::SurfaceKey,id<CAMetalDrawable>,std::string& error,
-                           render::SurfaceContents* published=nullptr);
+                           render::SurfaceContents* published=nullptr,bool profile_gpu=false);
   id<MTLTexture> Output(const render::FramePlan&,std::string& error);
   // Retrieve a defined GPU alias of a retained frame allocation. This never
   // uploads pixels or creates a new backing allocation.
@@ -39,6 +39,6 @@ class FrameAdapter {
   std::unique_ptr<Impl> impl_;
   Receipt SubmitFrame(const std::shared_ptr<const render::FramePlan>&,
                       render::SurfaceKey,id<CAMetalDrawable>,std::string& error,
-                      render::SurfaceContents* published);
+                      render::SurfaceContents* published,bool profile_gpu);
 };
 }

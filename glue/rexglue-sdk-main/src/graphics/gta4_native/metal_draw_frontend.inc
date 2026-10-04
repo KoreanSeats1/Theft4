@@ -78,7 +78,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
         image->source=make_bytes(payload,{uint64_t(format),m.width,m.height,m.mip_levels});
         if(!image->source)return reject("Metal static image packet allocation failed");
         metadata=std::shared_ptr<NativeTextureImage>(std::move(description.image));metadata->source.reset();
-        native_metal_frame_->images[resource->generation]={NativeResourceView<NativeTextureResource>(resource).Share(),image,metadata,next_native_metal_sequence_};
+        native_metal_frame_->images.Store(resource->generation,{NativeResourceView<NativeTextureResource>(resource).Share(),image,metadata,next_native_metal_sequence_});
         packet.fetch.image=std::move(image);
       }
       }
@@ -253,7 +253,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       }
     }
     auto bytes=make_bytes(data,conversion);
-    if(bytes)native_metal_frame_->buffers[cache_key]={resource,bytes,next_native_metal_sequence_};return bytes;
+    if(bytes)native_metal_frame_->buffers.Store(cache_key,{resource,bytes,next_native_metal_sequence_});return bytes;
   };
   const std::array<std::shared_ptr<const ConstantStateVersion>,2> versions{
       command.shader_state->vertex_constants,command.shader_state->pixel_constants};
@@ -286,11 +286,38 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     auto it=native_metal_frame_->buffers.find(cache_key);
     if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
       bytes=it->second.owner;it->second.used=next_native_metal_sequence_;
-    } else {
+    }
+    if(!bytes&&constant_usage.known&&NativeMaskedConstantsEnabled()) {
+      const auto& mask=constant_usage.banks[bank];
+      const std::array<uint64_t,8> covered_key{7,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank,
+          mask[0],mask[1],mask[2],mask[3],required};
+      const auto found=native_metal_frame_->buffers.find(covered_key);
+      if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
+        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;
+      } else {
+        auto covered=std::make_shared<r::Bytes>();covered->value.resize(required);
+        const uint64_t written=projected_constants.WriteMasked(key.vertex_shader_hash,key.pixel_shader_hash,
+            bank,version,constant_usage,covered->value,
+            [](const r::Bytes& payload){return std::span<const uint8_t>(payload.value);},CopyGuestWordsToHost);
+        if(written) {
+          covered->generation=++next_native_metal_allocation_;
+          covered->conversion={7,bank,version->token.revision,XXH3_64bits(mask.data(),sizeof(mask))};
+          bytes=std::move(covered);
+          native_metal_frame_->buffers.Store(covered_key,{version,bytes,next_native_metal_sequence_});
+          ++native_metal_frame_->masked_constant_materializations;
+          native_metal_frame_->masked_constant_bytes_written+=written;
+          native_metal_frame_->masked_constant_full_bank_bytes+=required;
+        } else ++native_metal_frame_->masked_constant_fallbacks;
+      }
+    }
+    if(!bytes) {
       const auto* guest=AuthoritativeConstantState::MaterializeView(version);
       if(!guest||guest->size()!=required)return reject("Metal constant materialization failed");
-      std::vector<uint8_t> host(required);CopyGuestWordsToHost(host.data(),guest->data(),required);
-      bytes=cached_bytes(cache_key,version,host,{3,bank,version->token.revision,required});
+      auto full=std::make_shared<r::Bytes>();full->generation=++next_native_metal_allocation_;
+      full->conversion={3,bank,version->token.revision,required};full->value.resize(required);
+      CopyGuestWordsToHost(full->value.data(),guest->data(),required);
+      bytes=std::move(full);
+      native_metal_frame_->buffers.Store(cache_key,{version,bytes,next_native_metal_sequence_});
     }
     if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,required};
     projected_constants.Remember(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage,bytes);
@@ -496,7 +523,8 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   }
   phase(timing.fetches);
   r::DrawValidationIssue validation_issue;
-  if(!r::Validate(*capture,error,&validation_issue,&native_metal_frame_->index_ranges)) {
+  if(!r::Validate(*capture,error,&validation_issue,&native_metal_frame_->index_ranges,nullptr,
+                  native_metal_frame_->resource_admission.get())) {
     if(validation_issue!=r::DrawValidationIssue::VertexRange)return false;
     // RecordPrimitive already discards title draws exceeding captured buffers.
     // Match that admission policy without letting one malformed particle draw

@@ -131,6 +131,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
     return ValidateSampledViewOf(find(v.surface),v,e,ms);
   };
   SurfaceContents contents;
+  DrawResourceValidationCache resources;
   for(const auto& v:initial)if(find(v.surface)) {
     if(!view_valid(v))return Reject(error,"Initial frame content has an invalid view");
     contents.insert(v);
@@ -300,7 +301,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
       uint64_t maximum_vertex=0;
-      if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr))return false;
+      if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr,&resources))return false;
       if(validated_draws)draw_ranges.push_back({item.capture.get(),maximum_vertex});
       const auto& c=*item.capture;const auto& p=c.draw.pipeline;
       if(c.width!=width||c.height!=height||p.samples!=samples)return Reject(error,"Draw extent differs from its ordered pass");

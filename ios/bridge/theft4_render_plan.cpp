@@ -213,7 +213,19 @@ bool IndexRangeCache::Analyze(const Buffer& b,uint32_t count,uint32_t index_byte
 }
 uint64_t IndexRangeCache::ScannedIndices() const{return impl_->scanned;}
 uint64_t IndexRangeCache::Hits() const{return impl_->hits;}
-bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue,IndexRangeCache* indices,uint64_t* maximum_vertex) {
+bool DrawResourceValidationCache::CheckImage(const std::shared_ptr<const Image>& image,std::string& error) {
+  if(!image)return Error(error,"Missing immutable image for admission");
+  auto& e=images_[(reinterpret_cast<uintptr_t>(image.get())>>4)%images_.size()];
+  if(e.pointer==image.get()&&!e.owner.owner_before(image)&&!image.owner_before(e.owner)){++hits;return true;}
+  ++checks;if(!ValidateImage(*image,error))return false;e={image.get(),image};return true;
+}
+bool DrawResourceValidationCache::CheckSampler(const std::shared_ptr<const Sampler>& sampler,std::string& error) {
+  if(!sampler)return Error(error,"Missing immutable sampler for admission");
+  auto& e=samplers_[(reinterpret_cast<uintptr_t>(sampler.get())>>4)%samplers_.size()];
+  if(e.pointer==sampler.get()&&!e.owner.owner_before(sampler)&&!sampler.owner_before(e.owner)){++hits;return true;}
+  ++checks;if(!ValidateSampler(*sampler,error))return false;e={sampler.get(),sampler};return true;
+}
+bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue,IndexRangeCache* indices,uint64_t* maximum_vertex,DrawResourceValidationCache* resources) {
   if(issue)*issue=DrawValidationIssue::None;
   const auto& d=capture.draw;const auto& p=d.pipeline;
   if(!capture.width||!capture.height||capture.width>16384||capture.height>16384||!p.vertex.hash||
@@ -299,10 +311,10 @@ bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* is
   for(const auto& b:d.vertices)if(!add(b.source))return Error(error,"Invalid game resource payload");
   if(!add(d.indices.source))return Error(error,"Invalid game resource payload");
   for(const auto& f:d.fetches) {
-    if(f.sampler&&!ValidateSampler(*f.sampler,error))return false;
+    if(f.sampler&&!(resources?resources->CheckSampler(f.sampler,error):ValidateSampler(*f.sampler,error)))return false;
     if(f.image) {
       if(!add(f.image->source))return Error(error,"Invalid game sampled image payload budget");
-      if(!ValidateImage(*f.image,error))return false;
+      if(!(resources?resources->CheckImage(f.image,error):ValidateImage(*f.image,error)))return false;
     }
   }
   error.clear();return true;

@@ -25,6 +25,8 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   std::map<std::pair<uint32_t,bool>,std::vector<uint64_t>> surface_buckets;
   std::unordered_map<GuestPlacementKey,PlacementOwner,GuestPlacementKeyHash> placements;
   std::map<uint64_t,TextureRecord> textures;
+  std::set<uint64_t> pending_texture_generations;
+  uint64_t retired_texture_generations=0;
   std::map<std::string,std::shared_ptr<const theft4::render::Surface>> utilities;
   theft4::render::SmaaLookups smaa_lookups;
   NativeReflectionRegistry reflections; // Snapshot for this speculative batch.
@@ -47,8 +49,10 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
       return size_t(XXH3_64bits(key.data(),sizeof(key)));
     }
   };
-  std::unordered_map<std::array<uint64_t,8>,BytesRecord,BytesKeyHash> buffers;
-  std::unordered_map<uint64_t,ImageRecord> images;
+  struct BufferSize {size_t operator()(const BytesRecord& e)const{return e.owner->value.size();}};
+  struct ImageSize {size_t operator()(const ImageRecord& e)const{return e.owner->source->value.size();}};
+  NativeIncrementalOwnerCache<std::array<uint64_t,8>,BytesRecord,BufferSize,BytesKeyHash> buffers;
+  NativeIncrementalOwnerCache<uint64_t,ImageRecord,ImageSize> images;
   struct PipelineTemplate {
     theft4::render::Pipeline pipeline;
     theft4::render::Primitive primitive;
@@ -63,11 +67,15 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   bool sample_draw_timing=false;
   std::unique_ptr<NativeMetalConstantProjection<theft4::render::Bytes>> projected_constants;
   uint64_t unused_constant_banks=0,constant_bytes_avoided=0;
+  uint64_t masked_constant_materializations=0,masked_constant_bytes_written=0;
+  uint64_t masked_constant_full_bank_bytes=0,masked_constant_fallbacks=0;
   theft4::render::SurfaceContents contents;
   theft4::render::IndexRangeCache index_ranges;
   uint64_t timed_presents=0;
+  std::array<double,60> frontend_ms{};
+  std::unique_ptr<theft4::render::DrawResourceValidationCache> resource_admission;
   void Release(uint32_t handle) {
-    std::erase_if(images,[&](const auto& entry) {
+    images.EraseIf([&](const auto& entry) {
       const auto owner=entry.second.resource.lock();return !owner||owner->handle==handle;
     });
     const auto forget=[&](theft4::render::SurfaceKey key) {
@@ -102,6 +110,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
   if(native_metal_frame_) {
     native_metal_frame_->surfaces.clear();native_metal_frame_->surface_buckets.clear();
     native_metal_frame_->placements.clear();native_metal_frame_->textures.clear();
+    native_metal_frame_->pending_texture_generations.clear();
     native_metal_frame_->utilities.clear();native_metal_frame_->smaa_lookups={};
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
@@ -178,15 +187,35 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   const uint32_t frame_identity=native_metal_frame_->continuity.frame_identity;
   native_metal_frame_->draw_timing={};
   native_metal_frame_->sample_draw_timing=present.device&&native_metal_frame_->timed_presents%60==0;
+  if(!native_metal_frame_->resource_admission)
+    native_metal_frame_->resource_admission=std::make_unique<r::DrawResourceValidationCache>();
+  native_metal_frame_->resource_admission->Clear();
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
   // later rejects. They do not claim any GPU-produced content or placement.
-  std::erase_if(native_metal_frame_->buffers,[](const auto& entry){return entry.second.resource.expired();});
-  std::erase_if(native_metal_frame_->images,[](const auto& entry){return entry.second.resource.expired();});
-  size_t resident=0;
-  for(const auto& entry:native_metal_frame_->buffers)resident+=entry.second.owner->value.size();
-  for(const auto& entry:native_metal_frame_->images)resident+=entry.second.owner->source->value.size();
+  {
+    std::lock_guard lock(texture_resource_mutex_);
+    native_metal_frame_->pending_texture_generations.insert(superseded_texture_release_generations_.begin(),
+                                                          superseded_texture_release_generations_.end());
+    superseded_texture_release_generations_.clear();
+  }
+  native_metal_frame_->pending_texture_generations.insert(pending_texture_release_generations_.begin(),
+                                                        pending_texture_release_generations_.end());
+  pending_texture_release_generations_.clear();
+  std::set<r::SurfaceKey> retired_texture_views;
+  if(!native_metal_frame_->pending_texture_generations.empty()) {
+    const auto protected_generations=CollectProtectedTextureGenerations(source);
+    native_metal_frame_->retired_texture_generations+=RetireExclusiveNativeGenerations(
+        native_metal_frame_->textures,native_metal_frame_->pending_texture_generations,
+        [&](uint64_t generation){return protected_generations.contains(generation);},
+        [&](const auto& record){retired_texture_views.insert(record.owner->key);});
+  }
+  if(!retired_texture_views.empty())
+    std::erase_if(native_metal_frame_->contents,[&](const auto& view){return retired_texture_views.contains(view.surface);});
+  native_metal_frame_->buffers.Sweep(512,[](const auto& entry){return entry.second.resource.expired();});
+  native_metal_frame_->images.Sweep(128,[](const auto& entry){return entry.second.resource.expired();});
+  size_t resident=native_metal_frame_->buffers.bytes()+native_metal_frame_->images.bytes();
   constexpr size_t budget=256*1024*1024;
   if(resident>budget) {
     // Sort eviction candidates once. Repeated minimum searches turned a burst
@@ -1060,15 +1089,32 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.index_ranges=std::move(native_metal_frame_->index_ranges);
   next.buffers=std::move(native_metal_frame_->buffers);
   next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
+  next.pending_texture_generations=std::move(native_metal_frame_->pending_texture_generations);
+  next.retired_texture_generations=native_metal_frame_->retired_texture_generations;
   next.virtual_journal.FinishBatch();
   next.images=std::move(native_metal_frame_->images);
   next.pipelines=std::move(native_metal_frame_->pipelines);
   next.samplers=std::move(native_metal_frame_->samplers);
   next.pipeline_hits=native_metal_frame_->pipeline_hits;next.pipeline_misses=native_metal_frame_->pipeline_misses;
   next.projected_constants=std::move(native_metal_frame_->projected_constants);
+  next.resource_admission=std::move(native_metal_frame_->resource_admission);
   next.unused_constant_banks=native_metal_frame_->unused_constant_banks;
   next.constant_bytes_avoided=native_metal_frame_->constant_bytes_avoided;
+  next.masked_constant_materializations=native_metal_frame_->masked_constant_materializations;
+  next.masked_constant_bytes_written=native_metal_frame_->masked_constant_bytes_written;
+  next.masked_constant_full_bank_bytes=native_metal_frame_->masked_constant_full_bank_bytes;
+  next.masked_constant_fallbacks=native_metal_frame_->masked_constant_fallbacks;
   next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
+  next.frontend_ms=native_metal_frame_->frontend_ms;
+  if(present.device) {
+    next.frontend_ms[(next.timed_presents-1)%next.frontend_ms.size()]=
+        double(tick()-began)*1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
+    if(next.timed_presents%next.frontend_ms.size()==0) {
+      auto sorted=next.frontend_ms;std::sort(sorted.begin(),sorted.end());
+      REXLOG_INFO("gta4-metal-renderer-cpu-budget: samples=60 ceiling-ms=30 p50-ms={:.3f} p95-ms={:.3f} p99-ms={:.3f} max-ms={:.3f} over-budget={}",
+        sorted[29],sorted[56],sorted[59],sorted[59],std::count_if(sorted.begin(),sorted.end(),[](double ms){return ms>30;}));
+    }
+  }
   if(present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
     REXLOG_INFO("gta4-metal-frontend-performance: present={} total-ms={:.3f} sweep-ms={:.3f} journal-ms={:.3f} lower-ms={:.3f} validate-ms={:.3f} backend-ms={:.3f} finish-ms={:.3f} source-commands={} passes={} surfaces={} cached-buffers={} cached-images={} index-cache-hits={} index-scanned={} pipeline-hits={} pipeline-misses={} cached-samplers={}",
@@ -1079,10 +1125,14 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const auto& d=native_metal_frame_->draw_timing;
     REXLOG_INFO("gta4-metal-draw-performance: present={} pipeline-ms={:.3f} constants-ms={:.3f} vertices-ms={:.3f} indices-ms={:.3f} fetches-ms={:.3f} validate-ms={:.3f}",
       next.timed_presents,d.pipeline*scale,d.constants*scale,d.vertices*scale,d.indices*scale,d.fetches*scale,d.validate*scale);
-    REXLOG_INFO("gta4-metal-constant-performance: present={} projection-hits={} changed-version-hits={} unused-banks={} bytes-avoided={}",
+    REXLOG_INFO("gta4-metal-constant-performance: present={} projection-hits={} changed-version-hits={} unused-banks={} bytes-avoided={} masked-banks={} masked-bytes-written={} full-bank-bytes={} masked-fallbacks={}",
       next.timed_presents,next.projected_constants?next.projected_constants->hits:0,
       next.projected_constants?next.projected_constants->changed_version_hits:0,
-      next.unused_constant_banks,next.constant_bytes_avoided);
+      next.unused_constant_banks,next.constant_bytes_avoided,next.masked_constant_materializations,
+      next.masked_constant_bytes_written,next.masked_constant_full_bank_bytes,next.masked_constant_fallbacks);
+    REXLOG_INFO("gta4-metal-lifetime-performance: present={} produced-generations={} pending-retirements={} retired-generations={} cpu-cache-bytes={} resource-checks={} resource-reuses={}",
+      next.timed_presents,next.textures.size(),next.pending_texture_generations.size(),next.retired_texture_generations,
+      next.buffers.bytes()+next.images.bytes(),next.resource_admission->checks,next.resource_admission->hits);
   }
   reflection_resources_=std::move(next.reflections);*native_metal_frame_=std::move(next);error.clear();return true;
 }

@@ -84,15 +84,24 @@ struct EncoderStats {
   uint64_t draws=0,state_calls=0,buffer_calls=0,texture_calls=0,sampler_calls=0,avoided_calls=0;
   uint64_t buffer_offset_calls=0;
 };
+struct GpuPassTiming {
+  size_t pass=0;
+  double vertex_ms=0,fragment_ms=0;
+};
 class Receipt {
  public:
   bool Wait(std::string& error) const;
   bool Completed() const;
   double GpuMilliseconds() const;
+  // Resolve only after completion. Stage durations may overlap and must not
+  // be summed to claim total frame time.
+  std::vector<GpuPassTiming> GpuPassTimings() const;
   explicit operator bool() const;
  private:
   friend class Frame;
   id<MTLCommandBuffer> buffer_ = nil;
+  id<MTLCounterSampleBuffer> counters_ = nil;
+  size_t profiled_passes_=0;
 };
 class Frame {
  public:
@@ -100,6 +109,9 @@ class Frame {
   Frame(Frame&&) noexcept; Frame& operator=(Frame&&) noexcept;
   Frame(const Frame&) = delete; Frame& operator=(const Frame&) = delete;
   bool BeginPass(MTLRenderPassDescriptor* pass, std::string& error);
+  // Optional diagnostics. Unsupported counters or allocation failure leave
+  // normal rendering untouched; sampling never introduces a completion wait.
+  bool ProfilePasses(size_t maximum_passes);
   bool Encode(const Draw& draw, std::string& error);
   bool ClearRectangle(const Clear&, std::string& error);
   bool CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,

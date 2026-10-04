@@ -1058,6 +1058,26 @@ bool PresentDirectMetalPreview(CAMetalLayer* layer, NSString* libraries, NSStrin
       probe.Require(layer && probe.renderer.Ready());
       layer.device=probe.renderer.Device();layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
       layer.framebufferOnly=YES;layer.drawableSize=CGSizeMake(256,256);
+      // Reuse the game's logical output while CAMetalLayer rotates its actual
+      // textures. Exercise FrameAdapter presentation, beyond one raw frame.
+      namespace r=theft4::render;
+      FrameAdapter adapter(probe.renderer);probe.Require(adapter.Open(libraries.UTF8String,probe.error));
+      auto output=std::make_shared<r::Surface>();output->key={1,1};
+      output->width=output->height=256;output->format=r::Format::BGRA8Unorm;
+      auto plan=std::make_shared<r::FramePlan>();plan->surfaces={output};
+      plan->output=r::SurfaceView{output->key,0,0,r::Aspect::Color};
+      r::Attachment attachment;attachment.view=*plan->output;
+      attachment.load=r::Load::Clear;attachment.store=r::Store::Store;
+      attachment.clear_color={0.1,0.0,0.3,1.0};
+      r::Pass pass;pass.colors[0]=attachment;plan->commands={pass};
+      std::vector<Receipt> rotating;
+      for(unsigned i=0;i<3;++i) {
+        id<CAMetalDrawable> next=[layer nextDrawable];probe.Require(next);
+        auto submitted=adapter.SubmitAndPresent(plan,output->key,next,probe.error);
+        probe.Require(bool(submitted));rotating.push_back(std::move(submitted));
+      }
+      for(auto& submitted:rotating)probe.Require(submitted.Wait(probe.error));
+      rotating.clear();
       id<CAMetalDrawable> drawable=[layer nextDrawable];probe.Require(drawable);
       Case c{};c.texture=true;
       auto p=probe.PipelineFor(c,1,MTLPixelFormatBGRA8Unorm);

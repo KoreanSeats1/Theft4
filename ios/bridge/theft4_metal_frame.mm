@@ -61,24 +61,28 @@ struct FrameAdapter::Impl {
     }
   }
   bool Ensure(const std::shared_ptr<const render::Surface>& s,id<MTLTexture> external,std::string& error) {
+    if(external && (external.device!=renderer.Device()||external.textureType!=MTLTextureType2D||external.sampleCount!=1||
+       external.width!=s->width||external.height!=s->height||external.pixelFormat!=PlanAdapter::PixelFormat(s->format)||
+       s->kind!=render::ImageKind::Texture2D||s->levels!=1||s->layers!=1||s->samples!=1)) {
+      error="Drawable allocation differs from the declared Metal frame output";return false;
+    }
     if(auto it=surfaces.find(s->key);it!=surfaces.end()) {
       const auto owner=it->second.owner.lock();
       if(owner) {
         if(owner.owner_before(s)||s.owner_before(owner)||it->second.descriptor!=*s||
-           it->second.external!=bool(external)||(external&&it->second.texture!=external)) {
-          error="Mutable Metal surface generation changed identity";return false;
+           it->second.external!=bool(external)) {
+          error="Mutable Metal surface generation changed identity for allocation "+std::to_string(s->key.id)+" generation "+std::to_string(s->key.generation)+" (owner="+std::to_string(owner.owner_before(s)||s.owner_before(owner))+", descriptor="+std::to_string(it->second.descriptor!=*s)+", external="+std::to_string(it->second.external!=bool(external))+")";return false;
         }
+        // CAMetalLayer rotates physical drawables for the same logical output.
+        // Each encoded command buffer retains its own texture, so rebinding the
+        // next submission cannot replace an earlier in-flight attachment.
+        if(external)it->second.texture=external;
         return true;
       }
       if(!it->second.external)stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);
       surfaces.erase(it);Forget(s->key);
     }
     if(external) {
-      if(external.device!=renderer.Device()||external.textureType!=MTLTextureType2D||external.sampleCount!=1||
-         external.width!=s->width||external.height!=s->height||external.pixelFormat!=PlanAdapter::PixelFormat(s->format)||
-         s->kind!=render::ImageKind::Texture2D||s->levels!=1||s->layers!=1||s->samples!=1) {
-        error="Drawable allocation differs from the declared Metal frame output";return false;
-      }
       surfaces.emplace(s->key,Entry{s,*s,external,true,{},{}});++stats.surface_creates;return true;
     }
     const auto bytes=SurfaceBytes(*s);

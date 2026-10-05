@@ -316,6 +316,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   }
   profile_gpu=profile_gpu&&!theft4_retail_mode();
   RetireResources(true);impl_->draws.BeginUploadBatch();render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
+  theft4::StorageCleanup upload_views{[&]{impl_->draws.EndUploadBatch();}};
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
   const auto dead_stores=render::DeadAttachmentStores(*plan);
   const auto redundant_loads=render::RedundantAttachmentLoads(*plan);

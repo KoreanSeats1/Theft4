@@ -22,6 +22,7 @@ struct ResourceCacheStats {
   uint64_t resident_buffer_bytes=0,peak_buffer_bytes=0,buffer_evictions=0;
   uint64_t resident_constant_bytes=0,constant_evictions=0;
   uint64_t page_memory_allocations=0,page_memory_reuses=0,free_page_bytes=0;
+  uint64_t prepared_view_hits=0,prepared_view_misses=0;
 };
 class ResourceCache {
  public:

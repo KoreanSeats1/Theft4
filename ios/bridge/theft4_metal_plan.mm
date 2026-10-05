@@ -247,10 +247,26 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   if(result){pipeline_cache_dirty_=true;render_pipelines_.emplace(std::pair{std::move(raster),primitive},result);
     pipelines_.emplace(std::pair{*effective,primitive},result);}return remember(result);
 }
+BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Bytes>& source,bool constants,std::string& error) {
+  if(!upload_batch_active_||source->value.size()>64*1024)
+    return constants?resources_.UniformBuffer(Version(source),source->value,error):
+                     resources_.UploadBuffer(Version(source),source->value,error);
+  auto& entry=buffer_views_[((reinterpret_cast<uintptr_t>(source.get())>>4)&31)+(constants?32:0)];
+  if(entry.view.buffer&&!entry.owner.owner_before(source)&&!source.owner_before(entry.owner)&&
+      entry.generation==source->generation&&entry.conversion==source->conversion) {
+    if(entry.view.length!=source->value.size()){error="Metal upload generation changed payload size";return {};}
+    ++prepared_view_hits_;error.clear();return entry.view;
+  }
+  ++prepared_view_misses_;
+  auto view=constants?resources_.UniformBuffer(Version(source),source->value,error):
+                      resources_.UploadBuffer(Version(source),source->value,error);
+  if(view.buffer)entry={source,source->generation,source->conversion,view};
+  return view;
+}
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
   if(!b.source)return {};
   if(b.offset>b.source->value.size()||b.length>b.source->value.size()-b.offset){error="Invalid buffer source range";return {};}
-  auto view=resources_.UploadBuffer(Version(b.source),b.source->value,error);
+  auto view=UploadedViewFor(b.source,false,error);
   if(!view.buffer)return {};
   view.offset+=NSUInteger(b.offset);view.length=NSUInteger(b.length);return view;
 }
@@ -258,7 +274,7 @@ BufferView PlanAdapter::ConstantFor(const render::Buffer& b,std::string& error) 
   if(!b.source)return {};
   if(b.offset>b.source->value.size()||b.length>b.source->value.size()-b.offset){error="Invalid constant source range";return {};}
   if(b.source->value.size()>64*1024)return BufferFor(b,error);
-  auto view=resources_.UniformBuffer(Version(b.source),b.source->value,error);
+  auto view=UploadedViewFor(b.source,true,error);
   if(!view.buffer)return {};
   view.offset+=NSUInteger(b.offset);view.length=NSUInteger(b.length);return view;
 }

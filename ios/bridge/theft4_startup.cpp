@@ -65,6 +65,7 @@ REXCVAR_DECLARE(double, gta4_shadow_distance_scale);
 REXCVAR_DECLARE(std::string, gta4_reflection_resolution);
 REXCVAR_DECLARE(std::string, gta4_aspect_ratio);
 REXCVAR_DECLARE(std::string, gta4_native_anti_aliasing);
+REXCVAR_DECLARE(bool, gta4_native_anti_aliasing_unified);
 REXCVAR_DECLARE(uint32_t, gta4_native_sharpening);
 REXCVAR_DECLARE(bool, gta4_force_highest_lod);
 REXCVAR_DECLARE(double, gta4_lod_selection_distance_scale);
@@ -348,11 +349,15 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
 
         const char* anti_aliasing_override = std::getenv("THEFT4_ANTI_ALIASING");
         const std::string_view anti_aliasing =
-            anti_aliasing_override ? anti_aliasing_override : "smaa";
+            anti_aliasing_override ? anti_aliasing_override : "off";
         if (anti_aliasing != "off" && anti_aliasing != "fxaa" &&
             anti_aliasing != "smaa") {
             throw std::runtime_error("THEFT4_ANTI_ALIASING must be off, fxaa, or smaa");
         }
+        // The iOS picker is a canonical selection. Mark it before the headless
+        // renderer resolves compatibility values, otherwise Off inherits the
+        // legacy 4x scene-MSAA default.
+        REXCVAR_SET(gta4_native_anti_aliasing_unified, true);
         REXCVAR_SET(gta4_native_anti_aliasing, std::string(anti_aliasing));
         const char* sharpening_override = std::getenv("THEFT4_SHARPENING");
         const std::string_view sharpening = sharpening_override ? sharpening_override : "0";

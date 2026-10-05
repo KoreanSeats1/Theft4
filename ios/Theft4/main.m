@@ -740,7 +740,7 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4DrawDistance": @1,
         @"Theft4ModelDetail": @1,
         @"Theft4ReflectionQuality": @0,
-        @"Theft4AntiAliasing": @2,
+        @"Theft4AntiAliasing": @0,
     }];
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
     [NSUserDefaults.standardUserDefaults registerDefaults:@{

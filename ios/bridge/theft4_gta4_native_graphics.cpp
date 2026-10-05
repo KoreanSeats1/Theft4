@@ -87,7 +87,7 @@ REXCVAR_DEFINE_STRING(gta4_reflection_aa, "original", "GTA IV/Graphics/Reflectio
 REXCVAR_DEFINE_STRING(gta4_reflection_capture_distance, "original",
                       "GTA IV/Graphics/Reflections/Advanced", "Reflection capture distance")
     .allowed({"original", "extended", "far"});
-REXCVAR_DEFINE_STRING(gta4_native_anti_aliasing, "smaa",
+REXCVAR_DEFINE_STRING(gta4_native_anti_aliasing, "off",
                       "GTA IV/Graphics/Anti-Aliasing", "Anti-aliasing mode")
     .allowed({"off", "fxaa", "smaa", "msaa2x", "msaa4x", "ssaa2x", "ssaa4x",
               "ssaa6x", "ssaa8x", "ssaa10x", "ssaa12x", "ssaa14x", "ssaa16x",

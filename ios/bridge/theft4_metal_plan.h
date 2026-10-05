@@ -27,10 +27,14 @@ class PlanAdapter {
   render::IndexRangeCache& IndexRanges() { return index_ranges_; }
   size_t PipelineCount() const { return render_pipelines_.size(); }
   size_t SamplerCount() const { return samplers_.size(); }
-  ResourceCacheStats ResourceStats() const { return resources_.Stats(); }
+  ResourceCacheStats ResourceStats() const {
+    auto stats=resources_.Stats();stats.prepared_view_hits=prepared_view_hits_;
+    stats.prepared_view_misses=prepared_view_misses_;return stats;
+  }
   size_t RetireResources(bool bounded=false);
   static MTLPixelFormat PixelFormat(render::Format format);
-  void BeginUploadBatch() { resources_.BeginUploadBatch(); }
+  void BeginUploadBatch() { EndUploadBatch();resources_.BeginUploadBatch();upload_batch_active_=true; }
+  void EndUploadBatch() { for(auto& entry:buffer_views_)entry={};upload_batch_active_=false; }
   BufferView ConstantFor(const render::Buffer&,std::string& error);
   BufferView BufferFor(const render::Buffer& buffer,std::string& error);
   id<MTLTexture> ImageFor(const render::Image& image,std::string& error);
@@ -51,6 +55,19 @@ class PlanAdapter {
   Renderer& renderer_;
   ShaderStore shaders_;
   ResourceCache resources_;
+  // Small, direct-mapped memo for this submission only. Avoid repeated
+  // generation hashing and global LRU updates when draws share an upload.
+  // Separate geometry/constants slots preserve their arena classification;
+  // large buffers are excluded. Views are released on every submission exit.
+  struct PreparedBufferView {
+    std::weak_ptr<const render::Bytes> owner;
+    uint64_t generation=0;std::array<uint64_t,4> conversion{};
+    BufferView view;
+  };
+  std::array<PreparedBufferView,64> buffer_views_;
+  bool upload_batch_active_=false;
+  uint64_t prepared_view_hits_=0,prepared_view_misses_=0;
+  BufferView UploadedViewFor(const std::shared_ptr<const render::Bytes>&,bool constants,std::string& error);
   render::IndexRangeCache index_ranges_;
   struct PipelineLookup {const render::Pipeline& pipeline;render::Primitive primitive;};
   struct PipelineLess {

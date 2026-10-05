@@ -342,6 +342,38 @@ struct Probe {
         @"sparse_fetch_slots":@[@0,@15],@"metal_indices":@[@0,@1],
         @"specialization_cache_reused":@YES,@"library_reused_after_file_removal":@YES,@"failed_binding_transaction_retained":@YES}];
   }
+  void PreparedUploadViews() {
+    namespace r=theft4::render;
+    PlanAdapter adapter(renderer);adapter.BeginUploadBatch();
+    auto source=std::make_shared<r::Bytes>();source->generation=1;source->value.assign(4096,0x34);
+    r::Buffer range{source,32,128};
+    const auto first=adapter.ConstantFor(range,error);Require(first.buffer);
+    for(size_t n=0;n<1024;++n) {
+      const auto view=adapter.ConstantFor(range,error);
+      Require(view.buffer==first.buffer&&view.offset==first.offset&&view.length==128);
+    }
+    Require(adapter.ResourceStats().prepared_view_hits==1024);
+    auto invalid=range;invalid.offset=4090;
+    Require(!adapter.ConstantFor(invalid,error).buffer);
+    source->value.resize(8192);Require(!adapter.ConstantFor(range,error).buffer);
+    source->value.resize(4096);source->generation=2;source->value.assign(4096,0x56);
+    const auto changed=adapter.ConstantFor(range,error);Require(changed.buffer&&changed.offset!=first.offset);
+    Require(static_cast<const uint8_t*>(first.buffer.contents)[first.offset]==0x34);
+    Require(static_cast<const uint8_t*>(changed.buffer.contents)[changed.offset]==0x56);
+    const auto misses=adapter.ResourceStats().prepared_view_misses;
+    const auto geometry=adapter.BufferFor(range,error);
+    Require(geometry.buffer&&adapter.ResourceStats().prepared_view_misses==misses+1);
+    Require(static_cast<const uint8_t*>(geometry.buffer.contents)[geometry.offset]==0x56);
+    adapter.EndUploadBatch();
+    const auto hits=adapter.ResourceStats().prepared_view_hits;
+    Require(adapter.ConstantFor(range,error).buffer);Require(adapter.ResourceStats().prepared_view_hits==hits);
+    source.reset();range={};invalid={};adapter.RetireResources();
+    Require(adapter.ResourceStats().resident_buffer_bytes==0);
+    Require(static_cast<const uint8_t*>(first.buffer.contents)[first.offset]==0x34);
+    [results addObject:@{@"case":@"submission_upload_view_memo",@"passed":@YES,
+      @"repeated_lookups_avoided":@1024,@"range_and_identity_changes_checked":@YES,
+      @"arena_request_classification_preserved":@YES,@"submission_exit_releases_views":@YES}];
+  }
   void ResourceGenerations() {
     ResourceCache cache(renderer);
     auto vertices=std::make_shared<const std::vector<Vertex>>(Quad({1,1,1,1}));
@@ -1534,7 +1566,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
+    probe.PreparedUploadViews();probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

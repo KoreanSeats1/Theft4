@@ -3,9 +3,11 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <stdexcept>
 #include <type_traits>
 using namespace rex::graphics::gta4_native;
 
@@ -20,6 +22,10 @@ template<class T>T Query(const char*) {
 template<class T>void RegisterChangeCallback(const char*,T){++callback_registrations;}
 }
 #define REXCVAR_GET(name) name
+#define REXCVAR_SET(name,value) name=value
+#define gta4_native_anti_aliasing configured
+#define gta4_native_anti_aliasing_unified unified
+#include "metal-ios-aa-startup.inc"
 #define REXLOG_INFO(...) do{}while(0)
 std::atomic<AntiAliasingMode> g_renderer_configured_anti_aliasing{AntiAliasingMode::kSmaa};
 std::atomic<AntiAliasingMode> g_renderer_active_anti_aliasing{AntiAliasingMode::kSmaa};
@@ -60,6 +66,25 @@ struct Gta4NativeGraphicsSystem {
 #undef system
 
 int main() {
+  // Apply the actual iOS environment bridge against the production legacy
+  // defaults. Off must not silently inherit 4x scene MSAA.
+  for(const auto* mode:{"off","fxaa","smaa"}) {
+    setenv("THEFT4_ANTI_ALIASING",mode,1);
+    configured="smaa";unified=false;gta4_native_msaa="4x";gta4_native_spatial_aa=true;
+    ApplyIosAntiAliasing();
+    runtime::FunctionDispatcher dispatcher;fixture_system::KernelState kernel;
+    Gta4NativeGraphicsSystem graphics;
+    assert(graphics.SetupGuestGpu(&dispatcher,&kernel)==X_STATUS_SUCCESS);
+    assert(graphics.worker_observed==*ParseAntiAliasingMode(mode));
+    assert(GetAntiAliasingRoute(graphics.worker_observed).scene_sample_count==1);
+  }
+  unsetenv("THEFT4_ANTI_ALIASING");unified=false;
+  ApplyIosAntiAliasing();assert(configured=="off");
+  setenv("THEFT4_ANTI_ALIASING","invalid",1);
+  bool rejected=false;
+  try {ApplyIosAntiAliasing();}catch(const std::runtime_error&){rejected=true;}
+  assert(rejected&&configured=="off");
+  unsetenv("THEFT4_ANTI_ALIASING");gta4_native_msaa="off";gta4_native_spatial_aa=false;
   // No SetupPresentation call: exercise the launch path used by the iPad.
   for(const auto* mode:{"off","fxaa","smaa","msaa2x","ssaa4x"}) {
     configured=mode;unified=true;

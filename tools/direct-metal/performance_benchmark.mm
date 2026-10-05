@@ -96,11 +96,12 @@ nlohmann::json UploadViewBenchmark(metal::Renderer& renderer) {
     {"uploaded_bytes",after.uploaded_bytes-before.uploaded_bytes},{"range_byte_parity",true}};
 }
 int main(int argc,char** argv) {
-  if(argc<3||argc>5)return 2;
-  bool streaming=false,profile_gpu=false;
-  for(int i=3;i<argc;++i){streaming|=std::string(argv[i])=="--streaming";profile_gpu|=std::string(argv[i])=="--profile";}
+  if(argc<3||argc>7)return 2;
+  bool streaming=false,profile_gpu=false,heavy=false,pooled=true;
+  for(int i=3;i<argc;++i){streaming|=std::string(argv[i])=="--streaming";profile_gpu|=std::string(argv[i])=="--profile";
+    heavy|=std::string(argv[i])=="--heavy";if(std::string(argv[i])=="--immutable-uploads")pooled=false;}
   try {@autoreleasepool {
-    std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer};
+    std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer,128,384*1024*1024,pooled};
     Require(renderer.Ready(),"Metal unavailable");
     if(argc==4&&std::string_view(argv[3])=="--upload-views") {
       const auto report=UploadViewBenchmark(renderer);std::ofstream output(argv[2]);
@@ -135,30 +136,38 @@ int main(int argc,char** argv) {
     prototype=Draw(200);
     uint64_t buffers_created=0,uploaded=0;std::vector<metal::GpuPassTiming> pass_timings;
     std::deque<std::shared_ptr<render::FramePlan>> retained_generations;
-    const auto frames=streaming?52u:22u;
+    const auto frames=streaming?52u:heavy?32u:22u;
+    const size_t draws_per_frame=heavy?4500:1000,pass_count=heavy?180:streaming?200:1;
     const auto allocated_before=renderer.Device().currentAllocatedSize;
     for(size_t frame=0;frame<frames;++frame) {@autoreleasepool {
       auto plan=Plan(surface,frame+2);auto& draws=std::get<render::Pass>(plan->commands[0]).commands;
-      for(size_t i=0;i<1000;++i) {
+      for(size_t i=0;i<draws_per_frame;++i) {
         auto c=std::make_shared<render::Capture>(*prototype);
         // Per-object constants change, while vertices and other banks stay static.
         std::vector<uint8_t> data(4096);const uint32_t value=uint32_t(i);
         std::memcpy(data.data(),&value,4);c->draw.constants[0]=Bytes(data,1000+frame*1000+i);
+        if(heavy) {
+          // The real immediate-mode shader reads this bank. Change a dormant
+          // prefix word while preserving all shader-visible color/scale words.
+          auto shared=prototype->draw.constants[2].source->value;
+          std::memcpy(shared.data(),&value,4);c->draw.constants[2]=Bytes(shared,200000+frame*draws_per_frame+i);
+        }
         if(streaming) {
           const auto& source=prototype->draw.vertices[0].source->value;
           c->draw.vertices[0]=Bytes(source,100000+frame*1000+i);
         }
         draws.push_back(render::FrameDraw{c,{}});
       }
-      if(streaming) {
+      if(streaming||heavy) {
         // The live game publishes hundreds of passes and retains CPU source
         // generations beyond one frame. Exercise both behaviors, not only one
         // static triangle and one pass. LOAD preserves the previous pass.
         auto original=std::move(draws);auto base=std::get<render::Pass>(plan->commands[0]);
         plan->commands.clear();
-        for(size_t group=0;group<200;++group) {
+        for(size_t group=0;group<pass_count;++group) {
           auto split=base;if(group)split.colors[0]->load=render::Load::Load;
-          for(size_t item=0;item<5;++item)split.commands.push_back(std::move(original[group*5+item]));
+          for(size_t item=0;item<draws_per_frame/pass_count;++item)
+            split.commands.push_back(std::move(original[group*(draws_per_frame/pass_count)+item]));
           plan->commands.push_back(std::move(split));
         }
       }
@@ -169,7 +178,7 @@ int main(int argc,char** argv) {
       if(profile_gpu&&frame==frames-1) {
         pass_timings=receipt.GpuPassTimings();
         if([renderer.Device() supportsFamily:MTLGPUFamilyApple1]&&[renderer.Device() supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
-          Require(pass_timings.size()==(streaming?200u:1u),"GPU stage profile missing pass samples");
+          Require(pass_timings.size()==pass_count,"GPU stage profile missing pass samples");
           for(const auto& t:pass_timings)Require(std::isfinite(t.vertex_ms)&&std::isfinite(t.fragment_ms)&&t.vertex_ms>=0&&t.fragment_ms>=0,"GPU stage timestamp conversion invalid");
         }
       }
@@ -181,15 +190,15 @@ int main(int argc,char** argv) {
         auto pixels=renderer.ReadRGBA8(adapter.Output(*plan,error),error);Require(pixels.size()==8*8*4,error);
         for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==255&&pixels[i+1]==0&&pixels[i+2]==0&&pixels[i+3]==255,"Benchmark render parity failed");
       }
-      if(streaming){retained_generations.push_back(plan);if(retained_generations.size()>40)retained_generations.pop_front();}
+      if(streaming||heavy){retained_generations.push_back(plan);if(retained_generations.size()>(heavy?8:40))retained_generations.pop_front();}
     }}
     const auto median=[](auto v){std::sort(v.begin(),v.end());return v[v.size()/2];};
     nlohmann::json report{{"optimized",bool(THEFT4_PERF_OPTIMIZED)},{"gpu",renderer.Device().name.UTF8String},
       {"synthetic_validation_draws",600},{"indices_per_draw",65532},{"validation_median_ms",median(validation_ms)},
-      {"synthetic_submission_draws",1000},{"submission_median_ms",median(submit_ms)},
+      {"synthetic_submission_draws",draws_per_frame},{"submission_median_ms",median(submit_ms)},
       {"submission_samples_ms",submit_ms},{"validation_samples_ms",validation_ms},
       {"measured_frames",submit_ms.size()},{"buffer_allocations",buffers_created},{"uploaded_bytes",uploaded},{"pixel_parity",true}};
-    report["streaming_geometry"]=streaming;report["passes_per_frame"]=streaming?200:1;
+    report["streaming_geometry"]=streaming;report["passes_per_frame"]=pass_count;report["reusable_frame_uploads"]=pooled;
     if(profile_gpu) {
       report["gpu_profile_samples"]=nlohmann::json::array();
       for(const auto& t:pass_timings)report["gpu_profile_samples"].push_back({{"pass",t.pass},{"vertex_ms",t.vertex_ms},{"fragment_ms",t.fragment_ms}});
@@ -199,6 +208,7 @@ int main(int argc,char** argv) {
     const auto stats=adapter.ImmutableStats();
     report["buffer_cache_peak_bytes"]=stats.peak_buffer_bytes;report["buffer_cache_resident_bytes"]=stats.resident_buffer_bytes;
     report["buffer_evictions"]=stats.buffer_evictions;
+    report["frame_buffer_reuses"]=stats.frame_upload_buffer_reuses;report["frame_buffer_bytes"]=stats.frame_upload_resident_bytes;
 #endif
 #if THEFT4_PERF_OPTIMIZED
     report["index_scanned"]=ranges.ScannedIndices();report["index_cache_hits"]=ranges.Hits();

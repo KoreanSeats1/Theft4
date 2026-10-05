@@ -4,6 +4,8 @@
 
 namespace theft4::metal {
 struct FrameTiming {
+  // Preparation is fixed frame/surface setup. Encoding includes interleaved
+  // draw realization; it no longer materializes a second owning draw list.
   double validation_ms=0,preparation_ms=0,encoding_ms=0;
   uint64_t commands=0,draws=0,pipelines_created=0,buffers_created=0,textures_created=0,uploaded_bytes=0;
   uint64_t render_passes=0,image_copies=0;
@@ -20,7 +22,8 @@ struct FrameResourceStats {
 // generation; submitted command buffers retain them after CPU owners retire.
 class FrameAdapter {
  public:
-  explicit FrameAdapter(Renderer&,size_t maximum_resolve_specializations=128,size_t buffer_budget=128*1024*1024);
+  explicit FrameAdapter(Renderer&,size_t maximum_resolve_specializations=128,size_t buffer_budget=128*1024*1024,
+                        bool reuse_frame_uploads=true);
   ~FrameAdapter();
   void ConfigurePipelineCache(const std::string& directory);
   void FlushPipelineCache();

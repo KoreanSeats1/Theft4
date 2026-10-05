@@ -57,9 +57,9 @@ ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
 }
 PlanAdapter::PlanAdapter(Renderer& renderer,size_t budget):diagnostics_(!theft4_retail_mode()),binding_storage_(8*1024*1024,8192,diagnostics_),
     renderer_(renderer),shaders_(renderer),resources_(renderer,budget){}
-Draw PlanAdapter::AcquireDrawStorage() {
-  auto storage=binding_storage_.Acquire();Draw draw;
-  draw.textures=std::move(storage.first);draw.samplers=std::move(storage.second);return draw;
+void PlanAdapter::AcquireDrawBindings(Draw& draw) {
+  auto storage=binding_storage_.Acquire();
+  draw.textures=std::move(storage.first);draw.samplers=std::move(storage.second);
 }
 void PlanAdapter::RecycleDrawStorage(Draw& draw) noexcept {
   binding_storage_.Recycle(draw.textures,draw.samplers);
@@ -264,12 +264,19 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
     pipelines_.emplace(std::pair{*effective,primitive},result);}return remember(result);
 }
 BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Bytes>& source,bool constants,std::string& error) {
+  const auto upload=[&]() {
+    if(constants&&frame_upload_batch_) {
+      auto view=frame_upload_batch_->TryUpload(source->value);
+      if(view.buffer){error.clear();return view;}
+    }
+    return constants?resources_.UniformBuffer(Version(source),source->value,error):
+                     resources_.UploadBuffer(Version(source),source->value,error);
+  };
   // A single-owner source often belongs to one newly recorded draw. Inserting
   // every such source made streaming slower despite good shared-source hits.
   // This is only a reuse hint: the full cache still validates every version.
   if(!upload_batch_active_||source->value.size()>64*1024||source.use_count()==1)
-    return constants?resources_.UniformBuffer(Version(source),source->value,error):
-                     resources_.UploadBuffer(Version(source),source->value,error);
+    return upload();
   // Allocator alignment and regular source strides made the old low-bit,
   // 32-slot index collide frequently. Mix the address and bound each lookup
   // to eight probes. A saturated table falls back to the full resource cache.
@@ -292,8 +299,7 @@ BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Byte
     break;
   }
   if(diagnostics_)++prepared_view_misses_;
-  auto view=constants?resources_.UniformBuffer(Version(source),source->value,error):
-                      resources_.UploadBuffer(Version(source),source->value,error);
+  auto view=upload();
   if(view.buffer&&destination) {
     if(!destination->identity)buffer_view_slots_[buffer_view_count_++]=uint16_t(destination_slot);
     *destination={source.get(),source,source->generation,source->conversion,view};
@@ -383,11 +389,13 @@ bool PlanAdapter::EnsureDummyImages(std::string& error) {
 bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string& error) {
   uint64_t maximum=0;bool index_has_restart=false;
   if(!render::Validate(capture,error,nullptr,&index_ranges_,&maximum,nullptr,&index_has_restart))return false;
-  return PrepareValidated(capture,maximum,index_has_restart,draw,error);
+  Draw result;theft4::StorageCleanup cleanup{[&]{RecycleDrawStorage(result);}};
+  if(!PrepareValidated(capture,maximum,index_has_restart,result,error))return false;
+  draw=std::move(result);return true;
 }
 bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,bool index_has_restart,Draw& draw,std::string& error) {
-  const auto& source=capture.draw;Draw result=AcquireDrawStorage();
-  theft4::StorageCleanup cleanup{[&]{RecycleDrawStorage(result);}};result.maximum_vertex=NSUInteger(maximum);
+  const auto& source=capture.draw;AcquireDrawBindings(draw);auto& result=draw;
+  result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
   result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
   result.vertex_count=source.vertex_count;result.instance_count=source.instances;result.base_vertex=source.base_vertex;
@@ -453,7 +461,7 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
   result.stencil_reference=source.stencil_front_reference;result.stencil_back_reference=source.stencil_back_reference;
   result.blend_color=source.blend_color;result.depth_bias=source.depth_bias;result.slope_bias=source.slope_bias;
   result.depth_clamp=source.depth_clamp;result.lines=source.lines;
-  draw=std::move(result);error.clear();return true;
+  error.clear();return true;
 }
 std::shared_ptr<const Draw> PlanAdapter::Realize(const std::shared_ptr<const render::Capture>& capture,std::string& error) {
   if(!capture){error="Missing immutable game draw plan";return {};}

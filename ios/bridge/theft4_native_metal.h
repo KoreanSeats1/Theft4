@@ -127,6 +127,9 @@ class Frame {
   bool EndPass(std::string& error);
   bool Present(id<CAMetalDrawable> drawable, std::string& error);
   Receipt Submit(std::string& error);
+  // Hold transient upload ownership until this command buffer completes.
+  // Aborted, unsubmitted frames release it without recycling pending GPU data.
+  void RetainUntilCompletion(std::shared_ptr<void>);
   explicit operator bool() const;
  private:
   friend class Renderer;

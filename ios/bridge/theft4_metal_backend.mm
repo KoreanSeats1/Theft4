@@ -146,11 +146,13 @@ class Backend final:public render::FrameBackend {
     if(!theft4_retail_mode()&&present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
       const auto resources=adapter_->ImmutableStats();
-      std::fprintf(stderr,"gta4-metal-upload-pages: present=%llu vm-allocations=%llu vm-reuses=%llu free-page-bytes=%llu buffer-extent-queries=%llu texture-shape-queries=%llu prepared-view-hits=%llu prepared-view-misses=%llu\n",
+      std::fprintf(stderr,"gta4-metal-upload-pages: present=%llu vm-allocations=%llu vm-reuses=%llu free-page-bytes=%llu buffer-extent-queries=%llu texture-shape-queries=%llu prepared-view-hits=%llu prepared-view-misses=%llu frame-buffer-creates=%llu frame-buffer-reuses=%llu frame-buffer-bytes=%llu interleaved-preparation=1\n",
         (unsigned long long)presentations_,(unsigned long long)resources.page_memory_allocations,
         (unsigned long long)resources.page_memory_reuses,(unsigned long long)resources.free_page_bytes,
         (unsigned long long)e.buffer_extent_queries,(unsigned long long)e.texture_shape_queries,
-        (unsigned long long)resources.prepared_view_hits,(unsigned long long)resources.prepared_view_misses);
+        (unsigned long long)resources.prepared_view_hits,(unsigned long long)resources.prepared_view_misses,
+        (unsigned long long)resources.frame_upload_buffer_creates,(unsigned long long)resources.frame_upload_buffer_reuses,
+        (unsigned long long)resources.frame_upload_resident_bytes);
       std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu avoided-loads=%llu native-identity-copies=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu host-specializations=%zu host-specialization-fallbacks=%zu\n",
         (unsigned long long)presentations_,(unsigned long long)t.avoided_attachment_stores,
         (unsigned long long)t.avoided_attachment_loads,(unsigned long long)t.native_identity_copies,

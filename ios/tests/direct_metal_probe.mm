@@ -732,7 +732,10 @@ struct Probe {
     }
 
     Require(cold.surface_creates==(theft4_retail_mode()?0:3)&&cold.surface_creates==warm.surface_creates&&cold.view_creates==warm.view_creates&&
-      immutable.buffer_creates==warmImmutable.buffer_creates&&immutable.uploaded_bytes==warmImmutable.uploaded_bytes&&
+      immutable.buffer_creates-immutable.frame_upload_buffer_creates==
+        warmImmutable.buffer_creates-warmImmutable.frame_upload_buffer_creates&&
+      immutable.uploaded_bytes-immutable.frame_uploaded_bytes==warmImmutable.uploaded_bytes-warmImmutable.frame_uploaded_bytes&&
+      warmImmutable.frame_upload_resident_bytes<=FrameUploadPool::Budget(128*1024*1024)&&
       pipelines==adapter.PipelineCount());
     // Report every shader preparation failure in a batch, including later
     // draws, while proving no clear/copy/draw from that rejected batch ran.
@@ -1022,7 +1025,8 @@ struct Probe {
     fetch.produced[0]->format=r::Format::RGBA8Srgb;check({34,55,81,255});
     const auto warm=adapter.Stats();const auto uploads=adapter.ImmutableStats();check({34,55,81,255});
     Require(adapter.Stats().surface_creates==warm.surface_creates&&adapter.Stats().view_creates==warm.view_creates&&
-      adapter.ImmutableStats().uploaded_bytes==uploads.uploaded_bytes);
+      adapter.ImmutableStats().uploaded_bytes-adapter.ImmutableStats().frame_uploaded_bytes==
+        uploads.uploaded_bytes-uploads.frame_uploaded_bytes);
     r::SampledSurfaceView cube;cube.surface=layered->key;cube.kind=r::ImageKind::TextureCube;
     cube.level=1;cube.levels=2;cube.slice=6;cube.slices=6;
     auto cubeTexture=adapter.SampledTexture(*plan,cube,error);Require(cubeTexture);
@@ -1188,7 +1192,8 @@ struct Probe {
     auto receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
     const auto cold=adapter.ImmutableStats();Require(adapter.PipelineCount()==2);
     receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
-    Require(adapter.ImmutableStats().buffer_creates==cold.buffer_creates&&adapter.PipelineCount()==2);
+    Require(adapter.ImmutableStats().buffer_creates-adapter.ImmutableStats().frame_upload_buffer_creates==
+      cold.buffer_creates-cold.frame_upload_buffer_creates&&adapter.PipelineCount()==2);
     Require(adapter.LastTiming().binding_storage_reuses==(theft4_retail_mode()?0:2)&&adapter.LastTiming().binding_storage_fresh==0);
     auto invalid=std::make_shared<r::FramePlan>(*plan);
     (*r::GetHostDraw(std::get<r::Pass>(invalid->commands.back()).commands[0])).constants.length=43;
@@ -1205,7 +1210,8 @@ struct Probe {
     present.commands={display};plan=std::make_shared<r::FramePlan>();plan->sequence=6;plan->surfaces={output};plan->commands={present};plan->output=dst;
     receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(true);
     const auto uploaded=adapter.ImmutableStats();receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(true);
-    Require(adapter.ImmutableStats().texture_creates==uploaded.texture_creates&&adapter.ImmutableStats().uploaded_bytes==uploaded.uploaded_bytes);
+    Require(adapter.ImmutableStats().texture_creates==uploaded.texture_creates&&
+      adapter.ImmutableStats().uploaded_bytes-adapter.ImmutableStats().frame_uploaded_bytes==uploaded.uploaded_bytes-uploaded.frame_uploaded_bytes);
     [results addObject:@{@"case":@"ordered_host_utility_commands",@"passed":@YES,
       @"gpu_depth_handoff_and_presentation":@YES,@"prepared_astc_source":@YES,
       @"warm_pipelines_and_resources_reused":@YES,@"short_host_constants_rejected":@YES,

@@ -84,6 +84,27 @@ int main(int argc,char** argv) {
     }
     // Exercise the same offline host programs and 64-byte resolve ABI used by
     // the live title producer, including scaled color, exponent and MSAA.
+    {
+      // Admission succeeds, then shader realization fails after a clear has
+      // already been encoded. Uncommitted streaming work must leave both the
+      // previous GPU bytes and published contents untouched.
+      const auto before_pixels=pixels;
+      auto aborted=Clear(surface,37,1);auto bad=std::make_shared<render::Capture>();
+      bad->width=32;bad->height=16;auto& d=bad->draw;d.pipeline.vertex.hash=0xfedcba9876543210ull;
+      d.pipeline.fragment.hash=0x949ed69300fb92b7ull;
+      d.pipeline.colors[0]=surface->format;d.vertex_count=3;d.viewport={0,0,32,16,0,1};d.scissor={0,0,32,16};
+      for(size_t bank=0;bank<3;++bank) {
+        auto bytes=std::make_shared<render::Bytes>();bytes->generation=37+bank;
+        bytes->value.resize(bank==0?4096:bank==1?3584:1056);d.constants[bank]={bytes,0,bytes->value.size()};
+      }
+      std::get<render::Pass>(aborted->commands[0]).commands.push_back(render::FrameDraw{bad,{}});
+      render::SurfaceContents admitted_final;
+      if(!render::ValidateFrame(*aborted,{},admitted_final,error)){std::cerr<<error<<'\n';return 1;}
+      const auto before_published=published;
+      assert(!backend->Submit(aborted,false,error,&published));assert(error.find("shader")!=std::string::npos);
+      assert(published==before_published);
+      assert(backend->ReadRGBA8(*first,*first->output,pixels,error));assert(pixels==before_pixels);
+    }
     for(uint32_t samples:{1u,4u}) {
       if(!(caps.sample_counts&(1u<<samples)))continue;
       auto input=std::make_shared<render::Surface>(*surface);input->key={100+samples,1};input->samples=samples;

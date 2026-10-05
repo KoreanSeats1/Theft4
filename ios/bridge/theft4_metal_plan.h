@@ -41,6 +41,7 @@ class PlanAdapter {
   void EndUploadBatch() {
     for(size_t i=0;i<buffer_view_count_;++i)buffer_views_[buffer_view_slots_[i]]={};
     buffer_view_count_=0;upload_batch_active_=false;
+    frame_upload_batch_.reset();
   }
   BufferView ConstantFor(const render::Buffer&,std::string& error);
   BufferView BufferFor(const render::Buffer& buffer,std::string& error);
@@ -49,11 +50,17 @@ class PlanAdapter {
   id<MTLSamplerState> SamplerFor(const render::Sampler& sampler,std::string& error);
  private:
   friend class FrameAdapter;
+  void BeginFrameUploadBatch(std::shared_ptr<FrameUploadPool::Batch> batch) {
+    BeginUploadBatch();frame_upload_batch_=std::move(batch);
+  }
+  std::shared_ptr<FrameUploadPool::Batch> frame_upload_batch_;
   // Only the frame adapter calls this after full transactional admission of
   // the SAME immutable capture in the SAME submission. Public Prepare remains
   // independently strict, and Metal packet validation still runs before encode.
+  // The internal destination must be a fresh Draw, owned by its caller's
+  // storage cleanup; public Prepare uses a transaction-local destination.
   bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,bool index_has_restart,Draw&,std::string& error);
-  Draw AcquireDrawStorage();
+  void AcquireDrawBindings(Draw&);
   void RecycleDrawStorage(Draw& draw) noexcept;
   const bool diagnostics_;
   theft4::VectorStoragePool<TextureBinding,SamplerBinding> binding_storage_;
@@ -73,7 +80,7 @@ class PlanAdapter {
     uint64_t generation=0;std::array<uint64_t,4> conversion{};
     BufferView view;
   };
-  static constexpr size_t kGeometryViewSlots=4096,kConstantViewSlots=4096;
+  static constexpr size_t kGeometryViewSlots=4096,kConstantViewSlots=32768;
   // Allocate once with the adapter, rather than putting the working-set
   // table on a caller's stack. Clear only occupied slots after submission.
   std::unique_ptr<PreparedBufferView[]> buffer_views_=

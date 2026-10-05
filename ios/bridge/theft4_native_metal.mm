@@ -170,6 +170,7 @@ struct Frame::Impl {
   id<MTLBlitCommandEncoder> blit = nil;
   MTLRenderPassDescriptor* pass = nil;
   std::shared_ptr<void> lease;
+  std::shared_ptr<void> upload_lease;
   bool submitted = false;
   id<MTLTexture> stored_color = nil;
   bool presented = false;
@@ -744,16 +745,20 @@ bool Frame::Present(id<CAMetalDrawable> drawable, std::string& error) {
   if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   [impl_->buffer presentDrawable:drawable]; impl_->presented = true; return true;
 }
+void Frame::RetainUntilCompletion(std::shared_ptr<void> lease) {
+  if(*this)impl_->upload_lease=std::move(lease);
+}
 Receipt Frame::Submit(std::string& error) {
   Receipt result;
   if (!*this || impl_->encoder) { error = "Metal submission requires an ended pass"; return result; }
   if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   auto lease = impl_->lease;
-  [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease; }];
+  auto uploads=impl_->upload_lease;
+  [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease;(void)uploads; }];
   result.buffer_ = impl_->buffer;
   result.counters_=impl_->counters;result.profiled_passes_=impl_->profiled_passes;result.pass_mapping_=std::move(impl_->pass_mapping);
   result.cpu_reference_=impl_->cpu_reference;result.gpu_reference_=impl_->gpu_reference;
-  impl_->submitted = true; impl_->lease.reset();
+  impl_->submitted = true; impl_->lease.reset();impl_->upload_lease.reset();
   [impl_->buffer commit]; return result;
 }
 Receipt::operator bool() const { return buffer_ != nil; }

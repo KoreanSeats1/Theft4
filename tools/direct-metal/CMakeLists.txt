@@ -240,6 +240,12 @@ target_include_directories(metal_upload_lifetime_test PRIVATE "${ROOT}/ios/bridg
 target_compile_options(metal_upload_lifetime_test PRIVATE -fobjc-arc -UNDEBUG)
 target_link_libraries(metal_upload_lifetime_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
 
+add_executable(metal_frame_upload_test frame_upload_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_frame_upload_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_frame_upload_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_frame_upload_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
 add_executable(metal_performance_benchmark performance_benchmark.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
   "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"

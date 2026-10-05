@@ -11,6 +11,63 @@
 #include "theft4_bounded_cache_sweep.h"
 
 namespace theft4::metal {
+struct FrameUploadPool::Impl {
+  static constexpr size_t page_bytes=1024*1024,slot_count=4;
+  struct Page {id<MTLBuffer> buffer=nil;uint8_t* contents=nullptr;};
+  struct Slot {bool busy=false;std::vector<Page> pages;};
+  id<MTLDevice> device;
+  const size_t budget;
+  const bool diagnostics=!theft4_retail_mode();
+  std::mutex mutex;std::array<Slot,slot_count> slots;
+  size_t resident=0;
+  uint64_t creates=0,reuses=0,uploaded=0;
+  Impl(Renderer& r,size_t limit):device(r.Device()),budget(limit){}
+};
+FrameUploadPool::FrameUploadPool(Renderer& r,size_t budget):impl_(std::make_shared<Impl>(r,budget)){}
+FrameUploadPool::Batch::Batch(std::shared_ptr<Impl> pool,size_t slot):pool_(std::move(pool)),slot_(slot){}
+FrameUploadPool::Batch::~Batch() {
+  // Completion may arrive on Metal's callback thread. Only slot admission is
+  // shared; uploads and stats stay on the single render worker.
+  std::lock_guard lock(pool_->mutex);pool_->slots[slot_].busy=false;
+}
+std::shared_ptr<FrameUploadPool::Batch> FrameUploadPool::Acquire() {
+  size_t chosen=Impl::slot_count;
+  {
+    std::lock_guard lock(impl_->mutex);
+    // Prefer an existing large slot; idle slots are not all eagerly populated.
+    for(size_t slot=0;slot<Impl::slot_count;++slot)
+      if(!impl_->slots[slot].busy&&(chosen==Impl::slot_count||
+          impl_->slots[slot].pages.size()>impl_->slots[chosen].pages.size()))chosen=slot;
+    if(chosen==Impl::slot_count||impl_->budget<Impl::page_bytes)return {};
+    impl_->slots[chosen].busy=true;
+  }
+  try {return std::shared_ptr<Batch>(new Batch(impl_,chosen));}
+  catch(...) {std::lock_guard lock(impl_->mutex);impl_->slots[chosen].busy=false;throw;}
+}
+BufferView FrameUploadPool::Batch::TryUpload(std::span<const uint8_t> bytes) {
+  if(bytes.empty()||bytes.size()>64*1024)return {};
+  const size_t size=(bytes.size()+255)&~size_t(255);
+  if(offset_+size>Impl::page_bytes){++page_;offset_=0;}
+  auto& pages=pool_->slots[slot_].pages;
+  if(page_==pages.size()) {
+    if(pool_->resident>pool_->budget||Impl::page_bytes>pool_->budget-pool_->resident)return {};
+    auto buffer=[pool_->device newBufferWithLength:Impl::page_bytes options:MTLResourceStorageModeShared];
+    if(!buffer||!buffer.contents)return {};
+    pages.push_back({buffer,static_cast<uint8_t*>(buffer.contents)});
+    pool_->resident+=Impl::page_bytes;if(pool_->diagnostics)++pool_->creates;
+  } else if(!offset_&&pool_->diagnostics)++pool_->reuses;
+  auto& page=pages[page_];const auto start=offset_;
+  std::memcpy(page.contents+start,bytes.data(),bytes.size());offset_+=size;
+  if(pool_->diagnostics)pool_->uploaded+=bytes.size();
+  return {page.buffer,NSUInteger(start),NSUInteger(bytes.size())};
+}
+void FrameUploadPool::AddStats(ResourceCacheStats& stats) const {
+  stats.buffer_creates+=impl_->creates;stats.uploaded_bytes+=impl_->uploaded;
+  stats.resident_buffer_bytes+=impl_->resident;if(impl_->diagnostics)stats.peak_buffer_bytes+=impl_->resident;
+  stats.frame_upload_buffer_creates=impl_->creates;stats.frame_upload_buffer_reuses=impl_->reuses;
+  stats.frame_upload_resident_bytes=impl_->resident;
+  stats.frame_uploaded_bytes=impl_->uploaded;
+}
 namespace {
 // Recycle VM backing only after Metal destroys its buffer, including escaped
 // ARC references and pending GPU work. A new Metal buffer gets a new identity;

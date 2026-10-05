@@ -66,6 +66,11 @@ target_include_directories(native_lod_selection_test PRIVATE "${CMAKE_BINARY_DIR
   "${ROOT}/glue/rexglue-sdk-main/include" "${ROOT}/glue/rexglue-sdk-main/thirdparty/simde")
 target_compile_options(native_lod_selection_test PRIVATE -UNDEBUG)
 add_test(NAME native_lod_selection COMMAND native_lod_selection_test)
+add_executable(batch_payload_cache_test batch_payload_cache_test.cpp)
+target_include_directories(batch_payload_cache_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
+  "${ROOT}/thirdparty/json/include")
+target_compile_options(batch_payload_cache_test PRIVATE -UNDEBUG)
+add_test(NAME batch_payload_cache COMMAND batch_payload_cache_test)
 add_executable(shader_realization_test shader_realization_test.cpp)
 target_include_directories(shader_realization_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 add_test(NAME shader_realization_contract COMMAND shader_realization_test)

@@ -52,6 +52,8 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   struct BufferSize {size_t operator()(const BytesRecord& e)const{return e.owner->value.size();}};
   struct ImageSize {size_t operator()(const ImageRecord& e)const{return e.owner->source->value.size();}};
   NativeIncrementalOwnerCache<std::array<uint64_t,8>,BytesRecord,BufferSize,BytesKeyHash> buffers;
+  NativeBatchPayloadCache<std::array<uint64_t,8>,theft4::render::Bytes,BytesKeyHash> constant_packets;
+  std::array<std::shared_ptr<const theft4::render::Bytes>,2> unused_constants;
   NativeIncrementalOwnerCache<uint64_t,ImageRecord,ImageSize> images;
   struct PipelineTemplate {
     theft4::render::Pipeline pipeline;
@@ -115,6 +117,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
     native_metal_frame_->utilities.clear();native_metal_frame_->smaa_lookups={};
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
+    native_metal_frame_->constant_packets.Reset();native_metal_frame_->unused_constants={};
     native_metal_frame_->pipelines.clear();native_metal_frame_->samplers.clear();
     native_metal_frame_->projected_constants.reset();
     native_metal_frame_->virtual_journal.FinishBatch();
@@ -206,6 +209,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   if(!native_metal_frame_->resource_admission)
     native_metal_frame_->resource_admission=std::make_unique<r::DrawResourceValidationCache>();
   native_metal_frame_->resource_admission->Clear();
+  native_metal_frame_->constant_packets.Reset();
   if(!native_metal_frame_->draw_arena)native_metal_frame_->draw_arena=std::make_unique<NativeSharedFrameArena<r::Capture>>();
   native_metal_frame_->draw_arena->BeginBatch([](r::Capture& capture){
     // Retain attribute capacity but release all immutable resource owners.
@@ -1118,6 +1122,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   std::erase_if(next.contents,[&](const auto& view){return !live.contains(view.surface);});
   next.index_ranges=std::move(native_metal_frame_->index_ranges);
   next.buffers=std::move(native_metal_frame_->buffers);
+  next.constant_packets=std::move(native_metal_frame_->constant_packets);
+  next.unused_constants=std::move(native_metal_frame_->unused_constants);
   next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
   next.pending_texture_generations=std::move(native_metal_frame_->pending_texture_generations);
   next.retired_texture_generations=native_metal_frame_->retired_texture_generations;
@@ -1158,6 +1164,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     REXLOG_INFO("gta4-metal-lifetime-performance: present={} produced-generations={} pending-retirements={} retired-generations={} cpu-cache-bytes={} resource-checks={} resource-reuses={}",
       next.timed_presents,next.textures.size(),next.pending_texture_generations.size(),next.retired_texture_generations,
       next.buffers.bytes()+next.images.bytes(),next.resource_admission->checks,next.resource_admission->hits);
+    REXLOG_INFO("gta4-metal-constant-cache: present={} batch-packets={} batch-bytes={} geometry-packets={} geometry-bytes={} image-bytes={}",
+      next.timed_presents,next.constant_packets.size(),next.constant_packets.bytes(),next.buffers.size(),next.buffers.bytes(),next.images.bytes());
   }
   // API-neutral saved CPU capture. Submission includes backend admission,
   // drawable acquisition and in-flight waits; it is not a GPU duration.

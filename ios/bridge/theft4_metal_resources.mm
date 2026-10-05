@@ -127,7 +127,7 @@ bool Validate(const Shape& s,std::span<const uint8_t> bytes,std::span<const Text
 }
 }
 struct ResourceCache::Impl {
-  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false;size_t live_entries=0;};
+  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false,constants=false;size_t live_entries=0;};
   using Allocations=std::list<Allocation>;
   struct BufferEntry { std::weak_ptr<const void> owner; id<MTLBuffer> buffer=nil; size_t size=0;Allocations::iterator allocation; };
   struct TextureEntry {
@@ -172,11 +172,24 @@ struct ResourceCache::Impl {
     while(!allocations.empty()&&stats.resident_buffer_bytes>buffer_budget-std::min(buffer_budget,size))
       Release(allocations.begin(),true);
   }
-  Allocations::iterator Add(id<MTLBuffer> buffer,bool packed) {
-    allocations.push_back({buffer,{},packed});auto i=std::prev(allocations.end());
+  Allocations::iterator Add(id<MTLBuffer> buffer,bool packed,bool constants=false) {
+    allocations.push_back({buffer,{},packed,constants});auto i=std::prev(allocations.end());
     stats.resident_buffer_bytes+=buffer.length;
     stats.peak_buffer_bytes=std::max(stats.peak_buffer_bytes,stats.resident_buffer_bytes);
     return i;
+  }
+  bool RetiredConstants(Allocations::iterator allocation,size_t& probes) const {
+    if(!allocation->constants)return false;
+    // Check complete allocation ownership, not just scattered hash buckets.
+    // A live source stops retirement. Independent encoded GPU views retain
+    // the Metal buffer; dropping cache ownership never overwrites its bytes.
+    for(const auto& key:allocation->keys) {
+      if(!probes)return false;
+      --probes;
+      const auto i=uniforms.find(key);
+      if(i!=uniforms.end()&&i->second.allocation==allocation&&!i->second.owner.expired())return false;
+    }
+    return true;
   }
   void Touch(Allocations::iterator allocation){allocations.splice(allocations.end(),allocations,allocation);}
 };
@@ -263,7 +276,7 @@ BufferView ResourceCache::UploadInArena(const ResourceVersion& version,std::span
     page.buffer=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
     if(!page.buffer){error="Metal uniform page allocation failed";return {};}
     page.buffer.label=constants?@"Theft4 Immutable Constants":@"Theft4 Immutable Geometry";
-    page.allocation=impl_->Add(page.buffer,true);
+    page.allocation=impl_->Add(page.buffer,true,constants);
     page.used=0;++impl_->stats.buffer_creates;
   }else page.used=offset;
   BufferView view{page.buffer,page.used,bytes.size()};
@@ -288,10 +301,11 @@ size_t ResourceCache::SweepRetired(bool bounded) {
   // Entry removal and owner replacement update exact page counts. Retiring
   // a page needs no repeated search through its historical keys.
   const auto allocations=std::min(impl_->allocations.size(),bounded?size_t(256):impl_->allocations.size());
+  size_t constant_probes=bounded?size_t(1024):std::numeric_limits<size_t>::max();
   for(size_t n=0;n<allocations&&!impl_->allocations.empty();++n) {
     if(impl_->sweep_allocation==impl_->allocations.end())impl_->sweep_allocation=impl_->allocations.begin();
     const auto allocation=impl_->sweep_allocation++;
-    if(!allocation->live_entries)impl_->Release(allocation,false);
+    if(!allocation->live_entries||impl_->RetiredConstants(allocation,constant_probes))impl_->Release(allocation,false);
   }
   impl_->stats.retired+=removed;return impl_->stats.retired-retired_before;
 }

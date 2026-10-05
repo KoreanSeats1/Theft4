@@ -270,12 +270,11 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     std::shared_ptr<const r::Bytes> bytes;
     if(constant_usage.known&&std::all_of(constant_usage.banks[bank].begin(),constant_usage.banks[bank].end(),
         [](uint64_t mask){return !mask;})) {
-      static const auto unused_bank_owner=std::make_shared<const uint8_t>(0);
-      auto found=native_metal_frame_->buffers.find({6,bank});
-      if(found!=native_metal_frame_->buffers.end()){bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);}
-      else {
+      bytes=native_metal_frame_->unused_constants[bank];
+      if(!bytes) {
         const std::vector<uint8_t> zero(required);
-        bytes=cached_bytes({6,bank},unused_bank_owner,zero,{6,bank,required});
+        bytes=make_bytes(zero,{6,bank,required});
+        native_metal_frame_->unused_constants[bank]=bytes;
       }
       ++native_metal_frame_->unused_constant_banks;native_metal_frame_->constant_bytes_avoided+=required;
     } else {
@@ -284,18 +283,13 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     }
     if(bytes){draw.constants[bank]={bytes,0,required};continue;}
     const auto cache_key=std::array<uint64_t,8>{3,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank};
-    auto it=native_metal_frame_->buffers.find(cache_key);
-    if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
-      bytes=it->second.owner;it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);
-    }
+    bytes=native_metal_frame_->constant_packets.Find(cache_key);
     if(!bytes&&constant_usage.known&&NativeMaskedConstantsEnabled()) {
       const auto& mask=constant_usage.banks[bank];
       const std::array<uint64_t,8> covered_key{7,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank,
           mask[0],mask[1],mask[2],mask[3],required};
-      const auto found=native_metal_frame_->buffers.find(covered_key);
-      if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
-        bytes=found->second.owner;found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);
-      } else {
+      bytes=native_metal_frame_->constant_packets.Find(covered_key);
+      if(!bytes) {
         auto covered=std::make_shared<r::Bytes>();covered->value.resize(required);
         const uint64_t written=projected_constants.WriteMasked(key.vertex_shader_hash,key.pixel_shader_hash,
             bank,version,constant_usage,covered->value,
@@ -304,7 +298,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           covered->generation=++next_native_metal_allocation_;
           covered->conversion={7,bank,version->token.revision,XXH3_64bits(mask.data(),sizeof(mask))};
           bytes=std::move(covered);
-          native_metal_frame_->buffers.Store(covered_key,{version,bytes,next_native_metal_sequence_});
+          if(!native_metal_frame_->constant_packets.Store(covered_key,bytes))return reject("Metal covered constant cache allocation failed");
           ++native_metal_frame_->masked_constant_materializations;
           native_metal_frame_->masked_constant_bytes_written+=written;
           native_metal_frame_->masked_constant_full_bank_bytes+=required;
@@ -318,7 +312,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       full->conversion={3,bank,version->token.revision,required};full->value.resize(required);
       CopyGuestWordsToHost(full->value.data(),guest->data(),required);
       bytes=std::move(full);
-      native_metal_frame_->buffers.Store(cache_key,{version,bytes,next_native_metal_sequence_});
+      if(!native_metal_frame_->constant_packets.Store(cache_key,bytes))return reject("Metal full constant cache allocation failed");
     }
     if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,required};
     projected_constants.Remember(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage,bytes);
@@ -351,9 +345,15 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   const uint64_t shared_hash=XXH3_64bits(shared_data.data(),shared_data.size());
   // Shared shader policy is content-addressed, not owned by a per-object
   // matrix bank. Compare the entire payload on hits to handle hash collisions.
-  // Ordinary frontend byte-budget eviction bounds this independent ownership.
-  static const auto shared_policy_owner=std::make_shared<const uint8_t>(0);
-  auto shared_bytes=cached_bytes({4,shared_hash},shared_policy_owner,shared_data,{4,shared_hash},true);
+  // Its values include camera/environment data that changes every frame. Keep
+  // them with this batch rather than accumulating in the geometry LRU.
+  const std::array<uint64_t,8> shared_key{4,shared_hash};
+  auto shared_bytes=native_metal_frame_->constant_packets.Find(shared_key);
+  if(!shared_bytes||shared_bytes->value.size()!=shared_data.size()||
+      std::memcmp(shared_bytes->value.data(),shared_data.data(),shared_data.size())) {
+    shared_bytes=make_bytes(shared_data,{4,shared_hash});
+    if(!native_metal_frame_->constant_packets.Store(shared_key,shared_bytes))return reject("Metal shared constant cache allocation failed");
+  }
   if(!shared_bytes)return reject("Metal shared constant allocation failed");
   draw.constants[2]={shared_bytes,0,sizeof(shared)};
   phase(timing.constants);

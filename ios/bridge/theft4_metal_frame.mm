@@ -269,6 +269,12 @@ struct FrameAdapter::Impl {
        source.constants.offset<=source.constants.source->value.size()&&
        source.constants.source->value.size()-source.constants.offset>=64) {
       std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+16,32);specialize=true;
+      if(source.program==render::HostProgram::PackedDepthAlias) {
+        // Only encoding and swizzle participate in this shader. Do not spend
+        // the bounded specialization budget on unused sample-layout fields.
+        const auto mode=specialization[4],swizzle=specialization[7];
+        specialization={0,0,0,0,uint32_t(mode!=0),0,0,swizzle&4095u};
+      }
     }
     if(metadata&&metadata->present_specialization&&source.constants.source&&source.constants.length>=44&&
        source.constants.offset<=source.constants.source->value.size()&&
@@ -276,6 +282,12 @@ struct FrameAdapter::Impl {
       // These output flags are immutable for this submitted plan. Remove
       // disabled AA, HDR and sharpening from the actual GPU function.
       std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+20,8);specialize=true;
+    }
+    if(metadata&&metadata->depth_specialization&&source.constants.source&&source.constants.length>=4&&
+       source.constants.offset<=source.constants.source->value.size()&&
+       source.constants.source->value.size()-source.constants.offset>=4) {
+      std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset,4);specialize=true;
+      specialization[0]=uint32_t(specialization[0]!=0);
     }
     auto pipeline=HostPipeline(source.program,source.pipeline,specialization,specialize,error);
     if(!pipeline)return false;

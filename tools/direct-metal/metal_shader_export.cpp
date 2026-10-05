@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 
@@ -135,17 +136,26 @@ Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one
   if (source.find(parameter) == std::string::npos)
     throw std::runtime_error("unexpected Metal guest bank parameter");
   source = Replace(source, parameter,
-    "const device uchar* vertexBank [[buffer(0)]], const device uchar* pixelBank [[buffer(1)]], "
-    "const device uchar* sharedBank [[buffer(2)]]");
+    "constant uchar* vertexBank [[buffer(0)]], constant uchar* pixelBank [[buffer(1)]], "
+    "constant uchar* sharedBank [[buffer(2)]]");
   source = Replace(source, "constant Theft4GuestBanks&", "thread const Theft4GuestBanks&");
+  // Guest addresses are offsets into three immutable per-draw banks. Retain
+  // their Metal address space and pointer provenance through inlined helpers,
+  // rather than round-tripping uniform pointers through integer GPU addresses.
+  for (const auto* bank : {"bankVS", "bankPS", "bankShared"})
+    source = Replace(source, std::string("ulong ") + bank + ";",
+                     std::string("constant uchar* ") + bank + ";");
+  source = Replace(source, "const device ", "constant ");
+  // SPIRV-Cross sometimes materializes an address before casting its pointee
+  // type. Numeric offsets and bit masks must remain integers.
+  source = std::regex_replace(source,
+      std::regex(R"(ulong (_[0-9]+) = (guestBanks\.bank(?:VS|PS|Shared)\b))"),
+      "constant uchar* $1 = $2");
   auto entry = source.find("theft4_shader(");
   auto body = source.find('{', entry);
   if (entry == std::string::npos || body == std::string::npos)
     throw std::runtime_error("missing Metal entry point");
-  // Preserve integer address arithmetic inside the shader, deriving its bases
-  // from ordinary Metal buffer parameters. The host never supplies GPU addresses.
-  source.insert(body + 1, "\n    const Theft4GuestBanks guestBanks{reinterpret_cast<ulong>(vertexBank), "
-      "reinterpret_cast<ulong>(pixelBank), reinterpret_cast<ulong>(sharedBank)};\n");
+  source.insert(body + 1, "\n    const Theft4GuestBanks guestBanks{vertexBank, pixelBank, sharedBank};\n");
   result.source = std::move(source);
   return result;
 }

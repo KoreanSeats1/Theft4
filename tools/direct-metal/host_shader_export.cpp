@@ -61,7 +61,12 @@ Json Export(const char* name,std::span<const uint32_t> code,const std::filesyste
     constants.push_back({{"buffer_index",0},{"bytes",compiler.get_declared_struct_size(compiler.get_type(push.base_type_id))}});
   }
   auto source=compiler.compile();
-  const bool resolve_specialization=std::string(name).find("gta4_native_resolve_convert_")==0;
+  const bool packed_depth_alias=std::string(name)=="gta4_native_packed_depth_alias_ps";
+  // Packed depth uses the same 64-byte conversion ABI. Its depth encoding and
+  // four channel selectors are fixed per draw, just like resolve conversion.
+  const bool resolve_specialization=packed_depth_alias||std::string(name).find("gta4_native_resolve_convert_")==0||
+      std::string(name)=="gta4_native_resolve_depth_msaa_ps";
+  const bool depth_specialization=std::string(name)=="gta4_native_scene_depth_handoff_ps";
   const bool present_specialization=std::string(name)=="gta4_native_hdr_present_ps"||
       std::string(name)=="smaa_present_ps"||std::string(name)=="smaa_hardware_present_ps";
   if(resolve_specialization) {
@@ -71,7 +76,7 @@ Json Export(const char* name,std::span<const uint32_t> code,const std::filesyste
     for(size_t i=0;i<fields.size();++i) {
       const auto symbol="theft4_resolve_"+std::to_string(i);
       declarations+="constant uint "+symbol+" [[function_constant("+std::to_string(i+1)+")]];\n";
-      const auto original="resolve_constants."+std::string(fields[i]);
+      const auto original=std::string(packed_depth_alias?"alias_constants.":"resolve_constants.")+fields[i];
       const auto replacement="(is_function_constant_defined("+symbol+") ? "+symbol+" : "+original+")";
       size_t at=0;while((at=source.find(original,at))!=std::string::npos){source.replace(at,original.size(),replacement);at+=replacement.size();}
     }
@@ -91,11 +96,18 @@ Json Export(const char* name,std::span<const uint32_t> code,const std::filesyste
     const auto insertion=source.find("using namespace metal;");if(insertion==std::string::npos)throw std::runtime_error("Metal presentation namespace missing");
     source.insert(insertion+std::string("using namespace metal;").size(),"\n"+declarations);
   }
+  if(depth_specialization) {
+    const std::string original="constants.float24",symbol="theft4_depth_float24";
+    const auto replacement="(is_function_constant_defined("+symbol+") ? "+symbol+" : "+original+")";
+    size_t at=0;while((at=source.find(original,at))!=std::string::npos){source.replace(at,original.size(),replacement);at+=replacement.size();}
+    const auto insertion=source.find("using namespace metal;");if(insertion==std::string::npos)throw std::runtime_error("Metal depth namespace missing");
+    source.insert(insertion+std::string("using namespace metal;").size(),"\nconstant uint "+symbol+" [[function_constant(1)]];\n");
+  }
   std::ofstream out(root/(std::string(name)+".metal"));out<<source;
   if(!out)throw std::runtime_error("Could not save translated host shader");
   uint64_t hash=14695981039346656037ull;
   for(auto word:code)for(size_t b=0;b<4;++b){hash^=uint8_t(word>>(b*8));hash*=1099511628211ull;}
-  return {{"resolve_specialization",resolve_specialization},{"present_specialization",present_specialization},{"name",name},{"stage",stage==spv::ExecutionModelVertex ? "vertex" : "fragment"},
+  return {{"resolve_specialization",resolve_specialization},{"present_specialization",present_specialization},{"depth_specialization",depth_specialization},{"name",name},{"stage",stage==spv::ExecutionModelVertex ? "vertex" : "fragment"},
     {"entry","theft4_host_shader"},{"spirv_words",code.size()},{"spirv_fnv1a64",hash},
     {"textures",textures},{"constants",constants}};
 }

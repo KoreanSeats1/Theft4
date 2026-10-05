@@ -293,3 +293,8 @@ target_include_directories(metal_draw_preparation_benchmark PRIVATE "${ROOT}/ios
 target_compile_options(metal_draw_preparation_benchmark PRIVATE -fobjc-arc)
 target_link_libraries(metal_draw_preparation_benchmark PRIVATE metal_shader_catalog render_plan
   "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_fragment_workload_benchmark fragment_workload_benchmark.mm)
+target_include_directories(metal_fragment_workload_benchmark PRIVATE "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_fragment_workload_benchmark PRIVATE -fobjc-arc)
+target_link_libraries(metal_fragment_workload_benchmark PRIVATE "-framework Foundation" "-framework Metal")

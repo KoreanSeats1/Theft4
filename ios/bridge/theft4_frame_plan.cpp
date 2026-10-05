@@ -73,7 +73,7 @@ bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& 
   if(host.scissor!=std::array<uint32_t,4>{0,0,w,h})return false;
   // These shaders contain no discard and always write the complete color.
   switch(host.program) {
-    case HostProgram::Resolve:case HostProgram::ResolveMSAA:
+    case HostProgram::Resolve:case HostProgram::ResolveMSAA:case HostProgram::PackedDepthAlias:
     case HostProgram::Present:case HostProgram::SplitPostFx:case HostProgram::SunShafts:
     case HostProgram::SmaaNeighborhood:case HostProgram::SmaaPresent:
     case HostProgram::SmaaHardwarePresent:case HostProgram::SmaaHardwareNeighborhood:return true;

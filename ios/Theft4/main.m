@@ -1966,8 +1966,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)applyFrameSpeedGraphicsChoices {
     if (!_bringupOverlay.renderResolution || _executionAttempted) return;
-    // Keep the user-selected scene/output resolution. The measured CPU win
-    // comes from geometry settings, rather than forcing a lower pixel count.
+    // Keep the user-selected scene/output resolution. The reduced geometry
+    // profile was useful in the device run; resolution needs a separate A/B.
     _antiAliasing.selectedSegmentIndex=0;_motionBlur.on=NO;_depthOfField.on=NO;_anisotropicFiltering.on=NO;
     _reflectionQuality.selectedSegmentIndex=0;_modelDetail.selectedSegmentIndex=0;
     _shadowQuality.selectedSegmentIndex=1;_drawDistance.selectedSegmentIndex=0;_enhancedOutput.on=NO;_fsrBoost.on=NO;

@@ -8,6 +8,14 @@
 #include <string.h>
 #import <QuartzCore/QuartzCore.h>
 
+#ifdef THEFT4_DIRECT_METAL_DEFAULT
+static NSString *const kOptimizedDistanceDescription = @"Optimized: 0.70× world distance. Reduces how far away world objects are drawn and keeps the game's existing LOD transitions.";
+static NSString *const kOptimizedDistanceMetrics = @"0.70× world distance";
+#else
+static NSString *const kOptimizedDistanceDescription = @"Optimized: 0.70× world distance and culls far local light volumes. Distant scenery and some night lighting may change.";
+static NSString *const kOptimizedDistanceMetrics = @"0.70× world distance · far local lights reduced";
+#endif
+
 static UIColor *Ink(unsigned rgb) {
     return [UIColor colorWithRed:((rgb >> 16) & 255) / 255.0
                            green:((rgb >> 8) & 255) / 255.0
@@ -313,7 +321,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
     [graphicsRows addObjectsFromArray:@[
         [self choice:@"DYNAMIC SHADOWS" detail:@"Optimized is locked until distant shadow cache reuse is verified. Original: 256 / 2048². Enhanced: 512 / 4096². Ultra: 1024 / up to 8192²." control:_shadowQuality metrics:_shadowMetrics],
-        [self choice:@"DRAW DISTANCE" detail:@"Optimized: 0.70× world distance and culls far local light volumes. Distant scenery and some night lighting may change." control:_drawDistance metrics:_distanceMetrics],
+        [self choice:@"DRAW DISTANCE" detail:kOptimizedDistanceDescription control:_drawDistance metrics:_distanceMetrics],
         [self choice:@"MODEL DETAIL" detail:@"Lower selects simpler resident meshes sooner; Highest prefers the best resident mesh. Neither forces missing models to load. Lower may reduce geometry cost, but CPU gains depend on submesh and draw-call counts." control:_modelDetail metrics:_modelMetrics],
         [self choice:@"REFLECTION QUALITY" detail:@"Mirror and water targets / environment cubemap. Full is capped at 1440p in this build." control:_reflectionQuality metrics:_reflectionMetrics],
         [self choice:@"ANTI-ALIASING" detail:@"Edge smoothing after scene rendering; this does not change internal resolution." control:_antiAliasing metrics:_aaMetrics],
@@ -631,7 +639,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         @"512 base · 4096 × 4096 cache · 1× range",
         @"1024 base · up to 8192 × 8192 cache · 1.5× range"];
     NSArray<NSString *> *distanceMetrics = @[
-        @"0.70× world distance · far local lights reduced",
+        kOptimizedDistanceMetrics,
         @"1× world distance · 13,000 drawable references",
         @"2× world distance · 17,000 drawable references",
         @"3× world distance · 20,000 drawable references"];

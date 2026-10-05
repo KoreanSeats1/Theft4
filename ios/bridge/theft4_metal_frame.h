@@ -8,8 +8,9 @@ struct FrameTiming {
   uint64_t commands=0,draws=0,pipelines_created=0,buffers_created=0,textures_created=0,uploaded_bytes=0;
   uint64_t render_passes=0,image_copies=0;
   uint64_t avoided_attachment_stores=0,avoided_attachment_loads=0,native_identity_copies=0;
-  uint64_t binding_storage_reuses=0,binding_storage_fresh=0;
+  uint64_t binding_storage_reuses=0,binding_storage_fresh=0,avoided_clear_passes=0;
   EncoderStats encoder;
+  PipelineCompilationStats compilation;
 };
 struct FrameResourceStats {
   size_t surface_creates=0,view_creates=0,retired=0,allocated_bytes=0;

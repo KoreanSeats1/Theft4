@@ -173,6 +173,9 @@ Pass& AppendPass(FramePlan&,Pass);
 // After successful frame admission only: identify stores overwritten before
 // any read. Bits0..3=color,4=depth,5=stencil; final cross-frame stores survive.
 std::vector<uint8_t> DeadAttachmentStores(const FramePlan&);
+// A clear-only pass can disappear only if every attachment result is discarded
+// or proven overwritten before its next read. Resolves and all draws remain.
+bool DeadClearPass(const Pass&,uint8_t dead_stores);
 // Applied after admission. Only host utilities proven to overwrite every
 // color pixel can omit the preceding attachment load/clear.
 std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan&);
@@ -186,7 +189,7 @@ bool SupportsAspect(Format,Aspect);
 bool ValidateSampledView(const FramePlan&,const SampledSurfaceView&,std::string& error,bool allow_multisampled=false);
 bool SampledViewContains(const SampledSurfaceView&,const SurfaceView&);
 bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
-struct DrawVertexRange {const Capture* capture=nullptr;uint64_t maximum_vertex=0;};
+struct DrawVertexRange {const Capture* capture=nullptr;uint64_t maximum_vertex=0;bool index_has_restart=false;};
 using DrawVertexRanges=std::vector<DrawVertexRange>;
 // Admission is transactional. Reads/loads of discarded or undefined content,
 // render/sample feedback, mismatched resolves and incompatible draw targets

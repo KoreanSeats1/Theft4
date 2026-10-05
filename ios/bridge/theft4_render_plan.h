@@ -193,7 +193,7 @@ class DrawResourceValidationCache {
 };
 bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue=nullptr,
               IndexRangeCache* indices=nullptr,uint64_t* maximum_vertex=nullptr,
-              DrawResourceValidationCache* resources=nullptr);
+              DrawResourceValidationCache* resources=nullptr,bool* index_has_restart=nullptr);
 bool ValidateFixedPipeline(const Pipeline&,std::string& error);
 bool ValidateSampler(const Sampler&,std::string& error);
 bool ValidateImage(const Image&,std::string& error);

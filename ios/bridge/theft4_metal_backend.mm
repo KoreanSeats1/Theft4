@@ -170,7 +170,23 @@ class Backend final:public render::FrameBackend {
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
     const auto timing=diagnostics?adapter_->LastTiming():FrameTiming{};
-    pending_.push_back({std::move(receipt),std::move(plan),present,timing.render_passes,timing.image_copies});
+    if(diagnostics) {
+      const auto& c=timing.compilation;
+      if(c.library_ms+c.function_ms+c.archive_ms+c.pipeline_ms>=4) {
+        char message[512];std::snprintf(message,sizeof(message),
+          "gta4-metal-compilation: sequence=%llu library-ms=%.3f function-ms=%.3f archive-ms=%.3f pipeline-ms=%.3f",
+          (unsigned long long)plan->sequence,c.library_ms,c.function_ms,c.archive_ms,c.pipeline_ms);
+        if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
+      }
+    }
+    // Default Metal command buffers retain every encoded GPU resource. Their
+    // upload pages are immutable through final Metal release. Keep allocation
+    // owners for the content journal, but release CPU captures after encoding
+    // so their arena pages can be reused by the next frontend batch. Only an
+    // explicitly profiled submission needs the full plan for pass attribution.
+    auto surfaces=plan->surfaces;
+    pending_.push_back({std::move(receipt),profile_gpu?std::move(plan):nullptr,std::move(surfaces),
+                       present,timing.render_passes,timing.image_copies});
     error.clear();return true;
   }
   bool Drain(std::string& error) override {
@@ -220,7 +236,12 @@ class Backend final:public render::FrameBackend {
     output=std::move(result);error.clear();return true;
   }
  private:
-  struct Submitted{Receipt receipt;std::shared_ptr<const render::FramePlan> owner;bool present=false;uint64_t render_passes=0,image_copies=0;};
+  struct Submitted {
+    Receipt receipt;
+    std::shared_ptr<const render::FramePlan> owner;
+    std::vector<std::shared_ptr<const render::Surface>> surfaces;
+    bool present=false;uint64_t render_passes=0,image_copies=0;
+  };
   bool Worker(std::string& error) const {
     if(!renderer_ || !adapter_){error="Metal worker is not open";return false;}
     if(worker_!=std::this_thread::get_id()){error="Metal encoding belongs to the render worker";return false;}
@@ -249,7 +270,7 @@ class Backend final:public render::FrameBackend {
         if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
       }
       auto timings=submitted.receipt.GpuPassTimings();
-      if(!timings.empty()) {
+      if(!timings.empty()&&submitted.owner) {
         std::vector<const render::Pass*> passes;
         std::vector<size_t> pass_commands;
         for(size_t i=0;i<submitted.owner->commands.size();++i)

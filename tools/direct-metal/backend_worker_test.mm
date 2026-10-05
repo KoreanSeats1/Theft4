@@ -47,13 +47,14 @@ int main(int argc,char** argv) {
     const auto admitted=published;
     assert(!backend->Submit(invalid,false,error,&published));assert(!error.empty());assert(published==admitted);
     assert(backend->ReadRGBA8(*first,*first->output,pixels,error));assert(pixels[0]==32);
-    // Exact CPU owners stay alive for accepted work; submission admission
-    // bounds retained plans and Drain retires all of them, even after rejections.
+    // Ordinary submission releases the CPU command plan immediately while
+    // Metal retains GPU resources and the backend retains surface identities.
+    // Completion still produces correct pixels after all plan owners expire.
     std::vector<std::weak_ptr<const render::FramePlan>> owners;
     for(uint32_t frame=3;frame<35;++frame) {
       auto next=Clear(surface,frame,double(frame%4)/4);
       owners.push_back(next);assert(backend->Submit(next,false,error));next.reset();
-      size_t retained=0;for(const auto& owner:owners)retained+=!owner.expired();assert(retained<=2);
+      for(const auto& owner:owners)assert(owner.expired());
     }
     assert(backend->Drain(error));for(const auto& owner:owners)assert(owner.expired());
     assert(backend->ReadRGBA8(*first,*first->output,pixels,error));assert(pixels[0]==128);
@@ -246,6 +247,19 @@ int main(int argc,char** argv) {
       assert(expected==pixels);size_t partial_samples=0;
       for(size_t i=0;i<expected.size();i+=4)partial_samples+=expected[i]>0&&expected[i]<255;
       assert(partial_samples>0);
+      // Release every CPU draw/payload owner immediately after encoding. The
+      // driver-owned immutable buffers must remain valid until GPU completion.
+      auto ephemeral=std::make_shared<render::FramePlan>(*f);
+      auto transient=std::make_shared<render::Capture>(*c);
+      transient->draw.vertices[0].source=std::make_shared<render::Bytes>(*c->draw.vertices[0].source);
+      for(size_t bank=0;bank<3;++bank)
+        transient->draw.constants[bank].source=std::make_shared<render::Bytes>(*c->draw.constants[bank].source);
+      std::weak_ptr<const render::Capture> transientOwner=transient;
+      std::weak_ptr<const render::Bytes> payloadOwner=transient->draw.vertices[0].source;
+      std::get<render::Pass>(ephemeral->commands[0]).commands={render::FrameDraw{transient,{}}};
+      transient.reset();assert(backend->Submit(ephemeral,false,error));ephemeral.reset();
+      assert(transientOwner.expired()&&payloadOwner.expired());
+      assert(backend->ReadRGBA8(*f,*f->output,pixels,error));assert(expected==pixels);
       // Live frontend may discard a malformed title draw, but the GPU backend
       // must never admit it or alter already-presented content. Classification
       // is not permission to bypass immutable buffer bounds.

@@ -4,9 +4,13 @@
 #include "theft4_metal_shader_store.h"
 #include "theft4_vector_storage_pool.h"
 #include <map>
+#include <nlohmann/json_fwd.hpp>
 #include <unordered_map>
 
 namespace theft4::metal {
+// Device-local cache recipes contain state only, never texture or geometry data.
+nlohmann::json PipelineRecipe(const render::Pipeline&,render::Primitive);
+bool ReadPipelineRecipe(const nlohmann::json&,render::Pipeline&,render::Primitive&,bool game_shader=true);
 std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer&,const render::Pipeline&,render::Primitive,
                                                   const Shader&,const Shader*,std::string& error);
 // Render-worker-owned realization of the frontend's immutable CPU contract.
@@ -48,7 +52,7 @@ class PlanAdapter {
   // Only the frame adapter calls this after full transactional admission of
   // the SAME immutable capture in the SAME submission. Public Prepare remains
   // independently strict, and Metal packet validation still runs before encode.
-  bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,Draw&,std::string& error);
+  bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,bool index_has_restart,Draw&,std::string& error);
   Draw AcquireDrawStorage();
   void RecycleDrawStorage(Draw& draw) noexcept;
   const bool diagnostics_;

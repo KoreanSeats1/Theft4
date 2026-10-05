@@ -64,7 +64,6 @@ Draw PlanAdapter::AcquireDrawStorage() {
 void PlanAdapter::RecycleDrawStorage(Draw& draw) noexcept {
   binding_storage_.Recycle(draw.textures,draw.samplers);
 }
-namespace {
 using PipelineJson=nlohmann::json;
 PipelineJson PipelineRecipe(const render::Pipeline& p,render::Primitive primitive) {
   PipelineJson attributes=PipelineJson::array(),streams=PipelineJson::array(),blends=PipelineJson::array();
@@ -76,9 +75,14 @@ PipelineJson PipelineRecipe(const render::Pipeline& p,render::Primitive primitiv
   return {{"primitive",uint32_t(primitive)},{"vertex",{p.vertex.hash,p.vertex.variant,p.vertex.specialization}},
     {"fragment",{p.fragment.hash,p.fragment.variant,p.fragment.specialization}},{"attributes",attributes},
     {"streams",streams},{"colors",colors},{"blends",blends},{"depth",uint32_t(p.depth)},
-    {"stencil",uint32_t(p.stencil)},{"samples",p.samples},{"mask",p.sample_mask},{"negative_clip",p.negative_one_to_one}};
+    {"stencil",uint32_t(p.stencil)},{"samples",p.samples},{"mask",p.sample_mask},{"negative_clip",p.negative_one_to_one},
+    {"depth_test",p.depth_test},{"depth_write",p.depth_write},{"depth_compare",uint32_t(p.depth_compare)},
+    {"stencil_test",p.stencil_test},
+    {"front",{uint32_t(p.front.compare),uint32_t(p.front.fail),uint32_t(p.front.pass),uint32_t(p.front.depth_fail),p.front.read_mask,p.front.write_mask}},
+    {"back",{uint32_t(p.back.compare),uint32_t(p.back.fail),uint32_t(p.back.pass),uint32_t(p.back.depth_fail),p.back.read_mask,p.back.write_mask}}};
 }
-bool ReadPipelineRecipe(const PipelineJson& j,render::Pipeline& p,render::Primitive& primitive) {
+bool ReadPipelineRecipe(const PipelineJson& j,render::Pipeline& p,render::Primitive& primitive,bool game_shader) {
+  p={};
   const auto pr=j.at("primitive").get<uint32_t>();if(pr>=uint32_t(render::Primitive::Count))return false;
   primitive=render::Primitive(pr);
   const auto shader=[](const PipelineJson& a) {if(a.size()!=3)throw std::runtime_error("pipeline shader recipe");
@@ -106,8 +110,19 @@ bool ReadPipelineRecipe(const PipelineJson& j,render::Pipeline& p,render::Primit
   if(p.depth!=render::Format::Invalid&&p.depth!=render::Format::Depth32Float&&p.depth!=render::Format::Depth32FloatStencil8)return false;
   if(p.stencil!=render::Format::Invalid&&p.stencil!=render::Format::Stencil8&&p.stencil!=render::Format::Depth32FloatStencil8)return false;
   p.samples=j.at("samples").get<uint32_t>();p.sample_mask=j.at("mask").get<uint32_t>();p.negative_one_to_one=j.at("negative_clip").get<bool>();
-  return p.samples&&p.samples<=8&&std::has_single_bit(p.samples)&&p.vertex.hash&&p.vertex.variant<=1&&p.fragment.variant<=1;
-}
+  p.depth_test=j.value("depth_test",false);p.depth_write=j.value("depth_write",false);
+  p.depth_compare=render::Compare(j.value("depth_compare",uint32_t(render::Compare::Always)));
+  p.stencil_test=j.value("stencil_test",false);
+  const auto stencil=[](const PipelineJson& a,render::Stencil& s) {
+    if(!a.is_array()||a.size()!=6)return false;
+    s={render::Compare(a.at(0).get<uint32_t>()),render::StencilOp(a.at(1).get<uint32_t>()),
+       render::StencilOp(a.at(2).get<uint32_t>()),render::StencilOp(a.at(3).get<uint32_t>()),
+       a.at(4).get<uint32_t>(),a.at(5).get<uint32_t>()};return true;
+  };
+  if((j.contains("front")&&!stencil(j.at("front"),p.front))||(j.contains("back")&&!stencil(j.at("back"),p.back)))return false;
+  std::string error;
+  return p.samples&&p.samples<=8&&std::has_single_bit(p.samples)&&(!game_shader||p.vertex.hash)&&
+      p.vertex.variant<=1&&p.fragment.variant<=1&&render::ValidateFixedPipeline(p,error);
 }
 void PlanAdapter::FlushPipelineCache() {
   if(!pipeline_cache_dirty_||pipeline_cache_directory_.empty())return;
@@ -366,11 +381,11 @@ bool PlanAdapter::EnsureDummyImages(std::string& error) {
   return true;
 }
 bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string& error) {
-  uint64_t maximum=0;
-  if(!render::Validate(capture,error,nullptr,&index_ranges_,&maximum))return false;
-  return PrepareValidated(capture,maximum,draw,error);
+  uint64_t maximum=0;bool index_has_restart=false;
+  if(!render::Validate(capture,error,nullptr,&index_ranges_,&maximum,nullptr,&index_has_restart))return false;
+  return PrepareValidated(capture,maximum,index_has_restart,draw,error);
 }
-bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,Draw& draw,std::string& error) {
+bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,bool index_has_restart,Draw& draw,std::string& error) {
   const auto& source=capture.draw;Draw result=AcquireDrawStorage();
   theft4::StorageCleanup cleanup{[&]{RecycleDrawStorage(result);}};result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
@@ -388,34 +403,50 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
   if(source.index_count) {
     result.indices=BufferFor(source.indices,error);if(!result.indices.buffer)return false;
     result.index_count=source.index_count;result.index_type=source.index_bytes==2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
-    render::IndexRange range;
-    if(!index_ranges_.Analyze(source.indices,source.index_count,source.index_bytes,range,error))return false;
-    if(range.has_restart&&!(source.primitive_restart&&
+    if(index_has_restart&&!(source.primitive_restart&&
         (source.primitive==render::Primitive::LineStrip||source.primitive==render::Primitive::TriangleStrip)))
       return Error(error,"Metal fixed restart markers differ from this game index stream; frontend expansion is required");
   }
   if((result.pipeline->vertex.textures||result.pipeline->fragment.textures)&&!EnsureDummyImages(error))return false;
-  std::array<FetchResources,26> fetches{};
   const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex);
   const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
-  const auto used=(vm ? vm->used_texture_mask : 0)|(pm ? pm->used_texture_mask : 0);
-  const auto placeholders=[&](const ShaderMetadata* metadata) {
-    if(metadata)for(const auto& binding:metadata->bindings)if(binding.kind!=FetchKind::Sampler)
-      fetches[binding.slot].images[size_t(binding.kind)]=dummy_images_[size_t(binding.kind)];
-  };
-  placeholders(vm);placeholders(pm);
-  for(size_t i=0;i<fetches.size();++i) {
-    if(!(used&(1u<<i)))continue;
-    const auto& f=source.fetches[i];
-    if(f.image) {
-      const auto kind=size_t(f.image->kind);
-      if(kind>=4)return Error(error,"Game cube-array sampling needs a matching Metal shader interface");
-      fetches[i].images[kind]=ImageFor(f.image,error);if(!fetches[i].images[kind])return false;
-    }
-    if(f.sampler){fetches[i].sampler=SamplerFor(*f.sampler,error);if(!fetches[i].sampler)return false;}
+  // Realize only reflected bindings. The previous dense 26 x 4 texture table
+  // retained placeholders for every dimension, then walked the reflection a
+  // second time to copy them. Static image declarations were already admitted;
+  // GPU-produced bindings keep typed placeholders until ordered replacement.
+  if(!vm||(source.pipeline.fragment.hash&&!pm))return Error(error,"Missing admitted game shader interface");
+  if(!vm->bindings.empty()||(pm&&!pm->bindings.empty())) {
+    result.textures.reserve(std::popcount(result.pipeline->vertex.textures)+std::popcount(result.pipeline->fragment.textures));
+    result.samplers.reserve(std::popcount(result.pipeline->vertex.samplers)+std::popcount(result.pipeline->fragment.samplers));
+    std::array<id<MTLTexture>,26> images{};
+    std::array<id<MTLSamplerState>,26> samplers{};
+    uint32_t initialized=0;
+    const auto bind=[&](const ShaderMetadata* metadata) {
+      if(!metadata)return Error(error,"Missing admitted game shader interface");
+      for(const auto& binding:metadata->bindings) {
+        const auto slot=binding.slot;const auto& fetch=source.fetches[slot];
+        if(!(initialized&(1u<<slot))) {
+          if(fetch.image) {
+            if(size_t(fetch.image->kind)>=dummy_images_.size())return Error(error,"Game cube-array sampling needs a matching Metal shader interface");
+            images[slot]=ImageFor(fetch.image,error);if(!images[slot])return false;
+          }
+          if(fetch.sampler){samplers[slot]=SamplerFor(*fetch.sampler,error);if(!samplers[slot])return false;}
+          initialized|=1u<<slot;
+        }
+        if(binding.kind==FetchKind::Sampler) {
+          if(!samplers[slot])return Error(error,"Missing game sampler for a Metal fetch slot");
+          result.samplers.push_back({metadata->stage,binding.index,samplers[slot]});
+        } else {
+          const auto kind=size_t(binding.kind);
+          auto texture=fetch.image&&size_t(fetch.image->kind)==kind ? images[slot] : dummy_images_[kind];
+          if(!texture)return Error(error,"Missing game texture for a Metal fetch slot");
+          result.textures.push_back({metadata->stage,binding.index,texture});
+        }
+      }
+      return true;
+    };
+    if(!bind(vm)||(source.pipeline.fragment.hash&&!bind(pm)))return false;
   }
-  if(!vm||!shaders_.BindMetadata(*vm,fetches,result,error))return false;
-  if(source.pipeline.fragment.hash&&(!pm||!shaders_.BindMetadata(*pm,fetches,result,error)))return false;
   const auto& v=source.viewport;result.viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
   const auto& s=source.scissor;result.scissor={s[0],s[1],s[2],s[3]};
   result.cull=MTLCullMode(source.cull);result.winding=source.clockwise ? MTLWindingClockwise : MTLWindingCounterClockwise;

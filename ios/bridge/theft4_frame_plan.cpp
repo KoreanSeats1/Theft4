@@ -49,6 +49,18 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
   }
   return masks;
 }
+bool DeadClearPass(const Pass& pass,uint8_t dead_stores) {
+  if(pass.attachmentless_extent[0]||std::any_of(pass.commands.begin(),pass.commands.end(),
+      [](const auto& command){return !std::holds_alternative<RectClear>(command);}))return false;
+  bool attachment=false;
+  const auto dead=[&](const std::optional<Attachment>& a,uint8_t slot) {
+    if(!a)return true;attachment=true;
+    return !a->resolve&&(a->store==Store::Discard||
+        (a->store==Store::Store&&(dead_stores&(1u<<slot))));
+  };
+  for(uint8_t slot=0;slot<4;++slot)if(!dead(pass.colors[slot],slot))return false;
+  return dead(pass.depth,4)&&dead(pass.stencil,5)&&attachment;
+}
 namespace {
 bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& host) {
   if(!pass.colors[0]||pass.depth||pass.stencil||host.pipeline.depth_test||host.pipeline.stencil_test||
@@ -312,6 +324,10 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         occupied.insert(*a->resolve);writes.push_back(*a->resolve);
       }
     }
+    std::array<Format,4> color_formats{};
+    for(size_t i=0;i<4;++i)if(pass.colors[i])color_formats[i]=find(pass.colors[i]->view.surface)->format;
+    const auto depth_format=pass.depth?find(pass.depth->view.surface)->format:Format::Invalid;
+    const auto stencil_format=pass.stencil?find(pass.stencil->view.surface)->format:Format::Invalid;
     if(pass.depth&&pass.stencil) {
       const auto* depth=find(pass.depth->view.surface);
       const auto* stencil=find(pass.stencil->view.surface);
@@ -397,18 +413,14 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         return Reject(error,"Ordered pass has a missing host utility draw");
       const auto& item=std::get<FrameDraw>(command);
       if(!item.capture)return Reject(error,"Ordered pass has a missing draw");
-      uint64_t maximum_vertex=0;
-      if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr,&resources))return false;
-      if(validated_draws)draw_ranges.push_back({item.capture.get(),maximum_vertex});
+      uint64_t maximum_vertex=0;bool index_has_restart=false;
+      if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr,&resources,
+                   validated_draws?&index_has_restart:nullptr))return false;
+      if(validated_draws)draw_ranges.push_back({item.capture.get(),maximum_vertex,index_has_restart});
       const auto& c=*item.capture;const auto& p=c.draw.pipeline;
       if(c.width!=width||c.height!=height||p.samples!=samples)return Reject(error,"Draw extent differs from its ordered pass");
-      for(size_t i=0;i<4;++i) {
-        const auto format=pass.colors[i] ? find(pass.colors[i]->view.surface)->format : Format::Invalid;
-        if(p.colors[i]!=format)return Reject(error,"Draw color formats differ from its ordered pass");
-      }
-      const auto depth=pass.depth ? find(pass.depth->view.surface)->format : Format::Invalid;
-      const auto stencil=pass.stencil ? find(pass.stencil->view.surface)->format : Format::Invalid;
-      if(p.depth!=depth||p.stencil!=stencil)return Reject(error,"Draw depth/stencil differs from its ordered pass");
+      if(p.colors!=color_formats)return Reject(error,"Draw color formats differ from its ordered pass");
+      if(p.depth!=depth_format||p.stencil!=stencil_format)return Reject(error,"Draw depth/stencil differs from its ordered pass");
       for(size_t slot=0;slot<item.produced.size();++slot)if(item.produced[slot]) {
         const auto& view=*item.produced[slot];
         if(!sampled_valid(view,error))return false;

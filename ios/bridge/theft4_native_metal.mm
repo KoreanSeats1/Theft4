@@ -7,9 +7,21 @@
 #include <limits>
 #include <map>
 #include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <chrono>
 
 namespace theft4::metal {
 namespace {
+// Cold-path-only attribution. Retail never reads a clock or accumulates it.
+struct CompilationTimer {
+  using Clock=std::chrono::steady_clock;
+  double* total=nullptr;Clock::time_point begin{};
+  explicit CompilationTimer(double& result) {
+    if(!theft4_retail_mode()){total=&result;begin=Clock::now();}
+  }
+  ~CompilationTimer(){if(total)*total+=std::chrono::duration<double,std::milli>(Clock::now()-begin).count();}
+};
 bool ViewValid(const BufferView& v, NSUInteger required) {
   if(!v.buffer)return false;
   const NSUInteger allocation=v.buffer.length;
@@ -36,6 +48,7 @@ NSUInteger FormatBytes(MTLVertexFormat f) {
 }
 }
 struct Renderer::Impl {
+  PipelineCompilationStats compilation;
   id<MTLBinaryArchive> archive=nil;
   NSURL* archive_url=nil;bool archive_dirty=false;uint64_t archive_hits=0;
   struct ClearKey {
@@ -63,6 +76,10 @@ struct Renderer::Impl {
     auto state=[device newDepthStencilStateWithDescriptor:descriptor];
     if(state)depth_states.emplace(key,state);return state;
   }
+  std::map<uint32_t,id<MTLLibrary>> clear_libraries;
+  bool clear_recipes_dirty=false;
+  id<MTLRenderPipelineState> BuildState(MTLRenderPipelineDescriptor*,std::string&);
+  const ClearPipeline* PrepareClear(const ClearKey&,std::string&);
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   id<MTLCommandQueue> queue = nil;
   dispatch_semaphore_t slots;
@@ -70,10 +87,87 @@ struct Renderer::Impl {
     queue = [device newCommandQueue]; queue.label = @"Theft4 Direct Metal";
   }
 };
+id<MTLRenderPipelineState> Renderer::Impl::BuildState(MTLRenderPipelineDescriptor* desc,std::string& error) {
+  NSError* e = nil;id<MTLRenderPipelineState> state=nil;
+  if(archive) {
+    desc.binaryArchives=@[archive];
+    {CompilationTimer timer(compilation.pipeline_ms);
+      state=[device newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&e];}
+    if(state) {
+      if(!theft4_retail_mode())++archive_hits;
+    }
+    else {
+      // Compile the missing functions into the archive once. No disk IO is
+      // performed during drawing; persist only when the backend is drained.
+      CompilationTimer timer(compilation.archive_ms);
+      e=nil;if([archive addRenderPipelineFunctionsWithDescriptor:desc error:&e])archive_dirty=true;
+    }
+  }
+  if(!state){CompilationTimer timer(compilation.pipeline_ms);e=nil;state=[device newRenderPipelineStateWithDescriptor:desc error:&e];}
+  if(!state&&archive) {
+    // Binary archives are optional. Retry without a failing archive before
+    // rejecting an otherwise valid pipeline, and stop consulting it.
+    desc.binaryArchives=nil;archive=nil;archive_dirty=false;
+    CompilationTimer timer(compilation.pipeline_ms);e=nil;state=[device newRenderPipelineStateWithDescriptor:desc error:&e];
+  }
+  if (!state) { error = Description(e); return nil; }
+  return state;
+}
+const Renderer::Impl::ClearPipeline* Renderer::Impl::PrepareClear(const ClearKey& key,std::string& error) {
+  auto& cache=clears;
+  auto found=cache.find(key);
+  if(found==cache.end()) {
+    // This utility pipeline is cached by attachment shape and aspect mask.
+    // No guest constants, draw state, blend state or shaders participate.
+    std::string source="#include <metal_stdlib>\nusing namespace metal;\n"
+      "struct V { float4 p [[position]]; };\n"
+      "vertex V clear_vs(uint id [[vertex_id]]) { const float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return V{float4(p[id],0,1)}; }\n";
+    bool output=key.depth;
+    for(size_t i=0;i<4;++i)output|=key.formats[i]!=MTLPixelFormatInvalid;
+    if(output) {
+      source+="struct O { ";
+      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
+        source+="float4 c"+std::to_string(i)+" [[color("+std::to_string(i)+")]]; ";
+      if(key.depth)source+="float d [[depth(any)]]; ";
+      source+="};\nfragment O clear_fs(constant float4* data [[buffer(0)]]) { O o; ";
+      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
+        source+="o.c"+std::to_string(i)+"=data[0]; ";
+      if(key.depth)source+="o.d=data[1].x; ";
+      source+="return o; }\n";
+    }else source+="fragment void clear_fs() {}\n";
+    uint32_t signature=key.depth?16u:0u;
+    for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)signature|=1u<<i;
+    id<MTLLibrary> library=nil;
+    if(auto cached=clear_libraries.find(signature);cached!=clear_libraries.end())library=cached->second;
+    else {
+      NSError* e=nil;auto options=[MTLCompileOptions new];options.languageVersion=MTLLanguageVersion2_4;
+      CompilationTimer timer(compilation.library_ms);
+      library=[device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()] options:options error:&e];
+      if(!library){error=Description(e);return nullptr;}
+      clear_libraries.emplace(signature,library);
+    }
+    auto fixed=[MTLRenderPipelineDescriptor new];fixed.label=@"Theft4 Rectangular Attachment Clear";
+    fixed.vertexFunction=[library newFunctionWithName:@"clear_vs"];
+    fixed.fragmentFunction=[library newFunctionWithName:@"clear_fs"];fixed.rasterSampleCount=key.samples;
+    for(size_t i=0;i<4;++i){fixed.colorAttachments[i].pixelFormat=key.formats[i];
+      fixed.colorAttachments[i].writeMask=(key.colors&(1u<<i)) ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;}
+    fixed.depthAttachmentPixelFormat=key.formats[4];fixed.stencilAttachmentPixelFormat=key.formats[5];
+    auto pipeline=BuildState(fixed,error);if(!pipeline)return nullptr;
+    auto d=[MTLDepthStencilDescriptor new];d.depthCompareFunction=MTLCompareFunctionAlways;d.depthWriteEnabled=key.depth;
+    if(key.stencil){auto s=[MTLStencilDescriptor new];s.stencilCompareFunction=MTLCompareFunctionAlways;
+      s.stencilFailureOperation=s.depthFailureOperation=s.depthStencilPassOperation=MTLStencilOperationReplace;
+      s.readMask=s.writeMask=255;d.frontFaceStencil=d.backFaceStencil=s;}
+    auto ds=DepthState(d);
+    if(!ds){error="Metal rectangular clear depth state creation failed";return nullptr;}
+    found=cache.emplace(key,ClearPipeline{pipeline,ds}).first;clear_recipes_dirty=true;
+  }
+  return &found->second;
+}
 struct Frame::Impl {
   std::shared_ptr<Renderer::Impl> renderer;
   id<MTLCommandBuffer> buffer = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
+  id<MTLBlitCommandEncoder> blit = nil;
   MTLRenderPassDescriptor* pass = nil;
   std::shared_ptr<void> lease;
   bool submitted = false;
@@ -121,7 +215,7 @@ struct Frame::Impl {
   size_t profiled_passes=0;
   std::vector<size_t> pass_mapping;
   MTLTimestamp cpu_reference=0,gpu_reference=0;
-  ~Impl() { if (encoder) [encoder endEncoding]; }
+  ~Impl() { if (encoder) [encoder endEncoding]; if(blit)[blit endEncoding]; }
 };
 Renderer::Renderer(NSUInteger maximum) {
   if (maximum >= 1 && maximum <= 3) impl_ = std::make_shared<Impl>(maximum);
@@ -156,6 +250,7 @@ id<MTLLibrary> Renderer::LoadLibrary(std::span<const uint8_t> bytes,std::string&
   dispatch_data_t data = dispatch_data_create(bytes.data(), bytes.size(), nullptr,
                                              DISPATCH_DATA_DESTRUCTOR_DEFAULT);
   NSError* e = nil;
+  CompilationTimer timer(impl_->compilation.library_ms);
   id<MTLLibrary> library = [Device() newLibraryWithData:data error:&e];
   if(!library)error=Description(e);else error.clear();return library;
 }
@@ -185,7 +280,8 @@ Shader Renderer::LoadShader(id<MTLLibrary> library, Stage stage,
   // Even undefined optional constants require a concrete specialized
   // function. Plain lookup can return an abstract function that Metal
   // rejects when creating the fallback render pipeline.
-  result.function=[library newFunctionWithName:name constantValues:values error:&e];
+  {CompilationTimer timer(impl_->compilation.function_ms);
+    result.function=[library newFunctionWithName:name constantValues:values error:&e];}
   if (!result.function) { error = Description(e); return result; }
   const auto expected = stage == Stage::Vertex ? MTLFunctionTypeVertex : MTLFunctionTypeFragment;
   if (result.function.functionType != expected) {
@@ -250,25 +346,7 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
     if(p->vertex.constant_bytes[i])desc.vertexBuffers[i].mutability=MTLMutabilityImmutable;
     if(p->fragment.constant_bytes[i])desc.fragmentBuffers[i].mutability=MTLMutabilityImmutable;
   }
-  NSError* e = nil;
-  if(impl_->archive) {
-    desc.binaryArchives=@[impl_->archive];
-    p->state=[Device() newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&e];
-    if(p->state&&!theft4_retail_mode())++impl_->archive_hits;
-    else {
-      // Compile the missing functions into the archive once. No disk IO is
-      // performed during drawing; persist only when the backend is drained.
-      e=nil;if([impl_->archive addRenderPipelineFunctionsWithDescriptor:desc error:&e])impl_->archive_dirty=true;
-    }
-  }
-  if(!p->state){e=nil;p->state=[Device() newRenderPipelineStateWithDescriptor:desc error:&e];}
-  if(!p->state&&impl_->archive) {
-    // Binary archives are optional. Retry without a failing archive before
-    // rejecting an otherwise valid pipeline, and stop consulting it.
-    desc.binaryArchives=nil;impl_->archive=nil;impl_->archive_dirty=false;
-    e=nil;p->state=[Device() newRenderPipelineStateWithDescriptor:desc error:&e];
-  }
-  if (!p->state) { error = Description(e); return {}; }
+  p->state=impl_->BuildState(desc,error);if(!p->state)return {};
   if (depth) {
     p->depth_stencil = impl_->DepthState(depth);
     if (!p->depth_stencil) { error = "Metal depth state creation failed"; return {}; }
@@ -292,9 +370,55 @@ void Renderer::ConfigurePipelineArchive(const std::string& path) {
     if(std::filesystem::exists(path)&&std::filesystem::file_size(path)<=256ull*1024*1024)descriptor.url=impl_->archive_url;
     NSError* error=nil;impl_->archive=[Device() newBinaryArchiveWithDescriptor:descriptor error:&error];
     if(!impl_->archive){descriptor.url=nil;impl_->archive=[Device() newBinaryArchiveWithDescriptor:descriptor error:&error];}
+    try {
+      const auto recipes=path+".clears.json";
+      if(std::filesystem::exists(recipes)&&std::filesystem::file_size(recipes)<=256*1024) {
+        std::ifstream stream(recipes);const auto json=nlohmann::json::parse(stream);
+        if(json.at("schema")==1&&json.at("clears").is_array()&&json.at("clears").size()<=512)
+          for(const auto& row:json.at("clears"))try {
+            Impl::ClearKey key;auto formats=row.at("formats").get<std::array<uint32_t,6>>();
+            for(size_t i=0;i<6;++i)key.formats[i]=MTLPixelFormat(formats[i]);
+            key.samples=row.at("samples").get<uint32_t>();key.colors=row.at("colors").get<uint32_t>();
+            key.depth=row.at("depth").get<bool>();key.stencil=row.at("stencil").get<bool>();
+            if((key.colors&~15u)||(!key.colors&&!key.depth&&!key.stencil)||
+               !key.samples||key.samples>8||!std::has_single_bit(key.samples)||
+               ![Device() supportsTextureSampleCount:key.samples])continue;
+            const auto color=[](MTLPixelFormat f) {
+              switch(f) {
+                case MTLPixelFormatInvalid:case MTLPixelFormatR8Unorm:case MTLPixelFormatRG8Unorm:
+                case MTLPixelFormatRGBA8Unorm:case MTLPixelFormatRGBA8Unorm_sRGB:
+                case MTLPixelFormatBGRA8Unorm:case MTLPixelFormatBGRA8Unorm_sRGB:
+                case MTLPixelFormatR16Unorm:case MTLPixelFormatRG16Unorm:case MTLPixelFormatRGBA16Unorm:
+                case MTLPixelFormatR16Float:case MTLPixelFormatRG16Float:case MTLPixelFormatRGBA16Float:
+                case MTLPixelFormatR32Float:case MTLPixelFormatRG32Float:case MTLPixelFormatRGBA32Float:
+                case MTLPixelFormatRGB10A2Unorm:return true;
+                default:return false;
+              }
+            };
+            bool valid=true;for(size_t i=0;i<4;++i)
+              if(!color(key.formats[i])||((key.colors&(1u<<i))&&key.formats[i]==MTLPixelFormatInvalid))valid=false;
+            valid&=key.formats[4]==MTLPixelFormatInvalid||key.formats[4]==MTLPixelFormatDepth32Float||key.formats[4]==MTLPixelFormatDepth32Float_Stencil8;
+            valid&=key.formats[5]==MTLPixelFormatInvalid||key.formats[5]==MTLPixelFormatStencil8||key.formats[5]==MTLPixelFormatDepth32Float_Stencil8;
+            if((key.depth&&key.formats[4]==MTLPixelFormatInvalid)||(key.stencil&&key.formats[5]==MTLPixelFormatInvalid))valid=false;
+            if(valid){std::string ignored;impl_->PrepareClear(key,ignored);}
+          }catch(...){}
+      }
+    }catch(...){} // Malformed optional recipes do not discard the valid archive.
+    impl_->clear_recipes_dirty=false;
   }catch(...){impl_->archive=nil;impl_->archive_url=nil;}
 }
 void Renderer::FlushPipelineArchive() {
+  if(impl_->clear_recipes_dirty&&impl_->archive_url)try {
+    auto rows=nlohmann::json::array();
+    for(const auto& [key,pipeline]:impl_->clears) {
+      if(rows.size()==512)break;
+      std::array<uint32_t,6> formats{};for(size_t i=0;i<6;++i)formats[i]=uint32_t(key.formats[i]);
+      rows.push_back({{"formats",formats},{"samples",key.samples},{"colors",key.colors},{"depth",key.depth},{"stencil",key.stencil}});
+    }
+    const std::string path=std::string(impl_->archive_url.path.UTF8String)+".clears.json",temporary=path+".tmp";
+    std::ofstream stream(temporary);stream<<nlohmann::json{{"schema",1},{"clears",rows}};stream.close();
+    if(stream&&std::rename(temporary.c_str(),path.c_str())==0)impl_->clear_recipes_dirty=false;
+  }catch(...){}
   if(!impl_->archive||!impl_->archive_dirty||!impl_->archive_url)return;
   // An atomic rename leaves the last usable archive intact after interruption.
   auto temporary=[NSURL fileURLWithPath:[impl_->archive_url.path stringByAppendingString:@".tmp"]];
@@ -304,6 +428,9 @@ void Renderer::FlushPipelineArchive() {
   }
 }
 uint64_t Renderer::PipelineArchiveHits() const{return impl_->archive_hits;}
+bool Renderer::PipelineArchiveNeedsFlush() const{return impl_->archive_dirty;}
+size_t Renderer::PreparedClearCount() const{return impl_->clears.size();}
+PipelineCompilationStats Renderer::CompilationStats() const{return impl_->compilation;}
 Frame Renderer::BeginFrame(std::string& error) {
   if (!Ready()) { error = "Direct Metal renderer is unavailable"; return {}; }
   // Bounded wait. Aborted frames release the lease just like completed frames.
@@ -352,6 +479,7 @@ bool Frame::ProfilePasses(size_t maximum_passes,std::span<const size_t> pass_map
 }
 bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
   if (!*this || impl_->encoder || !pass) return Error(error, "Invalid direct Metal pass transition");
+  if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   impl_->state={};
   impl_->pass = [pass copy];
   // Attachment properties are immutable for this encoder's copied descriptor.
@@ -577,48 +705,9 @@ bool Frame::ClearRectangle(const Clear& clear,std::string& error) {
      !std::isfinite(clear.depth_value)||clear.depth_value<0||clear.depth_value>1||clear.stencil_value>255)
     return Error(error,"Invalid Metal rectangular clear range or aspect");
   for(float c:clear.color)if(!std::isfinite(c))return Error(error,"Nonfinite Metal rectangular clear color");
-  auto& cache=impl_->renderer->clears;
-  auto found=cache.find(key);
-  if(found==cache.end()) {
-    // This utility pipeline is cached by attachment shape and aspect mask.
-    // No guest constants, draw state, blend state or shaders participate.
-    std::string source="#include <metal_stdlib>\nusing namespace metal;\n"
-      "struct V { float4 p [[position]]; };\n"
-      "vertex V clear_vs(uint id [[vertex_id]]) { const float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return V{float4(p[id],0,1)}; }\n";
-    bool output=clear.depth;
-    for(size_t i=0;i<4;++i)output|=key.formats[i]!=MTLPixelFormatInvalid;
-    if(output) {
-      source+="struct O { ";
-      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
-        source+="float4 c"+std::to_string(i)+" [[color("+std::to_string(i)+")]]; ";
-      if(clear.depth)source+="float d [[depth(any)]]; ";
-      source+="};\nfragment O clear_fs(constant float4* data [[buffer(0)]]) { O o; ";
-      for(size_t i=0;i<4;++i)if(key.formats[i]!=MTLPixelFormatInvalid)
-        source+="o.c"+std::to_string(i)+"=data[0]; ";
-      if(clear.depth)source+="o.d=data[1].x; ";
-      source+="return o; }\n";
-    }else source+="fragment void clear_fs() {}\n";
-    NSError* e=nil;auto options=[MTLCompileOptions new];options.languageVersion=MTLLanguageVersion2_4;
-    auto library=[impl_->renderer->device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()] options:options error:&e];
-    if(!library){error=Description(e);return false;}
-    auto fixed=[MTLRenderPipelineDescriptor new];fixed.label=@"Theft4 Rectangular Attachment Clear";
-    fixed.vertexFunction=[library newFunctionWithName:@"clear_vs"];
-    fixed.fragmentFunction=[library newFunctionWithName:@"clear_fs"];fixed.rasterSampleCount=key.samples;
-    for(size_t i=0;i<4;++i){fixed.colorAttachments[i].pixelFormat=key.formats[i];
-      fixed.colorAttachments[i].writeMask=(clear.colors&(1u<<i)) ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;}
-    fixed.depthAttachmentPixelFormat=key.formats[4];fixed.stencilAttachmentPixelFormat=key.formats[5];
-    auto pipeline=[impl_->renderer->device newRenderPipelineStateWithDescriptor:fixed error:&e];
-    if(!pipeline){error=Description(e);return false;}
-    auto d=[MTLDepthStencilDescriptor new];d.depthCompareFunction=MTLCompareFunctionAlways;d.depthWriteEnabled=clear.depth;
-    if(clear.stencil){auto s=[MTLStencilDescriptor new];s.stencilCompareFunction=MTLCompareFunctionAlways;
-      s.stencilFailureOperation=s.depthFailureOperation=s.depthStencilPassOperation=MTLStencilOperationReplace;
-      s.readMask=s.writeMask=255;d.frontFaceStencil=d.backFaceStencil=s;}
-    auto ds=[impl_->renderer->device newDepthStencilStateWithDescriptor:d];
-    if(!ds)return Error(error,"Metal rectangular clear depth state creation failed");
-    found=cache.emplace(key,Renderer::Impl::ClearPipeline{pipeline,ds}).first;
-  }
+  const auto* pipeline=impl_->renderer->PrepareClear(key,error);if(!pipeline)return false;
   impl_->state={};
-  auto e=impl_->encoder;[e setRenderPipelineState:found->second.pipeline];[e setDepthStencilState:found->second.depth];
+  auto e=impl_->encoder;[e setRenderPipelineState:pipeline->pipeline];[e setDepthStencilState:pipeline->depth];
   [e setViewport:MTLViewport{0,0,double(width),double(height),0,1}];[e setScissorRect:r];
   [e setCullMode:MTLCullModeNone];[e setFrontFacingWinding:MTLWindingCounterClockwise];
   [e setDepthBias:0 slopeScale:0 clamp:0];[e setDepthClipMode:MTLDepthClipModeClip];[e setTriangleFillMode:MTLTriangleFillModeFill];
@@ -636,21 +725,29 @@ bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrig
      dst.x>destination.width||dst.y>destination.height||size.width>source.width-src.x||
      size.height>source.height-src.y||size.width>destination.width-dst.x||size.height>destination.height-dst.y)
     return Error(error,"Invalid Metal image copy or pass transition");
-  auto e=[impl_->buffer blitCommandEncoder];if(!e)return Error(error,"Metal image-copy encoder allocation failed");
-  if(!theft4_retail_mode())e.label=@"Theft4 Ordered Texture Copy";
+  // Consecutive copies share one ordered blit encoder. A render pass or
+  // submission ends it; no copy is reordered across a draw or clear.
+  if(!impl_->blit) {
+    impl_->blit=[impl_->buffer blitCommandEncoder];
+    if(!impl_->blit)return Error(error,"Metal image-copy encoder allocation failed");
+    if(!theft4_retail_mode())impl_->blit.label=@"Theft4 Ordered Texture Copies";
+  }
+  auto e=impl_->blit;
   [e copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:src sourceSize:size
       toTexture:destination destinationSlice:0 destinationLevel:0 destinationOrigin:dst];
-  [e endEncoding];impl_->stored_color=destination;return true;
+  impl_->stored_color=destination;return true;
 }
 bool Frame::Present(id<CAMetalDrawable> drawable, std::string& error) {
   if (!*this || impl_->encoder || impl_->presented || !drawable ||
       drawable.texture != impl_->stored_color)
     return Error(error, "Metal presentation requires the stored drawable pass");
+  if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   [impl_->buffer presentDrawable:drawable]; impl_->presented = true; return true;
 }
 Receipt Frame::Submit(std::string& error) {
   Receipt result;
   if (!*this || impl_->encoder) { error = "Metal submission requires an ended pass"; return result; }
+  if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   auto lease = impl_->lease;
   [impl_->buffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)lease; }];
   result.buffer_ = impl_->buffer;

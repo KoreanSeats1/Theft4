@@ -810,6 +810,17 @@ struct Probe {
     auto updated=adapter.Submit(captured,error);Require(bool(updated));Require(updated.Wait(error));
     pixels=renderer.ReadRGBA8(adapter.Output(*captured,error),error);Require(pixels.size()==W*H*4);
     for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==0&&pixels[i+1]==255&&pixels[i+2]==0&&pixels[i+3]==255);
+    auto scratch=std::make_shared<r::Surface>(*source);scratch->key={82,1};
+    auto chained=std::make_shared<r::FramePlan>();chained->sequence=3;chained->surfaces={source,destination,scratch};chained->output=dst;
+    const r::SurfaceView mid{scratch->key,0,0,r::Aspect::Color};
+    r::ImageCopy toScratch=copy;toScratch.destination=mid;
+    r::ImageCopy toDestination=copy;toDestination.source=mid;
+    chained->commands={clear(src,{1,0,0,1}),toScratch,toDestination,clear(src,{0,1,0,1}),copy};
+    auto chainReceipt=adapter.Submit(chained,error);Require(bool(chainReceipt));Require(chainReceipt.Wait(error));
+    Require(renderer.ReadRGBA8(adapter.Output(*chained,error),error)==pixels);
+    auto scratchTexture=adapter.SampledTexture(*chained,{mid},error);Require(bool(scratchTexture));
+    const auto scratchPixels=renderer.ReadRGBA8(scratchTexture,error);
+    for(size_t i=0;i<scratchPixels.size();i+=4)Require(scratchPixels[i]==255&&scratchPixels[i+1]==0&&scratchPixels[i+2]==0&&scratchPixels[i+3]==255);
     auto deferred=std::make_shared<r::FramePlan>();deferred->sequence=3;deferred->surfaces={source,destination};deferred->output=dst;
     deferred->commands={clear(src,{1,0,0,1})};
     auto retained=adapter.Submit(deferred,error);Require(bool(retained));Require(retained.Wait(error));
@@ -835,6 +846,7 @@ struct Probe {
     plan->output=r::SurfaceView{target->key,0,0,r::Aspect::Color};
     auto receipt=adapter.Submit(plan,error,nullptr,true);Require(bool(receipt));Require(receipt.Wait(error));
     Require(adapter.LastTiming().native_identity_copies==(theft4_retail_mode()?0:1)&&adapter.LastTiming().avoided_attachment_stores==(theft4_retail_mode()?0:1));
+    Require(adapter.LastTiming().avoided_clear_passes==(theft4_retail_mode()?0:1));
     auto src=adapter.SampledTexture(*plan,{r::SurfaceView{source->key,0,0,r::Aspect::Color}},error);Require(src);
     auto dst=adapter.Output(*plan,error);Require(dst);Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
     // Force the specialized shader path with a neutral runtime exponent flag.
@@ -846,6 +858,32 @@ struct Probe {
     plan->sequence=2;receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
     Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==(theft4_retail_mode()?0:1));
     Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
+    const auto hostCache=std::string(output.UTF8String)+"/HostPipelineArchiveFixture";
+    {
+      Renderer cold;FrameAdapter first(cold);first.ConfigurePipelineCache(hostCache);
+      Require(first.Open(libraries.UTF8String,error));Require(first.PipelineCount()==0);
+      auto submitted=first.Submit(plan,error);Require(bool(submitted));Require(submitted.Wait(error));
+      Require(first.PipelineCount()==1);first.FlushPipelineCache();
+      Require(!cold.PipelineArchiveNeedsFlush());
+    }
+    {
+      Renderer warm;FrameAdapter restored(warm);restored.ConfigurePipelineCache(hostCache);
+      Require(restored.Open(libraries.UTF8String,error));
+      Require(restored.PipelineCount()==1&&!warm.PipelineArchiveNeedsFlush());
+      auto submitted=restored.Submit(plan,error);Require(bool(submitted));Require(submitted.Wait(error));
+      Require(restored.PipelineCount()==1&&!warm.PipelineArchiveNeedsFlush());
+      Require(warm.ReadRGBA8(restored.Output(*plan,error),error)==renderer.ReadRGBA8(src,error));
+    }
+    {
+      std::ofstream broken(hostCache+"/host-recipes.json");broken<<"{broken";broken.close();
+      Renderer fallback;FrameAdapter restored(fallback);restored.ConfigurePipelineCache(hostCache);
+      Require(restored.Open(libraries.UTF8String,error));Require(restored.PipelineCount()==0);
+      auto submitted=restored.Submit(plan,error);Require(bool(submitted));Require(submitted.Wait(error));
+      Require(fallback.ReadRGBA8(restored.Output(*plan,error),error)==renderer.ReadRGBA8(src,error));
+    }
+    [results addObject:@{@"case":@"persistent_host_pipeline_preparation",@"passed":@YES,
+      @"restored_before_first_submit":@YES,@"warm_submit_does_not_compile":@YES,@"pixels_preserved":@YES,
+      @"malformed_optional_cache_falls_back":@YES}];
     FrameAdapter capped(renderer,1);Require(capped.Open(libraries.UTF8String,error));
     for(uint32_t flag:{64u,128u,64u,32768u}) {
       fields[11]=2|flag;auto constants=std::make_shared<r::Bytes>(*bank);constants->generation=flag;
@@ -1474,16 +1512,32 @@ struct Probe {
     reversed={};
     // A second renderer restores real binary PSOs and prepares the exact
     // raster recipe before its first draw. Invalid recipe data is optional.
+    const auto checkClear=[&](Renderer& device) {
+      auto desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO];
+      desc.storageMode=MTLStorageModePrivate;desc.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+      auto texture=device.Texture(desc,error);Require(bool(texture));
+      auto pass=[MTLRenderPassDescriptor renderPassDescriptor];pass.colorAttachments[0].texture=texture;
+      pass.colorAttachments[0].loadAction=MTLLoadActionClear;pass.colorAttachments[0].storeAction=MTLStoreActionStore;
+      auto frame=device.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(pass,error));
+      Clear clear;clear.colors=1;clear.rectangle={0,0,W,H};clear.color={0,1,0,1};
+      Require(frame.ClearRectangle(clear,error));Require(frame.EndPass(error));
+      auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+      const auto pixels=device.ReadRGBA8(texture,error);Require(pixels.size()==W*H*4);
+      for(size_t i=0;i<pixels.size();i+=4)Require(pixels[i]==0&&pixels[i+1]==255&&pixels[i+2]==0&&pixels[i+3]==255);
+    };
     const auto cache=std::string(output.UTF8String)+"/PipelineArchiveFixture";
     {
       Renderer cold;Require(cold.Ready());cold.ConfigurePipelineArchive(cache+"/pipelines.metalarc");
       PlanAdapter first(cold);first.ConfigurePipelineCache(cache);Require(first.Open(libraries.UTF8String,error));
-      Draw packet;Require(first.Prepare(*immutable,packet,error));first.FlushPipelineCache();cold.FlushPipelineArchive();
+      Draw packet;Require(first.Prepare(*immutable,packet,error));checkClear(cold);
+      first.FlushPipelineCache();cold.FlushPipelineArchive();
     }
     {
       Renderer restored;Require(restored.Ready());restored.ConfigurePipelineArchive(cache+"/pipelines.metalarc");
       PlanAdapter second(restored);second.ConfigurePipelineCache(cache);Require(second.Open(libraries.UTF8String,error));
       Require(second.PipelineCount()==1&&(theft4_retail_mode()?restored.PipelineArchiveHits()==0:restored.PipelineArchiveHits()>=1));
+      Require(restored.PreparedClearCount()==1&&!restored.PipelineArchiveNeedsFlush());
+      checkClear(restored);Require(!restored.PipelineArchiveNeedsFlush()); // Warm hits never re-harvest, including Retail.
       Draw packet;Require(second.Prepare(*immutable,packet,error));Require(second.PipelineCount()==1);
     }
     {

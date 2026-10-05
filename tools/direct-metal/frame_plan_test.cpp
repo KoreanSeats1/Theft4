@@ -29,6 +29,24 @@ FramePlan Plan() {
 }
 int main() {
   std::string error;SurfaceContents result;
+  {
+    Pass clear;clear.colors[0]=Color(1);clear.colors[1]=Color(2);
+    assert(!DeadClearPass(clear,1));assert(DeadClearPass(clear,3));
+    clear.depth=Attachment{};clear.depth->view={{3,1},0,0,Aspect::Depth};clear.depth->store=Store::Store;
+    assert(!DeadClearPass(clear,3));assert(DeadClearPass(clear,19));
+    clear.commands.push_back(RectClear{1,false,false,{0,0,4,4},{0,0,0,1},1,0});
+    assert(DeadClearPass(clear,19));
+    clear.commands.push_back(FrameDraw{DrawFor(),{}});assert(!DeadClearPass(clear,255));clear.commands.pop_back();
+    clear.colors[0]->resolve=SurfaceView{{4,1},0,0,Aspect::Color};assert(!DeadClearPass(clear,255));
+    clear.colors[0]->resolve.reset();clear.colors[0]->store=Store::StoreAndResolve;assert(!DeadClearPass(clear,255));
+    FramePlan dependency;dependency.sequence=1;dependency.surfaces={SurfaceFor(1),SurfaceFor(2)};
+    Pass seed;seed.colors[0]=Color(1);Pass overwrite=seed;
+    dependency.commands={seed,ImageCopy{{{1,1},0,0,Aspect::Color},{{2,1},0,0,Aspect::Color},{},{},{4,4},false},overwrite};
+    auto masks=DeadAttachmentStores(dependency);assert(!DeadClearPass(seed,masks[0]));
+    dependency.commands={seed,overwrite};masks=DeadAttachmentStores(dependency);assert(DeadClearPass(seed,masks[0]));
+    assert(!DeadClearPass(overwrite,masks[1])); // Final stored content remains observable.
+  }
+
   // Consecutive title draws retain their order in a single encoder. Admission
   // still sees the actual initial clear; later clears, target changes, copies,
   // discard stores and resolves are boundaries and cannot disappear.

@@ -225,8 +225,9 @@ bool DrawResourceValidationCache::CheckSampler(const std::shared_ptr<const Sampl
   if(e.pointer==sampler.get()&&!e.owner.owner_before(sampler)&&!sampler.owner_before(e.owner)){++hits;return true;}
   ++checks;if(!ValidateSampler(*sampler,error))return false;e={sampler.get(),sampler};return true;
 }
-bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue,IndexRangeCache* indices,uint64_t* maximum_vertex,DrawResourceValidationCache* resources) {
+bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* issue,IndexRangeCache* indices,uint64_t* maximum_vertex,DrawResourceValidationCache* resources,bool* index_has_restart) {
   if(issue)*issue=DrawValidationIssue::None;
+  if(index_has_restart)*index_has_restart=false;
   const auto& d=capture.draw;const auto& p=d.pipeline;
   if(!capture.width||!capture.height||capture.width>16384||capture.height>16384||!p.vertex.hash||
       p.vertex.variant>3||p.fragment.variant>3||p.attributes.size()>31||
@@ -256,6 +257,7 @@ bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* is
     IndexRange range;
     if(!(indices?indices->Analyze(d.indices,d.index_count,d.index_bytes,range,error):
                  AnalyzeIndices(d.indices,d.index_count,d.index_bytes,range,error)))return false;
+    if(index_has_restart)*index_has_restart=range.has_restart;
     if(d.primitive_restart&&!range.has_non_restart)return Error(error,"Game index view contains only restart markers");
     const auto minimum=d.primitive_restart?range.minimum_without_restart:range.minimum;
     const auto high=d.primitive_restart?range.maximum_without_restart:range.maximum;

@@ -27,6 +27,9 @@ struct ShaderInterface {
   // their reflected push-constant size, or zero for unused banks.
   std::array<NSUInteger,3> constant_bytes{4096,3584,1056};
 };
+struct PipelineCompilationStats {
+  double library_ms=0,function_ms=0,archive_ms=0,pipeline_ms=0;
+};
 struct Shader {
   id<MTLFunction> function = nil;
   Stage stage = Stage::Vertex;
@@ -162,6 +165,9 @@ class Renderer {
   void ConfigurePipelineArchive(const std::string& path);
   void FlushPipelineArchive();
   uint64_t PipelineArchiveHits() const;
+  bool PipelineArchiveNeedsFlush() const;
+  size_t PreparedClearCount() const;
+  PipelineCompilationStats CompilationStats() const;
   Frame BeginFrame(std::string& error);
   // Readback is for validation/capture, never part of the normal draw path.
   std::vector<uint8_t> ReadRGBA8(id<MTLTexture> texture, std::string& error,

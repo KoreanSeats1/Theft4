@@ -284,3 +284,12 @@ target_include_directories(retail_diagnostic_policy_test PRIVATE "${ROOT}/ios/br
 target_compile_options(retail_diagnostic_policy_test PRIVATE -UNDEBUG)
 add_test(NAME retail_diagnostics_disabled COMMAND retail_diagnostic_policy_test retail)
 add_test(NAME diagnostics_restored_on_fresh_launch COMMAND retail_diagnostic_policy_test diagnostics)
+
+# Representative CPU preparation comparison; private game data remains external.
+add_executable(metal_draw_preparation_benchmark draw_preparation_benchmark.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm")
+target_include_directories(metal_draw_preparation_benchmark PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_draw_preparation_benchmark PRIVATE -fobjc-arc)
+target_link_libraries(metal_draw_preparation_benchmark PRIVATE metal_shader_catalog render_plan
+  "-framework Foundation" "-framework Metal" "-framework QuartzCore")

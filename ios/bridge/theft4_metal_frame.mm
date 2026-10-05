@@ -6,6 +6,9 @@
 #include <bit>
 #include <map>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 namespace theft4::metal {
 namespace {
@@ -56,6 +59,8 @@ struct FrameAdapter::Impl {
   HostShaderStore host;
   std::map<std::tuple<render::HostProgram,render::Pipeline,std::array<uint32_t,8>,bool>,std::shared_ptr<const Pipeline>> host_pipelines;
   std::set<std::pair<render::HostProgram,std::array<uint32_t,8>>> resolve_specializations;
+  std::string pipeline_cache_directory;
+  bool host_cache_dirty=false;
   size_t maximum_resolve_specializations;
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
@@ -66,9 +71,9 @@ struct FrameAdapter::Impl {
   std::set<std::string> logged_preparation_errors;
   explicit Impl(Renderer& r,size_t maximum,size_t budget):renderer(r),draws(r,budget),host(r),maximum_resolve_specializations(std::min(maximum,size_t(128))){}
   void Forget(render::SurfaceKey key) {
-    for(auto it=contents.begin();it!=contents.end();) {
-      if(it->surface==key)it=contents.erase(it);else ++it;
-    }
+    auto first=contents.lower_bound(render::SurfaceView{key});
+    auto last=first;while(last!=contents.end()&&last->surface==key)++last;
+    contents.erase(first,last);
   }
   bool Ensure(const std::shared_ptr<const render::Surface>& s,id<MTLTexture> external,std::string& error) {
     if(external && (external.device!=renderer.Device()||external.textureType!=MTLTextureType2D||external.sampleCount!=1||
@@ -198,6 +203,64 @@ struct FrameAdapter::Impl {
     if(!texture){error="Metal rejected the sampled mip/layer/format alias";return nil;}
     entry.sampled_ranges.emplace(view,texture);if(diagnostics)++stats.view_creates;return texture;
   }
+  std::shared_ptr<const Pipeline> HostPipeline(render::HostProgram program,const render::Pipeline& fixed,
+      std::array<uint32_t,8> specialization,bool specialize,std::string& error) {
+    if(size_t(program)>=render::kHostPrograms.size()){error="Unknown cached Metal utility";return {};}
+    const auto& info=render::kHostPrograms[size_t(program)];
+    const auto variant=std::pair{program,specialization};
+    if(specialize&&!resolve_specializations.contains(variant)&&resolve_specializations.size()>=maximum_resolve_specializations) {
+      specialize=false;specialization={};if(diagnostics)++stats.host_specialization_fallbacks;
+    }
+    const auto key=std::tuple{program,fixed,specialization,specialize};
+    if(auto it=host_pipelines.find(key);it!=host_pipelines.end())return it->second;
+    auto vs=host.Resolve("fullscreen_cw_vs",error),ps=host.Resolve(info.name,error,
+        specialize ? std::span<const uint32_t>(specialization) : std::span<const uint32_t>{});
+    if(!vs.function||!ps.function)return {};
+    auto pipeline=BuildFixedPipeline(renderer,fixed,render::Primitive::Triangle,vs,&ps,error);
+    if(!pipeline)return {};
+    host_pipelines.emplace(key,pipeline);host_cache_dirty=true;
+    if(specialize){resolve_specializations.insert(variant);if(diagnostics)stats.host_specializations=resolve_specializations.size();}
+    return pipeline;
+  }
+  void RestoreHostPipelines() {
+    if(pipeline_cache_directory.empty())return;
+    try {
+      const auto path=std::filesystem::path(pipeline_cache_directory)/"host-recipes.json";
+      if(!std::filesystem::exists(path)||std::filesystem::file_size(path)>2*1024*1024)return;
+      std::ifstream input(path);const auto cache=nlohmann::json::parse(input);
+      if(cache.at("schema")!=1||!cache.at("pipelines").is_array()||cache.at("pipelines").size()>2048)return;
+      for(const auto& row:cache.at("pipelines"))try {
+        const auto program=row.at("program").get<uint32_t>();
+        if(program>=render::kHostPrograms.size())continue;
+        render::Pipeline p;render::Primitive primitive;
+        if(!ReadPipelineRecipe(row.at("pipeline"),p,primitive,false)||primitive!=render::Primitive::Triangle||
+           p.vertex!=render::Shader{}||p.fragment!=render::Shader{}||!p.attributes.empty()||
+           p.negative_one_to_one||p.streams!=std::array<render::Stream,render::kStreamCount>{})continue;
+        const auto required=(1u<<p.samples)-1u;if((p.sample_mask&required)!=required)continue;
+        const auto constants=row.at("constants").get<std::array<uint32_t,8>>();
+        const bool specialized=row.at("specialized").get<bool>();
+        if(!specialized&&constants!=std::array<uint32_t,8>{})continue;
+        std::string ignored;HostPipeline(render::HostProgram(program),p,constants,specialized,ignored);
+      }catch(...){} // Reject optional malformed rows independently.
+    }catch(...){}
+    host_cache_dirty=false;
+  }
+  void SaveHostPipelines() {
+    if(!host_cache_dirty||pipeline_cache_directory.empty())return;
+    try {
+      auto rows=nlohmann::json::array();
+      for(const auto& [key,pipeline]:host_pipelines) {
+        if(rows.size()==2048)break;
+        const auto& [program,fixed,constants,specialized]=key;
+        rows.push_back({{"program",uint32_t(program)},{"pipeline",PipelineRecipe(fixed,render::Primitive::Triangle)},
+                       {"constants",constants},{"specialized",specialized}});
+      }
+      const auto path=std::filesystem::path(pipeline_cache_directory)/"host-recipes.json";
+      std::filesystem::create_directories(path.parent_path());const auto temporary=path.string()+".tmp";
+      std::ofstream stream(temporary);stream<<nlohmann::json{{"schema",1},{"pipelines",rows}};stream.close();
+      if(stream&&std::rename(temporary.c_str(),path.c_str())==0)host_cache_dirty=false;
+    }catch(...){} // Persistence never determines whether a valid frame renders.
+  }
   bool PrepareHost(const render::HostDraw& source,MTLRenderPassDescriptor* pass,Draw& draw,std::string& error) {
     const auto& info=render::kHostPrograms[size_t(source.program)];
     std::array<uint32_t,8> specialization{};bool specialize=false;
@@ -214,21 +277,10 @@ struct FrameAdapter::Impl {
       // disabled AA, HDR and sharpening from the actual GPU function.
       std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+20,8);specialize=true;
     }
-    const auto variant=std::pair{source.program,specialization};
-    if(specialize&&!resolve_specializations.contains(variant)&&resolve_specializations.size()>=maximum_resolve_specializations) {
-      specialize=false;specialization={};if(diagnostics)++stats.host_specialization_fallbacks;
-    }
-    const auto key=std::tuple{source.program,source.pipeline,specialization,specialize};
-    auto it=host_pipelines.find(key);
-    if(it==host_pipelines.end()) {
-      auto vs=host.Resolve("fullscreen_cw_vs",error),ps=host.Resolve(info.name,error,specialize ? std::span<const uint32_t>(specialization) : std::span<const uint32_t>{});
-      if(!vs.function||!ps.function)return false;
-      auto pipeline=BuildFixedPipeline(renderer,source.pipeline,render::Primitive::Triangle,vs,&ps,error);
-      if(!pipeline)return false;it=host_pipelines.emplace(key,pipeline).first;
-      if(specialize){resolve_specializations.insert(variant);if(diagnostics)stats.host_specializations=resolve_specializations.size();}
-    }
+    auto pipeline=HostPipeline(source.program,source.pipeline,specialization,specialize,error);
+    if(!pipeline)return false;
     Draw result=draws.AcquireDrawStorage();
-    theft4::StorageCleanup cleanup{[&]{draws.RecycleDrawStorage(result);}};result.pipeline=it->second;result.vertex_count=3;
+    theft4::StorageCleanup cleanup{[&]{draws.RecycleDrawStorage(result);}};result.pipeline=std::move(pipeline);result.vertex_count=3;
     id<MTLTexture> target=pass.depthAttachment.texture;
     if(!target)target=pass.stencilAttachment.texture;
     for(size_t i=0;i<4&&!target;++i)target=pass.colorAttachments[i].texture;
@@ -254,16 +306,18 @@ struct FrameAdapter::Impl {
 FrameAdapter::FrameAdapter(Renderer& renderer,size_t maximum,size_t budget):impl_(std::make_unique<Impl>(renderer,maximum,budget)){}
 FrameAdapter::~FrameAdapter()=default;
 void FrameAdapter::ConfigurePipelineCache(const std::string& directory) {
+  impl_->pipeline_cache_directory=directory;
   impl_->draws.ConfigurePipelineCache(directory);
   impl_->renderer.ConfigurePipelineArchive(directory+"/pipelines.metalarc");
 }
 void FrameAdapter::FlushPipelineCache() {
-  impl_->draws.FlushPipelineCache();impl_->renderer.FlushPipelineArchive();
+  impl_->draws.FlushPipelineCache();impl_->SaveHostPipelines();impl_->renderer.FlushPipelineArchive();
 }
 bool FrameAdapter::Open(const std::string& libraries,std::string& error){
   if(!impl_->draws.Open(libraries,error)||!impl_->host.Open(libraries+"/Host",error))return false;
   impl_->host_pipelines.clear();impl_->resolve_specializations.clear();
-  impl_->stats.host_specializations=impl_->stats.host_specialization_fallbacks=0;return true;
+  impl_->stats.host_specializations=impl_->stats.host_specialization_fallbacks=0;
+  impl_->RestoreHostPipelines();return true;
 }
 Receipt FrameAdapter::Submit(const std::shared_ptr<const render::FramePlan>& plan,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   return SubmitFrame(plan,{},nil,error,published,profile_gpu);
@@ -278,8 +332,10 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
   using Clock=std::chrono::steady_clock;
   const auto clock_now=[] {if constexpr(Diagnostics)return Clock::now();else return Clock::time_point{};};
   const auto begin=clock_now();
+  PipelineCompilationStats before_compilation{};
   ResourceCacheStats before_resources{};size_t before_pipelines=0,before_bindings_reused=0,before_bindings_fresh=0;
   if constexpr(Diagnostics) {
+    before_compilation=impl_->renderer.CompilationStats();
     before_resources=ImmutableStats();before_pipelines=PipelineCount();
     before_bindings_reused=impl_->draws.binding_storage_.Hits();
     before_bindings_fresh=impl_->draws.binding_storage_.Misses();
@@ -324,7 +380,7 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
   const auto dead_stores=render::DeadAttachmentStores(*plan);
   const auto redundant_loads=render::RedundantAttachmentLoads(*plan);
-  uint64_t avoided_stores=0,avoided_loads=0,native_copies=0,render_passes=0,image_copies=0;
+  uint64_t avoided_stores=0,avoided_loads=0,native_copies=0,render_passes=0,image_copies=0,avoided_clear_passes=0;
   size_t draw_range_index=0;
   const auto validated=clock_now();
   for(const auto& surface:plan->surfaces)
@@ -364,6 +420,10 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
     }
     const auto& pass=std::get<render::Pass>(command);size_t profile_pass=0;
     if constexpr(Diagnostics)profile_pass=profile_pass_index++;
+    if(render::DeadClearPass(pass,dead)) {
+      if constexpr(Diagnostics){++avoided_clear_passes;avoided_stores+=std::popcount(dead);}
+      continue;
+    }
     if(const auto copy=render::IdentityResolveCopy(*plan,pass);copy&&(!drawable||copy->destination.surface!=target)) {
       auto source=impl_->View(copy->source,error),destination=impl_->View(copy->destination,error);
       if(!source||!destination)return {};
@@ -396,7 +456,9 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
       if(draw_range_index>=draw_ranges.size()||draw_ranges[draw_range_index].capture!=item.capture.get()) {
         error="Immutable draw order changed after frame admission";return {};
       }
-      Draw draw;theft4::StorageCleanup draw_cleanup{[&]{impl_->draws.RecycleDrawStorage(draw);}};const bool base=impl_->draws.PrepareValidated(*item.capture,draw_ranges[draw_range_index++].maximum_vertex,draw,error);
+      const auto& admitted=draw_ranges[draw_range_index++];
+      Draw draw;theft4::StorageCleanup draw_cleanup{[&]{impl_->draws.RecycleDrawStorage(draw);}};
+      const bool base=impl_->draws.PrepareValidated(*item.capture,admitted.maximum_vertex,admitted.index_has_restart,draw,error);
       const auto fail_draw=[&] {failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);};
       if(!base){fail_draw();continue;}
       if(!item.produced.HasViews()) {
@@ -451,9 +513,12 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
   timing.pipelines_created=PipelineCount()-before_pipelines;
   timing.buffers_created=after_resources.buffer_creates-before_resources.buffer_creates;
   timing.textures_created=after_resources.texture_creates-before_resources.texture_creates;
-  timing.avoided_attachment_stores=avoided_stores;timing.avoided_attachment_loads=avoided_loads;timing.native_identity_copies=native_copies;
+  timing.avoided_attachment_stores=avoided_stores;timing.avoided_attachment_loads=avoided_loads;timing.native_identity_copies=native_copies;timing.avoided_clear_passes=avoided_clear_passes;
   timing.binding_storage_reuses=impl_->draws.binding_storage_.Hits()-before_bindings_reused;
   timing.binding_storage_fresh=impl_->draws.binding_storage_.Misses()-before_bindings_fresh;
+  const auto compiled=impl_->renderer.CompilationStats();
+  timing.compilation={compiled.library_ms-before_compilation.library_ms,compiled.function_ms-before_compilation.function_ms,
+      compiled.archive_ms-before_compilation.archive_ms,compiled.pipeline_ms-before_compilation.pipeline_ms};
   timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
   }
   if(published)*published=std::move(final);

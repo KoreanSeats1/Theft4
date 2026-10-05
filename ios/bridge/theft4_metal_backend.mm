@@ -80,12 +80,15 @@ class Backend final:public render::FrameBackend {
     if(present && (!layer_ || !plan->output)) {
       error="Metal publication requires a layer and final output";return false;
     }
-    using Clock=std::chrono::steady_clock;const auto began=Clock::now();
+    using Clock=std::chrono::steady_clock;
+    const bool diagnostics=!theft4_retail_mode();
+    const auto now=[&]{return diagnostics?Clock::now():Clock::time_point{};};
+    const auto began=now();
     // Reap completed work and bound admission before acquiring a scarce drawable.
     while(!pending_.empty() && (pending_.front().receipt.Completed() || pending_.size()>=maximum_)) {
       if(!FinishOldest(error))return false;
     }
-    const auto admitted=Clock::now();
+    const auto admitted=now();
     const bool profile_gpu=!theft4_retail_mode()&&present&&plan->commands.size()>=40&&
         (!profile_attempted_||presentations_-last_profile_presentation_>=180);
     if(profile_gpu){profile_attempted_=true;last_profile_presentation_=presentations_;}
@@ -101,14 +104,32 @@ class Backend final:public render::FrameBackend {
            plan->output->level || plan->output->slice || plan->output->aspect!=render::Aspect::Color) {
           error="Frame output does not match the current Metal drawable";return false;
         }
-        const auto drawable_begin=Clock::now();
+        const auto drawable_begin=now();
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
-        drawable_ms=std::chrono::duration<double,std::milli>(Clock::now()-drawable_begin).count();
+        drawable_ms=std::chrono::duration<double,std::milli>(now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
         receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published,profile_gpu);
       } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
+    const auto submitted_at=now();
+    const double submit_ms=std::chrono::duration<double,std::milli>(submitted_at-began).count();
+    // The periodic summary can miss the exact spike. Keep a bounded slow-only
+    // record of admission, driver preparation and encoding for attribution.
+    if(diagnostics&&submit_ms>40&&slow_submissions_<256&&
+       (submit_ms>=100||submitted_at-last_slow_submission_>=std::chrono::seconds(1))) {
+      last_slow_submission_=submitted_at;++slow_submissions_;
+      const auto t=adapter_->LastTiming();const auto resources=adapter_->ImmutableStats();
+      char message[1024];std::snprintf(message,sizeof(message),
+        "gta4-metal-slow-submit: sequence=%llu present=%d total-ms=%.3f admission-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu buffer-cache-bytes=%llu buffer-evictions=%llu",
+        (unsigned long long)plan->sequence,int(present),submit_ms,
+        std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
+        t.validation_ms,t.preparation_ms,t.encoding_ms,(unsigned long long)t.draws,
+        (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,
+        (unsigned long long)t.textures_created,(unsigned long long)t.uploaded_bytes,
+        (unsigned long long)resources.resident_buffer_bytes,(unsigned long long)resources.buffer_evictions);
+      if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
+    }
     if(!theft4_retail_mode()&&present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
       const auto resources=adapter_->ImmutableStats();
@@ -271,6 +292,8 @@ class Backend final:public render::FrameBackend {
   uint32_t maximum_;
   void (*diagnostic_)(const char*)=nullptr;
   uint64_t presentations_=0;double last_gpu_ms_=0;
+  uint32_t slow_submissions_=0;
+  std::chrono::steady_clock::time_point last_slow_submission_{};
   std::array<double,60> gpu_samples_{};size_t gpu_sample_count_=0;
   double frame_gpu_work_ms_=0;
   bool profile_attempted_=false;uint64_t last_profile_presentation_=0;

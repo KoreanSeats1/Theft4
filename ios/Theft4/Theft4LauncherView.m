@@ -6,6 +6,7 @@
 #include "theft4_output_policy.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #import <QuartzCore/QuartzCore.h>
 
 #ifdef THEFT4_DIRECT_METAL_DEFAULT
@@ -84,7 +85,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     CAEmitterLayer *_rain;
     UILabel *_masthead, *_edition, *_wordmark, *_sceneCaption, *_configuration;
     UILabel *_resolutionSummary, *_pageTitle, *_pageDetail, *_controllerHint;
-    UILabel *_shadowMetrics, *_distanceMetrics, *_modelMetrics, *_reflectionMetrics, *_aaMetrics;
+    UILabel *_shadowMetrics, *_distanceMetrics, *_modelMetrics, *_reflectionMetrics, *_aaMetrics, *_sharpeningMetrics;
     UIView *_topRule, *_bottomRule, *_navRule;
     UIScrollView *_scroll;
     UIStackView *_content, *_navigation;
@@ -237,6 +238,19 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     }
 
     NSMutableArray<UIView *> *graphicsRows = [NSMutableArray new];
+#ifdef THEFT4_DIRECT_METAL_DEFAULT
+    _sharpening = [UISlider new];
+    _sharpening.minimumValue = 0;
+    _sharpening.maximumValue = 100;
+    _sharpening.minimumTrackTintColor = Ink(0x35CDD1);
+    _sharpening.accessibilityIdentifier = @"settings.sharpening";
+    _sharpening.accessibilityLabel = @"Sharpening strength";
+    _sharpening.accessibilityHint = @"Zero disables sharpening. Changes apply on the next game launch.";
+    [_sharpening.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+    [_sharpening addTarget:self action:@selector(refreshConfigurationSummary)
+        forControlEvents:UIControlEventValueChanged];
+    _sharpeningMetrics = Copy(@"OFF · 0%", 12, YES);
+#endif
     if (lab) {
         _renderResolution = ChoiceControl(@[@"540p", @"720p", @"900p", @"1080p", @"Native"], @"renderResolution",
             @"Render resolution", @"The internal scene resolution. Applies at the next game launch.");
@@ -330,6 +344,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"DEPTH OF FIELD" detail:@"Distance-based focus blur. Off by default on iPhone Air; this may sharpen city views, but performance gains need testing." toggle:_depthOfField],
         Copy(@"Graphics changes apply on the next game launch. Extended distance and Ultra shadows can reduce frame rate in dense areas.", 12, NO)
     ]];
+#ifdef THEFT4_DIRECT_METAL_DEFAULT
+    [graphicsRows insertObject:Column(@[Copy(@"SHARPENING", 12, YES),
+        Copy(@"Adjust fine-detail contrast from 0–100%. Zero keeps the original image. Higher values add GPU work and can emphasize texture noise. Applies on the next game launch.", 12, NO),
+        _sharpening, _sharpeningMetrics], 8) atIndex:(lab ? 3 : 0)];
+#endif
     if (!lab) {
         [graphicsRows insertObjects:@[
             [self setting:@"1080p ENHANCED OUTPUT" detail:@"FSR 1 upscale plus sharpening." toggle:_enhancedOutput],
@@ -633,6 +652,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 }
 
 - (void)refreshConfigurationSummary {
+    if (_sharpening) {
+        const NSInteger strength = (NSInteger)lroundf(_sharpening.value);
+        _sharpeningMetrics.text = strength ? [NSString stringWithFormat:@"%ld%% · NEXT GAME LAUNCH", (long)strength] : @"OFF · 0%";
+        _sharpening.accessibilityValue = [NSString stringWithFormat:@"%ld percent", (long)strength];
+    }
     NSArray<NSString *> *shadowMetrics = @[
         @"128 base · 1024 × 1024 cache · 0.75× range",
         @"256 base · 2048 × 2048 cache · 1× range",

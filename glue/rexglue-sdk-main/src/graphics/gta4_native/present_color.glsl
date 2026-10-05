@@ -1,5 +1,18 @@
 // Shared SDR/HDR/dither contract for regular and fused presentation.
 float luma(vec3 color) { return dot(color, vec3(0.2126, 0.7152, 0.0722)); }
+float sharpening_strength() {
+  return min(float((present_constants.output_mode >> 8u) & 127u) * 0.01, 1.0);
+}
+// Five-tap detail enhancement in the final source's color space. Bound every
+// channel by its local neighborhood to avoid creating bright/dark halos.
+// Alpha and flat colors are preserved. Callers fetch neighbors only when on.
+vec4 sharpen_output(vec4 center, vec4 north, vec4 south, vec4 west, vec4 east) {
+  vec3 minimum_color = min(center.rgb, min(min(north.rgb, south.rgb), min(west.rgb, east.rgb)));
+  vec3 maximum_color = max(center.rgb, max(max(north.rgb, south.rgb), max(west.rgb, east.rgb)));
+  vec3 detail = center.rgb - (north.rgb + south.rgb + west.rgb + east.rgb) * 0.25;
+  return vec4(clamp(center.rgb + detail * (0.5 * sharpening_strength()),
+                    minimum_color, maximum_color), center.a);
+}
 float display_dither(ivec2 coordinate) {
   float noise = fract(dot(vec2(coordinate), vec2(0.75487766, 0.56984029)));
   return noise * (1.0 / 255.0) - (0.5 / 255.0);

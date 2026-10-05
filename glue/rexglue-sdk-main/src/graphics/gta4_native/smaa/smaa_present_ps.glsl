@@ -26,13 +26,24 @@ layout(set = 0, binding = 2) uniform sampler2D color_linear_tex;
 layout(location = 0) out vec4 output_color;
 #include "smaa_neighborhood_common.glsl"
 #include "../present_color.glsl"
-void main() {
-  vec2 texcoord = gl_FragCoord.xy * SMAA_RT_METRICS.xy;
+vec4 resolved_smaa_color(vec2 texcoord) {
   vec4 offset;
   SMAANeighborhoodBlendingVS(texcoord, offset);
   vec4 color = smaa_neighborhood_srgb(texcoord, offset);
   // Preserve rounding formerly introduced by the FP16 neighborhood target.
   color = vec4(unpackHalf2x16(packHalf2x16(color.xy)),
                unpackHalf2x16(packHalf2x16(color.zw)));
+  return color;
+}
+void main() {
+  vec2 texcoord = gl_FragCoord.xy * SMAA_RT_METRICS.xy;
+  vec4 color = resolved_smaa_color(texcoord);
+  if (sharpening_strength() > 0.0) {
+    color = sharpen_output(color,
+        resolved_smaa_color(texcoord + vec2(0.0, -SMAA_RT_METRICS.y)),
+        resolved_smaa_color(texcoord + vec2(0.0, SMAA_RT_METRICS.y)),
+        resolved_smaa_color(texcoord + vec2(-SMAA_RT_METRICS.x, 0.0)),
+        resolved_smaa_color(texcoord + vec2(SMAA_RT_METRICS.x, 0.0)));
+  }
   output_color = present_color(color, ivec2(gl_FragCoord.xy), false);
 }

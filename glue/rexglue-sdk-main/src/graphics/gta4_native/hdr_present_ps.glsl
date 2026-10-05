@@ -300,20 +300,32 @@ vec4 resolve_ssaa_area(ivec2 destination_coordinate) {
   return vec4(linear_sum * inverse_weight, alpha_sum * inverse_weight);
 }
 
-void main() {
-  ivec2 destination_coordinate = ivec2(gl_FragCoord.xy);
+vec4 resolve_output_source(ivec2 destination_coordinate) {
   vec2 source_position =
-      gl_FragCoord.xy * vec2(present_constants.source_extent) /
+      (vec2(destination_coordinate) + vec2(0.5)) * vec2(present_constants.source_extent) /
       vec2(present_constants.destination_extent);
   ivec2 coordinate = clamp(ivec2(source_position), ivec2(0),
                            present_constants.source_extent - ivec2(1));
   bool ssaa_enabled = (present_constants.output_mode & 32u) != 0u;
-  vec4 source = ssaa_enabled
+  return ssaa_enabled
                     ? resolve_ssaa_area(destination_coordinate)
                     : (present_constants.output_mode & 16u) != 0u
                           ? resolve_fxaa(coordinate)
                           : (present_constants.output_mode & 2u) != 0u
                                 ? resolve_spatial_edge(coordinate)
                                 : fetch_source(coordinate);
-  output_color = present_color(source, destination_coordinate, ssaa_enabled);
+}
+
+void main() {
+  ivec2 destination_coordinate = ivec2(gl_FragCoord.xy);
+  vec4 source = resolve_output_source(destination_coordinate);
+  if (sharpening_strength() > 0.0) {
+    source = sharpen_output(source,
+        resolve_output_source(destination_coordinate + ivec2(0, -1)),
+        resolve_output_source(destination_coordinate + ivec2(0, 1)),
+        resolve_output_source(destination_coordinate + ivec2(-1, 0)),
+        resolve_output_source(destination_coordinate + ivec2(1, 0)));
+  }
+  output_color = present_color(source, destination_coordinate,
+      (present_constants.output_mode & 32u) != 0u);
 }

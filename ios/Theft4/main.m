@@ -864,6 +864,12 @@ static void bootEvent(void *context, const char *event) {
         [choice addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
     }
+    if (_bringupOverlay.sharpening) {
+        _bringupOverlay.sharpening.value = MAX(0, MIN(100,
+            [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4Sharpening"]));
+        [_bringupOverlay.sharpening addTarget:self action:@selector(displaySettingsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    }
     if (_bringupOverlay.renderResolution) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
@@ -1922,6 +1928,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 #endif
 - (void)displaySettingsChanged:(UIControl *)sender {
     if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
+    if (_bringupOverlay.sharpening) {
+        _bringupOverlay.sharpening.value = roundf(_bringupOverlay.sharpening.value);
+        [NSUserDefaults.standardUserDefaults setInteger:(NSInteger)_bringupOverlay.sharpening.value
+            forKey:@"Theft4Sharpening"];
+    }
     if (_bringupOverlay.renderResolution.selectedSegmentIndex == 4) _bringupOverlay.fsrUpscaling.on = NO;
     [self applyLimitedMemoryCaps];
     if (sender == _fsrBoost && _fsrBoost.on) _enhancedOutput.on = YES;
@@ -1969,6 +1980,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // Keep the user-selected scene/output resolution. The reduced geometry
     // profile was useful in the device run; resolution needs a separate A/B.
     _antiAliasing.selectedSegmentIndex=0;_motionBlur.on=NO;_depthOfField.on=NO;_anisotropicFiltering.on=NO;
+    _bringupOverlay.sharpening.value=0;
     _reflectionQuality.selectedSegmentIndex=0;_modelDetail.selectedSegmentIndex=0;
     _shadowQuality.selectedSegmentIndex=1;_drawDistance.selectedSegmentIndex=0;_enhancedOutput.on=NO;_fsrBoost.on=NO;
 }
@@ -1993,6 +2005,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     uint32_t h=theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
     _bringupOverlay.renderResolution.selectedSegmentIndex=h==540?0:h==900?2:h==1080?3:h==THEFT4_LAB_NATIVE_16_9?4:1;
     _bringupOverlay.fsrUpscaling.on=[defaults boolForKey:@"Theft4LabFSREnabled"];
+    _bringupOverlay.sharpening.value=MAX(0,MIN(100,[defaults integerForKey:@"Theft4Sharpening"]));
     [self displaySettingsChanged:nil];
     [defaults setObject:saved[@"Theft4GraphicsPreset"] ?: @"custom" forKey:@"Theft4GraphicsPreset"];
 }
@@ -2001,6 +2014,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (!_bringupOverlay.renderResolution || _executionAttempted) return;
     _bringupOverlay.renderResolution.selectedSegmentIndex = 1;
     _bringupOverlay.fsrUpscaling.on = NO;
+    _bringupOverlay.sharpening.value = 0;
     _shadowQuality.selectedSegmentIndex = 1;
     _drawDistance.selectedSegmentIndex = 1;
     _modelDetail.selectedSegmentIndex = 1;
@@ -2964,12 +2978,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         setenv("THEFT4_REFLECTION_RESOLUTION",
             reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
+        NSString *sharpening = [NSString stringWithFormat:@"%ld", (long)lroundf(_bringupOverlay.sharpening.value)];
+        setenv("THEFT4_SHARPENING", sharpening.UTF8String, 1);
         if (!theft4_retail_mode()) [self record:[NSString stringWithFormat:
-            @"graphics.launch render-height=%u fsr=%d draw-distance=%s lod-bias=%s shadows=%s aa=%s dof=%d motion-blur=%d aniso=%d",
+            @"graphics.launch render-height=%u fsr=%d draw-distance=%s lod-bias=%s shadows=%s aa=%s dof=%d motion-blur=%d aniso=%d sharpening=%@",
             _bringupOverlay.renderHeight,_bringupOverlay.fsrUpscaling.on,
             distancePresets[_drawDistance.selectedSegmentIndex],_modelDetail.selectedSegmentIndex==0?"1.75":"1",
             shadowPresets[_shadowQuality.selectedSegmentIndex],antiAliasingPresets[_antiAliasing.selectedSegmentIndex],
-            _depthOfField.on,_motionBlur.on,_anisotropicFiltering.on]];
+            _depthOfField.on,_motionBlur.on,_anisotropicFiltering.on,sharpening]];
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
@@ -2989,6 +3005,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [_bringupOverlay retireScene];
         _fsrBoost.enabled = NO;
         _bringupOverlay.renderResolution.enabled = NO;
+        _bringupOverlay.sharpening.enabled = NO;
         _bringupOverlay.frameSpeedButton.enabled = NO;
         _bringupOverlay.restoreGraphicsButton.enabled = NO;
         // This is a next-process setting, but users can still prepare the

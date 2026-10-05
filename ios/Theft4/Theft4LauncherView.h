@@ -16,6 +16,7 @@
 @property(nonatomic, readonly) UISwitch *fsrBoost;
 @property(nonatomic, readonly) UISegmentedControl *renderResolution;
 @property(nonatomic, readonly) UISwitch *fsrUpscaling;
+@property(nonatomic, readonly) UISlider *sharpening;
 @property(nonatomic, readonly) uint32_t renderHeight;
 @property(nonatomic, readonly) UISwitch *motionBlur;
 @property(nonatomic, readonly) UISwitch *depthOfField;

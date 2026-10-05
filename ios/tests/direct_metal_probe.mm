@@ -6,6 +6,7 @@
 #include "theft4_metal_resources.h"
 #include "theft4_metal_plan.h"
 #include "theft4_metal_frame.h"
+#include "theft4_postfx_plan.h"
 #include "theft4_metal_host_shaders.h"
 #include "present_constants.h"
 #include "direct_metal_capture.h"
@@ -1077,6 +1078,54 @@ struct Probe {
       @"warm_pipelines_and_resources_reused":@YES,@"short_host_constants_rejected":@YES,
       @"synthetic_validation_geometry":@YES}];
   }
+  void OutputSharpening() {
+    std::string error;HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
+    auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO];
+    descriptor.storageMode=MTLStorageModeShared;descriptor.usage=MTLTextureUsageShaderRead;
+    auto source=renderer.Texture(descriptor,error),weights=renderer.Texture(descriptor,error);Require(source&&weights);
+    descriptor.pixelFormat=MTLPixelFormatRGBA8Unorm_sRGB;auto linear=renderer.Texture(descriptor,error);Require(linear);
+    std::vector<uint8_t> original(W*H*4),zero(W*H*4);
+    const std::array<uint8_t,7> steps{64,100,128,150,192,150,128};
+    for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x) {
+      const auto pixel=(y*W+x)*4;const auto value=steps[x%steps.size()];
+      original[pixel]=original[pixel+1]=original[pixel+2]=value;original[pixel+3]=uint8_t(32+(x%96));
+    }
+    for(auto texture:{source,linear})[texture replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:original.data() bytesPerRow:W*4];
+    [weights replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:zero.data() bytesPerRow:W*4];
+    auto samplerDescriptor=[MTLSamplerDescriptor new];samplerDescriptor.minFilter=samplerDescriptor.magFilter=MTLSamplerMinMagFilterLinear;
+    auto sampler=[renderer.Device() newSamplerStateWithDescriptor:samplerDescriptor];Require(sampler);
+    size_t checked=0,changed=0;
+    for(auto name:{"gta4_native_hdr_present_ps","smaa_present_ps","smaa_hardware_present_ps"}) {
+      auto fixed=[MTLRenderPipelineDescriptor new];fixed.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
+      auto pipeline=renderer.MakePipeline(host.Resolve("fullscreen_cw_vs",error),host.Resolve(name,error),fixed,nil,error);Require(bool(pipeline));
+      for(uint32_t strength:{0u,50u,100u}) {
+        theft4::render::PresentConstants constants;constants.source_width=constants.destination_width=W;constants.source_height=constants.destination_height=H;
+        constants.output_mode=4u|(strength<<8);
+        const auto bank=Buffer({reinterpret_cast<const uint8_t*>(&constants),sizeof(constants)},true);
+        std::vector<HostInput> inputs{{0,source,sampler}};
+        if(std::string(name)!="gta4_native_hdr_present_ps")inputs.push_back({1,weights,sampler});
+        if(std::string(name)=="smaa_hardware_present_ps")inputs.push_back({2,linear,sampler});
+        Draw draw;draw.pipeline=pipeline;draw.vertex_count=3;draw.viewport={0,0,W,H,0,1};draw.scissor={0,0,W,H};
+        Require(host.Bind(name,inputs,bank,draw,error));auto target=Color();
+        auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(Pass(target,nil,nil),error));
+        Require(frame.Encode(draw,error));Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
+        const auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==original.size());
+        for(size_t y=0;y<H;++y)for(size_t x=0;x<W;++x) {
+          const auto at=(y*W+x)*4;const float center=original[at];
+          const float west=original[(y*W+(x?x-1:0))*4],east=original[(y*W+std::min(x+1,size_t(W-1)))*4];
+          const auto minimum=std::min({center,west,east}),maximum=std::max({center,west,east});
+          const auto expected=std::clamp(center+(center-(west+east+center*2)*0.25f)*(strength*0.005f),minimum,maximum);
+          for(size_t channel=0;channel<3;++channel)Require(std::abs(int(pixels[at+channel])-int(std::lround(expected)))<=1);
+          Require(std::abs(int(pixels[at+3])-int(original[at+3]))<=1);
+          changed+=strength&&std::abs(int(pixels[at])-int(original[at]))>1;++checked;
+        }
+      }
+    }
+    Require(changed>0);
+    [results addObject:@{@"case":@"output_sharpening_strength_and_alpha",@"passed":@YES,
+      @"pixels_checked":@(checked),@"zero_half_full_strength":@YES,@"regular_and_fused_smaa":@YES,
+      @"local_range_bounded":@YES,@"alpha_preserved":@YES}];
+  }
   void HostUtilityShaders() {
     HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
     Require(host.Size()==24);
@@ -1419,7 +1468,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

@@ -1097,6 +1097,9 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     constants.destination_width=target.width;constants.destination_height=target.height;
     const bool ssaa=IsNativeSsaaEnabled()&&(width!=logical_width||height!=logical_height);
     constants.output_mode=GetNativePresentationAABits()|(ssaa?32u:0u)|4u|(REXCVAR_GET(gta4_native_output_dither)?8u:0u);
+    // Keep the reflected 44-byte presentation ABI unchanged. Bits 8–14 hold
+    // an integer percentage; zero keeps the existing shader path untouched.
+    constants.output_mode|=std::min(100u,REXCVAR_GET(gta4_native_sharpening))<<8;
     const int quality=IsNativeSmaaEnabled()?int(ParseSmaaQuality(rex::cvar::Query<std::string>("gta4_native_smaa_quality"))):-1;
     if(quality>=0&&!next.smaa_lookups.area)next.smaa_lookups=r::MakeSmaaLookups(next_native_metal_allocation_);
     auto output=utility_for("present-output",target.width,target.height,target.format);

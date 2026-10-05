@@ -188,6 +188,9 @@ REXCVAR_DEFINE_BOOL(gta4_native_spatial_aa, true, "GTA IV/Graphics/Anti-Aliasing
                     "Legacy compatibility toggle for the native spatial edge resolve");
 REXCVAR_DEFINE_BOOL(gta4_native_output_dither, true, "GTA IV/Graphics/Post-Processing",
                     "Apply stable display-space dithering to reduce output banding");
+REXCVAR_DEFINE_UINT32(gta4_native_sharpening, 0, "GTA IV/Graphics/Post-Processing",
+                      "Bounded output sharpening strength, from 0 (off) to 100")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(gta4_native_hdr_high_precision, true, "GTA IV/Graphics/HDR",
                     "Preserve the final display-ready resolve in FP16 while HDR is active");
 REXCVAR_DEFINE_STRING(gta4_texture_filtering, "trilinear", "GTA IV/Graphics/Texture Filtering",

@@ -215,6 +215,10 @@ target_include_directories(metal_aa_startup_test PRIVATE "${CMAKE_BINARY_DIR}" "
 target_compile_definitions(metal_aa_startup_test PRIVATE THEFT4_DIRECT_METAL_BACKEND=1)
 target_compile_options(metal_aa_startup_test PRIVATE -UNDEBUG)
 add_test(NAME metal_headless_aa_startup COMMAND metal_aa_startup_test)
+add_executable(metal_profiling_policy_test metal_profiling_policy_test.cpp)
+target_include_directories(metal_profiling_policy_test PRIVATE "${ROOT}/ios/bridge")
+target_compile_options(metal_profiling_policy_test PRIVATE -UNDEBUG)
+add_test(NAME metal_profiling_policy COMMAND metal_profiling_policy_test)
 
 # Repeatable synthetic admission/submission comparison; requires a real Metal device.
 add_executable(metal_upload_stress_test upload_stress_test.mm

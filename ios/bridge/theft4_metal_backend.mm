@@ -2,6 +2,7 @@
 #include "theft4_metal_backend.h"
 #include "theft4_metal_frame.h"
 #include "theft4_upload_budget.h"
+#include "theft4_metal_profiling.h"
 #include <algorithm>
 #include <deque>
 #include <thread>
@@ -45,6 +46,10 @@ class Backend final:public render::FrameBackend {
     const auto upload_budget=ImmutableUploadBudget(NSProcessInfo.processInfo.physicalMemory,caps_.bc_textures);
     adapter_=std::make_unique<FrameAdapter>(*renderer_,128,upload_budget);
     if(!theft4_retail_mode()) {
+      detailed_gpu_=DetailedGpuProfilingEnabled();
+      const char* mode=detailed_gpu_?"gta4-metal-profiling-mode: explicit per-pass counters":
+          "gta4-metal-profiling-mode: coarse GPU timing; per-pass counters off";
+      if(diagnostic_)diagnostic_(mode);else std::fprintf(stderr,"%s\n",mode);
       char message[256];std::snprintf(message,sizeof(message),"gta4-metal-upload-budget: buffer-limit-bytes=%zu physical-memory-bytes=%llu bc-textures=%d",
           upload_budget,(unsigned long long)NSProcessInfo.processInfo.physicalMemory,int(caps_.bc_textures));
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
@@ -96,7 +101,7 @@ class Backend final:public render::FrameBackend {
       if(!FinishOldest(error))return false;
     }
     const auto admitted=now();
-    const bool profile_gpu=!theft4_retail_mode()&&present&&plan->commands.size()>=40&&
+    const bool profile_gpu=detailed_gpu_&&!theft4_retail_mode()&&present&&plan->commands.size()>=40&&
         (!profile_attempted_||presentations_-last_profile_presentation_>=180);
     if(profile_gpu){profile_attempted_=true;last_profile_presentation_=presentations_;}
     double drawable_ms=0;Receipt receipt;
@@ -311,7 +316,7 @@ class Backend final:public render::FrameBackend {
   std::chrono::steady_clock::time_point last_slow_submission_{};
   std::array<double,60> gpu_samples_{};size_t gpu_sample_count_=0;
   double frame_gpu_work_ms_=0;
-  bool profile_attempted_=false;uint64_t last_profile_presentation_=0;
+  bool detailed_gpu_=false,profile_attempted_=false;uint64_t last_profile_presentation_=0;
   bool open_attempted_=false;
   std::thread::id worker_;
   std::unique_ptr<Renderer> renderer_;

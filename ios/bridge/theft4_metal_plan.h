@@ -34,7 +34,10 @@ class PlanAdapter {
   size_t RetireResources(bool bounded=false);
   static MTLPixelFormat PixelFormat(render::Format format);
   void BeginUploadBatch() { EndUploadBatch();resources_.BeginUploadBatch();upload_batch_active_=true; }
-  void EndUploadBatch() { for(auto& entry:buffer_views_)entry={};upload_batch_active_=false; }
+  void EndUploadBatch() {
+    for(size_t i=0;i<buffer_view_count_;++i)buffer_views_[buffer_view_slots_[i]]={};
+    buffer_view_count_=0;upload_batch_active_=false;
+  }
   BufferView ConstantFor(const render::Buffer&,std::string& error);
   BufferView BufferFor(const render::Buffer& buffer,std::string& error);
   id<MTLTexture> ImageFor(const render::Image& image,std::string& error);
@@ -55,16 +58,20 @@ class PlanAdapter {
   Renderer& renderer_;
   ShaderStore shaders_;
   ResourceCache resources_;
-  // Small, direct-mapped memo for this submission only. Avoid repeated
+  // Bounded, submission-only memo. Avoid repeated
   // generation hashing and global LRU updates when draws share an upload.
   // Separate geometry/constants slots preserve their arena classification;
   // large buffers are excluded. Views are released on every submission exit.
   struct PreparedBufferView {
+    const render::Bytes* identity=nullptr;
     std::weak_ptr<const render::Bytes> owner;
     uint64_t generation=0;std::array<uint64_t,4> conversion{};
     BufferView view;
   };
-  std::array<PreparedBufferView,64> buffer_views_;
+  static constexpr size_t kGeometryViewSlots=4096,kConstantViewSlots=512;
+  std::array<PreparedBufferView,kGeometryViewSlots+kConstantViewSlots> buffer_views_;
+  std::array<uint16_t,kGeometryViewSlots+kConstantViewSlots> buffer_view_slots_{};
+  size_t buffer_view_count_=0;
   bool upload_batch_active_=false;
   uint64_t prepared_view_hits_=0,prepared_view_misses_=0;
   BufferView UploadedViewFor(const std::shared_ptr<const render::Bytes>&,bool constants,std::string& error);

@@ -44,13 +44,70 @@ std::shared_ptr<render::FramePlan> Plan(std::shared_ptr<render::Surface> surface
   a.load=render::Load::Clear;a.store=render::Store::Store;pass.colors[0]=a;
   plan->commands={pass};plan->output=a.view;return plan;
 }
+// Exercise the actual upload adapter with a scattered geometry working set,
+// repeated constant banks and different ranges of each immutable source.
+// Excludes source creation, GPU execution and shader loading from CPU timing.
+nlohmann::json UploadViewBenchmark(metal::Renderer& renderer) {
+  metal::PlanAdapter adapter{renderer};std::string error;
+  std::array<std::vector<render::Buffer>,2> buffers;
+  for(size_t kind=0;kind<2;++kind)for(size_t i=0;i<(kind?128:2048);++i) {
+    std::array<uint8_t,4096> data{};data.fill(uint8_t(i));
+    buffers[kind].push_back(Bytes(data,1+i));
+  }
+  std::vector<double> samples;uint64_t checksum=0;
+  const auto before=adapter.ResourceStats();
+  for(size_t frame=0;frame<28;++frame) {@autoreleasepool {
+    const auto start=Clock::now();adapter.BeginUploadBatch();
+    for(size_t draw=0;draw<4096;++draw) {
+      for(size_t slot=0;slot<2;++slot) {
+        auto range=buffers[0][(draw*13+slot*1024)%buffers[0].size()];
+        range.offset=(draw&3)*256;range.length=128;
+        const auto view=adapter.BufferFor(range,error);Require(bool(view.buffer),error);
+        checksum+=view.offset+view.length;
+      }
+      for(size_t bank=0;bank<3;++bank) {
+        auto range=buffers[1][(draw/16+bank*43)%buffers[1].size()];
+        range.offset=bank*256;range.length=128;
+        const auto view=adapter.ConstantFor(range,error);Require(bool(view.buffer),error);
+        checksum+=view.offset+view.length;
+      }
+    }
+    adapter.EndUploadBatch();
+    if(frame>=4)samples.push_back(std::chrono::duration<double,std::milli>(Clock::now()-start).count());
+  }}
+  // Read every source back through its returned range; aliasing collisions
+  // must never substitute another source's bytes.
+  adapter.BeginUploadBatch();
+  for(size_t kind=0;kind<2;++kind)for(size_t i=0;i<buffers[kind].size();++i) {
+    auto range=buffers[kind][i];range.offset=256;range.length=128;
+    const auto view=kind?adapter.ConstantFor(range,error):adapter.BufferFor(range,error);
+    Require(view.buffer&&view.length==128,error);
+    const auto* data=static_cast<const uint8_t*>(view.buffer.contents)+view.offset;
+    for(size_t j=0;j<128;++j)Require(data[j]==uint8_t(i),"Upload view substituted another source");
+  }
+  adapter.EndUploadBatch();auto sorted=samples;std::sort(sorted.begin(),sorted.end());
+  const auto after=adapter.ResourceStats();
+  return {{"scope","Synthetic upload-adapter CPU work; not game FPS"},
+    {"gpu",renderer.Device().name.UTF8String},{"draws_per_batch",4096},{"lookups_per_batch",20480},
+    {"geometry_sources",2048},{"constant_sources",128},{"measured_batches",samples.size()},
+    {"median_cpu_ms",sorted[sorted.size()/2]},{"samples_ms",samples},{"checksum",checksum},
+    {"memo_hits",after.prepared_view_hits-before.prepared_view_hits},
+    {"memo_misses",after.prepared_view_misses-before.prepared_view_misses},
+    {"uploaded_bytes",after.uploaded_bytes-before.uploaded_bytes},{"range_byte_parity",true}};
+}
 int main(int argc,char** argv) {
   if(argc<3||argc>5)return 2;
   bool streaming=false,profile_gpu=false;
   for(int i=3;i<argc;++i){streaming|=std::string(argv[i])=="--streaming";profile_gpu|=std::string(argv[i])=="--profile";}
   try {@autoreleasepool {
     std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer};
-    Require(renderer.Ready(),"Metal unavailable");Require(adapter.Open(argv[1],error),error);
+    Require(renderer.Ready(),"Metal unavailable");
+    if(argc==4&&std::string_view(argv[3])=="--upload-views") {
+      const auto report=UploadViewBenchmark(renderer);std::ofstream output(argv[2]);
+      Require(bool(output),"Benchmark report could not be opened");
+      output<<report.dump(2)<<'\n';std::cout<<report.dump(2)<<'\n';return 0;
+    }
+    Require(adapter.Open(argv[1],error),error);
     auto surface=std::make_shared<render::Surface>();surface->key={1,1};surface->width=surface->height=8;surface->format=render::Format::RGBA8Unorm;
     auto prototype=Draw(100);auto admission=Plan(surface,1);
     // 600 draws repeatedly reference one immutable 65,532-index generation.

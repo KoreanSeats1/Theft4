@@ -370,9 +370,47 @@ struct Probe {
     source.reset();range={};invalid={};adapter.RetireResources();
     Require(adapter.ResourceStats().resident_buffer_bytes==0);
     Require(static_cast<const uint8_t*>(first.buffer.contents)[first.offset]==0x34);
+    uint64_t working_set_hits=0;
+    {
+      PlanAdapter working(renderer);std::vector<std::shared_ptr<r::Bytes>> sources;
+      for(size_t i=0;i<1280;++i) {
+        auto bytes=std::make_shared<r::Bytes>();bytes->generation=1;
+        bytes->value.assign(512,uint8_t(i));sources.push_back(std::move(bytes));
+      }
+      working.BeginUploadBatch();
+      for(size_t round=0;round<5;++round)for(size_t i=0;i<sources.size();++i) {
+        r::Buffer part{sources[i],(round&1)*256,128};
+        const auto view=i<1024?working.BufferFor(part,error):working.ConstantFor(part,error);
+        Require(view.buffer&&view.length==128);
+        Require(static_cast<const uint8_t*>(view.buffer.contents)[view.offset]==uint8_t(i));
+      }
+      working_set_hits=working.ResourceStats().prepared_view_hits;
+      Require(working_set_hits>=4*sources.size()*9/10);
+      const auto old_hits=working.ResourceStats().prepared_view_hits;
+      // Same address/generation with a different shared ownership identity
+      // must take the full-cache path, never a memo hit.
+      auto alias=std::shared_ptr<const r::Bytes>(sources[0].get(),[](const r::Bytes*){});
+      Require(working.BufferFor({alias,0,128},error).buffer);
+      Require(working.ResourceStats().prepared_view_hits==old_hits);
+      sources[1]->conversion[0]=99;
+      const auto changed=working.BufferFor({sources[1],0,128},error);Require(changed.buffer);
+      Require(working.ResourceStats().prepared_view_hits==old_hits);
+      // Overflow remains correct and bounded; the complete resource cache
+      // handles sources that cannot be inserted in the submission memo.
+      for(size_t i=0;i<8192;++i) {
+        auto bytes=std::make_shared<r::Bytes>();bytes->generation=1;
+        bytes->value.assign(64,uint8_t(i));sources.push_back(bytes);
+        const auto view=working.BufferFor({bytes,16,32},error);Require(view.buffer);
+        Require(static_cast<const uint8_t*>(view.buffer.contents)[view.offset]==uint8_t(i));
+      }
+      working.EndUploadBatch();sources.clear();alias.reset();working.RetireResources();
+      Require(working.ResourceStats().resident_buffer_bytes==0);
+      Require(static_cast<const uint8_t*>(changed.buffer.contents)[changed.offset]==1);
+    }
     [results addObject:@{@"case":@"submission_upload_view_memo",@"passed":@YES,
       @"repeated_lookups_avoided":@1024,@"range_and_identity_changes_checked":@YES,
-      @"arena_request_classification_preserved":@YES,@"submission_exit_releases_views":@YES}];
+      @"arena_request_classification_preserved":@YES,@"submission_exit_releases_views":@YES,
+      @"scattered_working_set_hits":@(working_set_hits),@"saturation_and_shared_owner_alias_checked":@YES}];
   }
   void ResourceGenerations() {
     ResourceCache cache(renderer);

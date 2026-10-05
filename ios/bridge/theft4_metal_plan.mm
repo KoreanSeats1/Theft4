@@ -251,16 +251,34 @@ BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Byte
   if(!upload_batch_active_||source->value.size()>64*1024)
     return constants?resources_.UniformBuffer(Version(source),source->value,error):
                      resources_.UploadBuffer(Version(source),source->value,error);
-  auto& entry=buffer_views_[((reinterpret_cast<uintptr_t>(source.get())>>4)&31)+(constants?32:0)];
-  if(entry.view.buffer&&!entry.owner.owner_before(source)&&!source.owner_before(entry.owner)&&
-      entry.generation==source->generation&&entry.conversion==source->conversion) {
-    if(entry.view.length!=source->value.size()){error="Metal upload generation changed payload size";return {};}
-    ++prepared_view_hits_;error.clear();return entry.view;
+  // Allocator alignment and regular source strides made the old low-bit,
+  // 32-slot index collide frequently. Mix the address and bound each lookup
+  // to eight probes. A saturated table falls back to the full resource cache.
+  uint64_t hash=reinterpret_cast<uintptr_t>(source.get())>>4;
+  hash^=hash>>17;hash*=0x9e3779b97f4a7c15ull;hash^=hash>>32;
+  const size_t base=constants?kGeometryViewSlots:0;
+  const size_t mask=(constants?kConstantViewSlots:kGeometryViewSlots)-1;
+  PreparedBufferView* destination=nullptr;
+  size_t destination_slot=0;
+  for(size_t probe=0;probe<8;++probe) {
+    const auto slot=base+((size_t(hash)+probe)&mask);auto& entry=buffer_views_[slot];
+    if(!entry.identity){destination=&entry;destination_slot=slot;break;}
+    if(entry.identity!=source.get())continue;
+    destination=&entry;destination_slot=slot;
+    if(!entry.owner.owner_before(source)&&!source.owner_before(entry.owner)&&
+        entry.generation==source->generation&&entry.conversion==source->conversion) {
+      if(entry.view.length!=source->value.size()){error="Metal upload generation changed payload size";return {};}
+      ++prepared_view_hits_;error.clear();return entry.view;
+    }
+    break;
   }
   ++prepared_view_misses_;
   auto view=constants?resources_.UniformBuffer(Version(source),source->value,error):
                       resources_.UploadBuffer(Version(source),source->value,error);
-  if(view.buffer)entry={source,source->generation,source->conversion,view};
+  if(view.buffer&&destination) {
+    if(!destination->identity)buffer_view_slots_[buffer_view_count_++]=uint16_t(destination_slot);
+    *destination={source.get(),source,source->generation,source->conversion,view};
+  }
   return view;
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {

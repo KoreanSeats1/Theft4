@@ -1020,6 +1020,10 @@ static void bootEvent(void *context, const char *event) {
 
     if (!theft4_retail_mode() && diagnosticCapture && strcmp(diagnosticCapture, "1") == 0)
         [self record:@"diagnostic-test: long-performance-capture=armed"];
+    // Store the named profile's effective choices after all controls exist.
+    // This also makes normal icon launches match the visible configuration.
+    if ([[speedDefaults stringForKey:@"Theft4GraphicsPreset"] isEqualToString:@"frame-speed"])
+        [self displaySettingsChanged:nil];
     [self createCore];
 #ifdef THEFT4_INTRO_TEST_BUILD
     [self runIntroTestImportSmokeIfRequested];

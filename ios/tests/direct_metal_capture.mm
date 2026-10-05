@@ -165,6 +165,32 @@ NSDictionary* ReplayDirectMetalCaptures(NSString* libraries,NSString* captures,N
         auto b=color ? replay.Pixels(color) : std::vector<uint8_t>{};replay.Require(a==b);
         replay.Require(cold.buffer_creates==warm.buffer_creates&&cold.texture_creates==warm.texture_creates&&
                        cold.uploaded_bytes==warm.uploaded_bytes&&pipelines==replay.adapter.PipelineCount());
+        // Compare actual game shaders with full banks versus compact prefixes
+        // on every render target, including float attachments and alpha.
+        auto realized=replay.adapter.Realize(capture,replay.error);replay.Require(bool(realized));
+        auto compact=std::make_shared<theft4::render::Capture>(*capture);
+        size_t full_bytes=0,compact_bytes=0;
+        for(size_t bank=0;bank<3;++bank) {
+          const auto required=realized->pipeline->constant_bytes[bank];
+          const auto& source=capture->draw.constants[bank];full_bytes+=source.length;compact_bytes+=required;
+          compact->draw.constant_bytes[bank]=uint32_t(required);
+          if(required) {
+            auto bytes=std::make_shared<theft4::render::Bytes>();bytes->generation=source.source->generation;
+            bytes->value.assign(source.source->value.begin()+source.offset,source.source->value.begin()+source.offset+required);
+            compact->draw.constants[bank]={bytes,0,required};
+          }else compact->draw.constants[bank].length=0;
+        }
+        std::vector<std::vector<uint8_t>> expected;
+        for(auto texture:targets.readable)if(texture)expected.push_back(replay.renderer.ReadColorBytes(texture,replay.error));
+        replay.RunDraw(compact,targets);size_t target_index=0;
+        for(auto texture:targets.readable)if(texture)replay.Require(replay.renderer.ReadColorBytes(texture,replay.error)==expected[target_index++]);
+        for(size_t bank=0;bank<2;++bank)if(compact->draw.constant_bytes[bank]>=16) {
+          auto invalid=*compact;invalid.draw.constant_bytes[bank]-=16;
+          replay.Require(theft4::render::Validate(invalid,replay.error));
+          Draw rejected;replay.Require(!replay.adapter.Prepare(invalid,rejected,replay.error));break;
+        }
+        item[@"compact_constant_prefixes_byte_identical"]=@YES;
+        item[@"full_constant_bytes"]=@(full_bytes);item[@"compact_constant_bytes"]=@(compact_bytes);
         size_t changed=0;for(size_t i=0;i<a.size();i+=4)
           if(std::abs(int(a[i])-int(baseline[i]))>1||std::abs(int(a[i+1])-int(baseline[i+1]))>1||
              std::abs(int(a[i+2])-int(baseline[i+2]))>1||std::abs(int(a[i+3])-int(baseline[i+3]))>1)++changed;

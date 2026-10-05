@@ -5,10 +5,44 @@
 #include <limits>
 #include <list>
 #include <unordered_map>
+#include <mutex>
+#include <mach/mach.h>
 #include "theft4_bounded_cache_sweep.h"
 
 namespace theft4::metal {
 namespace {
+// Recycle VM backing only after Metal destroys its buffer, including escaped
+// ARC references and pending GPU work. A new Metal buffer gets a new identity;
+// no live buffer is overwritten. Each allocation is one page-aligned VM region.
+struct UploadPagePool {
+  static constexpr size_t capacity=256*1024,limit=16*1024*1024;
+  std::mutex mutex;
+  std::vector<vm_address_t> free;
+  uint64_t allocations=0,reuses=0;
+  UploadPagePool(){free.reserve(limit/capacity);}
+  ~UploadPagePool(){for(auto address:free)vm_deallocate(mach_task_self(),address,capacity);}
+  vm_address_t Acquire() {
+    std::lock_guard lock(mutex);
+    if(!free.empty()){auto address=free.back();free.pop_back();++reuses;return address;}
+    vm_address_t address=0;
+    if(vm_allocate(mach_task_self(),&address,capacity,VM_FLAGS_ANYWHERE)!=KERN_SUCCESS)return 0;
+    ++allocations;return address;
+  }
+  void Release(vm_address_t address) {
+    std::lock_guard lock(mutex);
+    if(free.size()<limit/capacity)free.push_back(address);
+    else vm_deallocate(mach_task_self(),address,capacity);
+  }
+  void Stats(ResourceCacheStats& result) {
+    std::lock_guard lock(mutex);result.page_memory_allocations=allocations;
+    result.page_memory_reuses=reuses;result.free_page_bytes=free.size()*capacity;
+  }
+};
+struct UploadPageBacking {
+  std::shared_ptr<UploadPagePool> pool;vm_address_t address;
+  UploadPageBacking(std::shared_ptr<UploadPagePool> p,vm_address_t a):pool(std::move(p)),address(a){}
+  ~UploadPageBacking(){pool->Release(address);}
+};
 struct Key {
   const void* owner = nullptr;
   uint64_t generation = 0;
@@ -149,13 +183,26 @@ struct ResourceCache::Impl {
   size_t buffer_bucket=0,texture_bucket=0,uniform_bucket=0;
   size_t buffer_budget;
   size_t constant_budget;
+  std::shared_ptr<UploadPagePool> page_pool;
   struct Page {id<MTLBuffer> buffer=nil;NSUInteger used=0;Allocations::iterator allocation;};
   std::array<Page,2> pages; // constants / geometry never pin one another's pages
   std::unordered_map<Key,BufferEntry,KeyHash> buffers;
   std::unordered_map<Key,TextureEntry,KeyHash> textures;
-  explicit Impl(Renderer& value,size_t budget):renderer(value),sweep_allocation(allocations.end()),
+  explicit Impl(Renderer& value,size_t budget,bool recycle):renderer(value),sweep_allocation(allocations.end()),
       buffer_budget(std::max(size_t(256*1024),budget)),
-      constant_budget(std::clamp(buffer_budget/4,size_t(256*1024),size_t(32*1024*1024))){}
+      constant_budget(std::clamp(buffer_budget/4,size_t(256*1024),size_t(32*1024*1024))),
+      page_pool(recycle?std::make_shared<UploadPagePool>():nullptr){}
+  id<MTLBuffer> NewPage() {
+    if(page_pool)if(auto address=page_pool->Acquire()) {
+      auto backing=std::make_shared<UploadPageBacking>(page_pool,address);
+      auto buffer=[renderer.Device() newBufferWithBytesNoCopy:reinterpret_cast<void*>(address)
+          length:UploadPagePool::capacity options:MTLResourceStorageModeShared
+          deallocator:^(void*,NSUInteger){(void)backing;}];
+      if(buffer)return buffer;
+    }
+    // Optional recycling must never prevent an otherwise valid allocation.
+    return [renderer.Device() newBufferWithLength:UploadPagePool::capacity options:MTLResourceStorageModeShared];
+  }
   void Release(Allocations::iterator allocation,bool eviction) {
     if(sweep_allocation==allocation)++sweep_allocation;
     for(auto& page:pages)if(allocation->buffer==page.buffer){page.buffer=nil;page.used=0;}
@@ -218,7 +265,7 @@ struct ResourceCache::Impl {
     if(allocation->constants)constant_lru.splice(constant_lru.end(),constant_lru,allocation->constant_lru);
   }
 };
-ResourceCache::ResourceCache(Renderer& renderer,size_t budget):impl_(std::make_unique<Impl>(renderer,budget)){}
+ResourceCache::ResourceCache(Renderer& renderer,size_t budget,bool recycle):impl_(std::make_unique<Impl>(renderer,budget,recycle)){}
 ResourceCache::~ResourceCache()=default;
 id<MTLBuffer> ResourceCache::Buffer(const ResourceVersion& version,std::span<const uint8_t> bytes,
                                    std::string& error) {
@@ -298,7 +345,7 @@ BufferView ResourceCache::UploadInArena(const ResourceVersion& version,std::span
   const auto offset=(page.used+alignment-1)&~(alignment-1);
   if(!page.buffer||offset>capacity-bytes.size()) {
     impl_->Reserve(capacity,constants);
-    page.buffer=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+    page.buffer=impl_->NewPage();
     if(!page.buffer){error="Metal uniform page allocation failed";return {};}
     page.buffer.label=constants?@"Theft4 Immutable Constants":@"Theft4 Immutable Geometry";
     page.allocation=impl_->Add(page.buffer,true,constants);
@@ -337,5 +384,5 @@ size_t ResourceCache::SweepRetired(bool bounded) {
 void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->constant_lru.clear();impl_->allocations.clear();impl_->sweep_allocation=impl_->allocations.end();impl_->buffer_bucket=impl_->texture_bucket=impl_->uniform_bucket=0;impl_->stats.resident_buffer_bytes=impl_->stats.resident_constant_bytes=0;BeginUploadBatch();}
 size_t ResourceCache::BufferCount()const{return impl_->buffers.size()+impl_->uniforms.size();}
 size_t ResourceCache::TextureCount()const{return impl_->textures.size();}
-ResourceCacheStats ResourceCache::Stats()const{return impl_->stats;}
+ResourceCacheStats ResourceCache::Stats()const{auto result=impl_->stats;if(impl_->page_pool)impl_->page_pool->Stats(result);return result;}
 }

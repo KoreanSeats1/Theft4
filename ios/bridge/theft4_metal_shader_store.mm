@@ -39,6 +39,7 @@ Shader ShaderStore::Resolve(ShaderKey key, Stage stage, uint32_t specialization,
     error.clear(); return found->second;
   }
   ShaderInterface interface{};
+  std::copy(metadata->constant_bytes.begin(),metadata->constant_bytes.end(),interface.constant_bytes.begin());
   for (const auto& binding : metadata->bindings) {
     if (binding.kind == FetchKind::Sampler) interface.samplers |= 1u << binding.index;
     else {
@@ -67,6 +68,11 @@ bool ShaderStore::Bind(ShaderKey key, Stage stage, const std::array<FetchResourc
                        Draw& packet, std::string& error) const {
   const auto* metadata = Metadata(key, stage);
   if (!metadata) { error = "Unknown Metal shader resource interface"; return false; }
+  return BindMetadata(*metadata,fetches,packet,error);
+}
+bool ShaderStore::BindMetadata(const ShaderMetadata& metadata,const std::array<FetchResources,26>& fetches,
+                              Draw& packet,std::string& error) const {
+  const auto stage=metadata.stage;
   for (const auto& binding : packet.textures) if (binding.stage == stage) {
     error = "The draw already contains texture bindings for this stage"; return false;
   }
@@ -76,7 +82,7 @@ bool ShaderStore::Bind(ShaderKey key, Stage stage, const std::array<FetchResourc
   size_t texture_count=0,sampler_count=0;
   // Validate the entire interface before appending. A missing final binding
   // must leave preceding stages untouched; no temporary owning vectors needed.
-  for (const auto& binding : metadata->bindings) {
+  for (const auto& binding : metadata.bindings) {
     const auto& resource = fetches[binding.slot];
     if (binding.kind == FetchKind::Sampler) {
       if (!resource.sampler) { error = "Missing game sampler for a Metal fetch slot"; return false; }
@@ -91,7 +97,7 @@ bool ShaderStore::Bind(ShaderKey key, Stage stage, const std::array<FetchResourc
   }
   packet.textures.reserve(packet.textures.size()+texture_count);
   packet.samplers.reserve(packet.samplers.size()+sampler_count);
-  for(const auto& binding:metadata->bindings) {
+  for(const auto& binding:metadata.bindings) {
     const auto& resource=fetches[binding.slot];
     if(binding.kind==FetchKind::Sampler)packet.samplers.push_back({stage,binding.index,resource.sampler});
     else packet.textures.push_back({stage,binding.index,resource.images[size_t(binding.kind)]});

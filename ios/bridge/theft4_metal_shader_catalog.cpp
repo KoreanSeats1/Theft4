@@ -39,8 +39,18 @@ std::vector<std::string_view> List(std::string_view text) {
 ShaderMetadata ParseRow(std::string_view line) {
   Require(line.size() <= 8192, "Metal shader metadata row exceeds its bound");
   auto fields = Split(line, '\t');
-  Require(fields.size() == 7, "Unexpected Metal shader manifest schema");
+  Require(fields.size() == 7 || fields.size() == 8, "Unexpected Metal shader manifest schema");
   ShaderMetadata result;
+  if(fields.size()==8) {
+    auto sizes=Split(fields[7],':');
+    Require(sizes.size()==3,"Invalid Metal constant bounds");
+    for(size_t i=0;i<3;++i) {
+      const auto size=Number<uint32_t>(sizes[i]);
+      Require(size<=result.constant_bytes[i]&&size%16==0,"Invalid Metal constant bound");
+      result.constant_bytes[i]=size;
+    }
+    Require(result.constant_bytes[2]==1056,"Shared Metal constant bound must remain complete");
+  }
   auto key = fields[0];
   result.key.negative_one_to_one = key.ends_with("-clip-neg");
   if (result.key.negative_one_to_one) key.remove_suffix(9);

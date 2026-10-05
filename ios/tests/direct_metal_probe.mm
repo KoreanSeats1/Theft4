@@ -1328,6 +1328,7 @@ struct Probe {
       }
     }
     Require(last_offset!=first.offset);Require(frame.Stats().buffer_offset_calls>40);
+    Require(frame.Stats().buffer_extent_queries<40*4);
     Require(frame.EndPass(error));
     for(size_t batch=0;batch<12;++batch) {
       cache.BeginUploadBatch();std::vector<uint8_t> filler(4096,uint8_t(batch));upload(filler,true);
@@ -1478,8 +1479,9 @@ struct Probe {
     adapter.BeginUploadBatch();
     auto new_bank=std::make_shared<r::Bytes>();new_bank->generation=2;new_bank->value.assign(4096,0xff);
     auto next_uniform=adapter.ConstantFor({new_bank,0,4096},error);Require(next_uniform.buffer);
-    Require(next_uniform.buffer!=prepared->constants[0].buffer);
-    immutable.reset();Require(adapter.RetireResources()>=5);prepared.reset();
+    Require(next_uniform.buffer!=prepared->constants[2].buffer);
+    const auto used_banks=std::count_if(prepared->pipeline->constant_bytes.begin(),prepared->pipeline->constant_bytes.end(),[](auto bytes){return bytes!=0;});
+    immutable.reset();Require(adapter.RetireResources()>=2+used_banks);prepared.reset();
     auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
     auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
     const uint8_t expected[]{102,51,77,255};

@@ -61,6 +61,35 @@ int main(int argc,char** argv) {
     }
     report["bounded_retirement_calls"]=calls;report["retired_constant_entries"]=8192;
     report["retained_gpu_views_unchanged"]=true;report["live_geometry_retained"]=true;
+    // Retaining only the public ARC buffer must also prevent backing reuse.
+    ResourceCache recycled(renderer,256*1024);
+    id<MTLBuffer> escaped=nil;void* escaped_memory=nullptr;
+    @autoreleasepool {
+      auto owner=std::make_shared<const uint64_t>(1);
+      auto view=recycled.UniformBuffer({owner,1,{}},std::vector<uint8_t>(4096,0x63),error);
+      assert(view.buffer);escaped=view.buffer;escaped_memory=view.buffer.contents;
+      recycled.Clear();
+    }
+    for(size_t trial=0;trial<12;++trial) {
+      @autoreleasepool {
+        auto owner=std::make_shared<const uint64_t>(trial+2);
+        auto view=recycled.UniformBuffer({owner,*owner,{}},std::vector<uint8_t>(4096,uint8_t(trial)),error);
+        assert(view.buffer&&view.buffer.contents!=escaped_memory);recycled.Clear();
+      }
+      for(size_t byte=0;byte<4096;++byte)assert(static_cast<const uint8_t*>(escaped.contents)[byte]==0x63);
+    }
+    assert(recycled.Stats().page_memory_reuses>=10&&recycled.Stats().free_page_bytes<=16*1024*1024);
+    escaped=nil;
+    id<MTLBuffer> outlived=nil;
+    {
+      ResourceCache temporary(renderer);auto owner=std::make_shared<const uint64_t>(1);
+      outlived=temporary.UniformBuffer({owner,1,{}},std::vector<uint8_t>(4096,0x7e),error).buffer;
+    }
+    assert(outlived&&static_cast<const uint8_t*>(outlived.contents)[0]==0x7e);outlived=nil;
+    report["escaped_arc_buffer_keeps_backing_immutable"]=true;
+    report["buffer_can_outlive_resource_cache"]=true;
+    report["recycled_vm_pages"]=recycled.Stats().page_memory_reuses;
+    report["free_page_budget_bytes"]=16*1024*1024;
     std::ofstream(argv[1])<<report.dump(2)<<'\n';
   }
 }

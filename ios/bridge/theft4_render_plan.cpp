@@ -248,7 +248,8 @@ bool Validate(const Capture& capture, std::string& error,DrawValidationIssue* is
       " depth="+std::to_string(d.viewport[4])+","+std::to_string(d.viewport[5])+
       " scissor="+std::to_string(d.scissor[0])+","+std::to_string(d.scissor[1])+","+std::to_string(d.scissor[2])+","+std::to_string(d.scissor[3]));
   constexpr uint64_t sizes[]{4096,3584,1056};
-  for(size_t i=0;i<3;++i)if(!View(d.constants[i],sizes[i])||d.constants[i].offset%16)
+  for(size_t i=0;i<3;++i)if(d.constant_bytes[i]>sizes[i]||d.constant_bytes[i]%16||
+      (i==2&&d.constant_bytes[i]!=sizes[i])||!View(d.constants[i],d.constant_bytes[i])||d.constants[i].offset%16)
     return Error(error,"Invalid game constant bank");
   uint64_t maximum=0;
   if(d.index_count) {
@@ -328,7 +329,7 @@ bool WriteCapture(const std::string& path, const Capture& capture, std::string& 
     for(const auto& b:d.vertices)vertices.push_back(encoder.BufferValue(b));
     for(const auto& f:d.fetches)fetches.push_back({{"image",f.image ? encoder.ImageValue(*f.image) : json(nullptr)},
         {"sampler",f.sampler ? json(*f.sampler) : json(nullptr)}});
-    json draw={{"pipeline",d.pipeline},{"constants",constants},{"vertices",vertices},{"fetches",fetches},
+    json draw={{"pipeline",d.pipeline},{"constants",constants},{"constant_bytes",d.constant_bytes},{"vertices",vertices},{"fetches",fetches},
         {"indices",encoder.BufferValue(d.indices)},{"primitive",d.primitive},{"first_vertex",d.first_vertex},
         {"vertex_count",d.vertex_count},{"instances",d.instances},{"index_count",d.index_count},
         {"index_bytes",d.index_bytes},{"base_vertex",d.base_vertex},{"primitive_restart",d.primitive_restart},
@@ -363,6 +364,11 @@ bool ReadCapture(const std::string& path, Capture& capture, std::string& error) 
     root.at("frame").get_to(next.frame);root.at("command").get_to(next.command);
     root.at("width").get_to(next.width);root.at("height").get_to(next.height);
     auto& d=next.draw;v.at("pipeline").get_to(d.pipeline);
+    if(v.contains("constant_bytes")) {
+      const auto& bounds=v.at("constant_bytes");
+      if(!bounds.is_array()||bounds.size()!=3)return Error(error,"Invalid constant bound count");
+      bounds.get_to(d.constant_bytes);
+    }
     const auto& c=v.at("constants");const auto& b=v.at("vertices");const auto& f=v.at("fetches");
     if(!c.is_array()||c.size()!=3||!b.is_array()||b.size()!=kStreamCount||!f.is_array()||f.size()!=kFetchCount)
       return Error(error,"Invalid game capture binding counts");

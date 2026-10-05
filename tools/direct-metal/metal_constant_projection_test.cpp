@@ -118,6 +118,52 @@ static void Benchmark() {
       <<" full_bytes="<<full_bytes<<" sparse_bytes="<<sparse_bytes<<" fallbacks="<<fallbacks<<'\n';
 }
 int main(int argc,char**) {
+  {
+    AuthoritativeConstantState state(4096);ConstantPayloadDelta delta;
+    Bytes guest(4096,0x31);CaptureCompleteConstantSnapshot(guest,delta);
+    auto hash=[](std::span<const uint8_t>){return uint64_t(1);};
+    auto parent=state.Apply(delta,hash).version;
+    delta={};delta.ranges={{0,0,1024}};delta.payload.assign(1024,0x52);
+    auto version=state.Apply(delta,hash).version;
+    NativeConstantMask mask{};mask[0]=~uint64_t(0);
+    NativeMaskedConstantPlan plan;assert(plan.Build(version.get(),mask));
+    Bytes output(1024);size_t calls=0;
+    assert(plan.Write(output,[&](uint8_t* out,const uint8_t* in,size_t bytes){++calls;CopyWords(out,in,bytes);})==2048);
+    assert(calls==2);for(auto byte:output)assert(byte==0x52);
+  }
+  // Compact prefixes must match the old full-size masked replay, including
+  // deltas outside the prefix and changes to the mask's highest register.
+  {
+    AuthoritativeConstantState state(4096);NativeMetalConstantProjection<Bytes> compact;
+    Bytes canonical(4096);std::mt19937 random(111);
+    for(auto& value:canonical)value=uint8_t(random());
+    ConstantPayloadDelta delta;CaptureCompleteConstantSnapshot(canonical,delta);
+    auto hash=[](std::span<const uint8_t>){return uint64_t(1);};
+    auto version=state.Apply(delta,hash).version;
+    NativeConstantUsage use;use.known=true;use.banks[0][0]=0xff;
+    for(size_t step=0;step<1000;++step) {
+      if(step%19==0){use.banks[0]={};const size_t reg=random()%256;use.banks[0][reg/64]|=uint64_t(1)<<(reg%64);use.banks[0][0]|=1;}
+      const size_t extent=NativeMaskedConstantExtent(use.banks[0]);
+      Bytes full(4096);auto short_bank=std::make_shared<Bytes>(extent);
+      const auto full_written=compact.WriteMasked(11,12,0,version,use,full,View,CopyWords);
+      const auto short_written=compact.WriteMasked(11,12,0,version,use,*short_bank,View,CopyWords);
+      assert(full_written==short_written);
+      if(!full_written) {
+        const auto* guest=AuthoritativeConstantState::MaterializeView(version);assert(guest);
+        ForNativeConstantRuns(use.banks[0],[&](size_t reg,size_t count) {
+          CopyWords(full.data()+reg*16,guest->data()+reg*16,count*16);
+          CopyWords(short_bank->data()+reg*16,guest->data()+reg*16,count*16);
+        });
+      }
+      assert(!std::memcmp(full.data(),short_bank->data(),extent));
+      Bytes too_short(extent-1);assert(!compact.WriteMasked(11,12,0,version,use,too_short,View,CopyWords));
+      auto unknown=use;unknown.known=false;assert(!compact.WriteMasked(11,12,0,version,unknown,*short_bank,View,CopyWords));
+      compact.Remember(11,12,0,version,use,short_bank);
+      const size_t offset=(random()%1024)*4;delta={};delta.ranges={{uint32_t(offset),0,4}};delta.payload.resize(4);
+      for(auto& value:delta.payload)value=uint8_t(random());
+      version=state.Apply(delta,hash).version;
+    }
+  }
   using Bytes=std::vector<uint8_t>;
   NativeMetalConstantProjection<Bytes> cache;
   NativeConstantUsage usage;usage.known=true;usage.banks[0][0]=4;

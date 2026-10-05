@@ -1,4 +1,5 @@
 #include "theft4_metal_shader_catalog.h"
+#include "native_masked_constants.h"
 #include "shader_cache.h"
 #include "smolv.h"
 #include "spirv_cross.hpp"
@@ -35,6 +36,16 @@ int main(int argc, char** argv) {
       Check(!catalog.Find({entry.hash,variant},stage==Stage::Vertex ? Stage::Fragment : Stage::Vertex),
             "Shader lookup admitted the wrong stage");
       Check(metadata->Specialization(UINT32_MAX)==entry.specConstantsMask,"Specialization contains unused bits");
+      const auto offset=variant?entry.lateSpirvOffset:entry.spirvOffset;
+      const auto size=variant?entry.lateSpirvSize:entry.spirvSize;
+      const auto decoded=smolv::GetDecodedBufferSize(cache.data()+offset,size);
+      std::vector<uint32_t> module(decoded/4);
+      Check(smolv::Decode(cache.data()+offset,size,module.data(),decoded),"Variant constant reflection decode failed");
+      const auto usage=rex::graphics::gta4_native::ReflectNativeConstantUsage(module);
+      std::array<uint32_t,3> bounds{4096,3584,1056};
+      if(usage.known)for(size_t bank=0;bank<2;++bank)bounds[bank]=uint32_t(rex::graphics::gta4_native::NativeMaskedConstantExtent(usage.banks[bank]));
+      if(manifest.find("\t0:0:1056")!=std::string::npos)
+        Check(metadata->constant_bytes==bounds,"Catalog constant bounds differ from executing stock variant");
       variant ? ++late : ++early; ++checked;
       if (stage==Stage::Vertex) {
         const auto* converted=catalog.Find({entry.hash,false,true},stage);
@@ -56,6 +67,11 @@ int main(int argc, char** argv) {
       "Sparse game fetch slots 0/15 did not become Metal indices 0/1");
   const std::string row="0000000000000001\tfragment\t32769\t1794\tfixture.bin\t0:13:4,\t0:0:0,0:15:1,4:0:0,4:15:1,\n";
   ShaderCatalog fixture;Check(fixture.Parse(row,error),error.c_str());
+  const auto bounded_row=row.substr(0,row.size()-1)+"\t16:32:1056\n";
+  Check(fixture.Parse(bounded_row,error),error.c_str());
+  Check(fixture.Find({1,false},Stage::Fragment)->constant_bytes==std::array<uint32_t,3>{16,32,1056},"Constant bounds lost");
+  for(const auto* bounds:{"17:32:1056","4112:0:1056","0:0:0","0:0:1056:16","-1:0:1056"})
+    Check(!fixture.Parse(row.substr(0,row.size()-1)+"\t"+bounds+"\n",error),"Malformed constant bounds admitted");
   const std::string corrupt[]{"", row+row,
     "../shader\tfragment\t0\t0\tfixture.bin\t\t\n",
     "0000000000000001-late\tfragment\t0\t0\tfixture.bin\t\t\n",

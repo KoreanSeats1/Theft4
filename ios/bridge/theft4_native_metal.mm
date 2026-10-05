@@ -99,6 +99,23 @@ struct Frame::Impl {
     NSUInteger depth_samples=0,stencil_samples=0,width=0,height=0,default_samples=0;
   } shape;
   EncoderStats stats;
+  // Strong, bounded entries prevent pointer reuse while cached traits are
+  // admitted. Every draw still validates its own range and expected interface.
+  struct BufferExtent {id<MTLBuffer> owner=nil;NSUInteger length=0;};
+  std::array<BufferExtent,64> buffer_extents;
+  struct TextureShape {id<MTLTexture> owner=nil;MTLTextureType type{};bool framebuffer_only=false;};
+  std::array<TextureShape,64> texture_shapes;
+  bool ValidView(const BufferView& v,NSUInteger required) {
+    if(!v.buffer)return false;
+    auto& entry=buffer_extents[(reinterpret_cast<uintptr_t>((__bridge void*)v.buffer)>>4)%buffer_extents.size()];
+    if(entry.owner!=v.buffer){entry.owner=v.buffer;entry.length=v.buffer.length;++stats.buffer_extent_queries;}
+    return v.offset<=entry.length&&v.length<=entry.length-v.offset&&required<=v.length;
+  }
+  const TextureShape& ShapeFor(id<MTLTexture> texture) {
+    auto& entry=texture_shapes[(reinterpret_cast<uintptr_t>((__bridge void*)texture)>>4)%texture_shapes.size()];
+    if(entry.owner!=texture){entry.owner=texture;entry.type=texture.textureType;entry.framebuffer_only=texture.framebufferOnly;++stats.texture_shape_queries;}
+    return entry;
+  }
   id<MTLCounterSampleBuffer> counters=nil;
   size_t profiled_passes=0;
   std::vector<size_t> pass_mapping;
@@ -397,13 +414,13 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     return Error(error,"Invalid direct Metal dynamic state");
   for(float value:d.blend_color)if(!std::isfinite(value))
     return Error(error,"Invalid direct Metal blend color");
-  for (size_t i = 0; i < 3; ++i) if (p.constant_bytes[i]&&(!ViewValid(d.constants[i], p.constant_bytes[i]) || d.constants[i].offset % 16))
+  for (size_t i = 0; i < 3; ++i) if (p.constant_bytes[i]&&(!impl_->ValidView(d.constants[i], p.constant_bytes[i]) || d.constants[i].offset % 16))
     return Error(error, "Invalid Metal game constant bank");
   NSUInteger maximum = d.maximum_vertex;
   if (d.index_count) {
     const NSUInteger size = d.index_type == MTLIndexTypeUInt16 ? 2 : 4;
     if (d.index_count > std::numeric_limits<NSUInteger>::max() / size ||
-        !ViewValid(d.indices, d.index_count * size) || d.indices.offset % size)
+        !impl_->ValidView(d.indices, d.index_count * size) || d.indices.offset % size)
       return Error(error, "Invalid Metal index range");
   } else {
     if (!d.vertex_count || d.first_vertex > std::numeric_limits<NSUInteger>::max() - (d.vertex_count - 1))
@@ -413,15 +430,18 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   for (NSUInteger s = 0; s < kGameVertexStreamCount; ++s) if (p.vertex_streams & (1u << s)) {
     const NSUInteger last=(p.instance_streams & (1u<<s)) ? d.instance_count-1 : maximum;
     if (last > (std::numeric_limits<NSUInteger>::max() - p.attribute_extents[s]) / p.strides[s] ||
-        !ViewValid(d.vertices[s], last * p.strides[s] + p.attribute_extents[s]))
+        !impl_->ValidView(d.vertices[s], last * p.strides[s] + p.attribute_extents[s]))
       return Error(error, "Invalid Metal vertex stream range");
   }
   uint32_t texture_masks[2]{}, sampler_masks[2]{};
   for (const auto& b : d.textures) {
     const unsigned s = b.stage == Stage::Vertex ? 0 : 1;
     const auto& abi = s ? p.fragment : p.vertex;
-    if ((b.stage!=Stage::Vertex&&b.stage!=Stage::Fragment) || b.index >= 31 || !b.texture || b.texture.framebufferOnly || !(abi.textures & (1u << b.index)) ||
-        (texture_masks[s] & (1u << b.index)) || b.texture.textureType != abi.texture_types[b.index])
+    if ((b.stage!=Stage::Vertex&&b.stage!=Stage::Fragment) || b.index >= 31 || !b.texture || !(abi.textures & (1u << b.index)) ||
+        (texture_masks[s] & (1u << b.index)))
+      return Error(error, "Invalid Metal texture binding");
+    const auto& traits=impl_->ShapeFor(b.texture);
+    if(traits.framebuffer_only||traits.type!=abi.texture_types[b.index])
       return Error(error, "Invalid Metal texture binding");
     texture_masks[s] |= 1u << b.index;
   }

@@ -83,6 +83,7 @@ struct Clear {
 struct EncoderStats {
   uint64_t draws=0,state_calls=0,buffer_calls=0,texture_calls=0,sampler_calls=0,avoided_calls=0;
   uint64_t buffer_offset_calls=0;
+  uint64_t buffer_extent_queries=0,texture_shape_queries=0;
 };
 struct GpuPassTiming {
   size_t pass=0;

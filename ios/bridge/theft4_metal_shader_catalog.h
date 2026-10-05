@@ -1,6 +1,7 @@
 #pragma once
 // Runtime metadata from the offline shader exporter. No SPIR-V or Vulkan types.
 #include <cstdint>
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -38,6 +39,9 @@ struct ShaderMetadata {
   std::string filename;
   std::vector<ShaderInput> inputs;
   std::vector<ShaderFetchBinding> bindings;
+  // Conservative read bounds from the executing SPIR-V. Old catalogs retain
+  // the full-bank contract; dynamic/unknown reads also use these defaults.
+  std::array<uint32_t,3> constant_bytes{4096,3584,1056};
   uint32_t Specialization(uint32_t requested) const { return requested & specialization_mask; }
 };
 class ShaderCatalog {

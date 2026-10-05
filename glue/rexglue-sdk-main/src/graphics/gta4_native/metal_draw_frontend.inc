@@ -266,6 +266,8 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   auto& projected_constants=*native_metal_frame_->projected_constants;
   for(size_t bank=0;bank<2;++bank) {
     const auto& version=versions[bank];const size_t required=bank?kPixelConstantsSize:kVertexConstantsSize;
+    const size_t extent=constant_usage.known?NativeMaskedConstantExtent(constant_usage.banks[bank]):required;
+    draw.constant_bytes[bank]=uint32_t(extent);
     if(!version||version->byte_size!=required)return reject("Metal authoritative constant bank unavailable");
     std::shared_ptr<const r::Bytes> bytes;
     if(constant_usage.known&&std::all_of(constant_usage.banks[bank].begin(),constant_usage.banks[bank].end(),
@@ -281,7 +283,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       bytes=projected_constants.Find(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage);
       if(bytes)native_metal_frame_->constant_bytes_avoided+=required;
     }
-    if(bytes){draw.constants[bank]={bytes,0,required};continue;}
+    if(bytes){draw.constants[bank]={bytes,0,bytes->value.size()};continue;}
     const auto cache_key=std::array<uint64_t,8>{3,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank};
     bytes=native_metal_frame_->constant_packets.Find(cache_key);
     if(!bytes&&constant_usage.known&&NativeMaskedConstantsEnabled()) {
@@ -290,7 +292,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           mask[0],mask[1],mask[2],mask[3],required};
       bytes=native_metal_frame_->constant_packets.Find(covered_key);
       if(!bytes) {
-        auto covered=std::make_shared<r::Bytes>();covered->value.resize(required);
+        auto covered=std::make_shared<r::Bytes>();covered->value.resize(extent);
         const uint64_t written=projected_constants.WriteMasked(key.vertex_shader_hash,key.pixel_shader_hash,
             bank,version,constant_usage,covered->value,
             [](const r::Bytes& payload){return std::span<const uint8_t>(payload.value);},CopyGuestWordsToHost);
@@ -314,7 +316,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       bytes=std::move(full);
       if(!native_metal_frame_->constant_packets.Store(cache_key,bytes))return reject("Metal full constant cache allocation failed");
     }
-    if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,required};
+    if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,bytes->value.size()};
     projected_constants.Remember(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage,bytes);
   }
   NativeSharedConstants shared;

@@ -338,7 +338,12 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
   result.primitive=MTLPrimitiveType(source.primitive);result.first_vertex=source.first_vertex;
   result.vertex_count=source.vertex_count;result.instance_count=source.instances;result.base_vertex=source.base_vertex;
-  for(size_t i=0;i<3;++i){result.constants[i]=ConstantFor(source.constants[i],error);if(!result.constants[i].buffer)return false;}
+  for(size_t i=0;i<3;++i) {
+    const auto required=result.pipeline->constant_bytes[i];
+    if(source.constant_bytes[i]<required)return Error(error,"Game constant payload does not cover the offline shader interface");
+    if(!required)continue;
+    result.constants[i]=ConstantFor(source.constants[i],error);if(!result.constants[i].buffer)return false;
+  }
   for(size_t i=0;i<kGameVertexStreamCount;++i)if(result.pipeline->vertex_streams&(1u<<i)) {
     result.vertices[i]=BufferFor(source.vertices[i],error);if(!result.vertices[i].buffer)return false;
   }
@@ -371,8 +376,8 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
     }
     if(f.sampler){fetches[i].sampler=SamplerFor(*f.sampler,error);if(!fetches[i].sampler)return false;}
   }
-  if(!shaders_.Bind({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex,fetches,result,error))return false;
-  if(source.pipeline.fragment.hash&&!shaders_.Bind({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment,fetches,result,error))return false;
+  if(!vm||!shaders_.BindMetadata(*vm,fetches,result,error))return false;
+  if(source.pipeline.fragment.hash&&(!pm||!shaders_.BindMetadata(*pm,fetches,result,error)))return false;
   const auto& v=source.viewport;result.viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
   const auto& s=source.scissor;result.scissor={s[0],s[1],s[2],s[3]};
   result.cull=MTLCullMode(source.cull);result.winding=source.clockwise ? MTLWindingClockwise : MTLWindingCounterClockwise;

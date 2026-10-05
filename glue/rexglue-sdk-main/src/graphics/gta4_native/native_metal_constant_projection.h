@@ -26,7 +26,8 @@ template<class Payload> class NativeMetalConstantProjection {
     if(usage.known&&bank<2&&version&&payload)
       entries_[bank][Slot(vertex,pixel)]={vertex,pixel,usage.banks[bank],version,std::move(payload)};
   }
-  // Replay into a new, zero-initialized full-size ABI bank. The previous host
+  // Replay into a new, zero-initialized ABI prefix covering every known read.
+  // Unknown reflection retains the full-bank fallback. The previous host
   // bytes are usable only for this exact shader/mask, and both owners remain
   // alive until Write completes. Sparse payloads never become authoritative
   // guest materializations or enter a cache keyed by the version alone.
@@ -34,7 +35,8 @@ template<class Payload> class NativeMetalConstantProjection {
   uint64_t WriteMasked(uint64_t vertex,uint64_t pixel,size_t bank,
       const std::shared_ptr<const ConstantStateVersion>& version,const NativeConstantUsage& usage,
       std::span<uint8_t> output,ViewPayload&& view_payload,CopyGuest&& copy_guest) const {
-    if(!usage.known||bank>=2||!version||output.size()!=version->byte_size)return 0;
+    if(!usage.known||bank>=2||!version||output.size()>version->byte_size||
+        output.size()<NativeMaskedConstantExtent(usage.banks[bank]))return 0;
     const auto& e=entries_[bank][Slot(vertex,pixel)];
     std::shared_ptr<const ConstantStateVersion> previous;
     std::shared_ptr<const Payload> payload;

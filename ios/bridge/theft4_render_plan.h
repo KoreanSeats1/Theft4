@@ -127,6 +127,9 @@ struct Fetch {
 struct Draw {
   Pipeline pipeline{};
   std::array<Buffer, 3> constants{};
+  // CPU payload bounds. The backend independently checks them against its
+  // offline shader interface before admitting a draw. Legacy captures stay full.
+  std::array<uint32_t,3> constant_bytes{4096,3584,1056};
   std::array<Buffer, kStreamCount> vertices{};
   std::array<Fetch, kFetchCount> fetches{};
   Buffer indices{};

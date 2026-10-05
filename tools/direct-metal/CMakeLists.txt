@@ -24,6 +24,7 @@ target_include_directories(metal_shader_export PRIVATE
   "${ROOT}/tools/XenosRecomp/thirdparty/smol-v/source"
   "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib"
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
+  "${ROOT}/glue/rexglue-sdk-main/include"
   "${ROOT}/glue/rexglue-sdk-main/thirdparty/spirv-headers/include")
 target_link_libraries(metal_shader_export PRIVATE spirv-cross-msl spirv-cross-glsl
   spirv-cross-core libzstd_static)
@@ -97,6 +98,7 @@ add_test(NAME resource_admission_cache COMMAND resource_admission_cache_test)
 target_include_directories(metal_shader_catalog PUBLIC "${ROOT}/ios/bridge")
 add_executable(metal_shader_catalog_test shader_catalog_test.cpp $<TARGET_OBJECTS:metal_shader_corpus>)
 target_include_directories(metal_shader_catalog_test PRIVATE "${ROOT}/LibertyRecompLib/shader"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
   "${ROOT}/tools/XenosRecomp/thirdparty/smol-v/source" "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib")
 target_link_libraries(metal_shader_catalog_test PRIVATE metal_shader_catalog spirv-cross-core libzstd_static)
 set(METAL_CATALOG_MANIFEST "" CACHE FILEPATH "Exported full stock Metal manifest to validate")
@@ -213,6 +215,12 @@ target_include_directories(metal_upload_stress_test PRIVATE "${ROOT}/ios/bridge"
 target_compile_options(metal_upload_stress_test PRIVATE -fobjc-arc)
 target_compile_definitions(metal_upload_stress_test PRIVATE THEFT4_PACKED_UPLOAD_STRESS=1)
 target_link_libraries(metal_upload_stress_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_upload_page_benchmark upload_page_benchmark.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_upload_page_benchmark PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_upload_page_benchmark PRIVATE -fobjc-arc)
+target_link_libraries(metal_upload_page_benchmark PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
 
 add_executable(metal_upload_lifetime_test upload_lifetime_test.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")

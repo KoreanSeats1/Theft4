@@ -3,6 +3,7 @@
 #include "shader_cache.h"
 #include "smolv.h"
 #include "spirv_msl.hpp"
+#include "native_masked_constants.h"
 #include <zstd.h>
 #include <bit>
 #include <filesystem>
@@ -34,8 +35,12 @@ struct Export {
   std::vector<Binding> bindings;
   bool vertex = false;
   uint32_t fp_flags = 0;
+  std::array<uint32_t,3> constant_bytes{4096,3584,1056};
 };
 Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one_to_one = false) {
+  // Descriptor and color-output lowering leave the VS/PS bank reads intact.
+  // The generated color epilogue reads only the complete shared bank.
+  const auto constant_usage=rex::graphics::gta4_native::ReflectNativeConstantUsage(code);
   spirv_cross::CompilerMSL probe(code);
   const auto stage = probe.get_execution_model();
   if (stage != spv::ExecutionModelVertex && stage != spv::ExecutionModelFragment)
@@ -88,6 +93,8 @@ Export Convert(std::vector<uint32_t> code, uint32_t used_mask, bool negative_one
   const uint32_t count = std::popcount(used_mask);
   if (count > 16) throw std::runtime_error("more than 16 samplers in one stage");
   Export result; result.vertex = stage == spv::ExecutionModelVertex;
+  if(constant_usage.known)for(size_t i=0;i<2;++i)
+    result.constant_bytes[i]=uint32_t(rex::graphics::gta4_native::NativeMaskedConstantExtent(constant_usage.banks[i]));
   uint32_t texture_index = 0;
   for (auto& image : resources.separate_images) {
     const uint32_t kind = compiler.get_decoration(image.id, spv::DecorationDescriptorSet);
@@ -172,7 +179,7 @@ int main(int argc, char** argv) {
             << e.usedTextureMask << '\t' << e.specConstantsMask << '\t' << e.filename << '\t'
             << output.inputs << '\t';
           for (auto b : output.bindings) manifest << b.kind << ':' << b.slot << ':' << b.index << ',';
-          manifest << '\n';
+          manifest << '\t' << output.constant_bytes[0] << ':' << output.constant_bytes[1] << ':' << output.constant_bytes[2] << '\n';
           // Match MoltenVK's on-demand compiler policy from the original SPIR-V
           // permissions. Legacy NoContraction operations keep their generated
           // precise helpers independently of the module's permitted math mode.

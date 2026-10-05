@@ -152,14 +152,23 @@ class NativeMaskedConstantPlan {
         // Float4-register masks bound all reads, including scalar/vector loads.
         // Replay supports any word-aligned range and overlapping successive
         // versions in the original order, without copying unread holes.
-        for (size_t reg = begin / 16; reg < (end + 15) / 16; ++reg) {
-          if (!(mask_[reg / 64] & (uint64_t{1} << (reg % 64)))) continue;
+        // Coalesce consecutive covered registers. Broad updates used to call
+        // the endian converter once per float4, defeating its vectorized loop.
+        NativeConstantMask clipped{};
+        const size_t first_reg=begin/16,last_reg=(end+15)/16;
+        for(size_t word=first_reg/64;word<(last_reg+63)/64;++word) {
+          const size_t first=std::max(first_reg,word*64)-word*64;
+          const size_t last=std::min(last_reg,(word+1)*64)-word*64;
+          clipped[word]=mask_[word]&(~uint64_t(0)<<first)&
+              (last==64?~uint64_t(0):(uint64_t(1)<<last)-1);
+        }
+        ForNativeConstantRuns(clipped,[&](size_t reg,size_t count) {
           const size_t first = std::max(begin, reg * 16);
-          const size_t last = std::min(end, (reg + 1) * 16);
+          const size_t last = std::min(end, (reg + count) * 16);
           copy_guest(output.data() + first,
               delta.payload.data() + range.payload_offset + first - begin, last - first);
           written += last - first;
-        }
+        });
       }
     }
     return written;

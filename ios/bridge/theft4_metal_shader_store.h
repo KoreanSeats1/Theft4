@@ -23,6 +23,8 @@ class ShaderStore {
   size_t LoadedLibraries() const { return libraries_.size(); }
   size_t CatalogSize() const { return catalog_.Size(); }
  private:
+  friend class PlanAdapter;
+  bool BindMetadata(const ShaderMetadata&,const std::array<FetchResources,26>&,Draw&,std::string&) const;
   struct FunctionKey {
     ShaderKey shader{};
     uint32_t specialization = 0;

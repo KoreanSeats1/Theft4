@@ -172,16 +172,6 @@ static void HostOverwriteChecks() {
   std::array<uint32_t,16> fields{};fields[8]=1;fields[11]=2;fields[12]=fields[14]=16;fields[13]=fields[15]=8;
   constants->value.resize(64);std::memcpy(constants->value.data(),fields.data(),64);host.constants={constants,0,64};pass.commands.push_back(host);frame.commands.push_back(pass);
   assert(r::RedundantAttachmentLoads(frame)==std::vector<uint8_t>{1});assert(r::IdentityResolveCopy(frame,pass));
-  auto packed=frame;
-  auto& packed_pass=std::get<r::Pass>(packed.commands[0]);
-  r::GetHostDraw(packed_pass.commands[0])->program=r::HostProgram::PackedDepthAlias;
-  assert(r::RedundantAttachmentLoads(packed)==std::vector<uint8_t>{1});
-  assert(!r::IdentityResolveCopy(packed,packed_pass)); // Packing remains a shader operation.
-  r::GetHostDraw(packed_pass.commands[0])->scissor[2]--;
-  assert(r::RedundantAttachmentLoads(packed)==std::vector<uint8_t>{0});
-  r::GetHostDraw(packed_pass.commands[0])->scissor[2]++;
-  r::GetHostDraw(packed_pass.commands[0])->pipeline.blends[0].enabled=true;
-  assert(r::RedundantAttachmentLoads(packed)==std::vector<uint8_t>{0});
   auto discarded=frame;std::get<r::Pass>(discarded.commands[0]).colors[0]->load=r::Load::Discard;
   assert(r::RedundantAttachmentLoads(discarded)==std::vector<uint8_t>{0});
   assert(r::IdentityResolveCopy(discarded,std::get<r::Pass>(discarded.commands[0])));

@@ -11,7 +11,6 @@ struct HostShaderMetadata {
   Stage stage=Stage::Fragment;
   bool resolve_specialization=false;
   bool present_specialization=false;
-  bool depth_specialization=false;
   size_t constant_bytes=0;
   std::vector<HostBinding> textures;
 };

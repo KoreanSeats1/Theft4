@@ -21,9 +21,6 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
         return Fail(error,"Invalid host shader identity");
       HostShaderMetadata m;m.resolve_specialization=p.value("resolve_specialization",false);m.stage=stage=="vertex" ? Stage::Vertex : Stage::Fragment;
       m.present_specialization=p.value("present_specialization",false);
-      m.depth_specialization=p.value("depth_specialization",false);
-      if(m.depth_specialization&&(m.resolve_specialization||m.present_specialization||stage!="fragment"||name!="gta4_native_scene_depth_handoff_ps"))
-        return Fail(error,"Invalid scene depth specialization identity");
       if(m.present_specialization&&(m.resolve_specialization||stage!="fragment"||
          (name!="gta4_native_hdr_present_ps"&&name!="smaa_present_ps"&&name!="smaa_hardware_present_ps")))
         return Fail(error,"Invalid presentation specialization identity");
@@ -68,8 +65,7 @@ Shader HostShaderStore::Resolve(const std::string& name,std::string& error,std::
   const auto* m=Metadata(name);if(!m){error="Unknown host utility shader";return {};}
   if(!constants.empty()&&(m->stage!=Stage::Fragment||constants.size()!=8||
      !((m->resolve_specialization&&m->constant_bytes==64)||
-       (m->present_specialization&&m->constant_bytes==44)||
-       (m->depth_specialization&&m->constant_bytes==4)))) {error="Invalid host specialization ABI";return {};}
+       (m->present_specialization&&m->constant_bytes==44)))) {error="Invalid host specialization ABI";return {};}
   try {
     auto library=libraries_.find(name);
     if(library==libraries_.end()) {

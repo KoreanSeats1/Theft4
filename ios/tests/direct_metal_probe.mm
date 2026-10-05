@@ -1321,72 +1321,6 @@ struct Probe {
       @"geometry_reused_without_upload":@YES,@"retained_constant_bytes_unchanged":@YES,
       @"constant_budget_bytes":@(4*1024*1024),@"global_budget_bytes":@(16*1024*1024)}];
   }
-  void SpecializedDepthUtilities() {
-    HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
-    auto vs=host.Resolve("fullscreen_cw_vs",error);
-    const auto texture=[&](MTLPixelFormat format) {
-      auto d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:W height:H mipmapped:NO];
-      d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead;auto t=renderer.Texture(d,error);Require(t);return t;
-    };
-    auto source=texture(MTLPixelFormatR32Float),stencil=texture(MTLPixelFormatR8Uint);
-    const std::array<float,12> values{0,0.00000001f,0.000001f,0.001f,0.125f,0.25f,0.49999f,0.5f,0.75f,0.99999f,1,1.5f};
-    std::vector<float> depths(W*H);std::vector<uint8_t> stencils(W*H);
-    for(size_t i=0;i<depths.size();++i){depths[i]=values[i%values.size()];stencils[i]=uint8_t(i*37);}
-    [source replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];
-    [stencil replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:stencils.data() bytesPerRow:W];
-    auto sampler=[renderer.Device() newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
-    const std::array<HostInput,2> inputs{{{0,source,sampler},{1,stencil,sampler}}};
-    size_t checked=0;
-    for(uint32_t mode:{0u,1u})for(uint32_t swizzle:{0u,1672u,83u,292u,4095u,2716u}) {
-      std::array<uint32_t,16> constants{};constants[8]=mode;constants[11]=swizzle;
-      std::array<uint32_t,8> flags{};flags[4]=mode;flags[7]=swizzle;
-      auto bank=Buffer({reinterpret_cast<const uint8_t*>(constants.data()),sizeof(constants)},true);
-      std::array<std::vector<uint8_t>,2> pixels;
-      for(size_t variant=0;variant<2;++variant) {
-        auto fixed=[MTLRenderPipelineDescriptor new];fixed.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
-        auto ps=host.Resolve("gta4_native_packed_depth_alias_ps",error,variant?std::span<const uint32_t>(flags):std::span<const uint32_t>{});
-        auto pipeline=renderer.MakePipeline(vs,ps,fixed,nil,error);Require(bool(pipeline));
-        Draw draw;draw.pipeline=pipeline;draw.vertex_count=3;draw.viewport={0,0,W,H,0,1};draw.scissor={0,0,W,H};
-        Require(host.Bind("gta4_native_packed_depth_alias_ps",inputs,bank,draw,error));auto target=Color();
-        auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(Pass(target,nil,nil),error));
-        Require(frame.Encode(draw,error));Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
-        pixels[variant]=renderer.ReadRGBA8(target,error);Require(pixels[variant].size()==W*H*4);
-      }
-      Require(pixels[0]==pixels[1]);checked+=W*H;
-    }
-    // Scene handoff discards packed-zero depth. A zero texel must retain the
-    // destination's old value, even with the encoding mode compiled in.
-    for(uint32_t mode:{0u,1u}) {
-      std::array<uint32_t,8> flags{mode};auto bank=Buffer({reinterpret_cast<const uint8_t*>(&mode),sizeof(mode)},true);
-      std::array<std::vector<uint8_t>,2> stored;
-      for(size_t variant=0;variant<2;++variant) {
-        auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:W height:H mipmapped:NO];
-        td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget;
-        auto target=renderer.Texture(td,error);Require(target);
-        auto fixed=[MTLRenderPipelineDescriptor new];fixed.depthAttachmentPixelFormat=MTLPixelFormatDepth32Float;
-        auto state=[MTLDepthStencilDescriptor new];state.depthCompareFunction=MTLCompareFunctionAlways;state.depthWriteEnabled=YES;
-        auto pipeline=renderer.MakePipeline(vs,host.Resolve("gta4_native_scene_depth_handoff_ps",error,
-          variant?std::span<const uint32_t>(flags):std::span<const uint32_t>{}),fixed,state,error);Require(bool(pipeline));
-        Draw draw;draw.pipeline=pipeline;draw.vertex_count=3;draw.viewport={0,0,W,H,0,1};draw.scissor={0,0,W,H};
-        Require(host.Bind("gta4_native_scene_depth_handoff_ps",{inputs.data(),1},bank,draw,error));
-        auto pass=[MTLRenderPassDescriptor renderPassDescriptor];pass.depthAttachment.texture=target;
-        pass.depthAttachment.loadAction=MTLLoadActionClear;pass.depthAttachment.storeAction=MTLStoreActionStore;pass.depthAttachment.clearDepth=.875;
-        auto frame=renderer.BeginFrame(error);Require(bool(frame));Require(frame.BeginPass(pass,error));Require(frame.Encode(draw,error));Require(frame.EndPass(error));
-        auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
-        auto queue=[renderer.Device() newCommandQueue];auto command=[queue commandBuffer];
-        auto buffer=[renderer.Device() newBufferWithLength:W*H*4 options:MTLResourceStorageModeShared];Require(buffer);
-        auto blit=[command blitCommandEncoder];[blit copyFromTexture:target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
-          sourceSize:MTLSizeMake(W,H,1) toBuffer:buffer destinationOffset:0 destinationBytesPerRow:W*4 destinationBytesPerImage:W*H*4];
-        [blit endEncoding];[command commit];[command waitUntilCompleted];Require(command.status==MTLCommandBufferStatusCompleted);
-        auto bytes=static_cast<const uint8_t*>(buffer.contents);stored[variant].assign(bytes,bytes+W*H*4);
-        Require(static_cast<const float*>(buffer.contents)[0]==.875f);
-        Require(static_cast<const float*>(buffer.contents)[5]==.25f);
-      }
-      Require(stored[0]==stored[1]);checked+=W*H;
-    }
-    [results addObject:@{@"case":@"specialized_depth_conversion_exact_output",@"passed":@YES,@"pixels_checked":@(checked),
-      @"float24_and_unorm24":@YES,@"channel_swizzles_and_stencil":@YES,@"zero_depth_discard_preserved":@YES}];
-  }
   void HostUtilityShaders() {
     HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
     Require(host.Size()==24);
@@ -1748,7 +1682,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.PreparedUploadViews();probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.SpecializedDepthUtilities();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
+    probe.PreparedUploadViews();probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

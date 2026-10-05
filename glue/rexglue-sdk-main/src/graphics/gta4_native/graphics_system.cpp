@@ -4451,6 +4451,9 @@ X_STATUS Gta4NativeGraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* fu
       memory_ = nullptr;
       return X_STATUS_UNSUCCESSFUL;
     }
+    // The headless iOS launch path does not call SetupPresentation. Resolve
+    // saved AA settings before the render worker can build its first frame.
+    InitializeRendererAntiAliasingController();
     {
       std::lock_guard lock(render_mutex_);
       native_metal_worker_open_complete_ = false;

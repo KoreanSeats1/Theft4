@@ -184,6 +184,28 @@ target_compile_options(constant_projection_corpus PRIVATE -UNDEBUG)
 target_link_libraries(constant_projection_corpus PRIVATE libzstd_static)
 add_test(NAME constant_projection_corpus COMMAND constant_projection_corpus)
 
+# Exercise the actual headless Metal startup and AA controller bodies. iOS
+# initializes the guest GPU without calling the windowed presentation setup.
+set(native_graphics_source "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${native_graphics_source}")
+file(READ "${native_graphics_source}" native_graphics)
+string(FIND "${native_graphics}" "void InitializeRendererAntiAliasingController() {" aa_begin)
+string(FIND "${native_graphics}" "uint32_t GetNativePresentationAABits()" aa_end)
+math(EXPR aa_length "${aa_end}-${aa_begin}")
+string(SUBSTRING "${native_graphics}" ${aa_begin} ${aa_length} aa_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-aa-controller.inc" "${aa_body}")
+string(FIND "${native_graphics}" "X_STATUS Gta4NativeGraphicsSystem::SetupGuestGpu(" guest_begin)
+string(SUBSTRING "${native_graphics}" ${guest_begin} -1 guest_tail)
+string(FIND "${guest_tail}" "\n#endif" guest_end)
+math(EXPR guest_length "${guest_end}+7")
+string(SUBSTRING "${guest_tail}" 0 ${guest_length} guest_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-guest-startup.inc" "${guest_body}\nreturn X_STATUS_UNSUCCESSFUL;\n}\n")
+add_executable(metal_aa_startup_test metal_aa_startup_test.cpp)
+target_include_directories(metal_aa_startup_test PRIVATE "${CMAKE_BINARY_DIR}" "${ROOT}/glue/rexglue-sdk-main/include")
+target_compile_definitions(metal_aa_startup_test PRIVATE THEFT4_DIRECT_METAL_BACKEND=1)
+target_compile_options(metal_aa_startup_test PRIVATE -UNDEBUG)
+add_test(NAME metal_headless_aa_startup COMMAND metal_aa_startup_test)
+
 # Repeatable synthetic admission/submission comparison; requires a real Metal device.
 add_executable(metal_upload_stress_test upload_stress_test.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")

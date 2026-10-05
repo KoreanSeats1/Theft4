@@ -124,7 +124,7 @@ class Backend final:public render::FrameBackend {
     // The periodic summary can miss the exact spike. Keep a bounded slow-only
     // record of admission, driver preparation and encoding for attribution.
     if(diagnostics&&submit_ms>40&&slow_submissions_<256&&
-       (submit_ms>=100||submitted_at-last_slow_submission_>=std::chrono::seconds(1))) {
+       (submit_ms>=80||submitted_at-last_slow_submission_>=std::chrono::seconds(1))) {
       last_slow_submission_=submitted_at;++slow_submissions_;
       const auto t=adapter_->LastTiming();const auto resources=adapter_->ImmutableStats();
       char message[1024];std::snprintf(message,sizeof(message),

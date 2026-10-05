@@ -275,3 +275,12 @@ add_executable(metal_hardware_resolve_comparison hardware_resolve_comparison.mm)
 target_include_directories(metal_hardware_resolve_comparison PRIVATE "${ROOT}/thirdparty/json/include")
 target_compile_options(metal_hardware_resolve_comparison PRIVATE -fobjc-arc)
 target_link_libraries(metal_hardware_resolve_comparison PRIVATE "-framework Foundation" "-framework Metal")
+
+add_executable(retail_diagnostic_policy_test "${ROOT}/ios/tests/retail_diagnostic_policy_test.cpp"
+  "${ROOT}/glue/rexglue-sdk-main/src/core/diagnostics_policy.cpp")
+target_include_directories(retail_diagnostic_policy_test PRIVATE "${ROOT}/ios/bridge"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
+  "${ROOT}/glue/rexglue-sdk-main/include")
+target_compile_options(retail_diagnostic_policy_test PRIVATE -UNDEBUG)
+add_test(NAME retail_diagnostics_disabled COMMAND retail_diagnostic_policy_test retail)
+add_test(NAME diagnostics_restored_on_fresh_launch COMMAND retail_diagnostic_policy_test diagnostics)

@@ -352,7 +352,7 @@ struct Probe {
       const auto view=adapter.ConstantFor(range,error);
       Require(view.buffer==first.buffer&&view.offset==first.offset&&view.length==128);
     }
-    Require(adapter.ResourceStats().prepared_view_hits==1024);
+    Require(adapter.ResourceStats().prepared_view_hits==(theft4_retail_mode()?0:1024));
     auto invalid=range;invalid.offset=4090;
     Require(!adapter.ConstantFor(invalid,error).buffer);
     source->value.resize(8192);Require(!adapter.ConstantFor(range,error).buffer);
@@ -362,7 +362,7 @@ struct Probe {
     Require(static_cast<const uint8_t*>(changed.buffer.contents)[changed.offset]==0x56);
     const auto misses=adapter.ResourceStats().prepared_view_misses;
     const auto geometry=adapter.BufferFor(range,error);
-    Require(geometry.buffer&&adapter.ResourceStats().prepared_view_misses==misses+1);
+    Require(geometry.buffer&&adapter.ResourceStats().prepared_view_misses==misses+(theft4_retail_mode()?0:1));
     Require(static_cast<const uint8_t*>(geometry.buffer.contents)[geometry.offset]==0x56);
     adapter.EndUploadBatch();
     const auto hits=adapter.ResourceStats().prepared_view_hits;
@@ -373,7 +373,18 @@ struct Probe {
     uint64_t working_set_hits=0;
     {
       PlanAdapter working(renderer);std::vector<std::shared_ptr<r::Bytes>> sources;
-      for(size_t i=0;i<1280;++i) {
+      r::Buffer single_owner;{
+        auto bytes=std::make_shared<r::Bytes>();bytes->generation=1;bytes->value.assign(512,0xA6);
+        single_owner={bytes,16,128};
+      }
+      Require(single_owner.source.use_count()==1);
+      working.BeginUploadBatch();
+      const auto single_first=working.ConstantFor(single_owner,error);Require(single_first.buffer);
+      const auto single_second=working.ConstantFor(single_owner,error);Require(single_second.buffer==single_first.buffer);
+      Require(working.ResourceStats().prepared_view_hits==0&&working.ResourceStats().prepared_view_misses==0);
+      Require(static_cast<const uint8_t*>(single_second.buffer.contents)[single_second.offset]==0xA6);
+      working.EndUploadBatch();single_owner={};working.RetireResources();
+      for(size_t i=0;i<2560;++i) {
         auto bytes=std::make_shared<r::Bytes>();bytes->generation=1;
         bytes->value.assign(512,uint8_t(i));sources.push_back(std::move(bytes));
       }
@@ -385,7 +396,7 @@ struct Probe {
         Require(static_cast<const uint8_t*>(view.buffer.contents)[view.offset]==uint8_t(i));
       }
       working_set_hits=working.ResourceStats().prepared_view_hits;
-      Require(working_set_hits>=4*sources.size()*9/10);
+      Require(theft4_retail_mode()?working_set_hits==0:working_set_hits>=4*sources.size()*9/10);
       const auto old_hits=working.ResourceStats().prepared_view_hits;
       // Same address/generation with a different shared ownership identity
       // must take the full-cache path, never a memo hit.
@@ -402,6 +413,8 @@ struct Probe {
         bytes->value.assign(64,uint8_t(i));sources.push_back(bytes);
         const auto view=working.BufferFor({bytes,16,32},error);Require(view.buffer);
         Require(static_cast<const uint8_t*>(view.buffer.contents)[view.offset]==uint8_t(i));
+        const auto uniform=working.ConstantFor({bytes,16,32},error);Require(uniform.buffer);
+        Require(static_cast<const uint8_t*>(uniform.buffer.contents)[uniform.offset]==uint8_t(i));
       }
       working.EndUploadBatch();sources.clear();alias.reset();working.RetireResources();
       Require(working.ResourceStats().resident_buffer_bytes==0);
@@ -510,8 +523,8 @@ struct Probe {
     };
     for(NSUInteger level=0;level<3;++level)render(astc_texture,level,false);
     for(NSUInteger level=0;level<4;++level)render(rgba_texture,level,level==3);
-    const auto stats=cache.Stats();Require(stats.buffer_creates==3 && stats.texture_creates==5 &&
-        stats.buffer_hits==1 && stats.texture_hits==1 && stats.retired==4);
+    const auto stats=cache.Stats();Require(stats.buffer_creates==(theft4_retail_mode()?0:3) && stats.texture_creates==(theft4_retail_mode()?0:5) &&
+        stats.buffer_hits==(theft4_retail_mode()?0:1) && stats.texture_hits==(theft4_retail_mode()?0:1) && stats.retired==(theft4_retail_mode()?0:4));
     [results addObject:@{@"case":@"immutable_game_resource_generations",@"passed":@YES,
         @"rgba_mips_sampled":@4,@"astc_mips_sampled":@3,@"cube_array_volume_planes_checked":@(dimensional_subresources),
         @"buffer_creates":@(stats.buffer_creates),@"texture_creates":@(stats.texture_creates),
@@ -707,7 +720,18 @@ struct Probe {
     const auto cold=adapter.Stats();const auto immutable=adapter.ImmutableStats();const auto pipelines=adapter.PipelineCount();
     receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));oracle(firstExpected);
     const auto warm=adapter.Stats();const auto warmImmutable=adapter.ImmutableStats();
-    Require(cold.surface_creates==3&&cold.surface_creates==warm.surface_creates&&cold.view_creates==warm.view_creates&&
+    if(theft4_retail_mode()) {
+      const auto t=adapter.LastTiming();const auto e=t.encoder;
+      Require(t.validation_ms==0&&t.preparation_ms==0&&t.encoding_ms==0&&t.commands==0&&t.draws==0&&
+        t.uploaded_bytes==0&&t.binding_storage_reuses==0&&t.binding_storage_fresh==0&&
+        e.state_calls==0&&e.buffer_calls==0&&e.texture_calls==0&&e.sampler_calls==0&&e.avoided_calls==0&&
+        e.buffer_extent_queries==0&&e.texture_shape_queries==0);
+      Require(warmImmutable.buffer_hits==0&&warmImmutable.texture_hits==0&&warmImmutable.uploaded_bytes==0&&
+        warmImmutable.page_memory_allocations==0&&warmImmutable.page_memory_reuses==0&&warmImmutable.free_page_bytes==0&&
+        warmImmutable.peak_buffer_bytes==0&&warmImmutable.resident_buffer_bytes>0&&warm.allocated_bytes>0);
+    }
+
+    Require(cold.surface_creates==(theft4_retail_mode()?0:3)&&cold.surface_creates==warm.surface_creates&&cold.view_creates==warm.view_creates&&
       immutable.buffer_creates==warmImmutable.buffer_creates&&immutable.uploaded_bytes==warmImmutable.uploaded_bytes&&
       pipelines==adapter.PipelineCount());
     // Report every shader preparation failure in a batch, including later
@@ -810,7 +834,7 @@ struct Probe {
     copy.colors[0]=a;copy.commands.push_back(host);plan->commands.push_back(copy);
     plan->output=r::SurfaceView{target->key,0,0,r::Aspect::Color};
     auto receipt=adapter.Submit(plan,error,nullptr,true);Require(bool(receipt));Require(receipt.Wait(error));
-    Require(adapter.LastTiming().native_identity_copies==1&&adapter.LastTiming().avoided_attachment_stores==1);
+    Require(adapter.LastTiming().native_identity_copies==(theft4_retail_mode()?0:1)&&adapter.LastTiming().avoided_attachment_stores==(theft4_retail_mode()?0:1));
     auto src=adapter.SampledTexture(*plan,{r::SurfaceView{source->key,0,0,r::Aspect::Color}},error);Require(src);
     auto dst=adapter.Output(*plan,error);Require(dst);Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
     // Force the specialized shader path with a neutral runtime exponent flag.
@@ -820,7 +844,7 @@ struct Probe {
     plan=std::make_shared<r::FramePlan>(*plan);
     (*r::GetHostDraw(std::get<r::Pass>(plan->commands[2]).commands[0])).constants={changed,0,64};
     plan->sequence=2;receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));
-    Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==1);
+    Require(adapter.LastTiming().native_identity_copies==0&&adapter.LastTiming().avoided_attachment_loads==(theft4_retail_mode()?0:1));
     Require(renderer.ReadRGBA8(src,error)==renderer.ReadRGBA8(dst,error));
     FrameAdapter capped(renderer,1);Require(capped.Open(libraries.UTF8String,error));
     for(uint32_t flag:{64u,128u,64u,32768u}) {
@@ -831,7 +855,7 @@ struct Probe {
       auto submitted=capped.Submit(candidate,error);Require(bool(submitted));Require(submitted.Wait(error));
       Require(renderer.ReadRGBA8(capped.Output(*candidate,error),error)==renderer.ReadRGBA8(src,error));
     }
-    Require(capped.Stats().host_specializations==1&&capped.Stats().host_specialization_fallbacks==2);
+    Require(capped.Stats().host_specializations==(theft4_retail_mode()?0:1)&&capped.Stats().host_specialization_fallbacks==(theft4_retail_mode()?0:2));
     Require(capped.PipelineCount()==2); // One specialized PSO and one shared dynamic PSO.
     [results addObject:@{@"case":@"identity_native_copy_full_overwrite_load_and_specialization",@"passed":@YES,
       @"identity_pixels_equal":@YES,@"shader_pixels_equal":@YES,@"previous_store_elided":@YES,@"full_overwrite_load_elided":@YES,
@@ -1127,7 +1151,7 @@ struct Probe {
     const auto cold=adapter.ImmutableStats();Require(adapter.PipelineCount()==2);
     receipt=adapter.Submit(plan,error);Require(bool(receipt));Require(receipt.Wait(error));check(false);
     Require(adapter.ImmutableStats().buffer_creates==cold.buffer_creates&&adapter.PipelineCount()==2);
-    Require(adapter.LastTiming().binding_storage_reuses==2&&adapter.LastTiming().binding_storage_fresh==0);
+    Require(adapter.LastTiming().binding_storage_reuses==(theft4_retail_mode()?0:2)&&adapter.LastTiming().binding_storage_fresh==0);
     auto invalid=std::make_shared<r::FramePlan>(*plan);
     (*r::GetHostDraw(std::get<r::Pass>(invalid->commands.back()).commands[0])).constants.length=43;
     Require(!adapter.Submit(invalid,error));error.clear();check(false);
@@ -1223,7 +1247,7 @@ struct Probe {
       }
       creates[mode]=cache.Stats().buffer_creates;uploaded[mode]=cache.Stats().uploaded_bytes;
     }
-    Require(creates[1]<creates[0]&&uploaded[1]<uploaded[0]);
+    Require(theft4_retail_mode() ? creates[0]==0&&creates[1]==0&&uploaded[0]==0&&uploaded[1]==0 : creates[1]<creates[0]&&uploaded[1]<uploaded[0]);
     [results addObject:@{@"case":@"bounded_high_memory_upload_working_set",@"passed":@YES,
       @"geometry_bytes":@(geometry.size()*versions.size()),@"frames":@12,
       @"old_buffer_creates":@(creates[0]),@"new_buffer_creates":@(creates[1]),
@@ -1251,7 +1275,7 @@ struct Probe {
       Require(cache.Stats().resident_constant_bytes<=4*1024*1024);
       Require(cache.Stats().resident_buffer_bytes<=14*1024*1024);
     }
-    Require(cache.Stats().constant_evictions>0&&cache.Stats().constant_evictions==cache.Stats().buffer_evictions);
+    Require((theft4_retail_mode()?cache.Stats().constant_evictions==0:cache.Stats().constant_evictions>0)&&cache.Stats().constant_evictions==cache.Stats().buffer_evictions);
     Require(cache.Buffer(geometry_version,geometry,error)==original);
     Require(std::memcmp(static_cast<const uint8_t*>(first.buffer.contents)+first.offset,constants.data(),constants.size())==0);
     [results addObject:@{@"case":@"constant_residency_cannot_displace_geometry",@"passed":@YES,
@@ -1397,13 +1421,13 @@ struct Probe {
         Require(frame.ClearRectangle(clear,error));
       }
     }
-    Require(last_offset!=first.offset);Require(frame.Stats().buffer_offset_calls>40);
+    Require(last_offset!=first.offset);Require((theft4_retail_mode()?frame.Stats().buffer_offset_calls==0:frame.Stats().buffer_offset_calls>40));
     Require(frame.Stats().buffer_extent_queries<40*4);
     Require(frame.EndPass(error));
     for(size_t batch=0;batch<12;++batch) {
       cache.BeginUploadBatch();std::vector<uint8_t> filler(4096,uint8_t(batch));upload(filler,true);
     }
-    Require(cache.Stats().buffer_evictions>0&&cache.Stats().resident_buffer_bytes<=1024*1024);
+    Require((theft4_retail_mode()?cache.Stats().buffer_evictions==0:cache.Stats().buffer_evictions>0)&&cache.Stats().resident_buffer_bytes<=1024*1024);
     float first_multiplier=0;std::memcpy(&first_multiplier,static_cast<const uint8_t*>(first.buffer.contents)+first.offset+0x360,4);
     Require(first_multiplier==0.25f);
     owners.clear();cache.SweepRetired();cache.Clear();prototype={};first={};
@@ -1459,7 +1483,7 @@ struct Probe {
     {
       Renderer restored;Require(restored.Ready());restored.ConfigurePipelineArchive(cache+"/pipelines.metalarc");
       PlanAdapter second(restored);second.ConfigurePipelineCache(cache);Require(second.Open(libraries.UTF8String,error));
-      Require(second.PipelineCount()==1&&restored.PipelineArchiveHits()>=1);
+      Require(second.PipelineCount()==1&&(theft4_retail_mode()?restored.PipelineArchiveHits()==0:restored.PipelineArchiveHits()>=1));
       Draw packet;Require(second.Prepare(*immutable,packet,error));Require(second.PipelineCount()==1);
     }
     {
@@ -1532,20 +1556,20 @@ struct Probe {
     auto invalid=*prepared;invalid.scissor.width=NSUIntegerMax;
     Require(!frame.Encode(invalid,error));
     for(size_t repeat=0;repeat<20;++repeat)Require(frame.Encode(*prepared,error));
-    Require(frame.Stats().state_calls==11&&frame.Stats().avoided_calls>=20*11);
+    Require(frame.Stats().state_calls==(theft4_retail_mode()?0:11)&&(theft4_retail_mode()?frame.Stats().avoided_calls==0:frame.Stats().avoided_calls>=20*11));
     Clear restore;restore.colors=1;restore.rectangle={0,0,W,H};restore.color={0.1f,0.2f,0.3f,0.4f};
     Require(frame.ClearRectangle(restore,error));Require(frame.Encode(*prepared,error));
-    Require(frame.Stats().state_calls==22);
+    Require(frame.Stats().state_calls==(theft4_retail_mode()?0:22));
     Require(frame.EndPass(error));Require(frame.BeginPass(pass,error));Require(frame.Encode(*prepared,error));
-    Require(frame.Stats().state_calls==33);Require(frame.EndPass(error));
+    Require(frame.Stats().state_calls==(theft4_retail_mode()?0:33));Require(frame.EndPass(error));
     auto wrong_target=Color();
     Require(frame.BeginPass(Pass(wrong_target,nil,nil),error));
-    Require(!frame.Encode(*prepared,error));Require(frame.Stats().state_calls==33);
+    Require(!frame.Encode(*prepared,error));Require(frame.Stats().state_calls==(theft4_retail_mode()?0:33));
     Require(frame.EndPass(error));
     auto copied_pass=Pass(target,nil,nil);copied_pass.colorAttachments[0].clearColor=pass.colorAttachments[0].clearColor;
     Require(frame.BeginPass(copied_pass,error));
     copied_pass.colorAttachments[0].texture=wrong_target; // Caller mutation cannot change the active pass.
-    Require(frame.Encode(*prepared,error));Require(frame.Stats().state_calls==44);Require(frame.EndPass(error));
+    Require(frame.Encode(*prepared,error));Require(frame.Stats().state_calls==(theft4_retail_mode()?0:44));Require(frame.EndPass(error));
     adapter.BeginUploadBatch();
     auto new_bank=std::make_shared<r::Bytes>();new_bank->generation=2;new_bank->value.assign(4096,0xff);
     auto next_uniform=adapter.ConstantFor({new_bank,0,4096},error);Require(next_uniform.buffer);

@@ -43,6 +43,9 @@ class FrameAdapter {
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  template<bool Diagnostics> Receipt SubmitFrameImpl(const std::shared_ptr<const render::FramePlan>&,
+                      render::SurfaceKey,id<CAMetalDrawable>,std::string& error,
+                      render::SurfaceContents* published,bool profile_gpu);
   Receipt SubmitFrame(const std::shared_ptr<const render::FramePlan>&,
                       render::SurfaceKey,id<CAMetalDrawable>,std::string& error,
                       render::SurfaceContents* published,bool profile_gpu);

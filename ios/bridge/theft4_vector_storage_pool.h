@@ -12,12 +12,12 @@ namespace theft4 {
 template<class A,class B> class VectorStoragePool {
  public:
   struct Entry {std::vector<A> first;std::vector<B> second;};
-  explicit VectorStoragePool(size_t bytes=8*1024*1024,size_t entries=8192)
-      :maximum_bytes_(bytes),maximum_entries_(entries){}
+  explicit VectorStoragePool(size_t bytes=8*1024*1024,size_t entries=8192,bool diagnostics=true)
+      :diagnostics_(diagnostics),maximum_bytes_(bytes),maximum_entries_(entries){}
   Entry Acquire() {
-    if(entries_.empty()){++misses_;return {};}
+    if(entries_.empty()){if(diagnostics_)++misses_;return {};}
     auto out=std::move(entries_.back());entries_.pop_back();
-    bytes_-=Bytes(out);++hits_;return out;
+    bytes_-=Bytes(out);if(diagnostics_)++hits_;return out;
   }
   void Recycle(std::vector<A>& first,std::vector<B>& second) noexcept {
     first.clear();second.clear();
@@ -39,6 +39,7 @@ template<class A,class B> class VectorStoragePool {
   size_t Misses()const{return misses_;}
  private:
   static size_t Bytes(const Entry& e){return e.first.capacity()*sizeof(A)+e.second.capacity()*sizeof(B);}
+  const bool diagnostics_;
   std::vector<Entry> entries_;
   size_t maximum_bytes_,maximum_entries_,bytes_=0,hits_=0,misses_=0;
 };

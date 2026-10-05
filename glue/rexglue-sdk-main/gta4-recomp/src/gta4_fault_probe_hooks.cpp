@@ -2,6 +2,7 @@
 
 #include <rex/diagnostics/runtime_probe.h>
 #include <rex/fault_diagnostics.h>
+#include <rex/diagnostics/policy.h>
 
 namespace {
 using rex::diagnostics::runtime_probe::Scope;
@@ -12,13 +13,16 @@ using rex::diagnostics::runtime_probe::Stage;
 class GuestFaultScope {
  public:
   GuestFaultScope(uint32_t tag, const PPCContext& ctx, const uint8_t* base)
-      : had_previous_(RexReadCurrentGuestFaultContext(&previous_) != 0) {
+      : active_(rex::diagnostics::IsEnabled(rex::diagnostics::Category::kLogging)) {
+    if(!active_)return;
+    had_previous_=RexReadCurrentGuestFaultContext(&previous_) != 0;
     const RexGuestFaultContext current{
         tag, ctx.r3.u32, ctx.r29.u32, ctx.r30.u32, ctx.r31.u32,
         static_cast<uint32_t>(ctx.lr), reinterpret_cast<uint64_t>(base)};
     RexSetGuestFaultContext(&current);
   }
   ~GuestFaultScope() {
+    if(!active_)return;
     if (had_previous_) {
       RexSetGuestFaultContext(&previous_);
     } else {
@@ -30,7 +34,7 @@ class GuestFaultScope {
 
  private:
   RexGuestFaultContext previous_{};
-  bool had_previous_;
+  bool active_=false,had_previous_=false;
 };
 }  // namespace
 

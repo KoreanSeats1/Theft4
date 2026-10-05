@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_metal_presenter.h"
 
 #import <Metal/Metal.h>
@@ -192,6 +193,7 @@ bool theft4_metal_present_clear(double red, double green, double blue,
 }
 
 void theft4_frame_counter_note_published(void) {
+  if (theft4_retail_mode()) return;
   const uint64_t frame = published_game_frames.fetch_add(1, std::memory_order_relaxed) + 1;
   if (frame_time_history.Enabled() || publication_trace.Enabled()) {
     const uint64_t now_ns = uint64_t(CACurrentMediaTime() * 1e9);
@@ -199,7 +201,7 @@ void theft4_frame_counter_note_published(void) {
     publication_trace.Record(frame, now_ns);
   }
 }
-uint64_t theft4_publication_capture_start(void) { return publication_trace.Start(); }
+uint64_t theft4_publication_capture_start(void) { return theft4_retail_mode()?0:publication_trace.Start(); }
 void theft4_publication_capture_stop(void) { publication_trace.Stop(); }
 uint32_t theft4_publication_capture_read(uint64_t* cursor,
     theft4_publication_sample* samples, uint32_t capacity, uint64_t* lost) {
@@ -211,7 +213,7 @@ uint32_t theft4_publication_capture_read(uint64_t* cursor,
 }
 
 void theft4_frame_time_set_enabled(bool enabled) {
-  frame_time_history.SetEnabled(enabled);
+  frame_time_history.SetEnabled(enabled&&!theft4_retail_mode());
 }
 
 void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot) {
@@ -301,7 +303,7 @@ bool theft4_metal_renderer_end_frame(uint32_t frontbuffer_ptr,
     frame_command_buffer = nil;
     dispatch_semaphore_t slots = frame_slots;
     const uint64_t frame = submitted_frames.fetch_add(1) + 1;
-    buffer.label = [NSString stringWithFormat:@"Theft4 Guest Frame %llu",
+    if(!theft4_retail_mode()) buffer.label = [NSString stringWithFormat:@"Theft4 Guest Frame %llu",
                                                (unsigned long long)frame];
     [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
       (void)completed;

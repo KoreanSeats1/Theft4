@@ -55,7 +55,8 @@ ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
   return {source,source->generation,source->conversion};
 }
 }
-PlanAdapter::PlanAdapter(Renderer& renderer,size_t budget):renderer_(renderer),shaders_(renderer),resources_(renderer,budget){}
+PlanAdapter::PlanAdapter(Renderer& renderer,size_t budget):diagnostics_(!theft4_retail_mode()),binding_storage_(8*1024*1024,8192,diagnostics_),
+    renderer_(renderer),shaders_(renderer),resources_(renderer,budget){}
 Draw PlanAdapter::AcquireDrawStorage() {
   auto storage=binding_storage_.Acquire();Draw draw;
   draw.textures=std::move(storage.first);draw.samplers=std::move(storage.second);return draw;
@@ -248,7 +249,10 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
     pipelines_.emplace(std::pair{*effective,primitive},result);}return remember(result);
 }
 BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Bytes>& source,bool constants,std::string& error) {
-  if(!upload_batch_active_||source->value.size()>64*1024)
+  // A single-owner source often belongs to one newly recorded draw. Inserting
+  // every such source made streaming slower despite good shared-source hits.
+  // This is only a reuse hint: the full cache still validates every version.
+  if(!upload_batch_active_||source->value.size()>64*1024||source.use_count()==1)
     return constants?resources_.UniformBuffer(Version(source),source->value,error):
                      resources_.UploadBuffer(Version(source),source->value,error);
   // Allocator alignment and regular source strides made the old low-bit,
@@ -268,11 +272,11 @@ BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Byte
     if(!entry.owner.owner_before(source)&&!source.owner_before(entry.owner)&&
         entry.generation==source->generation&&entry.conversion==source->conversion) {
       if(entry.view.length!=source->value.size()){error="Metal upload generation changed payload size";return {};}
-      ++prepared_view_hits_;error.clear();return entry.view;
+      if(diagnostics_)++prepared_view_hits_;error.clear();return entry.view;
     }
     break;
   }
-  ++prepared_view_misses_;
+  if(diagnostics_)++prepared_view_misses_;
   auto view=constants?resources_.UniformBuffer(Version(source),source->value,error):
                       resources_.UploadBuffer(Version(source),source->value,error);
   if(view.buffer&&destination) {

@@ -51,6 +51,7 @@ class PlanAdapter {
   bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,Draw&,std::string& error);
   Draw AcquireDrawStorage();
   void RecycleDrawStorage(Draw& draw) noexcept;
+  const bool diagnostics_;
   theft4::VectorStoragePool<TextureBinding,SamplerBinding> binding_storage_;
   std::string pipeline_cache_directory_;
   bool pipeline_cache_dirty_=false;
@@ -68,8 +69,11 @@ class PlanAdapter {
     uint64_t generation=0;std::array<uint64_t,4> conversion{};
     BufferView view;
   };
-  static constexpr size_t kGeometryViewSlots=4096,kConstantViewSlots=512;
-  std::array<PreparedBufferView,kGeometryViewSlots+kConstantViewSlots> buffer_views_;
+  static constexpr size_t kGeometryViewSlots=4096,kConstantViewSlots=4096;
+  // Allocate once with the adapter, rather than putting the working-set
+  // table on a caller's stack. Clear only occupied slots after submission.
+  std::unique_ptr<PreparedBufferView[]> buffer_views_=
+      std::make_unique<PreparedBufferView[]>(kGeometryViewSlots+kConstantViewSlots);
   std::array<uint16_t,kGeometryViewSlots+kConstantViewSlots> buffer_view_slots_{};
   size_t buffer_view_count_=0;
   bool upload_batch_active_=false;

@@ -208,7 +208,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   if(auto found=native_metal_frame_->pipelines.find(cpu_key);found!=native_metal_frame_->pipelines.end()) {
     const auto& p=found->second;draw.pipeline=p.pipeline;draw.primitive=p.primitive;
     draw.cull=p.cull;draw.clockwise=p.clockwise;draw.lines=p.lines;draw.depth_clamp=p.depth_clamp;
-    draw.primitive_restart=p.primitive_restart;++native_metal_frame_->pipeline_hits;
+    draw.primitive_restart=p.primitive_restart;if(!theft4_retail_mode())++native_metal_frame_->pipeline_hits;
   } else {
     auto description=PrepareNativePipelineDescription(state,fixed,key,capabilities,
         select_shader(state.vertex_shader_resource),select_shader(state.pixel_shader_resource),error);
@@ -218,7 +218,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     if(native_metal_frame_->pipelines.size()>=4096)native_metal_frame_->pipelines.clear();
     native_metal_frame_->pipelines.emplace(std::move(cpu_key),NativeMetalFrameState::PipelineTemplate{
         draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,draw.primitive_restart});
-    ++native_metal_frame_->pipeline_misses;
+    if(!theft4_retail_mode())++native_metal_frame_->pipeline_misses;
   }
   draw.first_vertex=first;draw.vertex_count=indexed?0:count;draw.base_vertex=base_vertex;
   const auto& v=viewport.viewport;
@@ -262,7 +262,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   if(state.pixel_shader_resource)constant_usage.Merge(state.pixel_shader_resource->constant_usage);
   if(!NativeConstantProjectionEnabled()||REXCVAR_GET(gta4_validate_native_hot_caches))constant_usage.known=false;
   if(!native_metal_frame_->projected_constants)
-    native_metal_frame_->projected_constants=std::make_unique<NativeMetalConstantProjection<r::Bytes>>();
+    native_metal_frame_->projected_constants=std::make_unique<NativeMetalConstantProjection<r::Bytes>>(!theft4_retail_mode());
   auto& projected_constants=*native_metal_frame_->projected_constants;
   for(size_t bank=0;bank<2;++bank) {
     const auto& version=versions[bank];const size_t required=bank?kPixelConstantsSize:kVertexConstantsSize;
@@ -278,10 +278,10 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
         bytes=make_bytes(zero,{6,bank,required});
         native_metal_frame_->unused_constants[bank]=bytes;
       }
-      ++native_metal_frame_->unused_constant_banks;native_metal_frame_->constant_bytes_avoided+=required;
+      if(!theft4_retail_mode())++native_metal_frame_->unused_constant_banks;if(!theft4_retail_mode())native_metal_frame_->constant_bytes_avoided+=required;
     } else {
       bytes=projected_constants.Find(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage);
-      if(bytes)native_metal_frame_->constant_bytes_avoided+=required;
+      if(bytes)if(!theft4_retail_mode())native_metal_frame_->constant_bytes_avoided+=required;
     }
     if(bytes){draw.constants[bank]={bytes,0,bytes->value.size()};continue;}
     const auto cache_key=std::array<uint64_t,8>{3,uint64_t(reinterpret_cast<uintptr_t>(version.get())),bank};
@@ -301,10 +301,10 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           covered->conversion={7,bank,version->token.revision,XXH3_64bits(mask.data(),sizeof(mask))};
           bytes=std::move(covered);
           if(!native_metal_frame_->constant_packets.Store(covered_key,bytes))return reject("Metal covered constant cache allocation failed");
-          ++native_metal_frame_->masked_constant_materializations;
-          native_metal_frame_->masked_constant_bytes_written+=written;
-          native_metal_frame_->masked_constant_full_bank_bytes+=required;
-        } else ++native_metal_frame_->masked_constant_fallbacks;
+          if(!theft4_retail_mode())++native_metal_frame_->masked_constant_materializations;
+          if(!theft4_retail_mode())native_metal_frame_->masked_constant_bytes_written+=written;
+          if(!theft4_retail_mode())native_metal_frame_->masked_constant_full_bank_bytes+=required;
+        } else if(!theft4_retail_mode())++native_metal_frame_->masked_constant_fallbacks;
       }
     }
     if(!bytes) {
@@ -535,7 +535,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     // attachment content for the rejected draw. Backend validation stays strict.
     static std::map<std::pair<uint64_t,uint64_t>,uint64_t> rejected_ranges;
     const auto shader_pair=std::pair{draw.pipeline.vertex.hash,draw.pipeline.fragment.hash};
-    if(rejected_ranges.size()<32||rejected_ranges.contains(shader_pair)) {
+    if(!theft4_retail_mode()&&(rejected_ranges.size()<32||rejected_ranges.contains(shader_pair))) {
       auto& failures=rejected_ranges[shader_pair];++failures;
       if(failures==1||failures%1024==0) {
         REXLOG_WARN("gta4-metal-draw-rejected: count={} type={} primitive={} guest-first={} guest-count={} "

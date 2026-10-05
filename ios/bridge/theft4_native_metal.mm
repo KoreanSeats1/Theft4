@@ -98,6 +98,7 @@ struct Frame::Impl {
     MTLPixelFormat depth=MTLPixelFormatInvalid,stencil=MTLPixelFormatInvalid;
     NSUInteger depth_samples=0,stencil_samples=0,width=0,height=0,default_samples=0;
   } shape;
+  const bool diagnostics=!theft4_retail_mode();
   EncoderStats stats;
   // Strong, bounded entries prevent pointer reuse while cached traits are
   // admitted. Every draw still validates its own range and expected interface.
@@ -105,15 +106,15 @@ struct Frame::Impl {
   std::array<BufferExtent,64> buffer_extents;
   struct TextureShape {id<MTLTexture> owner=nil;MTLTextureType type{};bool framebuffer_only=false;};
   std::array<TextureShape,64> texture_shapes;
-  bool ValidView(const BufferView& v,NSUInteger required) {
+  template<bool Diagnostics> bool ValidView(const BufferView& v,NSUInteger required) {
     if(!v.buffer)return false;
     auto& entry=buffer_extents[(reinterpret_cast<uintptr_t>((__bridge void*)v.buffer)>>4)%buffer_extents.size()];
-    if(entry.owner!=v.buffer){entry.owner=v.buffer;entry.length=v.buffer.length;++stats.buffer_extent_queries;}
+    if(entry.owner!=v.buffer){entry.owner=v.buffer;entry.length=v.buffer.length;if constexpr(Diagnostics)++stats.buffer_extent_queries;}
     return v.offset<=entry.length&&v.length<=entry.length-v.offset&&required<=v.length;
   }
-  const TextureShape& ShapeFor(id<MTLTexture> texture) {
+  template<bool Diagnostics> const TextureShape& ShapeFor(id<MTLTexture> texture) {
     auto& entry=texture_shapes[(reinterpret_cast<uintptr_t>((__bridge void*)texture)>>4)%texture_shapes.size()];
-    if(entry.owner!=texture){entry.owner=texture;entry.type=texture.textureType;entry.framebuffer_only=texture.framebufferOnly;++stats.texture_shape_queries;}
+    if(entry.owner!=texture){entry.owner=texture;entry.type=texture.textureType;entry.framebuffer_only=texture.framebufferOnly;if constexpr(Diagnostics)++stats.texture_shape_queries;}
     return entry;
   }
   id<MTLCounterSampleBuffer> counters=nil;
@@ -253,7 +254,7 @@ std::shared_ptr<const Pipeline> Renderer::MakePipelineInternal(const Shader& vs,
   if(impl_->archive) {
     desc.binaryArchives=@[impl_->archive];
     p->state=[Device() newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&e];
-    if(p->state)++impl_->archive_hits;
+    if(p->state&&!theft4_retail_mode())++impl_->archive_hits;
     else {
       // Compile the missing functions into the archive once. No disk IO is
       // performed during drawing; persist only when the backend is drained.
@@ -316,7 +317,7 @@ Frame Renderer::BeginFrame(std::string& error) {
   });
   p->buffer = [impl_->queue commandBuffer];
   if (!p->buffer) { error = "Metal command buffer allocation failed"; return {}; }
-  p->buffer.label = @"Theft4 Native Game Passes";
+  if(!theft4_retail_mode())p->buffer.label = @"Theft4 Native Game Passes";
   return Frame(std::move(p));
 }
 Frame::Frame() = default;
@@ -382,7 +383,7 @@ bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
   if (!impl_->encoder) return Error(error, "Metal render encoder allocation failed");
   return true;
 }
-bool Frame::Encode(const Draw& d, std::string& error) {
+template<bool Diagnostics> bool Frame::EncodeImpl(const Draw& d, std::string& error) {
   if (!*this || !impl_->encoder || !d.pipeline || !d.pipeline->state || !d.instance_count)
     return Error(error, "Invalid direct Metal draw state");
   const auto& p = *d.pipeline;
@@ -414,13 +415,13 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     return Error(error,"Invalid direct Metal dynamic state");
   for(float value:d.blend_color)if(!std::isfinite(value))
     return Error(error,"Invalid direct Metal blend color");
-  for (size_t i = 0; i < 3; ++i) if (p.constant_bytes[i]&&(!impl_->ValidView(d.constants[i], p.constant_bytes[i]) || d.constants[i].offset % 16))
+  for (size_t i = 0; i < 3; ++i) if (p.constant_bytes[i]&&(!impl_->ValidView<Diagnostics>(d.constants[i], p.constant_bytes[i]) || d.constants[i].offset % 16))
     return Error(error, "Invalid Metal game constant bank");
   NSUInteger maximum = d.maximum_vertex;
   if (d.index_count) {
     const NSUInteger size = d.index_type == MTLIndexTypeUInt16 ? 2 : 4;
     if (d.index_count > std::numeric_limits<NSUInteger>::max() / size ||
-        !impl_->ValidView(d.indices, d.index_count * size) || d.indices.offset % size)
+        !impl_->ValidView<Diagnostics>(d.indices, d.index_count * size) || d.indices.offset % size)
       return Error(error, "Invalid Metal index range");
   } else {
     if (!d.vertex_count || d.first_vertex > std::numeric_limits<NSUInteger>::max() - (d.vertex_count - 1))
@@ -430,7 +431,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   for (NSUInteger s = 0; s < kGameVertexStreamCount; ++s) if (p.vertex_streams & (1u << s)) {
     const NSUInteger last=(p.instance_streams & (1u<<s)) ? d.instance_count-1 : maximum;
     if (last > (std::numeric_limits<NSUInteger>::max() - p.attribute_extents[s]) / p.strides[s] ||
-        !impl_->ValidView(d.vertices[s], last * p.strides[s] + p.attribute_extents[s]))
+        !impl_->ValidView<Diagnostics>(d.vertices[s], last * p.strides[s] + p.attribute_extents[s]))
       return Error(error, "Invalid Metal vertex stream range");
   }
   uint32_t texture_masks[2]{}, sampler_masks[2]{};
@@ -440,7 +441,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     if ((b.stage!=Stage::Vertex&&b.stage!=Stage::Fragment) || b.index >= 31 || !b.texture || !(abi.textures & (1u << b.index)) ||
         (texture_masks[s] & (1u << b.index)))
       return Error(error, "Invalid Metal texture binding");
-    const auto& traits=impl_->ShapeFor(b.texture);
+    const auto& traits=impl_->ShapeFor<Diagnostics>(b.texture);
     if(traits.framebuffer_only||traits.type!=abi.texture_types[b.index])
       return Error(error, "Invalid Metal texture binding");
     texture_masks[s] |= 1u << b.index;
@@ -460,7 +461,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   auto e = impl_->encoder;auto& cached=impl_->state;auto& stats=impl_->stats;
   const bool first=!cached.valid;
   const auto changed=[&](bool difference,auto&& apply) {
-    if(first||difference){apply();++stats.state_calls;}else ++stats.avoided_calls;
+    if(first||difference){apply();if constexpr(Diagnostics)++stats.state_calls;}else {if constexpr(Diagnostics)++stats.avoided_calls;}
   };
   changed(cached.pipeline!=(__bridge const void*)p.state,[&]{[e setRenderPipelineState:p.state];cached.pipeline=(__bridge const void*)p.state;});
   changed(cached.depth!=(__bridge const void*)p.depth_stencil,[&]{[e setDepthStencilState:p.depth_stencil];cached.depth=(__bridge const void*)p.depth_stencil;});
@@ -479,16 +480,16 @@ bool Frame::Encode(const Draw& d, std::string& error) {
   const auto buffer=[&](Stage stage,NSUInteger slot,const BufferView& view) {
     auto& previous=stage==Stage::Vertex?cached.vertex_buffers[slot]:cached.fragment_buffers[slot];
     const auto object=(__bridge const void*)view.buffer;
-    if(previous.object==object&&previous.offset==view.offset){++stats.avoided_calls;return;}
+    if(previous.object==object&&previous.offset==view.offset){if constexpr(Diagnostics)++stats.avoided_calls;return;}
     if(previous.object==object) {
       if(stage==Stage::Vertex)[e setVertexBufferOffset:view.offset atIndex:slot];
       else [e setFragmentBufferOffset:view.offset atIndex:slot];
-      ++stats.buffer_offset_calls;
+      if constexpr(Diagnostics)++stats.buffer_offset_calls;
     }else {
       if(stage==Stage::Vertex)[e setVertexBuffer:view.buffer offset:view.offset atIndex:slot];
       else [e setFragmentBuffer:view.buffer offset:view.offset atIndex:slot];
     }
-    previous={object,view.offset};++stats.buffer_calls;
+    previous={object,view.offset};if constexpr(Diagnostics)++stats.buffer_calls;
   };
   for(NSUInteger i=0;i<3;++i) {
     if(p.vertex.constant_bytes[i])buffer(Stage::Vertex,i,d.constants[i]);
@@ -505,7 +506,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     for(const auto& binding:d.textures)if(binding.stage==stage) {
       textures[binding.index]=binding.texture;
       const auto object=(__bridge const void*)binding.texture;
-      if(previous[binding.index]==object){++stats.avoided_calls;continue;}
+      if(previous[binding.index]==object){if constexpr(Diagnostics)++stats.avoided_calls;continue;}
       first_changed=std::min(first_changed,binding.index);last_changed=std::max(last_changed,binding.index);
     }
     if(first_changed!=31) {
@@ -513,7 +514,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       if(stage==Stage::Vertex)[e setVertexTextures:textures+first_changed withRange:range];
       else [e setFragmentTextures:textures+first_changed withRange:range];
       for(NSUInteger i=first_changed;i<=last_changed;++i)previous[i]=(__bridge const void*)textures[i];
-      ++stats.texture_calls;
+      if constexpr(Diagnostics)++stats.texture_calls;
     }
     id<MTLSamplerState> __unsafe_unretained samplers[16]={};
     auto& old_samplers=stage==Stage::Vertex?cached.vertex_samplers:cached.fragment_samplers;
@@ -521,7 +522,7 @@ bool Frame::Encode(const Draw& d, std::string& error) {
     for(const auto& binding:d.samplers)if(binding.stage==stage) {
       samplers[binding.index]=binding.sampler;
       const auto object=(__bridge const void*)binding.sampler;
-      if(old_samplers[binding.index]==object){++stats.avoided_calls;continue;}
+      if(old_samplers[binding.index]==object){if constexpr(Diagnostics)++stats.avoided_calls;continue;}
       first_changed=std::min(first_changed,binding.index);last_changed=std::max(last_changed,binding.index);
     }
     if(first_changed!=16) {
@@ -529,16 +530,19 @@ bool Frame::Encode(const Draw& d, std::string& error) {
       if(stage==Stage::Vertex)[e setVertexSamplerStates:samplers+first_changed withRange:range];
       else [e setFragmentSamplerStates:samplers+first_changed withRange:range];
       for(NSUInteger i=first_changed;i<=last_changed;++i)old_samplers[i]=(__bridge const void*)samplers[i];
-      ++stats.sampler_calls;
+      if constexpr(Diagnostics)++stats.sampler_calls;
     }
   }
-  cached.valid=true;++stats.draws;
+  cached.valid=true;if constexpr(Diagnostics)++stats.draws;
   if (d.index_count) [e drawIndexedPrimitives:d.primitive indexCount:d.index_count indexType:d.index_type
       indexBuffer:d.indices.buffer indexBufferOffset:d.indices.offset instanceCount:d.instance_count
       baseVertex:d.base_vertex baseInstance:0];
   else [e drawPrimitives:d.primitive vertexStart:d.first_vertex vertexCount:d.vertex_count
       instanceCount:d.instance_count];
   return true;
+}
+bool Frame::Encode(const Draw& d,std::string& error) {
+  return impl_&&impl_->diagnostics ? EncodeImpl<true>(d,error) : EncodeImpl<false>(d,error);
 }
 EncoderStats Frame::Stats() const{return impl_?impl_->stats:EncoderStats{};}
 bool Frame::EndPass(std::string& error) {
@@ -633,7 +637,7 @@ bool Frame::CopyTexture(id<MTLTexture> source,id<MTLTexture> destination,MTLOrig
      size.height>source.height-src.y||size.width>destination.width-dst.x||size.height>destination.height-dst.y)
     return Error(error,"Invalid Metal image copy or pass transition");
   auto e=[impl_->buffer blitCommandEncoder];if(!e)return Error(error,"Metal image-copy encoder allocation failed");
-  e.label=@"Theft4 Ordered Texture Copy";
+  if(!theft4_retail_mode())e.label=@"Theft4 Ordered Texture Copy";
   [e copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:src sourceSize:size
       toTexture:destination destinationSlice:0 destinationLevel:0 destinationOrigin:dst];
   [e endEncoding];impl_->stored_color=destination;return true;

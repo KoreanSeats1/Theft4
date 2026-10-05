@@ -10,6 +10,7 @@ namespace rex::graphics::gta4_native {
 // reflection, changed used registers, expired ancestors and long chains miss.
 template<class Payload> class NativeMetalConstantProjection {
  public:
+  explicit NativeMetalConstantProjection(bool diagnostics=true):diagnostics_(diagnostics){}
   std::shared_ptr<const Payload> Find(uint64_t vertex,uint64_t pixel,size_t bank,
       const std::shared_ptr<const ConstantStateVersion>& version,const NativeConstantUsage& usage) {
     if(!usage.known||bank>=2||!version)return {};
@@ -17,7 +18,7 @@ template<class Payload> class NativeMetalConstantProjection {
     auto previous=e.version.lock();
     if(e.vertex!=vertex||e.pixel!=pixel||e.mask!=usage.banks[bank]||!e.payload||
        !CanReuseConstantProjection(previous.get(),version.get(),e.mask))return {};
-    ++hits;if(previous!=version)++changed_version_hits;
+    if(diagnostics_){++hits;if(previous!=version)++changed_version_hits;}
     e.version=version;return e.payload;
   }
   void Remember(uint64_t vertex,uint64_t pixel,size_t bank,
@@ -52,6 +53,7 @@ template<class Payload> class NativeMetalConstantProjection {
   void Clear(){entries_={};hits=changed_version_hits=0;}
   uint64_t hits=0,changed_version_hits=0;
  private:
+  bool diagnostics_;
   static size_t Slot(uint64_t vertex,uint64_t pixel){return (vertex^(pixel>>7))%256;}
   struct Entry {
     uint64_t vertex=0,pixel=0;NativeConstantMask mask{};

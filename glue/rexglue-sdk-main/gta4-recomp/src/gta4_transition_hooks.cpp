@@ -116,6 +116,7 @@ extern "C" void sub_82145770(PPCContext& ctx, uint8_t* base) {
 }
 
 extern "C" void sub_821BB3D8(PPCContext& ctx, uint8_t* base) {
+  if(!rex::diagnostics::gta4_transition::IsEnabled()) {__imp__sub_821BB3D8(ctx,base);return;}
   const uint32_t requested_size = ctx.r3.u32;
   const uint32_t caller = static_cast<uint32_t>(ctx.lr);
   const uint32_t selector_before =
@@ -175,6 +176,7 @@ extern "C" void sub_821BB2D0(PPCContext& ctx, uint8_t* base) {
            access!=PageAccess::kExecuteReadOnly&&access!=PageAccess::kExecuteReadWrite)return {};
         return REX_LOAD_U32(address);
       });
+  if(!rex::diagnostics::gta4_transition::IsEnabled()) {__imp__sub_821BB2D0(ctx,base);return;}
   const uint32_t caller = static_cast<uint32_t>(ctx.lr);
   const uint32_t argument3 = ctx.r3.u32;
   const uint32_t argument4 = ctx.r4.u32;

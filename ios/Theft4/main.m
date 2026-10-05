@@ -1875,6 +1875,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)performanceProfileChanged:(NSNotification *)notification {
+    if (theft4_retail_mode()) return;
     NSString *fields = Theft4PerformanceProfileFields();
     const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1969,7 +1970,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)retailModeChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4RetailMode"];
     UIAlertController *notice=[UIAlertController alertControllerWithTitle:@"Reopen Theft4"
-        message:@"Retail Mode takes effect after closing and reopening the app. Save your game before closing."
+        message:sender.on ? @"Save your game, then close and reopen Theft4 to turn off development logging, profiling, captures and debug overlays. Your diagnostic preferences are preserved." : @"Save your game, then close and reopen Theft4 to restore diagnostic tools and your saved overlay preferences. Long Performance Capture is available to enable again."
         preferredStyle:UIAlertControllerStyleAlert];
     [notice addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:notice animated:YES completion:nil];
@@ -2957,7 +2958,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!theft4_retail_mode()) NSLog(@"Theft4 texture compatibility: enabled=%@",
               astcEnabled ? @"yes" : @"no");
 #endif
-        [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
+        if (!theft4_retail_mode()) [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
         theft4_apply_performance_defaults();
         if (_performanceCapture.on) [self beginPublicationCapture];
@@ -3218,6 +3219,7 @@ int main(int argc, char *argv[]) {
         const char *override=getenv("THEFT4_RETAIL_MODE");
         if (!override || (strcmp(override,"0") && strcmp(override,"1")))
             setenv("THEFT4_RETAIL_MODE",[defaults boolForKey:@"Theft4RetailMode"]?"1":"0",1);
+        theft4_apply_retail_diagnostic_policy();
         if (theft4_retail_mode()) {freopen("/dev/null","w",stdout);freopen("/dev/null","w",stderr);}
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(Theft4AppDelegate.class));
     }

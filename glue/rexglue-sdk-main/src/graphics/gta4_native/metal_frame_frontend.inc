@@ -210,7 +210,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     native_metal_frame_->resource_admission=std::make_unique<r::DrawResourceValidationCache>();
   native_metal_frame_->resource_admission->Clear();
   native_metal_frame_->constant_packets.Reset();
-  if(!native_metal_frame_->draw_arena)native_metal_frame_->draw_arena=std::make_unique<NativeSharedFrameArena<r::Capture>>();
+  if(!native_metal_frame_->draw_arena)native_metal_frame_->draw_arena=std::make_unique<NativeSharedFrameArena<r::Capture>>(32*1024*1024,!theft4_retail_mode());
   native_metal_frame_->draw_arena->BeginBatch([](r::Capture& capture){
     // Retain attribute capacity but release all immutable resource owners.
     auto attributes=std::move(capture.draw.pipeline.attributes);capture={};
@@ -1144,7 +1144,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.masked_constant_bytes_written=native_metal_frame_->masked_constant_bytes_written;
   next.masked_constant_full_bank_bytes=native_metal_frame_->masked_constant_full_bank_bytes;
   next.masked_constant_fallbacks=native_metal_frame_->masked_constant_fallbacks;
-  next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
+  next.timed_presents=native_metal_frame_->timed_presents+(!theft4_retail_mode()&&present.device?1:0);
   next.frontend_ms=native_metal_frame_->frontend_ms;
   if(!theft4_retail_mode()&&present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
@@ -1178,7 +1178,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     light::Set(light::Finalization, tick()-submit_done);
     light::Set(light::DriverSubmit, submit_done-validate_done);
   }
-  if(present.device&&next.timed_presents%60==1)
+  if(!theft4_retail_mode()&&present.device&&next.timed_presents%60==1)
     REXLOG_INFO("gta4-metal-allocation-performance: present={} registry-copies={} pooled-draws={} draw-pages={} recycled-draws={} fallback-draws={} draw-arena-bytes={}",
       next.timed_presents,next.surfaces.CopiedEntries()+next.textures.CopiedEntries(),next.draw_arena->pooled_objects,
       next.draw_arena->page_allocations,next.draw_arena->recycled_objects,next.draw_arena->fallback_objects,next.draw_arena->AllocatedBytes());

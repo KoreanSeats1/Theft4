@@ -118,14 +118,14 @@ class Backend final:public render::FrameBackend {
         }
         const auto drawable_begin=now();
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
-        drawable_ms=std::chrono::duration<double,std::milli>(now()-drawable_begin).count();
+        if(diagnostics)drawable_ms=std::chrono::duration<double,std::milli>(now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
         receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published,profile_gpu);
       } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
     const auto submitted_at=now();
-    const double submit_ms=std::chrono::duration<double,std::milli>(submitted_at-began).count();
+    const double submit_ms=diagnostics?std::chrono::duration<double,std::milli>(submitted_at-began).count():0;
     // The periodic summary can miss the exact spike. Keep a bounded slow-only
     // record of admission, driver preparation and encoding for attribution.
     if(diagnostics&&submit_ms>40&&slow_submissions_<256&&
@@ -169,7 +169,7 @@ class Backend final:public render::FrameBackend {
         (unsigned long long)resources.prepared_view_misses);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
-    const auto timing=adapter_->LastTiming();
+    const auto timing=diagnostics?adapter_->LastTiming():FrameTiming{};
     pending_.push_back({std::move(receipt),std::move(plan),present,timing.render_passes,timing.image_copies});
     error.clear();return true;
   }

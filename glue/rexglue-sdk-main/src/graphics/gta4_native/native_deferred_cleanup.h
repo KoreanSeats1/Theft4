@@ -23,7 +23,8 @@ class NativeDeferredCleanup {
     if (group_) dispatch_release(group_);
 #endif
   }
-  void Initialize(bool requested, uint32_t available_cpus) {
+  void Initialize(bool requested, uint32_t available_cpus,bool diagnostics=true) {
+    diagnostics_=diagnostics;
 #if defined(__APPLE__)
     if (!requested || available_cpus < 4 || group_) return;
     group_ = dispatch_group_create();
@@ -44,7 +45,7 @@ class NativeDeferredCleanup {
     // The group wait establishes callback completion and publication; result
     // fields are never read while the utility callback can still write them.
     pending_ = false;
-    ++completed_; commands_ += job_commands_; cpu_ns_ += job_cpu_ns_; wall_ns_ += job_wall_ns_;
+    if(diagnostics_) {++completed_; commands_ += job_commands_; cpu_ns_ += job_cpu_ns_; wall_ns_ += job_wall_ns_;}
     retained_metadata_bytes_ = 0;
 #endif
   }
@@ -56,18 +57,19 @@ class NativeDeferredCleanup {
   bool TryStart(std::vector<Owner>& records, size_t metadata_bytes, Recycler& recycler) {
     Poll();
     if (!available() || records.empty()) return false;
-    if (pending_) { ++busy_fallbacks_; return false; }
+    if (pending_) { if(diagnostics_)++busy_fallbacks_; return false; }
     // Bounds direct command metadata and owner count. Immutable resources can
     // be shared with caches/current work: this is not a total resource-byte cap.
-    if (records.size() > 8192 || metadata_bytes > 67108864) { ++budget_fallbacks_; return false; }
+    if (records.size() > 8192 || metadata_bytes > 67108864) { if(diagnostics_)++budget_fallbacks_; return false; }
 #if defined(__APPLE__)
     records_.swap(records);
-    recycler_ = &recycler; job_commands_ = records_.size();
+    recycler_ = &recycler;if(diagnostics_)job_commands_ = records_.size();
     retained_metadata_bytes_ = metadata_bytes;
-    high_water_metadata_bytes_ = std::max(high_water_metadata_bytes_,uint64_t(metadata_bytes));
-    ++started_; pending_ = true;
+    if(diagnostics_)high_water_metadata_bytes_ = std::max(high_water_metadata_bytes_,uint64_t(metadata_bytes));
+    if(diagnostics_)++started_; pending_ = true;
     dispatch_group_async_f(group_,queue_,this,[](void* raw) {
       auto& self = *static_cast<NativeDeferredCleanup*>(raw);
+      if(!self.diagnostics_) {self.recycler_->RecycleExternalBatch(self.records_);return;}
       const auto wall_begin = std::chrono::steady_clock::now();
       timespec begin{},end{};
       const bool valid_cpu = clock_gettime(CLOCK_THREAD_CPUTIME_ID,&begin)==0;
@@ -97,7 +99,7 @@ class NativeDeferredCleanup {
  private:
   Recycler* recycler_ = nullptr;
   std::vector<Owner> records_;
-  bool pending_ = false;
+  bool pending_ = false,diagnostics_=true;
   uint64_t job_commands_ = 0,job_cpu_ns_ = 0,job_wall_ns_ = 0;
   uint64_t started_ = 0,completed_ = 0,commands_ = 0,cpu_ns_ = 0,wall_ns_ = 0;
   uint64_t retained_metadata_bytes_ = 0,high_water_metadata_bytes_ = 0;

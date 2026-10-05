@@ -44,6 +44,7 @@ REXCVAR_DECLARE(uint32_t, gta4_native_cpu_present_admission);
 REXCVAR_DECLARE(bool, gta4_native_texture_content_cache);
 REXCVAR_DECLARE(bool, gta4_native_sparse_texture_walks);
 REXCVAR_DECLARE(bool, gta4_native_worker_stall_attribution);
+REXCVAR_DECLARE(bool, gta4_validate_native_hot_caches);
 REXCVAR_DECLARE(bool, gta4_native_async_pipeline_no_wait);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_prewarm);
 REXCVAR_DECLARE(bool, gta4_native_pipeline_snapshot_reuse);
@@ -88,7 +89,7 @@ void* entry_context = nullptr;
 
 void ObservedEntry(PPCContext& ctx, uint8_t* base) {
     if (!theft4_retail_mode()) std::fprintf(stderr, "THEFT4 AOT ENTRY REACHED\n");
-    std::fflush(stderr);
+    if (!theft4_retail_mode()) std::fflush(stderr);
     entry_event(entry_context, "Recompiled GTA IV entry point is executing");
     original_entry(ctx, base);
 }
@@ -110,20 +111,17 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             return 1;
         }
         // Keep this first-execution experiment separate from existing saves.
-        if (theft4_retail_mode()) {
-            for (const char* option : {"THEFT4_DIAGNOSTICS", "THEFT4_NATIVE_CONTENT_PROBE",
-                 "THEFT4_AUDIO_TIMING", "THEFT4_GPU_FLIGHT_TRACE", "THEFT4_PERFORMANCE_CAPTURE",
-                 "THEFT4_MOTION_BLUR_TRACE", "THEFT4_METAL_CAPTURE"}) setenv(option,"0",1);
-            for (const char* path : {"REX_GPU_FLIGHT_TRACE_PATH", "REX_AUDIO_HANDOFF_DIR",
-                 "THEFT4_FRAME_CAPTURE_DIR"}) unsetenv(path);
-        }
+        theft4_apply_retail_diagnostic_policy();
+        if(theft4_retail_mode())REXCVAR_SET(gta4_validate_native_hot_caches,false);
         const auto support = std::filesystem::path(support_directory) / "startup";
         std::filesystem::create_directories(support);
-        const std::string log_path = (support / "runtime.log").string();
-        rex::LogConfig logging;
-        logging.log_file = log_path.c_str();
-        logging.log_to_console = true;
-        rex::InitLogging(logging);
+        if(!theft4_retail_mode()) {
+            const std::string log_path = (support / "runtime.log").string();
+            rex::LogConfig logging;
+            logging.log_file = log_path.c_str();
+            logging.log_to_console = true;
+            rex::InitLogging(logging);
+        }
         if (const char* flight = std::getenv("THEFT4_GPU_FLIGHT_TRACE");
             flight && std::string_view(flight) == "1") {
             if (!std::getenv("REX_GPU_FLIGHT_TRACE_PATH")) {
@@ -471,8 +469,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 Lab texture content cache: {} ({})",
                     content_cache == "1" ? "enabled" : "strict baseline",
                     content_cache_override ? "launch override" : "Lab default");
-        REXCVAR_SET(gta4_native_worker_stall_attribution, true);
-        REXLOG_INFO("Theft4 Lab render-worker stall attribution enabled");
+        REXCVAR_SET(gta4_native_worker_stall_attribution, !theft4_retail_mode());
+        REXLOG_INFO("Theft4 Lab render-worker stall attribution enabled: {}", !theft4_retail_mode());
         // New-area pipelines may still be compiling when their first draw is
         // recorded. In the Lab, defer that draw instead of blocking the whole
         // render worker. Set 0 to restore the exact synchronous wait path.

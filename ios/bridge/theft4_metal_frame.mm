@@ -41,6 +41,7 @@ MTLStoreAction Store(render::Store value) {
 }
 }
 struct FrameAdapter::Impl {
+  const bool diagnostics=!theft4_retail_mode();
   struct Entry {
     std::weak_ptr<const render::Surface> owner;
     render::Surface descriptor;
@@ -92,7 +93,7 @@ struct FrameAdapter::Impl {
       surfaces.erase(it);Forget(s->key);
     }
     if(external) {
-      surfaces.emplace(s->key,Entry{s,*s,external,true,{},{}});++stats.surface_creates;return true;
+      surfaces.emplace(s->key,Entry{s,*s,external,true,{},{}});if(diagnostics)++stats.surface_creates;return true;
     }
     const auto bytes=SurfaceBytes(*s);
     if(bytes>kSurfaceBudget||stats.allocated_bytes>kSurfaceBudget-bytes) {
@@ -112,7 +113,7 @@ struct FrameAdapter::Impl {
     d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
     if(s->format==render::Format::Depth32FloatStencil8)d.usage|=MTLTextureUsagePixelFormatView;
     auto texture=renderer.Texture(d,error);if(!texture)return false;
-    surfaces.emplace(s->key,Entry{s,*s,texture,false,{},{}});stats.allocated_bytes+=bytes;++stats.surface_creates;
+    surfaces.emplace(s->key,Entry{s,*s,texture,false,{},{}});stats.allocated_bytes+=bytes;if(diagnostics)++stats.surface_creates;
     return true;
   }
   id<MTLTexture> View(const render::SurfaceView& view,std::string& error) {
@@ -129,7 +130,7 @@ struct FrameAdapter::Impl {
     auto texture=[entry.texture newTextureViewWithPixelFormat:entry.texture.pixelFormat
       textureType:MTLTextureType2D levels:NSMakeRange(view.level,1) slices:NSMakeRange(view.slice,1)];
     if(!texture){error="Metal rejected the ordered frame subresource view";return nil;}
-    entry.views.emplace(view,texture);++stats.view_creates;return texture;
+    entry.views.emplace(view,texture);if(diagnostics)++stats.view_creates;return texture;
   }
   MTLRenderPassDescriptor* Pass(const render::Pass& source,std::string& error) {
     auto result=[MTLRenderPassDescriptor renderPassDescriptor];
@@ -169,7 +170,7 @@ struct FrameAdapter::Impl {
     if(auto it=entry.sampled_views.find(view);it!=entry.sampled_views.end())return it->second;
     auto stencil=[texture newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];
     if(!stencil){error="Metal rejected the sampled stencil alias";return nil;}
-    entry.sampled_views.emplace(view,stencil);++stats.view_creates;return stencil;
+    entry.sampled_views.emplace(view,stencil);if(diagnostics)++stats.view_creates;return stencil;
   }
   id<MTLTexture> SampledView(const render::SampledSurfaceView& view,std::string& error) {
     auto it=surfaces.find(view.surface);
@@ -195,7 +196,7 @@ struct FrameAdapter::Impl {
         levels:NSMakeRange(view.level,view.levels) slices:NSMakeRange(view.slice,view.slices) swizzle:channels];
     }
     if(!texture){error="Metal rejected the sampled mip/layer/format alias";return nil;}
-    entry.sampled_ranges.emplace(view,texture);++stats.view_creates;return texture;
+    entry.sampled_ranges.emplace(view,texture);if(diagnostics)++stats.view_creates;return texture;
   }
   bool PrepareHost(const render::HostDraw& source,MTLRenderPassDescriptor* pass,Draw& draw,std::string& error) {
     const auto& info=render::kHostPrograms[size_t(source.program)];
@@ -215,7 +216,7 @@ struct FrameAdapter::Impl {
     }
     const auto variant=std::pair{source.program,specialization};
     if(specialize&&!resolve_specializations.contains(variant)&&resolve_specializations.size()>=maximum_resolve_specializations) {
-      specialize=false;specialization={};++stats.host_specialization_fallbacks;
+      specialize=false;specialization={};if(diagnostics)++stats.host_specialization_fallbacks;
     }
     const auto key=std::tuple{source.program,source.pipeline,specialization,specialize};
     auto it=host_pipelines.find(key);
@@ -224,7 +225,7 @@ struct FrameAdapter::Impl {
       if(!vs.function||!ps.function)return false;
       auto pipeline=BuildFixedPipeline(renderer,source.pipeline,render::Primitive::Triangle,vs,&ps,error);
       if(!pipeline)return false;it=host_pipelines.emplace(key,pipeline).first;
-      if(specialize){resolve_specializations.insert(variant);stats.host_specializations=resolve_specializations.size();}
+      if(specialize){resolve_specializations.insert(variant);if(diagnostics)stats.host_specializations=resolve_specializations.size();}
     }
     Draw result=draws.AcquireDrawStorage();
     theft4::StorageCleanup cleanup{[&]{draws.RecycleDrawStorage(result);}};result.pipeline=it->second;result.vertex_count=3;
@@ -272,14 +273,17 @@ Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::Frame
   if(!drawable||!target.id||!target.generation){error="Missing ordered Metal presentation target";return {};}
   return SubmitFrame(plan,target,drawable,error,published,profile_gpu);
 }
-Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
+template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shared_ptr<const render::FramePlan>& plan,
                                  render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   using Clock=std::chrono::steady_clock;
-  const auto clock_now=[] {return theft4_retail_mode()?Clock::time_point{}:Clock::now();};
+  const auto clock_now=[] {if constexpr(Diagnostics)return Clock::now();else return Clock::time_point{};};
   const auto begin=clock_now();
-  const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
-  const auto before_bindings_reused=impl_->draws.binding_storage_.Hits();
-  const auto before_bindings_fresh=impl_->draws.binding_storage_.Misses();
+  ResourceCacheStats before_resources{};size_t before_pipelines=0,before_bindings_reused=0,before_bindings_fresh=0;
+  if constexpr(Diagnostics) {
+    before_resources=ImmutableStats();before_pipelines=PipelineCount();
+    before_bindings_reused=impl_->draws.binding_storage_.Hits();
+    before_bindings_fresh=impl_->draws.binding_storage_.Misses();
+  }
   if(!plan){error="Missing ordered Metal frame plan";return {};}
   if(drawable) {
     if(!plan->output||*plan->output!=render::SurfaceView{target,0,0,render::Aspect::Color}) {
@@ -314,7 +318,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       }
     }
   }
-  profile_gpu=profile_gpu&&!theft4_retail_mode();
+  profile_gpu=profile_gpu&&Diagnostics;
   RetireResources(true);impl_->draws.BeginUploadBatch();render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
   theft4::StorageCleanup upload_views{[&]{impl_->draws.EndUploadBatch();}};
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
@@ -339,10 +343,12 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   size_t preparation_errors=0;std::string first_preparation_error;
   const auto failed_preparation=[&](uint64_t vertex,uint64_t fragment) {
     ++preparation_errors;if(first_preparation_error.empty())first_preparation_error=error;
+    if constexpr(Diagnostics) {
     const auto key=std::to_string(vertex)+":"+std::to_string(fragment)+":"+error;
-    if(!theft4_retail_mode()&&impl_->logged_preparation_errors.size()<32&&impl_->logged_preparation_errors.insert(key).second)
+    if(impl_->logged_preparation_errors.size()<32&&impl_->logged_preparation_errors.insert(key).second)
       std::fprintf(stderr,"gta4-metal-preflight: vs=%016llx ps=%016llx reason=%s submitted=false\n",
           (unsigned long long)vertex,(unsigned long long)fragment,error.c_str());
+    }
     error.clear();
   };
   size_t command_index=0,storage_index=0,profile_pass_index=0;
@@ -356,11 +362,12 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
         MTLOriginMake(copy->destination_origin[0],copy->destination_origin[1],0),
         MTLSizeMake(copy->extent[0],copy->extent[1],1),copy->combined_depth_stencil});continue;
     }
-    const auto& pass=std::get<render::Pass>(command);const auto profile_pass=profile_pass_index++;
+    const auto& pass=std::get<render::Pass>(command);size_t profile_pass=0;
+    if constexpr(Diagnostics)profile_pass=profile_pass_index++;
     if(const auto copy=render::IdentityResolveCopy(*plan,pass);copy&&(!drawable||copy->destination.surface!=target)) {
       auto source=impl_->View(copy->source,error),destination=impl_->View(copy->destination,error);
       if(!source||!destination)return {};
-      ++native_copies;ready.push_back(ReadyCopy{source,destination,MTLOriginMake(0,0,0),MTLOriginMake(0,0,0),
+      if constexpr(Diagnostics)++native_copies;ready.push_back(ReadyCopy{source,destination,MTLOriginMake(0,0,0),MTLOriginMake(0,0,0),
         MTLSizeMake(copy->extent[0],copy->extent[1],1),false});continue;
     }
     if(impl_->prepared_storage.size()<=storage_index)impl_->prepared_storage.emplace_back();
@@ -370,10 +377,10 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       if(prepared.commands.capacity()){prepared.commands.clear();impl_->prepared_storage[prepared.storage]=std::move(prepared.commands);}
     }};
     if(!prepared.descriptor)return {};
-    for(size_t slot=0;slot<4;++slot)if(dead&(1u<<slot)){prepared.descriptor.colorAttachments[slot].storeAction=MTLStoreActionDontCare;++avoided_stores;}
-    if(dead&16u){prepared.descriptor.depthAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
-    if(dead&32u){prepared.descriptor.stencilAttachment.storeAction=MTLStoreActionDontCare;++avoided_stores;}
-    if(dead_load&1u){prepared.descriptor.colorAttachments[0].loadAction=MTLLoadActionDontCare;++avoided_loads;}
+    for(size_t slot=0;slot<4;++slot)if(dead&(1u<<slot)){prepared.descriptor.colorAttachments[slot].storeAction=MTLStoreActionDontCare;if constexpr(Diagnostics)++avoided_stores;}
+    if(dead&16u){prepared.descriptor.depthAttachment.storeAction=MTLStoreActionDontCare;if constexpr(Diagnostics)++avoided_stores;}
+    if(dead&32u){prepared.descriptor.stencilAttachment.storeAction=MTLStoreActionDontCare;if constexpr(Diagnostics)++avoided_stores;}
+    if(dead_load&1u){prepared.descriptor.colorAttachments[0].loadAction=MTLLoadActionDontCare;if constexpr(Diagnostics)++avoided_loads;}
     prepared.commands.reserve(pass.commands.size());
     for(const auto& command:pass.commands) {
       if(const auto* clear=std::get_if<render::RectClear>(&command)) {
@@ -418,12 +425,12 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   }
   for(const auto& command:ready) {
     if(const auto* copy=std::get_if<ReadyCopy>(&command)) {
-      ++image_copies;
+      if constexpr(Diagnostics)++image_copies;
       if(!frame.CopyTexture(copy->source,copy->destination,copy->src,copy->dst,copy->size,error,copy->combined_depth_stencil))return {};
       continue;
     }
     const auto& pass=std::get<ReadyPass>(command);
-    ++render_passes;
+    if constexpr(Diagnostics)++render_passes;
     if(!frame.BeginPass(pass.descriptor,error))return {};
     for(const auto& command:pass.commands) {
       if(const auto* draw=std::get_if<Draw>(&command)){if(!frame.Encode(*draw,error))return {};}
@@ -435,6 +442,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   auto receipt=frame.Submit(error);if(!receipt)return {};
   for(const auto& surface:plan->surfaces)impl_->Forget(surface->key);
   impl_->contents.insert(final.begin(),final.end());
+  if constexpr(Diagnostics) {
   const auto ended=clock_now();const auto after_resources=ImmutableStats();
   const auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
   FrameTiming timing;timing.validation_ms=ms(begin,validated);timing.preparation_ms=ms(validated,prepared_at);
@@ -447,8 +455,14 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   timing.binding_storage_reuses=impl_->draws.binding_storage_.Hits()-before_bindings_reused;
   timing.binding_storage_fresh=impl_->draws.binding_storage_.Misses()-before_bindings_fresh;
   timing.uploaded_bytes=after_resources.uploaded_bytes-before_resources.uploaded_bytes;impl_->timing=timing;
+  }
   if(published)*published=std::move(final);
   return receipt;
+}
+Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
+    render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
+  return impl_->diagnostics ? SubmitFrameImpl<true>(plan,target,drawable,error,published,profile_gpu)
+                            : SubmitFrameImpl<false>(plan,target,drawable,error,published,profile_gpu);
 }
 id<MTLTexture> FrameAdapter::Output(const render::FramePlan& plan,std::string& error) {
   if(!plan.output||!impl_->contents.contains(*plan.output)) {
@@ -480,7 +494,7 @@ size_t FrameAdapter::RetireResources(bool bounded) {
   for(auto it=impl_->surfaces.begin();it!=impl_->surfaces.end();) {
     if(it->second.owner.expired()) {
       impl_->Forget(it->first);if(!it->second.external)impl_->stats.allocated_bytes-=SurfaceBytes(it->second.descriptor);
-      it=impl_->surfaces.erase(it);++retired;++impl_->stats.retired;
+      it=impl_->surfaces.erase(it);++retired;if(impl_->diagnostics)++impl_->stats.retired;
     }else ++it;
   }
   return retired;

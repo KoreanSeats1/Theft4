@@ -40,7 +40,7 @@ class NativeCommandRecycler {
     worker_free_.reserve(Batch);
   }
 
-  void InitializePayloadReuse(bool enabled) { retain_payloads_ = enabled; }
+  void InitializePayloadReuse(bool enabled,bool diagnostics=true) { retain_payloads_ = enabled;diagnostics_=diagnostics; }
   uint64_t RetainedAcquires() const { return retained_acquires_.load(std::memory_order_relaxed); }
   Owner Acquire(bool* reused = nullptr) {
     if (producer_free_.empty()) {
@@ -57,7 +57,7 @@ class NativeCommandRecycler {
     Storage storage = std::move(producer_free_.back());
     producer_free_.pop_back();
     Command* command = storage.get();
-    if (storage.get_deleter().constructed) retained_acquires_.fetch_add(1,std::memory_order_relaxed);
+    if (storage.get_deleter().constructed) {if(diagnostics_)retained_acquires_.fetch_add(1,std::memory_order_relaxed);}
     else std::construct_at(command);
     storage.release();
     return Owner(command);
@@ -81,7 +81,7 @@ class NativeCommandRecycler {
         std::lock_guard lock(mutex_);
         for (auto& slot : batch)
           if (shared_free_.size() < SharedLimit) shared_free_.push_back(std::move(slot));
-        max_shared_ = std::max(max_shared_,shared_free_.size());
+        if(diagnostics_)max_shared_ = std::max(max_shared_,shared_free_.size());
       }
       batch.clear(); // excess slots are destroyed outside the exchange lock
     };
@@ -100,7 +100,7 @@ class NativeCommandRecycler {
         shared_free_.push_back(std::move(worker_free_.back()));
         worker_free_.pop_back();
       }
-      max_shared_ = std::max(max_shared_, shared_free_.size());
+      if(diagnostics_)max_shared_ = std::max(max_shared_, shared_free_.size());
     }
     worker_free_.clear(); // release excess payload capacity outside exchange lock
   }
@@ -124,6 +124,7 @@ class NativeCommandRecycler {
     return Storage(pointer,StorageDelete{false});
   }
   bool retain_payloads_ = false; // frozen before producer/worker creation
+  bool diagnostics_=true;
   std::atomic<uint64_t> retained_acquires_{0};
   mutable std::mutex mutex_;
   std::vector<Storage> shared_free_;

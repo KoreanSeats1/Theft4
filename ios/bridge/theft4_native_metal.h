@@ -128,6 +128,7 @@ class Frame {
  private:
   friend class Renderer;
   struct Impl;
+  template<bool Diagnostics> bool EncodeImpl(const Draw&,std::string& error);
   explicit Frame(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };

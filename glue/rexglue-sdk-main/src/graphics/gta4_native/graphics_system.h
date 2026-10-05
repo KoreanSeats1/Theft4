@@ -499,6 +499,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     }
   };
 
+  bool development_diagnostics_=true;
   bool FrameResourceSharingEnabled() const;
   template <typename T>
   void CaptureRecordResource(NativeCommand& command, NativeCommandResourceRef<T>& destination,
@@ -513,14 +514,14 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       } else {
         if (!active || active->size() >= 8192 - 64) {
           active = std::make_shared<NativeFrameResourceOwners>();
-          owner_pages_created_.fetch_add(1, std::memory_order_relaxed);
+          if(development_diagnostics_)owner_pages_created_.fetch_add(1, std::memory_order_relaxed);
         }
         page = active;
       }
     }
     bool inserted = false;
     destination = page->Capture(source, &inserted);
-    if (inserted) owner_cells_created_.fetch_add(1, std::memory_order_relaxed);
+    if (inserted&&development_diagnostics_) owner_cells_created_.fetch_add(1, std::memory_order_relaxed);
 #else
     destination = source;
 #endif

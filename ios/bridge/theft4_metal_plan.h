@@ -13,7 +13,7 @@ std::shared_ptr<const Pipeline> BuildFixedPipeline(Renderer&,const render::Pipel
 // Shader, PSO, sampler and resource hits do no driver creation or disk reads.
 class PlanAdapter {
  public:
-  explicit PlanAdapter(Renderer& renderer);
+  explicit PlanAdapter(Renderer& renderer,size_t buffer_budget=128*1024*1024);
   void ConfigurePipelineCache(const std::string& directory) { pipeline_cache_directory_=directory; }
   void FlushPipelineCache();
   bool Open(const std::string& libraries, std::string& error);

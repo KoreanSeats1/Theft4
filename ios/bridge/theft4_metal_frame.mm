@@ -63,7 +63,7 @@ struct FrameAdapter::Impl {
   using PreparedCommand=std::variant<Draw,Clear>;
   std::vector<std::vector<PreparedCommand>> prepared_storage;
   std::set<std::string> logged_preparation_errors;
-  explicit Impl(Renderer& r,size_t maximum):renderer(r),draws(r),host(r),maximum_resolve_specializations(std::min(maximum,size_t(128))){}
+  explicit Impl(Renderer& r,size_t maximum,size_t budget):renderer(r),draws(r,budget),host(r),maximum_resolve_specializations(std::min(maximum,size_t(128))){}
   void Forget(render::SurfaceKey key) {
     for(auto it=contents.begin();it!=contents.end();) {
       if(it->surface==key)it=contents.erase(it);else ++it;
@@ -206,6 +206,13 @@ struct FrameAdapter::Impl {
        source.constants.source->value.size()-source.constants.offset>=64) {
       std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+16,32);specialize=true;
     }
+    if(metadata&&metadata->present_specialization&&source.constants.source&&source.constants.length>=44&&
+       source.constants.offset<=source.constants.source->value.size()&&
+       source.constants.source->value.size()-source.constants.offset>=44) {
+      // These output flags are immutable for this submitted plan. Remove
+      // disabled AA, HDR and sharpening from the actual GPU function.
+      std::memcpy(specialization.data(),source.constants.source->value.data()+source.constants.offset+20,8);specialize=true;
+    }
     const auto variant=std::pair{source.program,specialization};
     if(specialize&&!resolve_specializations.contains(variant)&&resolve_specializations.size()>=maximum_resolve_specializations) {
       specialize=false;specialization={};++stats.host_specialization_fallbacks;
@@ -243,7 +250,7 @@ struct FrameAdapter::Impl {
     draw=std::move(result);return true;
   }
 };
-FrameAdapter::FrameAdapter(Renderer& renderer,size_t maximum):impl_(std::make_unique<Impl>(renderer,maximum)){}
+FrameAdapter::FrameAdapter(Renderer& renderer,size_t maximum,size_t budget):impl_(std::make_unique<Impl>(renderer,maximum,budget)){}
 FrameAdapter::~FrameAdapter()=default;
 void FrameAdapter::ConfigurePipelineCache(const std::string& directory) {
   impl_->draws.ConfigurePipelineCache(directory);

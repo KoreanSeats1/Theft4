@@ -1,6 +1,7 @@
 #include "theft4_retail_mode.h"
 #include "theft4_metal_backend.h"
 #include "theft4_metal_frame.h"
+#include "theft4_upload_budget.h"
 #include <algorithm>
 #include <deque>
 #include <thread>
@@ -41,7 +42,13 @@ class Backend final:public render::FrameBackend {
     if(!renderer_->Ready() || renderer_->Device()!=device_) {
       error="Metal worker device initialization failed";renderer_.reset();return false;
     }
-    adapter_=std::make_unique<FrameAdapter>(*renderer_);
+    const auto upload_budget=ImmutableUploadBudget(NSProcessInfo.processInfo.physicalMemory,caps_.bc_textures);
+    adapter_=std::make_unique<FrameAdapter>(*renderer_,128,upload_budget);
+    if(!theft4_retail_mode()) {
+      char message[256];std::snprintf(message,sizeof(message),"gta4-metal-upload-budget: buffer-limit-bytes=%zu physical-memory-bytes=%llu bc-textures=%d",
+          upload_budget,(unsigned long long)NSProcessInfo.processInfo.physicalMemory,int(caps_.bc_textures));
+      if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
+    }
     #if TARGET_OS_IOS
     if(layer_) {
       auto root=[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
@@ -121,13 +128,14 @@ class Backend final:public render::FrameBackend {
       last_slow_submission_=submitted_at;++slow_submissions_;
       const auto t=adapter_->LastTiming();const auto resources=adapter_->ImmutableStats();
       char message[1024];std::snprintf(message,sizeof(message),
-        "gta4-metal-slow-submit: sequence=%llu present=%d total-ms=%.3f admission-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu buffer-cache-bytes=%llu buffer-evictions=%llu",
+        "gta4-metal-slow-submit: sequence=%llu present=%d total-ms=%.3f admission-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu buffer-cache-bytes=%llu buffer-evictions=%llu constant-cache-bytes=%llu constant-evictions=%llu",
         (unsigned long long)plan->sequence,int(present),submit_ms,
         std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
         t.validation_ms,t.preparation_ms,t.encoding_ms,(unsigned long long)t.draws,
         (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,
         (unsigned long long)t.textures_created,(unsigned long long)t.uploaded_bytes,
-        (unsigned long long)resources.resident_buffer_bytes,(unsigned long long)resources.buffer_evictions);
+        (unsigned long long)resources.resident_buffer_bytes,(unsigned long long)resources.buffer_evictions,
+        (unsigned long long)resources.resident_constant_bytes,(unsigned long long)resources.constant_evictions);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
     if(!theft4_retail_mode()&&present&&++presentations_%60==1) {
@@ -138,7 +146,7 @@ class Backend final:public render::FrameBackend {
         (unsigned long long)t.avoided_attachment_loads,(unsigned long long)t.native_identity_copies,
         (unsigned long long)t.binding_storage_reuses,(unsigned long long)t.binding_storage_fresh,
         adapter_->Stats().host_specializations,adapter_->Stats().host_specialization_fallbacks);
-      char message[1280];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu buffer-cache-bytes=%llu buffer-cache-peak=%llu buffer-evictions=%llu gpu-allocated-bytes=%llu buffer-offset-calls=%llu",
+      char message[1400];std::snprintf(message,sizeof(message),"gta4-metal-performance: present=%llu wait-ms=%.3f drawable-ms=%.3f validate-ms=%.3f prepare-ms=%.3f encode-ms=%.3f last-gpu-ms=%.3f commands=%llu draws=%llu new-pipelines=%llu new-buffers=%llu new-textures=%llu upload-bytes=%llu binding-calls=%llu avoided-calls=%llu resident-bytes=%zu buffer-cache-bytes=%llu buffer-cache-peak=%llu buffer-evictions=%llu gpu-allocated-bytes=%llu buffer-offset-calls=%llu constant-cache-bytes=%llu constant-evictions=%llu",
         (unsigned long long)presentations_,std::chrono::duration<double,std::milli>(admitted-began).count(),drawable_ms,
         t.validation_ms,t.preparation_ms,t.encoding_ms,last_gpu_ms_,(unsigned long long)t.commands,(unsigned long long)t.draws,
         (unsigned long long)t.pipelines_created,(unsigned long long)t.buffers_created,(unsigned long long)t.textures_created,
@@ -146,7 +154,8 @@ class Backend final:public render::FrameBackend {
         (unsigned long long)e.avoided_calls,adapter_->Stats().allocated_bytes,
         (unsigned long long)resources.resident_buffer_bytes,(unsigned long long)resources.peak_buffer_bytes,
         (unsigned long long)resources.buffer_evictions,(unsigned long long)device_.currentAllocatedSize,
-        (unsigned long long)e.buffer_offset_calls);
+        (unsigned long long)e.buffer_offset_calls,(unsigned long long)resources.resident_constant_bytes,
+        (unsigned long long)resources.constant_evictions);
       if(diagnostic_)diagnostic_(message);else std::fprintf(stderr,"%s\n",message);
     }
     const auto timing=adapter_->LastTiming();

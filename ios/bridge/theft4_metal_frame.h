@@ -19,7 +19,7 @@ struct FrameResourceStats {
 // generation; submitted command buffers retain them after CPU owners retire.
 class FrameAdapter {
  public:
-  explicit FrameAdapter(Renderer&,size_t maximum_resolve_specializations=128);
+  explicit FrameAdapter(Renderer&,size_t maximum_resolve_specializations=128,size_t buffer_budget=128*1024*1024);
   ~FrameAdapter();
   void ConfigurePipelineCache(const std::string& directory);
   void FlushPipelineCache();

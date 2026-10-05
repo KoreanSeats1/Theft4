@@ -20,6 +20,10 @@ bool HostShaderStore::Open(const std::string& directory,std::string& error) {
          (stage!="vertex"&&stage!="fragment")||p.at("entry")!="theft4_host_shader")
         return Fail(error,"Invalid host shader identity");
       HostShaderMetadata m;m.resolve_specialization=p.value("resolve_specialization",false);m.stage=stage=="vertex" ? Stage::Vertex : Stage::Fragment;
+      m.present_specialization=p.value("present_specialization",false);
+      if(m.present_specialization&&(m.resolve_specialization||stage!="fragment"||
+         (name!="gta4_native_hdr_present_ps"&&name!="smaa_present_ps"&&name!="smaa_hardware_present_ps")))
+        return Fail(error,"Invalid presentation specialization identity");
       if(p.at("constants").size()>1||p.at("textures").size()>16)return Fail(error,"Host shader binding budget exceeded");
       for(const auto& c:p.at("constants")) {
         auto size=c.at("bytes").get<uint64_t>();
@@ -59,8 +63,9 @@ Shader HostShaderStore::Resolve(const std::string& name,std::string& error,std::
   std::string key=name;for(auto value:constants)key+=":"+std::to_string(value);
   if(auto it=functions_.find(key);it!=functions_.end()){error.clear();return it->second;}
   const auto* m=Metadata(name);if(!m){error="Unknown host utility shader";return {};}
-  if(!constants.empty()&&(!m->resolve_specialization||m->stage!=Stage::Fragment||
-     m->constant_bytes!=64||constants.size()!=8)) {error="Invalid host resolve specialization ABI";return {};}
+  if(!constants.empty()&&(m->stage!=Stage::Fragment||constants.size()!=8||
+     !((m->resolve_specialization&&m->constant_bytes==64)||
+       (m->present_specialization&&m->constant_bytes==44)))) {error="Invalid host specialization ABI";return {};}
   try {
     auto library=libraries_.find(name);
     if(library==libraries_.end()) {

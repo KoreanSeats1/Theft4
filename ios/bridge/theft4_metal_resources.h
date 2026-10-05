@@ -20,6 +20,7 @@ struct ResourceCacheStats {
   uint64_t buffer_creates = 0, texture_creates = 0;
   uint64_t buffer_hits = 0, texture_hits = 0, retired = 0, uploaded_bytes = 0;
   uint64_t resident_buffer_bytes=0,peak_buffer_bytes=0,buffer_evictions=0;
+  uint64_t resident_constant_bytes=0,constant_evictions=0;
 };
 class ResourceCache {
  public:

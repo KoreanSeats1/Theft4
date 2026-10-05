@@ -127,8 +127,10 @@ bool Validate(const Shape& s,std::span<const uint8_t> bytes,std::span<const Text
 }
 }
 struct ResourceCache::Impl {
-  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false,constants=false;size_t live_entries=0;};
+  struct Allocation;
   using Allocations=std::list<Allocation>;
+  using ConstantLru=std::list<Allocations::iterator>;
+  struct Allocation {id<MTLBuffer> buffer=nil;std::vector<Key> keys;bool packed=false,constants=false;size_t live_entries=0;ConstantLru::iterator constant_lru;};
   struct BufferEntry { std::weak_ptr<const void> owner; id<MTLBuffer> buffer=nil; size_t size=0;Allocations::iterator allocation; };
   struct TextureEntry {
     std::weak_ptr<const void> owner;
@@ -142,14 +144,18 @@ struct ResourceCache::Impl {
   struct UniformEntry {std::weak_ptr<const void> owner;BufferView view;Allocations::iterator allocation;};
   std::unordered_map<Key,UniformEntry,KeyHash> uniforms;
   Allocations allocations;
+  ConstantLru constant_lru;
   Allocations::iterator sweep_allocation;
   size_t buffer_bucket=0,texture_bucket=0,uniform_bucket=0;
   size_t buffer_budget;
+  size_t constant_budget;
   struct Page {id<MTLBuffer> buffer=nil;NSUInteger used=0;Allocations::iterator allocation;};
   std::array<Page,2> pages; // constants / geometry never pin one another's pages
   std::unordered_map<Key,BufferEntry,KeyHash> buffers;
   std::unordered_map<Key,TextureEntry,KeyHash> textures;
-  explicit Impl(Renderer& value,size_t budget):renderer(value),sweep_allocation(allocations.end()),buffer_budget(std::max(size_t(256*1024),budget)){}
+  explicit Impl(Renderer& value,size_t budget):renderer(value),sweep_allocation(allocations.end()),
+      buffer_budget(std::max(size_t(256*1024),budget)),
+      constant_budget(std::clamp(buffer_budget/4,size_t(256*1024),size_t(32*1024*1024))){}
   void Release(Allocations::iterator allocation,bool eviction) {
     if(sweep_allocation==allocation)++sweep_allocation;
     for(auto& page:pages)if(allocation->buffer==page.buffer){page.buffer=nil;page.used=0;}
@@ -163,10 +169,22 @@ struct ResourceCache::Impl {
       }
     }
     stats.resident_buffer_bytes-=allocation->buffer.length;
+    if(allocation->constants) {
+      stats.resident_constant_bytes-=allocation->buffer.length;
+      constant_lru.erase(allocation->constant_lru);
+      if(eviction)++stats.constant_evictions;
+    }
     if(eviction)++stats.buffer_evictions;
     allocations.erase(allocation);
   }
-  void Reserve(size_t size) {
+  void Reserve(size_t size,bool constants=false) {
+    // A surviving CPU projection can keep one entry in a mostly obsolete
+    // constant page alive. Keep these pages on a separate bounded LRU so
+    // changing constants cannot consume the geometry working-set budget.
+    // Encoded views retain evicted buffers; eviction never changes their bytes.
+    if(constants)while(!constant_lru.empty()&&
+        stats.resident_constant_bytes>constant_budget-std::min(constant_budget,size))
+      Release(constant_lru.front(),true);
     // One oversized source may exceed the budget. It is admitted intact;
     // the next allocation evicts it. No clipping or in-flight overwrite.
     while(!allocations.empty()&&stats.resident_buffer_bytes>buffer_budget-std::min(buffer_budget,size))
@@ -174,6 +192,10 @@ struct ResourceCache::Impl {
   }
   Allocations::iterator Add(id<MTLBuffer> buffer,bool packed,bool constants=false) {
     allocations.push_back({buffer,{},packed,constants});auto i=std::prev(allocations.end());
+    if(constants) {
+      constant_lru.push_back(i);i->constant_lru=std::prev(constant_lru.end());
+      stats.resident_constant_bytes+=buffer.length;
+    }
     stats.resident_buffer_bytes+=buffer.length;
     stats.peak_buffer_bytes=std::max(stats.peak_buffer_bytes,stats.resident_buffer_bytes);
     return i;
@@ -191,7 +213,10 @@ struct ResourceCache::Impl {
     }
     return true;
   }
-  void Touch(Allocations::iterator allocation){allocations.splice(allocations.end(),allocations,allocation);}
+  void Touch(Allocations::iterator allocation){
+    allocations.splice(allocations.end(),allocations,allocation);
+    if(allocation->constants)constant_lru.splice(constant_lru.end(),constant_lru,allocation->constant_lru);
+  }
 };
 ResourceCache::ResourceCache(Renderer& renderer,size_t budget):impl_(std::make_unique<Impl>(renderer,budget)){}
 ResourceCache::~ResourceCache()=default;
@@ -272,7 +297,7 @@ BufferView ResourceCache::UploadInArena(const ResourceVersion& version,std::span
   auto& page=impl_->pages[constants?0:1];
   const auto offset=(page.used+alignment-1)&~(alignment-1);
   if(!page.buffer||offset>capacity-bytes.size()) {
-    impl_->Reserve(capacity);
+    impl_->Reserve(capacity,constants);
     page.buffer=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
     if(!page.buffer){error="Metal uniform page allocation failed";return {};}
     page.buffer.label=constants?@"Theft4 Immutable Constants":@"Theft4 Immutable Geometry";
@@ -309,7 +334,7 @@ size_t ResourceCache::SweepRetired(bool bounded) {
   }
   impl_->stats.retired+=removed;return impl_->stats.retired-retired_before;
 }
-void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->allocations.clear();impl_->sweep_allocation=impl_->allocations.end();impl_->buffer_bucket=impl_->texture_bucket=impl_->uniform_bucket=0;impl_->stats.resident_buffer_bytes=0;BeginUploadBatch();}
+void ResourceCache::Clear(){impl_->stats.retired+=impl_->buffers.size()+impl_->textures.size()+impl_->uniforms.size();impl_->buffers.clear();impl_->textures.clear();impl_->uniforms.clear();impl_->constant_lru.clear();impl_->allocations.clear();impl_->sweep_allocation=impl_->allocations.end();impl_->buffer_bucket=impl_->texture_bucket=impl_->uniform_bucket=0;impl_->stats.resident_buffer_bytes=impl_->stats.resident_constant_bytes=0;BeginUploadBatch();}
 size_t ResourceCache::BufferCount()const{return impl_->buffers.size()+impl_->uniforms.size();}
 size_t ResourceCache::TextureCount()const{return impl_->textures.size();}
 ResourceCacheStats ResourceCache::Stats()const{return impl_->stats;}

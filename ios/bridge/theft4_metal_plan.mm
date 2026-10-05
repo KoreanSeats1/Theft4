@@ -55,7 +55,7 @@ ResourceVersion Version(const std::shared_ptr<const render::Bytes>& source) {
   return {source,source->generation,source->conversion};
 }
 }
-PlanAdapter::PlanAdapter(Renderer& renderer):renderer_(renderer),shaders_(renderer),resources_(renderer){}
+PlanAdapter::PlanAdapter(Renderer& renderer,size_t budget):renderer_(renderer),shaders_(renderer),resources_(renderer,budget){}
 Draw PlanAdapter::AcquireDrawStorage() {
   auto storage=binding_storage_.Acquire();Draw draw;
   draw.textures=std::move(storage.first);draw.samplers=std::move(storage.second);return draw;

@@ -7,6 +7,7 @@
 #include "theft4_metal_plan.h"
 #include "theft4_metal_frame.h"
 #include "theft4_postfx_plan.h"
+#include "theft4_upload_budget.h"
 #include "theft4_metal_host_shaders.h"
 #include "present_constants.h"
 #include "direct_metal_capture.h"
@@ -1097,10 +1098,12 @@ struct Probe {
     size_t checked=0,changed=0;
     for(auto name:{"gta4_native_hdr_present_ps","smaa_present_ps","smaa_hardware_present_ps"}) {
       auto fixed=[MTLRenderPipelineDescriptor new];fixed.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
-      auto pipeline=renderer.MakePipeline(host.Resolve("fullscreen_cw_vs",error),host.Resolve(name,error),fixed,nil,error);Require(bool(pipeline));
-      for(uint32_t strength:{0u,50u,100u}) {
+      for(uint32_t strength:{0u,50u,100u})for(bool specialized:{false,true}) {
         theft4::render::PresentConstants constants;constants.source_width=constants.destination_width=W;constants.source_height=constants.destination_height=H;
         constants.output_mode=4u|(strength<<8);
+        std::array<uint32_t,8> flags{};flags[0]=constants.output_mode;
+        auto pipeline=renderer.MakePipeline(host.Resolve("fullscreen_cw_vs",error),
+            host.Resolve(name,error,specialized?std::span<const uint32_t>(flags):std::span<const uint32_t>{}),fixed,nil,error);Require(bool(pipeline));
         const auto bank=Buffer({reinterpret_cast<const uint8_t*>(&constants),sizeof(constants)},true);
         std::vector<HostInput> inputs{{0,source,sampler}};
         if(std::string(name)!="gta4_native_hdr_present_ps")inputs.push_back({1,weights,sampler});
@@ -1124,7 +1127,67 @@ struct Probe {
     Require(changed>0);
     [results addObject:@{@"case":@"output_sharpening_strength_and_alpha",@"passed":@YES,
       @"pixels_checked":@(checked),@"zero_half_full_strength":@YES,@"regular_and_fused_smaa":@YES,
-      @"local_range_bounded":@YES,@"alpha_preserved":@YES}];
+      @"local_range_bounded":@YES,@"alpha_preserved":@YES,@"specialized_and_fallback":@YES}];
+  }
+  void UploadWorkingSet() {
+    constexpr uint64_t gib=1024ull*1024*1024;
+    Require(ImmutableUploadBudget(12*gib,true)==384*1024*1024);
+    Require(ImmutableUploadBudget(8*gib,true)==128*1024*1024);
+    Require(ImmutableUploadBudget(12*gib,false)==128*1024*1024);
+    Require(ImmutableUploadBudget(0,true)==128*1024*1024);
+    std::string error;std::vector<uint8_t> geometry(4*1024*1024,0x5a),constants(4096,0x37);
+    std::vector<ResourceVersion> versions;
+    for(uint64_t i=0;i<37;++i)versions.push_back({std::make_shared<uint64_t>(i),i+1,{}});
+    std::array<uint64_t,2> creates{},uploaded{};
+    for(size_t mode=0;mode<2;++mode) {
+      ResourceCache cache(renderer,mode?ImmutableUploadBudget(12*gib,true):128*1024*1024);
+      for(size_t frame=0;frame<12;++frame) {
+        cache.SweepRetired();cache.BeginUploadBatch();
+        for(const auto& version:versions)Require(cache.Buffer(version,geometry,error));
+        std::vector<std::shared_ptr<uint64_t>> owners;
+        for(uint64_t i=0;i<2048;++i) {
+          auto owner=std::make_shared<uint64_t>(i);owners.push_back(owner);
+          Require(cache.UniformBuffer({owner,frame*2048+i+1,{}},constants,error).buffer);
+        }
+        Require(cache.Stats().resident_buffer_bytes<=uint64_t(mode?384:128)*1024*1024);
+      }
+      creates[mode]=cache.Stats().buffer_creates;uploaded[mode]=cache.Stats().uploaded_bytes;
+    }
+    Require(creates[1]<creates[0]&&uploaded[1]<uploaded[0]);
+    [results addObject:@{@"case":@"bounded_high_memory_upload_working_set",@"passed":@YES,
+      @"geometry_bytes":@(geometry.size()*versions.size()),@"frames":@12,
+      @"old_buffer_creates":@(creates[0]),@"new_buffer_creates":@(creates[1]),
+      @"old_upload_bytes":@(uploaded[0]),@"new_upload_bytes":@(uploaded[1]),
+      @"older_device_budget_preserved":@YES,@"bounded_budget":@YES,
+      @"scope":@"Retained148MiB geometry plus8MiB changing constants; cache fixture, not gameplay FPS"}];
+  }
+  void ConstantWorkingSetIsolation() {
+    ResourceCache cache(renderer,16*1024*1024);std::string error;
+    const auto geometry_owner=std::make_shared<int>(1);
+    const ResourceVersion geometry_version{geometry_owner,1,{}};
+    std::vector<uint8_t> geometry(10*1024*1024,0x5a),constants(64*1024,0x37);
+    auto original=cache.Buffer(geometry_version,geometry,error);Require(original);
+    std::vector<std::shared_ptr<uint64_t>> retained;BufferView first;
+    // Keep every CPU generation alive, as shader projections and pending
+    // frames can. Their old constant pages must not displace reused geometry.
+    for(uint64_t batch=0;batch<24;++batch) {
+      cache.BeginUploadBatch();Require(cache.Buffer(geometry_version,geometry,error)==original);
+      for(uint64_t i=0;i<64;++i) {
+        retained.push_back(std::make_shared<uint64_t>(batch*64+i));
+        auto view=cache.UniformBuffer({retained.back(),batch*64+i+1,{}},constants,error);Require(view.buffer);
+        if(!first.buffer)first=view;
+      }
+      cache.SweepRetired(true);
+      Require(cache.Stats().resident_constant_bytes<=4*1024*1024);
+      Require(cache.Stats().resident_buffer_bytes<=14*1024*1024);
+    }
+    Require(cache.Stats().constant_evictions>0&&cache.Stats().constant_evictions==cache.Stats().buffer_evictions);
+    Require(cache.Buffer(geometry_version,geometry,error)==original);
+    Require(std::memcmp(static_cast<const uint8_t*>(first.buffer.contents)+first.offset,constants.data(),constants.size())==0);
+    [results addObject:@{@"case":@"constant_residency_cannot_displace_geometry",@"passed":@YES,
+      @"retained_cpu_generations":@(retained.size()),@"constant_evictions":@(cache.Stats().constant_evictions),
+      @"geometry_reused_without_upload":@YES,@"retained_constant_bytes_unchanged":@YES,
+      @"constant_budget_bytes":@(4*1024*1024),@"global_budget_bytes":@(16*1024*1024)}];
   }
   void HostUtilityShaders() {
     HostShaderStore host(renderer);Require(host.Open(std::string(libraries.UTF8String)+"/Host",error));
@@ -1235,12 +1298,13 @@ struct Probe {
     Require(frame.BeginPass(Pass(target,nil,nil),error));
     std::vector<std::shared_ptr<const uint64_t>> owners;uint64_t generation=0;
     BufferView first;NSUInteger last_offset=0;
-    const auto upload=[&](std::span<const uint8_t> data) {
+    const auto upload=[&](std::span<const uint8_t> data,bool constant=false) {
       auto owner=std::make_shared<const uint64_t>(++generation);owners.push_back(owner);
-      auto view=cache.UploadBuffer({owner,generation,{}},data,error);Require(view.buffer);return view;
+      auto view=constant?cache.UniformBuffer({owner,generation,{}},data,error):cache.UploadBuffer({owner,generation,{}},data,error);
+      Require(view.buffer);return view;
     };
-    // Alternate shader-visible constant values and geometry in ONE Metal
-    // allocation, then force eviction while the first encoded draw is pending.
+    // Alternate shader-visible constant values and geometry in their separate
+    // arenas, then force eviction while the first encoded draw is pending.
     for(size_t item=0;item<40;++item) {
       auto draw=prototype;const float multiplier=item%2?0.75f:0.25f;
       for(size_t bank=0;bank<3;++bank) {
@@ -1248,7 +1312,7 @@ struct Probe {
         std::vector<uint8_t> data(source.length);
         std::memcpy(data.data(),static_cast<const uint8_t*>(source.buffer.contents)+source.offset,data.size());
         if(bank==2)for(size_t channel=0;channel<4;++channel)std::memcpy(data.data()+0x360+channel*4,&multiplier,4);
-        draw.constants[bank]=upload(data);
+        draw.constants[bank]=upload(data,true);
       }
       const auto vertices=Quad(item%2?std::array<float,4>{0,1,0,1}:std::array<float,4>{1,0,0,1});
       draw.vertices[0]=upload(Bytes(vertices));
@@ -1266,7 +1330,7 @@ struct Probe {
     Require(last_offset!=first.offset);Require(frame.Stats().buffer_offset_calls>40);
     Require(frame.EndPass(error));
     for(size_t batch=0;batch<12;++batch) {
-      cache.BeginUploadBatch();std::vector<uint8_t> filler(4096,uint8_t(batch));upload(filler);
+      cache.BeginUploadBatch();std::vector<uint8_t> filler(4096,uint8_t(batch));upload(filler,true);
     }
     Require(cache.Stats().buffer_evictions>0&&cache.Stats().resident_buffer_bytes<=1024*1024);
     float first_multiplier=0;std::memcpy(&first_multiplier,static_cast<const uint8_t*>(first.buffer.contents)+first.offset+0x360,4);
@@ -1468,7 +1532,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
     };
     for(const auto& c:cases)probe.Run(c);
     probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
-    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.OrderedHostUtilities();passed=true;
+    probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();
   NSDictionary* report=@{@"schema":@2,@"passed":@(passed),@"failure":failure,@"cases":probe.results,

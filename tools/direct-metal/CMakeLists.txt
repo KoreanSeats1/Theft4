@@ -43,6 +43,29 @@ target_include_directories(lab_resolution_policy_test PRIVATE "${ROOT}/ios/bridg
   "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src")
 target_compile_options(lab_resolution_policy_test PRIVATE -UNDEBUG)
 add_test(NAME lab_resolution_policy COMMAND lab_resolution_policy_test)
+# Validate the rewritten selector against the actual generated PowerPC body,
+# rather than another hand-written description of the selection rules.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_recomp.32.cpp"
+  "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp")
+file(READ "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/generated/gta4_recomp.32.cpp" lod_title)
+string(FIND "${lod_title}" "DEFINE_REX_FUNC(sub_824F3418) {" lod_begin)
+string(FIND "${lod_title}" "DEFINE_REX_FUNC(sub_824F34F0) {" lod_end)
+math(EXPR lod_length "${lod_end}-${lod_begin}")
+string(SUBSTRING "${lod_title}" ${lod_begin} ${lod_length} lod_body)
+file(WRITE "${CMAKE_BINARY_DIR}/lod-title-reference.inc" "${lod_body}")
+file(READ "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp" lod_hooks)
+string(FIND "${lod_hooks}" "extern \"C\" void sub_824F3418(" lod_begin)
+string(FIND "${lod_hooks}" "extern \"C\" void sub_821DFFE8(" lod_end)
+math(EXPR lod_length "${lod_end}-${lod_begin}")
+string(SUBSTRING "${lod_hooks}" ${lod_begin} ${lod_length} lod_body)
+file(WRITE "${CMAKE_BINARY_DIR}/lod-native-hook.inc" "${lod_body}")
+add_executable(native_lod_selection_test lod_selection_test.cpp)
+target_include_directories(native_lod_selection_test PRIVATE "${CMAKE_BINARY_DIR}"
+  "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src"
+  "${ROOT}/glue/rexglue-sdk-main/include" "${ROOT}/glue/rexglue-sdk-main/thirdparty/simde")
+target_compile_options(native_lod_selection_test PRIVATE -UNDEBUG)
+add_test(NAME native_lod_selection COMMAND native_lod_selection_test)
 add_executable(shader_realization_test shader_realization_test.cpp)
 target_include_directories(shader_realization_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 add_test(NAME shader_realization_contract COMMAND shader_realization_test)
@@ -163,6 +186,12 @@ target_include_directories(metal_upload_stress_test PRIVATE "${ROOT}/ios/bridge"
 target_compile_options(metal_upload_stress_test PRIVATE -fobjc-arc)
 target_compile_definitions(metal_upload_stress_test PRIVATE THEFT4_PACKED_UPLOAD_STRESS=1)
 target_link_libraries(metal_upload_stress_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_upload_lifetime_test upload_lifetime_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_upload_lifetime_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_upload_lifetime_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_upload_lifetime_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
 
 add_executable(metal_performance_benchmark performance_benchmark.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"

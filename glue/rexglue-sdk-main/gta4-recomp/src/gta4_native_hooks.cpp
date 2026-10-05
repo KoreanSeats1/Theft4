@@ -56,6 +56,7 @@
 #include "gta4_help_trace.h"
 #include "gta4_font_selection_trace.h"
 #include "gta4_draw_distance_policy.h"
+#include "gta4_lod_selection_policy.h"
 #include "gta4_frame_limiter.h"
 
 REXCVAR_DECLARE(uint32_t, gta4_shadow_map_base_size);
@@ -4868,17 +4869,26 @@ extern "C" void sub_824F3418(PPCContext& ctx, uint8_t* base) {
   if (!REXCVAR_GET(gta4_force_highest_lod)) {
     const double bias = REXCVAR_GET(gta4_lod_selection_distance_scale);
     const double original = ctx.f1.f64;
-    if (bias > 1.0 && std::isfinite(original) && original >= 0.0) {
-      // The retail selector compares f1 against the drawable's own LOD
-      // thresholds and verifies the chosen resident mesh. Bias only that
-      // comparison input, then restore the guest register; leave all fallback
-      // and blend logic in the original selector untouched.
-      ctx.f1.f64 = double(float(original * bias));
-      __imp__sub_824F3418(ctx, base);
-      ctx.f1.f64 = original;
-      return;
+    const double comparison = bias > 1.0 && std::isfinite(original) && original >= 0.0
+        ? double(float(original * bias)) : original;
+    // The title selector only publishes these three output words. Retain the
+    // original FPSCR flush-mode effect, and preserve unusual default blend
+    // encodings through the original implementation rather than reinterpret it.
+    const float default_blend=std::bit_cast<float>(LoadU32(base,kDefaultLodBlendGlobal));
+    if(!std::isfinite(default_blend)) {
+      ctx.f1.f64=comparison;__imp__sub_824F3418(ctx,base);ctx.f1.f64=original;return;
     }
-    __imp__sub_824F3418(ctx, base);
+    ctx.fpscr.disableFlushMode();
+    const auto drawable=ctx.r4.u32;
+    const auto selected=gta4::lod::Select(comparison,
+        std::bit_cast<float>(LoadU32(base,drawable+80)),
+        std::bit_cast<float>(LoadU32(base,drawable+84)),
+        std::bit_cast<float>(LoadU32(base,kDistanceScaleOutputGlobal)),
+        {LoadU32(base,drawable+64),LoadU32(base,drawable+68),LoadU32(base,drawable+72)},
+        base[0x83016A20]!=0);
+    StoreU32(base,ctx.r5.u32,selected.desired);
+    StoreU32(base,ctx.r6.u32,selected.secondary);
+    StoreU32(base,ctx.r7.u32,std::bit_cast<uint32_t>(default_blend));
     return;
   }
 

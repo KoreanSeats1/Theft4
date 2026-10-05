@@ -41,7 +41,7 @@ class ResourceCache {
   // live resource versions retain their pages through GPU completion.
   void BeginUploadBatch();
   BufferView UniformBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
-  // Geometry and indices use the same append-only arena as constants. Every
+  // Geometry and indices use a separate append-only arena from constants. Every
   // view is immutable; cache eviction releases ownership, never reuses bytes
   // in a buffer that an encoded or pending frame can still retain.
   BufferView UploadBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
@@ -51,6 +51,7 @@ class ResourceCache {
   size_t TextureCount() const;
   ResourceCacheStats Stats() const;
  private:
+  BufferView UploadInArena(const ResourceVersion&,std::span<const uint8_t>,std::string&,bool constants);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

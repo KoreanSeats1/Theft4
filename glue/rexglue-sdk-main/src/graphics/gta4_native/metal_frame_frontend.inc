@@ -177,7 +177,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error,bool diagnostic_scan) {
   namespace r=theft4::render;
-  const auto tick=[] {return rex::chrono::Clock::QueryHostTickCount();};
+  const auto tick=[] {return theft4_retail_mode()?uint64_t(0):rex::chrono::Clock::QueryHostTickCount();};
   const auto began=tick();uint64_t arena_done=began,retire_done=began,owners_done=began;
   uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
   if(!frame_backend_){error="Metal backend missing";return false;}
@@ -187,7 +187,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   // Record after commit and destruction of the speculative state and temporary
   // plan. Registry retirement is frame work too, rather than invisible cleanup.
   const auto record_complete_budget=MakeScopeExit([&]{
-    if(!frontend_complete||!present.device||diagnostic_scan)return;
+    if(theft4_retail_mode()||!frontend_complete||!present.device||diagnostic_scan)return;
     auto& state=*native_metal_frame_;
     state.frontend_ms[(state.timed_presents-1)%state.frontend_ms.size()]=
       double(tick()-began)*1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
@@ -202,7 +202,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   });
   const uint32_t frame_identity=native_metal_frame_->continuity.frame_identity;
   native_metal_frame_->draw_timing={};
-  native_metal_frame_->sample_draw_timing=present.device&&native_metal_frame_->timed_presents%60==0;
+  native_metal_frame_->sample_draw_timing=!theft4_retail_mode()&&present.device&&native_metal_frame_->timed_presents%60==0;
   if(!native_metal_frame_->resource_admission)
     native_metal_frame_->resource_admission=std::make_unique<r::DrawResourceValidationCache>();
   native_metal_frame_->resource_admission->Clear();
@@ -1137,7 +1137,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.masked_constant_fallbacks=native_metal_frame_->masked_constant_fallbacks;
   next.timed_presents=native_metal_frame_->timed_presents+(present.device?1:0);
   next.frontend_ms=native_metal_frame_->frontend_ms;
-  if(present.device&&next.timed_presents%60==1) {
+  if(!theft4_retail_mode()&&present.device&&next.timed_presents%60==1) {
     const double scale=1000.0/double(rex::chrono::Clock::QueryHostTickFrequency());
     REXLOG_INFO("gta4-metal-maintenance-performance: present={} arena-ms={:.3f} retirement-ms={:.3f} owners-ms={:.3f} pressure-ms={:.3f} pressure-evictions={} pressure-before-bytes={} pressure-after-bytes={}",
       next.timed_presents,(arena_done-began)*scale,(retire_done-arena_done)*scale,

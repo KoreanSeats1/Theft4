@@ -140,6 +140,7 @@ extern "C" void theft4_native_unregister_renderer(void* renderer);
 #endif
 #if defined(THEFT4_NATIVE_METAL_CAPTURE) || defined(THEFT4_DIRECT_METAL_BACKEND)
 #include "theft4_render_plan_source.h"
+#include "theft4_retail_mode.h"
 #endif
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "theft4_primitive_expansion.h"
@@ -36236,7 +36237,7 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
     std::string error;
     const bool okay = PublishNativeMetalFrame(present, present_source, environmental_data, error);
     light::Set(light::Result, okay ? VK_SUCCESS : VK_ERROR_UNKNOWN);
-    if (!okay) {
+    if (!okay && !theft4_retail_mode()) {
       REXLOG_ERROR("gta4-metal: frame {} rejected: {}", present.submitted_frame, error);
       // On the first rejection inspect the entire captured batch, including
       // commands after the failing one. Bound diagnostics and keep them off the

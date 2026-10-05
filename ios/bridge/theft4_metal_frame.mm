@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_metal_frame.h"
 #include "theft4_metal_host_shaders.h"
 #include <algorithm>
@@ -267,7 +268,8 @@ Receipt FrameAdapter::SubmitAndPresent(const std::shared_ptr<const render::Frame
 Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>& plan,
                                  render::SurfaceKey target,id<CAMetalDrawable> drawable,std::string& error,render::SurfaceContents* published,bool profile_gpu) {
   using Clock=std::chrono::steady_clock;
-  const auto begin=Clock::now();
+  const auto clock_now=[] {return theft4_retail_mode()?Clock::time_point{}:Clock::now();};
+  const auto begin=clock_now();
   const auto before_resources=ImmutableStats();const auto before_pipelines=PipelineCount();
   const auto before_bindings_reused=impl_->draws.binding_storage_.Hits();
   const auto before_bindings_fresh=impl_->draws.binding_storage_.Misses();
@@ -305,13 +307,14 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
       }
     }
   }
+  profile_gpu=profile_gpu&&!theft4_retail_mode();
   RetireResources(true);impl_->draws.BeginUploadBatch();render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
   if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
   const auto dead_stores=render::DeadAttachmentStores(*plan);
   const auto redundant_loads=render::RedundantAttachmentLoads(*plan);
   uint64_t avoided_stores=0,avoided_loads=0,native_copies=0,render_passes=0,image_copies=0;
   size_t draw_range_index=0;
-  const auto validated=Clock::now();
+  const auto validated=clock_now();
   for(const auto& surface:plan->surfaces)
     if(!impl_->Ensure(surface,drawable&&surface->key==target ? drawable.texture : nil,error))return {};
   struct ReadyPass { MTLRenderPassDescriptor* descriptor;std::vector<Impl::PreparedCommand> commands;size_t storage=0,profile_pass=0; };
@@ -329,7 +332,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   const auto failed_preparation=[&](uint64_t vertex,uint64_t fragment) {
     ++preparation_errors;if(first_preparation_error.empty())first_preparation_error=error;
     const auto key=std::to_string(vertex)+":"+std::to_string(fragment)+":"+error;
-    if(impl_->logged_preparation_errors.size()<32&&impl_->logged_preparation_errors.insert(key).second)
+    if(!theft4_retail_mode()&&impl_->logged_preparation_errors.size()<32&&impl_->logged_preparation_errors.insert(key).second)
       std::fprintf(stderr,"gta4-metal-preflight: vs=%016llx ps=%016llx reason=%s submitted=false\n",
           (unsigned long long)vertex,(unsigned long long)fragment,error.c_str());
     error.clear();
@@ -399,7 +402,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
     error=first_preparation_error+" ("+std::to_string(preparation_errors)+" draw preparations failed; frame not submitted)";
     return {};
   }
-  const auto prepared_at=Clock::now();
+  const auto prepared_at=clock_now();
   auto frame=impl_->renderer.BeginFrame(error);if(!frame)return {};
   if(profile_gpu) {
     std::vector<size_t> mapping;for(const auto& command:ready)if(const auto* pass=std::get_if<ReadyPass>(&command))mapping.push_back(pass->profile_pass);
@@ -424,7 +427,7 @@ Receipt FrameAdapter::SubmitFrame(const std::shared_ptr<const render::FramePlan>
   auto receipt=frame.Submit(error);if(!receipt)return {};
   for(const auto& surface:plan->surfaces)impl_->Forget(surface->key);
   impl_->contents.insert(final.begin(),final.end());
-  const auto ended=Clock::now();const auto after_resources=ImmutableStats();
+  const auto ended=clock_now();const auto after_resources=ImmutableStats();
   const auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
   FrameTiming timing;timing.validation_ms=ms(begin,validated);timing.preparation_ms=ms(validated,prepared_at);
   timing.encoding_ms=ms(prepared_at,ended);timing.commands=plan->commands.size();timing.encoder=frame.Stats();timing.draws=timing.encoder.draws;

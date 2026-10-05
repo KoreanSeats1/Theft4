@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_draw_capture.h"
 #include <chrono>
 #include <cstdlib>
@@ -15,6 +16,7 @@ constexpr size_t kResidentLimit = 64 * 1024 * 1024;
 constexpr size_t kOutputLimit = 128 * 1024 * 1024;
 constexpr size_t kIndexedLimit = 24, kOtherLimit = 8, kQueueLimit = 4;
 std::string ConfiguredDirectory() {
+  if(theft4_retail_mode())return {};
   const auto* enabled = std::getenv("THEFT4_METAL_CAPTURE");
   if (!enabled || std::string_view(enabled) != "1") return {};
   const auto* home = std::getenv("HOME");

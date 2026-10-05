@@ -27,6 +27,9 @@
 @property(nonatomic, readonly) UISegmentedControl *reflectionQuality;
 @property(nonatomic, readonly) UISegmentedControl *antiAliasing;
 @property(nonatomic, readonly) UISwitch *performanceCapture;
+@property(nonatomic, readonly) UISwitch *retailMode;
+@property(nonatomic, readonly) UIButton *frameSpeedButton;
+@property(nonatomic, readonly) UIButton *restoreGraphicsButton;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
 @property(nonatomic, readonly) UISwitch *astcConversion;
 @property(nonatomic, readonly) UIButton *deleteTextureCacheButton;

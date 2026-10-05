@@ -67,6 +67,9 @@ class PlanAdapter {
   // Key omits only the separate depth/stencil test object. Attachment formats,
   // shader specializations, vertex ABI, blending and MSAA remain exact.
   decltype(pipelines_) render_pipelines_;
+  render::Pipeline consecutive_source_;
+  render::Primitive consecutive_primitive_=render::Primitive::Count;
+  std::shared_ptr<const Pipeline> consecutive_pipeline_;
   std::map<render::Sampler,id<MTLSamplerState>> samplers_;
   std::array<id<MTLTexture>,4> dummy_images_{};
   struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;uint64_t generation=0;};

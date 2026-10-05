@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_metal_backend.h"
 #include "theft4_metal_frame.h"
 #include <algorithm>
@@ -85,7 +86,7 @@ class Backend final:public render::FrameBackend {
       if(!FinishOldest(error))return false;
     }
     const auto admitted=Clock::now();
-    const bool profile_gpu=present&&plan->commands.size()>=40&&
+    const bool profile_gpu=!theft4_retail_mode()&&present&&plan->commands.size()>=40&&
         (!profile_attempted_||presentations_-last_profile_presentation_>=180);
     if(profile_gpu){profile_attempted_=true;last_profile_presentation_=presentations_;}
     double drawable_ms=0;Receipt receipt;
@@ -108,7 +109,7 @@ class Backend final:public render::FrameBackend {
       } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
-    if(present&&++presentations_%60==1) {
+    if(!theft4_retail_mode()&&present&&++presentations_%60==1) {
       const auto& t=adapter_->LastTiming();const auto& e=t.encoder;
       const auto resources=adapter_->ImmutableStats();
       std::fprintf(stderr,"gta4-metal-attachment-performance: present=%llu avoided-stores=%llu avoided-loads=%llu native-identity-copies=%llu binding-storage-reuses=%llu binding-storage-fresh=%llu host-specializations=%zu host-specialization-fallbacks=%zu\n",
@@ -190,7 +191,7 @@ class Backend final:public render::FrameBackend {
   bool FinishOldest(std::string& error) {
     auto submitted=std::move(pending_.front());pending_.pop_front();
     const bool okay=submitted.receipt.Wait(error);
-    if(okay) {
+    if(okay&&!theft4_retail_mode()) {
       if(submitted.present&&gpu_sample_count_%60==0) {
         char context[256];std::snprintf(context,sizeof(context),"gta4-metal-device-context: thermal-state=%ld low-power=%d",
           (long)NSProcessInfo.processInfo.thermalState,int(NSProcessInfo.processInfo.lowPowerModeEnabled));

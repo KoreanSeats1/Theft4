@@ -145,15 +145,14 @@ struct ResourceCache::Impl {
   Allocations::iterator sweep_allocation;
   size_t buffer_bucket=0,texture_bucket=0,uniform_bucket=0;
   size_t buffer_budget;
-  id<MTLBuffer> uniform_page=nil;
-  NSUInteger uniform_used=0;
-  Allocations::iterator current_page;
+  struct Page {id<MTLBuffer> buffer=nil;NSUInteger used=0;Allocations::iterator allocation;};
+  std::array<Page,2> pages; // constants / geometry never pin one another's pages
   std::unordered_map<Key,BufferEntry,KeyHash> buffers;
   std::unordered_map<Key,TextureEntry,KeyHash> textures;
   explicit Impl(Renderer& value,size_t budget):renderer(value),sweep_allocation(allocations.end()),buffer_budget(std::max(size_t(256*1024),budget)){}
   void Release(Allocations::iterator allocation,bool eviction) {
     if(sweep_allocation==allocation)++sweep_allocation;
-    if(allocation->buffer==uniform_page){uniform_page=nil;uniform_used=0;}
+    for(auto& page:pages)if(allocation->buffer==page.buffer){page.buffer=nil;page.used=0;}
     for(const auto& key:allocation->keys) {
       if(allocation->packed) {
         auto i=uniforms.find(key);
@@ -231,14 +230,17 @@ id<MTLTexture> ResourceCache::Texture(const ResourceVersion& version,MTLTextureD
       std::vector<TextureUpload>(uploads.begin(),uploads.end())});
   ++impl_->stats.texture_creates;impl_->stats.uploaded_bytes+=bytes.size();error.clear();return texture;
 }
-void ResourceCache::BeginUploadBatch(){impl_->uniform_page=nil;impl_->uniform_used=0;}
+void ResourceCache::BeginUploadBatch(){for(auto& page:impl_->pages){page.buffer=nil;page.used=0;}}
 BufferView ResourceCache::UniformBuffer(const ResourceVersion& version,std::span<const uint8_t> bytes,std::string& error) {
   if(!version.owner||!version.generation||bytes.empty()||bytes.size()>64*1024) {
     error="Invalid immutable Metal uniform generation";return {};
   }
-  return UploadBuffer(version,bytes,error);
+  return UploadInArena(version,bytes,error,true);
 }
 BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<const uint8_t> bytes,std::string& error) {
+  return UploadInArena(version,bytes,error,false);
+}
+BufferView ResourceCache::UploadInArena(const ResourceVersion& version,std::span<const uint8_t> bytes,std::string& error,bool constants) {
   if(!version.owner||!version.generation||bytes.empty()) {error="Invalid immutable Metal upload generation";return {};}
   if(bytes.size()>64*1024) {
     auto buffer=Buffer(version,bytes,error);return {buffer,0,bytes.size()};
@@ -254,21 +256,22 @@ BufferView ResourceCache::UploadBuffer(const ResourceVersion& version,std::span<
     --i->second.allocation->live_entries;impl_->uniforms.erase(i);++impl_->stats.retired;
   }
   constexpr NSUInteger capacity=256*1024,alignment=256;
-  const auto offset=(impl_->uniform_used+alignment-1)&~(alignment-1);
-  if(!impl_->uniform_page||offset>capacity-bytes.size()) {
+  auto& page=impl_->pages[constants?0:1];
+  const auto offset=(page.used+alignment-1)&~(alignment-1);
+  if(!page.buffer||offset>capacity-bytes.size()) {
     impl_->Reserve(capacity);
-    impl_->uniform_page=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
-    if(!impl_->uniform_page){error="Metal uniform page allocation failed";return {};}
-    impl_->uniform_page.label=@"Theft4 Immutable Upload Page";
-    impl_->current_page=impl_->Add(impl_->uniform_page,true);
-    impl_->uniform_used=0;++impl_->stats.buffer_creates;
-  }else impl_->uniform_used=offset;
-  BufferView view{impl_->uniform_page,impl_->uniform_used,bytes.size()};
-  std::memcpy(static_cast<uint8_t*>(impl_->uniform_page.contents)+view.offset,bytes.data(),bytes.size());
-  impl_->uniform_used+=bytes.size();
-  impl_->current_page->keys.push_back(key);impl_->Touch(impl_->current_page);
-  impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view,impl_->current_page});
-  ++impl_->current_page->live_entries;
+    page.buffer=[impl_->renderer.Device() newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+    if(!page.buffer){error="Metal uniform page allocation failed";return {};}
+    page.buffer.label=constants?@"Theft4 Immutable Constants":@"Theft4 Immutable Geometry";
+    page.allocation=impl_->Add(page.buffer,true);
+    page.used=0;++impl_->stats.buffer_creates;
+  }else page.used=offset;
+  BufferView view{page.buffer,page.used,bytes.size()};
+  std::memcpy(static_cast<uint8_t*>(page.buffer.contents)+view.offset,bytes.data(),bytes.size());
+  page.used+=bytes.size();
+  page.allocation->keys.push_back(key);impl_->Touch(page.allocation);
+  impl_->uniforms.insert_or_assign(key,Impl::UniformEntry{version.owner,view,page.allocation});
+  ++page.allocation->live_entries;
   impl_->stats.uploaded_bytes+=bytes.size();error.clear();return view;
 }
 size_t ResourceCache::SweepRetired(bool bounded) {

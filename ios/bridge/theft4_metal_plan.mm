@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_metal_plan.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -120,6 +121,7 @@ void PlanAdapter::FlushPipelineCache() {
 }
 bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
   if(!shaders_.Open(libraries,error))return false;
+  consecutive_pipeline_.reset();consecutive_source_={};consecutive_primitive_=render::Primitive::Count;
   pipelines_.clear();render_pipelines_.clear();prepared_.clear();images_.clear();
   if(!pipeline_cache_directory_.empty())try {
     const auto path=std::filesystem::path(pipeline_cache_directory_)/"recipes.json";
@@ -130,7 +132,7 @@ bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
           std::string ignored;PipelineFor(p,primitive,ignored);
         }}catch(...){}
       }
-      std::fprintf(stderr,"gta4-metal-pipeline-preparation: prepared=%zu archive-hits=%llu before-gameplay=true\n",
+      if(!theft4_retail_mode()) std::fprintf(stderr,"gta4-metal-pipeline-preparation: prepared=%zu archive-hits=%llu before-gameplay=true\n",
         render_pipelines_.size(),(unsigned long long)renderer_.PipelineArchiveHits());
     }
   }catch(...){}
@@ -204,6 +206,16 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   // Metal compiles topology classes; list versus strip remains in each Draw.
   if(primitive==render::Primitive::LineStrip)primitive=render::Primitive::Line;
   if(primitive==render::Primitive::TriangleStrip)primitive=render::Primitive::Triangle;
+  // Exact source equality covers all shader, specialization, vertex, attachment,
+  // blend and depth/stencil fields. Hits borrow the last realized object before
+  // metadata lookup or canonical-key preparation; Open invalidates the owner.
+  if(consecutive_pipeline_&&primitive==consecutive_primitive_&&source==consecutive_source_) {
+    error.clear();return consecutive_pipeline_;
+  }
+  const auto remember=[&](std::shared_ptr<const Pipeline> result) {
+    if(result){consecutive_source_=source;consecutive_primitive_=primitive;consecutive_pipeline_=result;}
+    return result;
+  };
   if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
   const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
   if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
@@ -219,13 +231,13 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   }
   // Borrow the immutable declaration for hits. The previous value argument
   // and owning map lookup copied its attribute vector twice on every draw.
-  if(auto it=pipelines_.find(PipelineLookup{*effective,primitive});it!=pipelines_.end()){error.clear();return it->second;}
+  if(auto it=pipelines_.find(PipelineLookup{*effective,primitive});it!=pipelines_.end()){error.clear();return remember(it->second);}
   render::Pipeline raster=*effective;
   raster.depth_test=false;raster.depth_write=false;raster.stencil_test=false;
   raster.depth_compare=render::Compare::Always;raster.front={};raster.back={};
   if(auto found=render_pipelines_.find(PipelineLookup{raster,primitive});found!=render_pipelines_.end()) {
     auto result=renderer_.MakeDepthVariant(*found->second,DepthDescriptor(*effective),error);
-    if(result)pipelines_.emplace(std::pair{*effective,primitive},result);return result;
+    if(result)pipelines_.emplace(std::pair{*effective,primitive},result);return remember(result);
   }
   auto vertex=shaders_.Resolve({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex,vs_specialization,error);
   if(!vertex.function)return {};
@@ -233,7 +245,7 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   if(p.fragment.hash){pixel=shaders_.Resolve({p.fragment.hash,p.fragment.variant==1},Stage::Fragment,ps_specialization,error);if(!pixel.function)return {};}
   auto result=BuildFixedPipeline(renderer_,*effective,primitive,vertex,p.fragment.hash ? &pixel : nullptr,error);
   if(result){pipeline_cache_dirty_=true;render_pipelines_.emplace(std::pair{std::move(raster),primitive},result);
-    pipelines_.emplace(std::pair{*effective,primitive},result);}return result;
+    pipelines_.emplace(std::pair{*effective,primitive},result);}return remember(result);
 }
 BufferView PlanAdapter::BufferFor(const render::Buffer& b,std::string& error) {
   if(!b.source)return {};

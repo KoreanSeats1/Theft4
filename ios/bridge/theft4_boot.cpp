@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_boot.h"
 #include "gta4_installer.h"
 #include <rex/logging.h>
@@ -80,6 +81,7 @@ int theft4_validate_installed_game(const char* game_directory, char* message,
 }
 
 int theft4_configure_boot_diagnostics(void) {
+    if (theft4_retail_mode()) return rex::diagnostics::Configure(false, "") ? 0 : 1;
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");
     const bool detailed = enabled && std::string_view(enabled) == "1";
     const char* content_probe = std::getenv("THEFT4_NATIVE_CONTENT_PROBE");

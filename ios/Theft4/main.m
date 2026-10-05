@@ -1,3 +1,4 @@
+#include "../bridge/theft4_retail_mode.h"
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <Metal/MTLDeviceCertification.h>
@@ -613,6 +614,10 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)applyLowPowerPreset;
 - (void)applyLimitedMemoryCaps;
 - (void)applyOriginalGraphicsPreset;
+- (void)applyFrameSpeedGraphicsChoices;
+- (void)applyFrameSpeedGraphicsPreset;
+- (void)restorePreviousGraphicsPreset;
+- (void)retailModeChanged:(UISwitch *)sender;
 #ifdef THEFT4_INTRO_TEST_BUILD
 - (void)runIntroTestImportSmokeIfRequested;
 #endif
@@ -703,7 +708,7 @@ static Theft4AutomaticGraphicsTier automaticGraphicsTier(void) {
 
 #ifdef THEFT4_HAS_GAME_LOADER
 static void bootEvent(void *context, const char *event) {
-    fprintf(stderr, "Theft4 loader: %s\n", event);
+    if (!theft4_retail_mode()) fprintf(stderr, "Theft4 loader: %s\n", event);
     fflush(stderr);
     Theft4ViewController *controller = (__bridge Theft4ViewController *)context;
     NSString *message = [NSString stringWithUTF8String:event];
@@ -844,8 +849,6 @@ static void bootEvent(void *context, const char *event) {
         toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:keys[i]];
         [toggle addTarget:self action:@selector(displaySettingsChanged:) forControlEvents:UIControlEventValueChanged];
     }
-    [_bringupOverlay.originalPresetButton addTarget:self action:@selector(applyOriginalGraphicsPreset)
-        forControlEvents:UIControlEventTouchUpInside];
     [self resetAutomaticCaptureForNewSession];
     [_performanceCapture addTarget:self action:@selector(displaySettingsChanged:)
                  forControlEvents:UIControlEventValueChanged];
@@ -887,25 +890,37 @@ static void bootEvent(void *context, const char *event) {
     }
     [self applyLimitedMemoryCaps];
     if (_fsrBoost.on) _enhancedOutput.on = YES;
-    // A controlled performance run selects current launcher choices only.
-    // It does not migrate saved preferences or alter normal launches.
+    NSUserDefaults *speedDefaults = NSUserDefaults.standardUserDefaults;
+#ifdef THEFT4_DIRECT_METAL_DEFAULT
+    // One-time selection for this isolated Metal app. Preserve the previous
+    // graphics values rather than silently replacing the user's custom profile.
+    if (![speedDefaults boolForKey:@"Theft4FrameSpeedSelection107"]) {
+        NSArray *savedKeys = @[@"Theft4GraphicsPreset",@"Theft4LabRenderHeight",@"Theft4LabFSREnabled",
+            @"Theft4ShadowQuality",@"Theft4DrawDistance",@"Theft4ModelDetail",@"Theft4ReflectionQuality",
+            @"Theft4AntiAliasing",@"Theft4AnisotropicFiltering",@"Theft4MotionBlur",@"Theft4DepthOfField",
+            @"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost"];
+        NSMutableDictionary *previous = [NSMutableDictionary new];
+        for (NSString *key in savedKeys) {id value=[speedDefaults objectForKey:key];if(value)previous[key]=value;}
+        [speedDefaults setObject:previous forKey:@"Theft4PreviousGraphicsSettings107"];
+        [speedDefaults setObject:@"frame-speed" forKey:@"Theft4GraphicsPreset"];
+        [speedDefaults setBool:YES forKey:@"Theft4FrameSpeedSelection107"];
+    }
+#endif
     const char *frameSpeedFirst = getenv("THEFT4_FRAME_SPEED_FIRST");
-    if (_bringupOverlay.renderResolution && frameSpeedFirst && strcmp(frameSpeedFirst, "1") == 0) {
-        _bringupOverlay.renderResolution.selectedSegmentIndex = 1; // 720p
-        _bringupOverlay.fsrUpscaling.on = NO;
-        _antiAliasing.selectedSegmentIndex = 0;
-        _motionBlur.on = NO;
-        _depthOfField.on = NO;
-        _anisotropicFiltering.on = NO;
-        _reflectionQuality.selectedSegmentIndex = 0;
-        _modelDetail.selectedSegmentIndex = 0;
-        _shadowQuality.selectedSegmentIndex = 0;
-        _drawDistance.selectedSegmentIndex = 0;
-        _enhancedOutput.on = NO;
-        _fsrBoost.on = NO;
+    if ([[speedDefaults stringForKey:@"Theft4GraphicsPreset"] isEqualToString:@"frame-speed"] ||
+        (frameSpeedFirst && strcmp(frameSpeedFirst,"1")==0)) [self applyFrameSpeedGraphicsChoices];
+    [_bringupOverlay.frameSpeedButton addTarget:self action:@selector(applyFrameSpeedGraphicsPreset) forControlEvents:UIControlEventTouchUpInside];
+    [_bringupOverlay.restoreGraphicsButton addTarget:self action:@selector(restorePreviousGraphicsPreset) forControlEvents:UIControlEventTouchUpInside];
+    _bringupOverlay.restoreGraphicsButton.hidden = ![speedDefaults dictionaryForKey:@"Theft4PreviousGraphicsSettings107"];
+    _bringupOverlay.retailMode.on = theft4_retail_mode();
+    [_bringupOverlay.retailMode addTarget:self action:@selector(retailModeChanged:) forControlEvents:UIControlEventValueChanged];
+    if (theft4_retail_mode()) {
+        _showCPUUsage.on=NO;_showFrameTime.on=NO;_showFPS.on=NO;_performanceCapture.on=NO;
+        _showCPUUsage.enabled=NO;_showFrameTime.enabled=NO;_showFPS.enabled=NO;_performanceCapture.enabled=NO;
+        _downloadLogButton.enabled=NO;_bringupOverlay.restartButton.hidden=YES;
     }
     const char *diagnosticCapture = getenv("THEFT4_DIAGNOSTIC_CAPTURE");
-    if (diagnosticCapture && strcmp(diagnosticCapture, "1") == 0) _performanceCapture.on = YES;
+    if (!theft4_retail_mode() && diagnosticCapture && strcmp(diagnosticCapture, "1") == 0) _performanceCapture.on = YES;
     [_bringupOverlay refreshConfigurationSummary];
     _touchControls = [Theft4TouchControls new];
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
@@ -973,12 +988,14 @@ static void bootEvent(void *context, const char *event) {
         [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
         [_frameTimeView.widthAnchor constraintEqualToConstant:244],
         [_frameTimeView.heightAnchor constraintEqualToConstant:126]]];
+    if (!theft4_retail_mode()) {
     _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                                 target:self
                                               selector:@selector(refreshFrameRate)
                                               userInfo:nil
                                                repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:_fpsTimer forMode:NSRunLoopCommonModes];
+    }
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -987,6 +1004,7 @@ static void bootEvent(void *context, const char *event) {
         withIntermediateDirectories:YES attributes:nil error:&error]) {
         _failure = error.localizedDescription ?: @"Application Support is unavailable";
     } else {
+        if (!theft4_retail_mode()) {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
         NSURL *faultDirectory = [_supportURL URLByAppendingPathComponent:@"faults" isDirectory:YES];
         if ([NSFileManager.defaultManager createDirectoryAtURL:faultDirectory withIntermediateDirectories:YES attributes:nil error:nil]) {
@@ -995,12 +1013,12 @@ static void bootEvent(void *context, const char *event) {
             RexInitializeFaultDiagnostics(faultURL.fileSystemRepresentation);
             RexSetFaultSnapshotWriter(rex_gta4_light_capture_write_fault_snapshot);
         }
+        }
     }
     [self initializeSharedGameDirectory];
     [self record:@"app.probe_loaded"];
-    if (_bringupOverlay.renderResolution && frameSpeedFirst && strcmp(frameSpeedFirst, "1") == 0)
-        [self record:@"frame-speed-first-test: render=1280x720 fsr=off aa=off motion-blur=off dof=off reflection=320x180 model-lod=optimized shadows=optimized draw-distance=0.70"];
-    if (diagnosticCapture && strcmp(diagnosticCapture, "1") == 0)
+
+    if (!theft4_retail_mode() && diagnosticCapture && strcmp(diagnosticCapture, "1") == 0)
         [self record:@"diagnostic-test: long-performance-capture=armed"];
     [self createCore];
 #ifdef THEFT4_INTRO_TEST_BUILD
@@ -1918,19 +1936,61 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
     }
     [_bringupOverlay refreshConfigurationSummary];
-    [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
-    [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
+    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
+    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
         forKey:@"Theft4AnisotropicFiltering"];
     [NSUserDefaults.standardUserDefaults setBool:_enhancedOutput.on
         forKey:@"Theft4EnhancedOutput1080p"];
     _fpsLabel.hidden = !_gamePresentation || _launcherDuringGame || !_showFPS.on;
-    [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
+    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
     [self updateFrameTimeHUD];
     _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
+}
+
+- (void)retailModeChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4RetailMode"];
+    UIAlertController *notice=[UIAlertController alertControllerWithTitle:@"Reopen Theft4"
+        message:@"Retail Mode takes effect after closing and reopening the app. Save your game before closing."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [notice addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:notice animated:YES completion:nil];
+}
+
+- (void)applyFrameSpeedGraphicsChoices {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    // Keep the user-selected scene/output resolution. The measured CPU win
+    // comes from geometry settings, rather than forcing a lower pixel count.
+    _antiAliasing.selectedSegmentIndex=0;_motionBlur.on=NO;_depthOfField.on=NO;_anisotropicFiltering.on=NO;
+    _reflectionQuality.selectedSegmentIndex=0;_modelDetail.selectedSegmentIndex=0;
+    _shadowQuality.selectedSegmentIndex=1;_drawDistance.selectedSegmentIndex=0;_enhancedOutput.on=NO;_fsrBoost.on=NO;
+}
+
+- (void)applyFrameSpeedGraphicsPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    [self applyFrameSpeedGraphicsChoices];[self displaySettingsChanged:nil];
+    [NSUserDefaults.standardUserDefaults setObject:@"frame-speed" forKey:@"Theft4GraphicsPreset"];
+}
+
+- (void)restorePreviousGraphicsPreset {
+    if (!_bringupOverlay.renderResolution || _executionAttempted) return;
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    NSDictionary *saved=[defaults dictionaryForKey:@"Theft4PreviousGraphicsSettings107"];if(!saved)return;
+    for(NSString *key in saved)[defaults setObject:saved[key] forKey:key];
+    NSArray<UISwitch *> *toggles=@[_anisotropicFiltering,_motionBlur,_depthOfField,_enhancedOutput,_fsrBoost];
+    NSArray *keys=@[@"Theft4AnisotropicFiltering",@"Theft4MotionBlur",@"Theft4DepthOfField",@"Theft4EnhancedOutput1080p",@"Theft4ExperimentalFSRBoost"];
+    for(NSUInteger i=0;i<toggles.count;++i)toggles[i].on=[defaults boolForKey:keys[i]];
+    NSArray<UISegmentedControl *> *choices=@[_shadowQuality,_drawDistance,_modelDetail,_reflectionQuality,_antiAliasing];
+    keys=@[@"Theft4ShadowQuality",@"Theft4DrawDistance",@"Theft4ModelDetail",@"Theft4ReflectionQuality",@"Theft4AntiAliasing"];
+    for(NSUInteger i=0;i<choices.count;++i)choices[i].selectedSegmentIndex=MAX(0,MIN(choices[i].numberOfSegments-1,[defaults integerForKey:keys[i]]));
+    uint32_t h=theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
+    _bringupOverlay.renderResolution.selectedSegmentIndex=h==540?0:h==900?2:h==1080?3:h==THEFT4_LAB_NATIVE_16_9?4:1;
+    _bringupOverlay.fsrUpscaling.on=[defaults boolForKey:@"Theft4LabFSREnabled"];
+    [self displaySettingsChanged:nil];
+    [defaults setObject:saved[@"Theft4GraphicsPreset"] ?: @"custom" forKey:@"Theft4GraphicsPreset"];
 }
 
 - (void)applyOriginalGraphicsChoices {
@@ -2030,6 +2090,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)record:(NSString *)event {
+    if (theft4_retail_mode()) return;
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ log = os_log_create(NSBundle.mainBundle.bundleIdentifier.UTF8String, "lifecycle"); });
@@ -2406,8 +2467,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)updateFrameTimeHUD {
-    [_cpuUsageView setMonitoringActive:(_gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
-    BOOL visible = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
+    [_cpuUsageView setMonitoringActive:(!theft4_retail_mode() && _gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
+    BOOL visible = !theft4_retail_mode() && _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
     _frameTimeTop.constant = _showFPS.on ? 52 : 10;
     theft4_frame_time_set_enabled(visible);
@@ -2684,6 +2745,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (BOOL)beginPublicationCapture {
+    if (theft4_retail_mode()) return NO;
     if (_publicationCaptureActive) return YES;
     if (!_supportURL || _publicationCaptureWriteFailed || _publicationCaptureURL) return NO;
     NSURL *directory = [[_supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES]
@@ -2874,7 +2936,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         setenv("THEFT4_ASTC_PREPARATION_ROOT", preparationRoot.fileSystemRepresentation, 1);
         const BOOL astcEnabled = _astcConversion.on;
         setenv("THEFT4_ASTC_ENABLED", astcEnabled ? "1" : "0", 1);
-        NSLog(@"Theft4 texture compatibility: enabled=%@",
+        if (!theft4_retail_mode()) NSLog(@"Theft4 texture compatibility: enabled=%@",
               astcEnabled ? @"yes" : @"no");
 #endif
         [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
@@ -2898,6 +2960,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         setenv("THEFT4_REFLECTION_RESOLUTION",
             reflectionPresets[_reflectionQuality.selectedSegmentIndex], 1);
         setenv("THEFT4_ANTI_ALIASING", antiAliasingPresets[_antiAliasing.selectedSegmentIndex], 1);
+        if (!theft4_retail_mode()) [self record:[NSString stringWithFormat:
+            @"graphics.launch render-height=%u fsr=%d draw-distance=%s lod-bias=%s shadows=%s aa=%s dof=%d motion-blur=%d aniso=%d",
+            _bringupOverlay.renderHeight,_bringupOverlay.fsrUpscaling.on,
+            distancePresets[_drawDistance.selectedSegmentIndex],_modelDetail.selectedSegmentIndex==0?"1.75":"1",
+            shadowPresets[_shadowQuality.selectedSegmentIndex],antiAliasingPresets[_antiAliasing.selectedSegmentIndex],
+            _depthOfField.on,_motionBlur.on,_anisotropicFiltering.on]];
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
@@ -2917,6 +2985,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [_bringupOverlay retireScene];
         _fsrBoost.enabled = NO;
         _bringupOverlay.renderResolution.enabled = NO;
+        _bringupOverlay.frameSpeedButton.enabled = NO;
+        _bringupOverlay.restoreGraphicsButton.enabled = NO;
         // This is a next-process setting, but users can still prepare the
         // comparison while viewing the in-game launcher. The saved choice is
         // applied only when a fresh game runtime is created after relaunch.
@@ -3121,5 +3191,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 @end
 
 int main(int argc, char *argv[]) {
-    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(Theft4AppDelegate.class)); }
+    @autoreleasepool {
+        NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+        if (![defaults objectForKey:@"Theft4RetailMode"]) [defaults setBool:YES forKey:@"Theft4RetailMode"];
+        const char *override=getenv("THEFT4_RETAIL_MODE");
+        if (!override || (strcmp(override,"0") && strcmp(override,"1")))
+            setenv("THEFT4_RETAIL_MODE",[defaults boolForKey:@"Theft4RetailMode"]?"1":"0",1);
+        if (theft4_retail_mode()) {freopen("/dev/null","w",stdout);freopen("/dev/null","w",stderr);}
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass(Theft4AppDelegate.class));
+    }
 }

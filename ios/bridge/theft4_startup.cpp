@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_boot.h"
 #include "theft4_bootstrap_audio.h"
 #include "theft4_bootstrap_graphics.h"
@@ -83,7 +84,7 @@ theft4_boot_event_fn entry_event = nullptr;
 void* entry_context = nullptr;
 
 void ObservedEntry(PPCContext& ctx, uint8_t* base) {
-    std::fprintf(stderr, "THEFT4 AOT ENTRY REACHED\n");
+    if (!theft4_retail_mode()) std::fprintf(stderr, "THEFT4 AOT ENTRY REACHED\n");
     std::fflush(stderr);
     entry_event(entry_context, "Recompiled GTA IV entry point is executing");
     original_entry(ctx, base);
@@ -106,6 +107,13 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             return 1;
         }
         // Keep this first-execution experiment separate from existing saves.
+        if (theft4_retail_mode()) {
+            for (const char* option : {"THEFT4_DIAGNOSTICS", "THEFT4_NATIVE_CONTENT_PROBE",
+                 "THEFT4_AUDIO_TIMING", "THEFT4_GPU_FLIGHT_TRACE", "THEFT4_PERFORMANCE_CAPTURE",
+                 "THEFT4_MOTION_BLUR_TRACE", "THEFT4_METAL_CAPTURE"}) setenv(option,"0",1);
+            for (const char* path : {"REX_GPU_FLIGHT_TRACE_PATH", "REX_AUDIO_HANDOFF_DIR",
+                 "THEFT4_FRAME_CAPTURE_DIR"}) unsetenv(path);
+        }
         const auto support = std::filesystem::path(support_directory) / "startup";
         std::filesystem::create_directories(support);
         const std::string log_path = (support / "runtime.log").string();
@@ -132,7 +140,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // launch needs one so device testing cannot accumulate large CSVs.
         const auto audio_timing = support / "audio-timing";
         std::error_code audio_timing_error;
-        std::filesystem::remove_all(audio_timing, audio_timing_error);
+        if (!theft4_retail_mode()) std::filesystem::remove_all(audio_timing, audio_timing_error);
         if (const char* timing = std::getenv("THEFT4_AUDIO_TIMING");
             timing && std::string_view(timing) == "1") {
             std::filesystem::create_directories(audio_timing);
@@ -426,9 +434,9 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // GPU envelope. Per-pass Metal timestamp blits measurably perturb the
         // workload and are unnecessary for the CPU/physics comparison.
         REXCVAR_SET(gta4_profile_native_detailed_gpu, false);
-        REXCVAR_SET(gta4_profile_native_detailed_cpu, true);
+        REXCVAR_SET(gta4_profile_native_detailed_cpu, !theft4_retail_mode());
         const char* capture_setting = std::getenv("THEFT4_PERFORMANCE_CAPTURE");
-        const bool capture_on_launch = capture_setting &&
+        const bool capture_on_launch = !theft4_retail_mode() && capture_setting &&
             std::string_view(capture_setting) == "1";
         REXCVAR_SET(gta4_profile_native_autostart, capture_on_launch);
         REXLOG_INFO(

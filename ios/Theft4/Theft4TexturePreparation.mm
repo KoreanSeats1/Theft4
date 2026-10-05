@@ -1,3 +1,4 @@
+#include "../bridge/theft4_retail_mode.h"
 #import "Theft4TexturePreparation.h"
 #include "theft4_texture_manifest.h"
 #include <atomic>
@@ -58,7 +59,7 @@ NSDictionary *Dictionary(const Json& value) {
     for (const auto& key : index) if (!available.contains(key.get<std::string>())) return NO;
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
-    NSLog(@"[texture-preparation] saved cache verified: %lu textures in %lld ms; no conversion required",
+    if (!theft4_retail_mode()) NSLog(@"[texture-preparation] saved cache verified: %lu textures in %lld ms; no conversion required",
           (unsigned long)index.size(), (long long)elapsed);
     // The first new runtime texture must not enumerate tens of thousands of
     // prepared files on the render thread. Start accounting while the launcher
@@ -72,7 +73,7 @@ NSDictionary *Dictionary(const Json& value) {
         const bool ready = theft4::astc::PrimeRuntimeCache(root, &error);
         const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - begin).count();
-        NSLog(@"[texture-preparation] runtime cache accounting ready=%d in %lld ms %s",
+        if (!theft4_retail_mode()) NSLog(@"[texture-preparation] runtime cache accounting ready=%d in %lld ms %s",
               ready, (long long)milliseconds, error.c_str());
       });
     });
@@ -93,7 +94,7 @@ NSDictionary *Dictionary(const Json& value) {
       const auto now = std::chrono::steady_clock::now();
       if (force || now - last_log >= std::chrono::seconds(10)) {
         last_log = now;
-        NSLog(@"[texture-preparation] %s", status.dump().c_str());
+        if (!theft4_retail_mode()) NSLog(@"[texture-preparation] %s", status.dump().c_str());
       }
       if (!force && now - last_update < std::chrono::milliseconds(250)) return;
       last_update = now;
@@ -176,7 +177,7 @@ NSDictionary *Dictionary(const Json& value) {
                  {"sourceWarnings", manifest.at("warnings").size()}};
       Save(root / "preparation-state.json", summary); complete = YES;
     } catch (const std::exception& failure) { error = failure.what(); }
-    NSLog(@"[texture-preparation] finished complete=%d %s %s", complete, summary.dump().c_str(), error.c_str());
+    if (!theft4_retail_mode()) NSLog(@"[texture-preparation] finished complete=%d %s %s", complete, summary.dump().c_str(), error.c_str());
     NSDictionary *result = Dictionary(summary);
     NSString *failure = error.empty() ? nil : [NSString stringWithUTF8String:error.c_str()];
     dispatch_async(dispatch_get_main_queue(), ^{

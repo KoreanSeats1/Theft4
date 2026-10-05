@@ -249,6 +249,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
                 toggle:_fsrUpscaling],
             _resolutionSummary
         ]];
+        _frameSpeedButton = Action(@"FRAME SPEED", NO);
+        _frameSpeedButton.accessibilityIdentifier = @"settings.frameSpeed";
+        _restoreGraphicsButton = Action(@"RESTORE PREVIOUS SETTINGS", NO);
+        _restoreGraphicsButton.accessibilityIdentifier = @"settings.restorePreviousGraphics";
+        [graphicsRows addObjectsFromArray:@[_frameSpeedButton,_restoreGraphicsButton,
+            Copy(@"Frame Speed keeps your resolution and uses original shadows, earlier resident mesh LOD and shorter draw distance, with edge filters, depth of field and motion blur off. Your selection is kept after reopening.",12,NO)]];
         _lowPowerButton = Action(@"AUTO OPTIMIZE", NO);
         _lowPowerButton.accessibilityIdentifier = @"settings.autoOptimize";
         _lowPowerButton.accessibilityLabel = @"Auto Optimize for this device";
@@ -340,6 +346,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _astcConversion.onTintColor = Ink(0x35CDD1);
     _astcConversion.accessibilityIdentifier = @"settings.astcConversion";
 #endif
+    _retailMode = [UISwitch new];
+    _retailMode.onTintColor = Ink(0x35CDD1);
+    _retailMode.accessibilityIdentifier = @"settings.retailMode";
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xB6884D);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
@@ -355,6 +364,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     NSMutableArray<UIView *> *systemRows = [NSMutableArray arrayWithArray:@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
+        [self setting:@"RETAIL MODE" detail:@"Disables app logging, profiling, captures and debug overlays. Saved choice applies after closing and reopening Theft4." toggle:_retailMode],
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
         Copy(@"SAVE TRANSFER", 13, YES),

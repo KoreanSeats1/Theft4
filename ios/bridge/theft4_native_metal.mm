@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include "theft4_native_metal.h"
 #include <algorithm>
 #include <bit>
@@ -308,6 +309,7 @@ Frame::Frame(Frame&&) noexcept = default;
 Frame& Frame::operator=(Frame&&) noexcept = default;
 Frame::operator bool() const { return impl_ && !impl_->submitted && impl_->buffer; }
 bool Frame::ProfilePasses(size_t maximum_passes,std::span<const size_t> pass_mapping) {
+  if(theft4_retail_mode())return false;
   if(!pass_mapping.empty()&&pass_mapping.size()!=maximum_passes)return false;
   if(!*this||impl_->encoder||impl_->counters||!maximum_passes||maximum_passes>4096)return false;
   impl_->pass_mapping.assign(pass_mapping.begin(),pass_mapping.end());

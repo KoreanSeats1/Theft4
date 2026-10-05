@@ -1,3 +1,4 @@
+#include "theft4_retail_mode.h"
 #include <source_location>
 #include "direct_metal_probe.h"
 #include "theft4_native_metal.h"
@@ -823,20 +824,23 @@ struct Probe {
     draw.vertex_count=vertices.size();draw.viewport={0,0,1920,1080,0,1};draw.scissor={0,0,1920,1080};
     for(size_t trial=0;trial<3;++trial) {
       auto frame=renderer.BeginFrame(error);Require(bool(frame));const std::array<size_t,1> mapping{7};
-      Require(frame.ProfilePasses(1,trial==1?std::span<const size_t>(mapping):std::span<const size_t>{}));
+      Require(frame.ProfilePasses(1,trial==1?std::span<const size_t>(mapping):std::span<const size_t>{})==!theft4_retail_mode());
       auto pass=[MTLRenderPassDescriptor renderPassDescriptor];auto a=pass.colorAttachments[0];a.texture=texture;
       a.loadAction=MTLLoadActionClear;a.storeAction=MTLStoreActionStore;
       Require(frame.BeginPass(pass,error));
       for(size_t i=0;i<64;++i)Require(frame.Encode(draw,error));
       Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
-      const auto gpu=receipt.GpuMilliseconds();const auto times=receipt.GpuPassTimings();Require(times.size()==1&&gpu>0);
+      const auto gpu=receipt.GpuMilliseconds();const auto times=receipt.GpuPassTimings();
+      if(theft4_retail_mode()){Require(times.empty());continue;}
+      Require(times.size()==1&&gpu>0);
       Require(times[0].pass==(trial==1?7:0));
       Require(std::isfinite(times[0].vertex_ms)&&std::isfinite(times[0].fragment_ms));
       Require(times[0].vertex_ms>=0&&times[0].fragment_ms>0&&
         times[0].vertex_ms<=gpu*1.1+0.05&&times[0].fragment_ms<=gpu*1.1+0.05);
     }
     [results addObject:@{@"case":@"calibrated_gpu_stage_timestamps",@"passed":@YES,
-      @"paired_cpu_gpu_clock_references":@YES,@"stage_durations_within_command_buffer":@YES,
+      @"paired_cpu_gpu_clock_references":@(!theft4_retail_mode()),@"stage_durations_within_command_buffer":@(!theft4_retail_mode()),
+      @"profiling_disabled_in_retail":@(theft4_retail_mode()),
       @"trials":@3,@"synthetic_validation_geometry":@YES}];
   }
   void SampledGameRanges() {

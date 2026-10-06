@@ -13,6 +13,7 @@
 #include "direct_metal_capture.h"
 #include "native_color_output.h"
 #include "native_shared_frame_arena.h"
+#include "native_shared_geometry_payload.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -424,6 +425,42 @@ struct Probe {
       @"repeated_lookups_avoided":@1024,@"range_and_identity_changes_checked":@YES,
       @"arena_request_classification_preserved":@YES,@"submission_exit_releases_views":@YES,
       @"scattered_working_set_hits":@(working_set_hits),@"saturation_and_shared_owner_alias_checked":@YES}];
+  }
+  void SharedGeometryPublication() {
+    namespace r=theft4::render;
+    using rex::graphics::gta4_native::PublishNativeGeometryPayload;
+    for(bool index32:{false,true}) {
+      PlanAdapter adapter(renderer);
+      const auto vertices=Quad({0.2f,0.4f,0.8f,1},0.5f,true);
+      std::vector<uint8_t> vertex_bytes(16,0xab),index_bytes(16,0xcd);
+      const auto raw=Bytes(vertices);vertex_bytes.insert(vertex_bytes.end(),raw.begin(),raw.end());
+      for(uint32_t index:{0u,1u,2u,0u,2u,3u}) {
+        if(index32) {const auto* p=reinterpret_cast<const uint8_t*>(&index);index_bytes.insert(index_bytes.end(),p,p+4);}
+        else {const uint16_t value=index;const auto* p=reinterpret_cast<const uint8_t*>(&value);index_bytes.insert(index_bytes.end(),p,p+2);}
+      }
+      const auto* vertex_allocation=vertex_bytes.data();const auto* index_allocation=index_bytes.data();
+      auto vertex_owner=PublishNativeGeometryPayload<r::Bytes>(vertex_bytes,100,{6,1});
+      auto index_owner=PublishNativeGeometryPayload<r::Bytes>(index_bytes,101,{2,index32});
+      Require(vertex_owner&&index_owner&&vertex_bytes.capacity()==0&&index_bytes.capacity()==0);
+      Require(vertex_owner->value.data()==vertex_allocation&&index_owner->value.data()==index_allocation);
+      auto target=Color();Case c{};c.indexed16=true;auto draw=Packet(c,PipelineFor(c,1),{1,1,1,1});
+      draw.vertices[0]=adapter.BufferFor({vertex_owner,16,raw.size()},error);Require(draw.vertices[0].buffer);
+      draw.indices=adapter.BufferFor({index_owner,16,6u*(index32?4u:2u)},error);Require(draw.indices.buffer);
+      draw.index_type=index32?MTLIndexTypeUInt32:MTLIndexTypeUInt16;
+      Require(adapter.BufferFor({vertex_owner,16,raw.size()},error).buffer==draw.vertices[0].buffer);
+      Require(!adapter.BufferFor({index_owner,index_owner->value.size(),1},error).buffer);error.clear();
+      auto frame=renderer.BeginFrame(error);Require(bool(frame));
+      Require(frame.BeginPass(Pass(target,nil,nil),error));Require(frame.Encode(draw,error));Require(frame.EndPass(error));
+      auto receipt=frame.Submit(error);Require(bool(receipt));
+      draw={};adapter.EndUploadBatch();vertex_owner.reset();index_owner.reset();adapter.RetireResources();
+      Require(adapter.ResourceStats().resident_buffer_bytes==0);
+      Require(receipt.Wait(error));const auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
+      constexpr uint8_t expected[]{51,102,204,255};
+      for(size_t byte=0;byte<pixels.size();++byte)Require(std::abs(int(pixels[byte])-int(expected[byte%4]))<=1);
+    }
+    [results addObject:@{@"case":@"shared_geometry_publication",@"passed":@YES,
+      @"cpu_allocation_transferred":@YES,@"index_widths":@2,@"offset_views_checked":@YES,
+      @"gpu_retains_retired_geometry":@YES,@"invalid_view_rejected":@YES}];
   }
   void ResourceGenerations() {
     ResourceCache cache(renderer);
@@ -1695,7 +1732,7 @@ NSDictionary* RunDirectMetalValidation(NSString* libraries, NSString* output) {
       ,{.name="pixel_constant_bank",.texture=true,.pixel_constants=true}
     };
     for(const auto& c:cases)probe.Run(c);
-    probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();
+    probe.AdmissionAndLifetime();probe.CatalogAndCache();probe.ResourceGenerations();probe.SharedGeometryPublication();
     probe.PreparedUploadViews();probe.GameDepthClip();probe.GamePipelineLayouts();probe.GameDrawPlan();probe.PackedUploadLifetime();probe.UploadPageRetirement();probe.SharedHostLibraries();probe.GameTexturePitchPlan();probe.OrderedGameFrame();probe.FloatPairTargets();probe.DeferredReflectionContent();probe.IdentityCopyAndLoadElision();probe.CalibratedPassTimings();probe.SampledGameRanges();probe.OrderedFrameOperations();probe.HostUtilityShaders();probe.OutputSharpening();probe.UploadWorkingSet();probe.ConstantWorkingSetIsolation();probe.OrderedHostUtilities();passed=true;
   } catch(const std::exception& error){failure=[NSString stringWithUTF8String:error.what()];}
   auto device=probe.renderer.Device();

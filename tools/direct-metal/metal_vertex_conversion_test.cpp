@@ -1,8 +1,14 @@
 #define THEFT4_DIRECT_METAL_BACKEND 1
 #define REXLOG_INFO(...) ((void)0)
+#define REXLOG_WARN(...) ((void)0)
+#define XXH_INLINE_ALL
+#include <xxhash.h>
 #include "native_metal_vertex_conversion.h"
 #include "native_frame_scheduling.h"
 #include "native_incremental_owner_cache.h"
+#include "native_shared_geometry_payload.h"
+#include "native_frame_resource_owners.h"
+#include "theft4_render_plan.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -18,26 +24,36 @@ enum class Numeric {kFloat,kSignedInteger,kUnsignedInteger};
 struct Input {uint32_t location=0;Numeric numeric_type=Numeric::kFloat;};
 struct Declaration {std::vector<VertexElement> elements;uint64_t content_hash=1;uint32_t handle=1;};
 struct Shader {std::vector<Input> vertex_inputs;uint64_t hash=1;};
+namespace xenos {constexpr uint32_t kVertexIndexMask=0xFFFFFF;}
+static uint64_t NextNativeTraceDiagnosticCount(std::atomic<uint64_t>& value){return ++value;}
+namespace profile {
+enum class CpuOp {kIndexConvert};
+template<class F> decltype(auto) CpuCall(CpuOp,F&& fn){return fn();}
+}
 #include "metal-vertex-converter.inc"
 namespace memory {
-enum class ResourceKind {kVertexConversion};
+enum class ResourceKind {kVertexConversion,kIndexConversion};
 enum class LifecycleAction {kCreate,kDestroy};
 enum class LifecycleReason {kCacheMiss,kSuperseded};
 }
 static uint64_t creates=0;
 template<class... Args> void RecordNativeMemoryLifecycle(memory::ResourceKind,
     memory::LifecycleAction action,Args&&...) {if(action==memory::LifecycleAction::kCreate)++creates;}
-static uint64_t NextNativeTraceDiagnosticCount(std::atomic<uint64_t>& value){return ++value;}
 struct Gta4NativeGraphicsSystem {
   struct NativeBufferResource {
     struct ConvertedVertexPayload {
       uint64_t metal_conversion_identity=0,declaration_hash=0,shader_hash=0;
       uint32_t stream=0,stream_offset=0,stride=0,created_frame=0,last_used_frame=0;
       std::vector<uint8_t> payload;
+      std::shared_ptr<const theft4::render::Bytes> metal_owner;
+      const std::vector<uint8_t>& Data() const;
     };
     uint64_t generation=1;uint32_t handle=1;
     std::vector<uint8_t> payload;
     mutable std::vector<ConvertedVertexPayload> converted_vertex_payloads;
+    mutable std::vector<uint8_t> host_index16_payload,host_index32_payload;
+    mutable std::array<std::shared_ptr<const theft4::render::Bytes>,2> metal_index_owners{};
+    const std::vector<uint8_t>& IndexPayload(bool) const;
   };
   struct NativePipelineState {
     const Declaration* vertex_declaration_resource=nullptr;
@@ -47,11 +63,26 @@ struct Gta4NativeGraphicsSystem {
   };
   static constexpr uint32_t kVertexStreamCount=16;
   uint32_t active_texture_frame_=1;
+  uint64_t next_native_metal_allocation_=0,next_native_metal_sequence_=0;
   const NativeBufferResource::ConvertedVertexPayload* PrepareConvertedVertexPayload(
       const NativeBufferResource*,const NativePipelineState&,uint32_t,
-      const NativeMetalVertexConversion* =nullptr);
+      const NativeMetalVertexConversion* =nullptr,bool=false);
+  const NativeBufferResource::ConvertedVertexPayload* FindConvertedVertexPayload(
+      const NativeBufferResource*,const NativePipelineState&,uint32_t,const NativeMetalVertexConversion*);
+  const std::vector<uint8_t>& PrepareConvertedIndexPayload(const NativeBufferResource*,bool);
+  const std::shared_ptr<const theft4::render::Bytes>& PrepareNativeMetalVertexPayload(
+      NativeResourceView<NativeBufferResource>,const NativePipelineState&,uint32_t,const NativeMetalVertexConversion*);
+  const std::shared_ptr<const theft4::render::Bytes>& PrepareNativeMetalIndexPayload(const NativeBufferResource*,bool);
+  struct BytesRecord {std::weak_ptr<const void> resource;std::shared_ptr<const theft4::render::Bytes> owner;uint64_t used=0;};
+  struct Size {size_t operator()(const BytesRecord& r)const{return r.owner->value.size();}};
+  struct Hash {size_t operator()(const std::array<uint64_t,8>& key)const {
+    return size_t(XXH3_64bits(key.data(),sizeof(key)));
+  }};
+  struct FrameState {NativeIncrementalOwnerCache<std::array<uint64_t,8>,BytesRecord,Size,Hash> buffers;};
+  std::unique_ptr<FrameState> native_metal_frame_=std::make_unique<FrameState>();
 };
 #include "metal-vertex-cache.inc"
+#include "metal-geometry-publish.inc"
 using Resource=Gta4NativeGraphicsSystem::NativeBufferResource;
 using State=Gta4NativeGraphicsSystem::NativePipelineState;
 static auto Plan(const Declaration& d,const Shader& s,uint32_t stream,uint32_t stride) {
@@ -195,4 +226,119 @@ static void Benchmark() {
   };
   assert(pressure(false)==pressure(true));
 }
-int main(){Differential();Benchmark();}
+static void SharedOwnership() {
+  Gta4NativeGraphicsSystem system;
+  auto source=std::make_shared<Resource>();source->payload.resize(4096);
+  for(size_t i=0;i<source->payload.size();++i)source->payload[i]=uint8_t(i);
+  Declaration declaration{{{0,0,0x2C2359,0,0}}};Shader shader{{{0,Numeric::kFloat}}};
+  NativeMetalVertexConversion recipe{*Plan(declaration,shader,0,32),100000};
+  State state{&declaration,&shader};state.vertex_streams[0]={32,64};
+  const auto* before=system.PrepareConvertedVertexPayload(source.get(),state,0,&recipe);
+  const auto* allocation=before->Data().data();const auto expected=before->Data();
+  const auto* after=system.PrepareConvertedVertexPayload(source.get(),state,0,&recipe,true);
+  assert(after==before&&after->payload.capacity()==0&&after->metal_owner);
+  assert(after->Data().data()==allocation&&after->Data()==expected);
+  auto escaped=after->metal_owner;
+  const auto generations=system.next_native_metal_allocation_;
+  for(size_t i=0;i<100;++i) {
+    const auto& owner=system.PrepareNativeMetalVertexPayload(NativeResourceView<Resource>(source),state,0,&recipe);
+    assert(owner==escaped&&system.next_native_metal_allocation_==generations);
+  }
+  std::array<Declaration,3> declarations;
+  std::array<NativeMetalVertexConversion,3> recipes;
+  std::array<std::shared_ptr<const theft4::render::Bytes>,3> saved{};
+  source=std::make_shared<Resource>();source->payload.resize(4096);
+  for(size_t i=0;i<source->payload.size();++i)source->payload[i]=uint8_t(i*3);
+  source->generation=2;
+  for(size_t i=0;i<3;++i) {
+    declarations[i].elements={{0,uint32_t(i)*4,0x2C2359,0,0}};
+    recipes[i]={*Plan(declarations[i],shader,0,32),200000+i};
+  }
+  const auto start_creates=creates;
+  for(size_t draw=0;draw<300;++draw) {
+    const auto i=draw%3;state.vertex_declaration_resource=&declarations[i];
+    const auto& owner=system.PrepareNativeMetalVertexPayload(NativeResourceView<Resource>(source),state,0,&recipes[i]);
+    assert(owner);if(saved[i])assert(owner==saved[i]);else saved[i]=owner;
+    std::vector<uint8_t> reference(source->payload.size());
+    ConvertGuestVertexPayload(reference.data(),source->payload.data(),reference.size(),declarations[i],shader,0,64,32);
+    assert(std::equal(reference.begin()+64,reference.end(),owner->value.begin()+64));
+  }
+  assert(creates-start_creates==3&&system.native_metal_frame_->buffers.size()==3);
+  std::weak_ptr<const Resource> weak_source=source;
+  system.native_metal_frame_->buffers.clear();source.reset();assert(weak_source.expired());
+  assert(escaped->value==expected); // Escaped draws survive source/cache destruction.
+  for(const auto& owner:saved)assert(owner&&owner->value.size()==4096);
+  Resource indices;indices.payload={0x12,0x34,0xFF,0xFF,0xAB,0xCD,0x00,0x01,0xCC};
+  for(bool index32:{false,true}) {
+    std::vector<uint8_t> reference(indices.payload.size());
+    CopyGuestIndicesToHost(reference.data(),indices.payload.data(),reference.size(),index32);
+    const auto& converted=system.PrepareConvertedIndexPayload(&indices,index32);
+    const auto* data=converted.data();
+    auto owner=system.PrepareNativeMetalIndexPayload(&indices,index32);
+    assert(owner&&owner->value==reference&&owner->value.data()==data);
+    assert(indices.IndexPayload(index32).data()==data);
+    assert((index32?indices.host_index32_payload:indices.host_index16_payload).capacity()==0);
+    assert(system.PrepareNativeMetalIndexPayload(&indices,index32)==owner);
+    // Legacy upload can borrow the published allocation without re-converting.
+    assert(system.PrepareConvertedIndexPayload(&indices,index32).data()==data);
+  }
+  std::vector<uint8_t> invalid{1,2,3};const auto* original=invalid.data();
+  assert(!PublishNativeGeometryPayload<theft4::render::Bytes>(invalid,0,{}));
+  assert(invalid.data()==original&&invalid.size()==3);
+  std::cout<<"shared geometry ownership: passed (allocation identity, three-recipe cycling, eviction, escaped draws, index widths)\n";
+}
+static void GeometryPublicationBenchmark(bool reverse=false) {
+  Declaration declaration{{{0,0,0x2C2359,0,0},{0,4,0x1A2187,3,0}}};
+  Shader shader{{{0,Numeric::kFloat},{4,Numeric::kFloat}}};
+  NativeMetalVertexConversion recipe{*Plan(declaration,shader,0,32),1000001};
+  constexpr size_t sources=256,bytes=128*1024,draws=4500,frames=24;
+  const auto run=[&](bool shared) {
+    Gta4NativeGraphicsSystem system;State state{&declaration,&shader};state.vertex_streams[0]={32,64};
+    std::array<std::shared_ptr<Resource>,sources> resources;
+    for(size_t n=0;n<sources;++n) {
+      resources[n]=std::make_shared<Resource>();resources[n]->generation=n+1;
+      resources[n]->payload.resize(bytes);
+      for(size_t i=0;i<bytes;++i)resources[n]->payload[i]=uint8_t(i+n);
+    }
+    uint64_t copied=0,checksum=0;std::vector<double> times;
+    for(size_t frame=0;frame<frames;++frame) {
+      auto start=std::chrono::steady_clock::now();
+      for(size_t draw=0;draw<draws;++draw) {
+        const auto& source=resources[(draw*13)%sources];
+        std::shared_ptr<const theft4::render::Bytes> owner;
+        if(shared)owner=system.PrepareNativeMetalVertexPayload(NativeResourceView<Resource>(source),state,0,&recipe);
+        else {
+          // Build 120's live frontend hit/miss path, using its production
+          // XXH3 key hash, weak expiry check, LRU and full packet copy.
+          const std::array<uint64_t,8> key{6,source->generation,recipe.identity,recipe.plan.Offset(64)};
+          auto& cache=system.native_metal_frame_->buffers;auto found=cache.find(key);
+          if(found!=cache.end()&&!found->second.resource.expired()) {
+            owner=found->second.owner;found->second.used=++system.next_native_metal_sequence_;cache.Touch(found);
+          }else {
+            const auto* converted=system.PrepareConvertedVertexPayload(source.get(),state,0,&recipe);
+            auto packet=std::make_shared<theft4::render::Bytes>();packet->generation=++system.next_native_metal_allocation_;
+            packet->conversion={recipe.identity,recipe.plan.Offset(64)};packet->value=converted->Data();
+            copied+=packet->value.size();owner=packet;cache.Store(key,{source,owner,++system.next_native_metal_sequence_});
+          }
+        }
+        assert(owner);checksum+=owner->value[64];
+      }
+      times.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+    }
+    uint64_t duplicate=0;
+    for(const auto& source:resources)for(const auto& conversion:source->converted_vertex_payloads) {
+      const std::array<uint64_t,8> key{6,source->generation,recipe.identity,recipe.plan.Offset(64)};
+      const auto found=system.native_metal_frame_->buffers.find(key);assert(found!=system.native_metal_frame_->buffers.end());
+      if(conversion.Data().data()!=found->second.owner->value.data())duplicate+=conversion.Data().capacity();
+    }
+    auto warm=times;warm.erase(warm.begin());std::sort(warm.begin(),warm.end());
+    std::cout<<(shared?"shared":"build120")<<" publication: sources="<<sources<<" bytes-per-source="<<bytes
+        <<" cold-ms="<<times[0]<<" warm-median-ms="<<warm[warm.size()/2]<<" copied-bytes="<<copied
+        <<" duplicate-retained-bytes="<<duplicate<<" checksum="<<checksum<<"\n";
+    assert(shared?copied==0&&duplicate==0:copied==sources*bytes&&duplicate==sources*bytes);
+    return checksum;
+  };
+  const auto first=run(reverse);const auto second=run(!reverse);assert(first==second);
+}
+int main(int argc,char** argv){Differential();SharedOwnership();Benchmark();
+  GeometryPublicationBenchmark(argc>1&&std::strcmp(argv[1],"--reverse-publication")==0);}

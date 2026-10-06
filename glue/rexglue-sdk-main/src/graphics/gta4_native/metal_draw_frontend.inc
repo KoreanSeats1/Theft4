@@ -1,3 +1,41 @@
+const std::shared_ptr<const theft4::render::Bytes>& Gta4NativeGraphicsSystem::PrepareNativeMetalVertexPayload(
+    NativeResourceView<NativeBufferResource> resource,const NativePipelineState& state,
+    uint32_t stream,const NativeMetalVertexConversion* conversion) {
+  static const std::shared_ptr<const theft4::render::Bytes> empty;
+  if(!resource||resource->payload.empty()||!state.vertex_declaration_resource||
+      !state.vertex_shader_resource||stream>=kVertexStreamCount||!state.vertex_streams[stream].stride||
+      state.vertex_streams[stream].offset>=resource->payload.size())return empty;
+  if(const auto* found=FindConvertedVertexPayload(resource.get(),state,stream,conversion);
+      found&&found->metal_owner)return found->metal_owner;
+  const auto& binding=state.vertex_streams[stream];
+  const auto key=conversion?std::array<uint64_t,8>{6,resource->generation,conversion->identity,
+      conversion->plan.Offset(binding.offset)}:std::array<uint64_t,8>{1,resource->generation,
+      state.vertex_declaration_resource->content_hash,state.vertex_shader_resource->hash,
+      stream,binding.offset,binding.stride};
+  // Keep the existing bounded packet cache for resources used through MORE
+  // than two distinct conversion recipes. Otherwise cycling recipes would
+  // evict the two CPU slots and recreate identical uploads every draw.
+  auto found=native_metal_frame_->buffers.find(key);
+  if(found!=native_metal_frame_->buffers.end()&&!found->second.resource.expired()) {
+    found->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(found);
+    return found->second.owner;
+  }
+  const auto* converted=PrepareConvertedVertexPayload(resource.get(),state,stream,conversion,true);
+  if(!converted||!converted->metal_owner)return empty;
+  native_metal_frame_->buffers.Store(key,{resource.Share(),converted->metal_owner,next_native_metal_sequence_});
+  return converted->metal_owner;
+}
+
+const std::shared_ptr<const theft4::render::Bytes>& Gta4NativeGraphicsSystem::PrepareNativeMetalIndexPayload(
+    const NativeBufferResource* resource,bool index32) {
+  auto& owner=resource->metal_index_owners[index32];
+  if(owner)return owner;
+  PrepareConvertedIndexPayload(resource,index32);
+  auto& host=index32?resource->host_index32_payload:resource->host_index16_payload;
+  owner=PublishNativeGeometryPayload<theft4::render::Bytes>(host,++next_native_metal_allocation_,{2,index32});
+  return owner;
+}
+
 bool Gta4NativeGraphicsSystem::PrepareNativeMetalFetch(
     NativeResourceView<NativeTextureResource> resource_view,const xenos::xe_gpu_texture_fetch_t& fetch,
     const NativeMetalFrameState& frame_state,theft4::render::HostFetch& output,std::string& error) {
@@ -429,19 +467,10 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       const auto& resource=command.vertex_buffers[stream];const auto& binding=state.vertex_streams[stream];
       if(!resource)return reject("Metal converted vertex source missing");
       const auto& conversion=pipeline_template->vertex_conversions[stream];
-      const auto cache_key=conversion?std::array<uint64_t,8>{6,resource->generation,conversion->identity,
-          conversion->plan.Offset(binding.offset)}:std::array<uint64_t,8>{1,resource->generation,state.vertex_declaration_resource->content_hash,
-          state.vertex_shader_resource->hash,stream,binding.offset,binding.stride};
-      auto it=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
-      if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
-        bytes=it->second.owner;it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);
-      } else {
-        const auto* converted=PrepareConvertedVertexPayload(resource.get(),state,stream,conversion.get());
-        if(!converted)return reject("Metal vertex conversion failed");
-        bytes=cached_bytes(cache_key,NativeResourceView<NativeBufferResource>(resource).Share(),converted->payload,
-            conversion?std::array<uint64_t,4>{conversion->identity,conversion->plan.Offset(binding.offset)}:
-              std::array<uint64_t,4>{converted->declaration_hash,converted->shader_hash,stream,(uint64_t(binding.offset)<<32)|binding.stride});
-      }
+      // The source's bounded two-entry conversion cache owns the SAME packet
+      // used by draw admission and GPU upload. Warm two-slot hits avoid the
+      // global packet-cache lookup; additional recipes use its bounded fallback.
+      const auto& bytes=PrepareNativeMetalVertexPayload(NativeResourceView<NativeBufferResource>(resource),state,stream,conversion.get());
       if(!bytes||binding.offset>=bytes->value.size())return reject("Metal converted vertex packet bounds");
       draw.vertices[stream]={bytes,binding.offset,bytes->value.size()-binding.offset};
     }
@@ -460,8 +489,9 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
       const auto& resource=command.index_buffer;
       const bool index32=(resource->flags&kIndex32Flag)!=0;const size_t element=index32?4:2;
       if((uint64_t(start_index)+count)*element>resource->payload.size())return reject("Metal rectangle index bounds");
-      auto& host=index32?resource->host_index32_payload:resource->host_index16_payload;
-      if(host.empty()){host.resize(resource->payload.size());CopyGuestIndicesToHost(host.data(),resource->payload.data(),host.size(),index32);}
+      const auto& owner=PrepareNativeMetalIndexPayload(resource.get(),index32);
+      if(!owner)return reject("Metal rectangle index conversion failed");
+      const auto& host=owner->value;
       for(uint32_t i=0;i<count;++i) {
         if(index32)std::memcpy(&selected[i],host.data()+(size_t(start_index)+i)*4,4);
         else {uint16_t value;std::memcpy(&value,host.data()+(size_t(start_index)+i)*2,2);selected[i]=value;}
@@ -501,13 +531,14 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     const auto& resource=command.index_buffer;const bool index32=(resource->flags&kIndex32Flag)!=0;
     const size_t element=index32?4:2;
     if((uint64_t(start_index)+count)*element>resource->payload.size())return reject("Metal guest index bounds");
-    auto& host=index32?resource->host_index32_payload:resource->host_index16_payload;
-    if(host.empty()){host.resize(resource->payload.size());CopyGuestIndicesToHost(host.data(),resource->payload.data(),host.size(),index32);}
+    const auto& index_owner=PrepareNativeMetalIndexPayload(resource.get(),index32);
+    if(!index_owner)return reject("Metal index conversion failed");
+    const auto& host=index_owner->value;
     auto selected=std::span<const uint8_t>(host).subspan(size_t(start_index)*element,size_t(count)*element);
     bool sentinel=false;
     std::shared_ptr<const r::Bytes> original;
     if(!expand) {
-      original=cached_bytes({2,resource->generation,index32},NativeResourceView<NativeBufferResource>(resource).Share(),host,{2,index32});
+      original=index_owner;
       if(!original)return reject("Metal index packet allocation failed");
       r::IndexRange range;
       if(!native_metal_frame_->index_ranges.Analyze({original,size_t(start_index)*element,size_t(count)*element},count,uint32_t(element),range,error))return false;

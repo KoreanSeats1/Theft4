@@ -1,5 +1,6 @@
 #include "graphics_system.h"
 #include "native_metal_vertex_conversion.h"
+#include "native_shared_geometry_payload.h"
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "native_metal_frame_continuity.h"
 #include "native_metal_constant_projection.h"
@@ -12204,8 +12205,8 @@ void Gta4NativeGraphicsSystem::CaptureNativeRetainedResources(uint32_t submitted
       resource.created_frame = buffer->created_frame;
       resource.last_used_frame = buffer->last_used_frame.load(std::memory_order_relaxed);
       resource.variant_count = uint32_t(buffer->converted_vertex_payloads.size()) +
-                               uint32_t(!buffer->host_index16_payload.empty()) +
-                               uint32_t(!buffer->host_index32_payload.empty());
+                               uint32_t(!buffer->IndexPayload(false).empty()) +
+                               uint32_t(!buffer->IndexPayload(true).empty());
       resource.auxiliary = buffer->flags;
       append(resource);
       for (const NativeBufferResource::ConvertedVertexPayload& converted :
@@ -12215,8 +12216,8 @@ void Gta4NativeGraphicsSystem::CaptureNativeRetainedResources(uint32_t submitted
         conversion.identity = converted.declaration_hash;
         conversion.generation = buffer->generation;
         conversion.parent_identity = handle;
-        conversion.logical_bytes = converted.payload.size();
-        conversion.retained_bytes = converted.payload.capacity();
+        conversion.logical_bytes = converted.Data().size();
+        conversion.retained_bytes = converted.Data().capacity();
         conversion.created_frame = converted.created_frame;
         conversion.last_used_frame = converted.last_used_frame;
         conversion.auxiliary = converted.stream;
@@ -12238,8 +12239,8 @@ void Gta4NativeGraphicsSystem::CaptureNativeRetainedResources(uint32_t submitted
         conversion.auxiliary = index_width;
         append(conversion);
       };
-      append_index(buffer->host_index16_payload, 16);
-      append_index(buffer->host_index32_payload, 32);
+      append_index(buffer->IndexPayload(false), 16);
+      append_index(buffer->IndexPayload(true), 32);
     }
   }
   std::unordered_set<uint64_t> superseded_generations;
@@ -12567,23 +12568,23 @@ memory::Snapshot Gta4NativeGraphicsSystem::CollectNativeMemorySnapshot(uint32_t 
           std::max(maximum_vertex_variants, uint64_t(buffer->converted_vertex_payloads.size()));
       for (const NativeBufferResource::ConvertedVertexPayload& converted :
            buffer->converted_vertex_payloads) {
-        vertex_conversion_capacity += converted.payload.capacity();
-        vertex_conversion_size += converted.payload.size();
+        vertex_conversion_capacity += converted.Data().capacity();
+        vertex_conversion_size += converted.Data().size();
         ++vertex_conversion_count;
         if (submitted_frame >= converted.last_used_frame &&
             submitted_frame - converted.last_used_frame >= aged_frames) {
           ++vertex_conversion_aged_count;
-          vertex_conversion_aged_bytes += converted.payload.capacity();
+          vertex_conversion_aged_bytes += converted.Data().capacity();
         }
       }
       vertex_conversion_capacity += buffer->converted_vertex_payloads.capacity() *
                                     sizeof(NativeBufferResource::ConvertedVertexPayload);
-      index_conversion_capacity += buffer->host_index16_payload.capacity();
-      index_conversion_capacity += buffer->host_index32_payload.capacity();
-      index_conversion_size += buffer->host_index16_payload.size();
-      index_conversion_size += buffer->host_index32_payload.size();
-      index_conversion_count += !buffer->host_index16_payload.empty();
-      index_conversion_count += !buffer->host_index32_payload.empty();
+      index_conversion_capacity += buffer->IndexPayload(false).capacity();
+      index_conversion_capacity += buffer->IndexPayload(true).capacity();
+      index_conversion_size += buffer->IndexPayload(false).size();
+      index_conversion_size += buffer->IndexPayload(true).size();
+      index_conversion_count += !buffer->IndexPayload(false).empty();
+      index_conversion_count += !buffer->IndexPayload(true).empty();
     }
   }
   set_usage(memory::Category::kHostBufferPayloads, buffer_payload_capacity, buffer_payload_size,
@@ -20554,11 +20555,11 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
   };
   auto retained_bytes = [](const NativeBufferResource& resource) {
     uint64_t bytes = resource.payload.capacity();
-    bytes += resource.host_index16_payload.capacity();
-    bytes += resource.host_index32_payload.capacity();
+    bytes += resource.IndexPayload(false).capacity();
+    bytes += resource.IndexPayload(true).capacity();
     for (const NativeBufferResource::ConvertedVertexPayload& converted :
          resource.converted_vertex_payloads) {
-      bytes += converted.payload.capacity();
+      bytes += converted.Data().capacity();
     }
     return bytes;
   };
@@ -20625,23 +20626,23 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
           memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kDestroy,
           over_budget ? memory::LifecycleReason::kBudgetPressure : memory::LifecycleReason::kUnused,
           converted.declaration_hash, resource.generation, resource.handle,
-          converted.payload.size(), converted.payload.capacity(), 0, converted.last_used_frame,
+          converted.Data().size(), converted.Data().capacity(), 0, converted.last_used_frame,
           converted.stream);
     }
-    if (!resource.host_index16_payload.empty()) {
+    if (!resource.IndexPayload(false).empty()) {
       RecordNativeMemoryLifecycle(
           memory::ResourceKind::kIndexConversion, memory::LifecycleAction::kDestroy,
           over_budget ? memory::LifecycleReason::kBudgetPressure : memory::LifecycleReason::kUnused,
           resource.handle, resource.generation, resource.handle,
-          resource.host_index16_payload.size(), resource.host_index16_payload.capacity(), 0,
+          resource.IndexPayload(false).size(), resource.IndexPayload(false).capacity(), 0,
           candidate.last_used_frame, 16);
     }
-    if (!resource.host_index32_payload.empty()) {
+    if (!resource.IndexPayload(true).empty()) {
       RecordNativeMemoryLifecycle(
           memory::ResourceKind::kIndexConversion, memory::LifecycleAction::kDestroy,
           over_budget ? memory::LifecycleReason::kBudgetPressure : memory::LifecycleReason::kUnused,
           resource.handle, resource.generation, resource.handle,
-          resource.host_index32_payload.size(), resource.host_index32_payload.capacity(), 0,
+          resource.IndexPayload(true).size(), resource.IndexPayload(true).capacity(), 0,
           candidate.last_used_frame, 32);
     }
     RecordNativeMemoryLifecycle(
@@ -22709,8 +22710,37 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   return PublishNativePipeline(key, pipeline, 0);
 }
 
+const std::vector<uint8_t>&
+Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload::Data() const {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(metal_owner)return metal_owner->value;
+#endif
+  return payload;
+}
+const std::vector<uint8_t>&
+Gta4NativeGraphicsSystem::NativeBufferResource::IndexPayload(bool index32) const {
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(metal_index_owners[index32])return metal_index_owners[index32]->value;
+#endif
+  return index32?host_index32_payload:host_index16_payload;
+}
+const std::vector<uint8_t>& Gta4NativeGraphicsSystem::PrepareConvertedIndexPayload(
+    const NativeBufferResource* resource,bool index32) {
+  const auto& existing=resource->IndexPayload(index32);
+  if(!existing.empty())return existing;
+  auto& host=index32?resource->host_index32_payload:resource->host_index16_payload;
+  host.resize(resource->payload.size());
+  profile::CpuCall(profile::CpuOp::kIndexConvert,[&] {
+    CopyGuestIndicesToHost(host.data(),resource->payload.data(),host.size(),index32);
+  });
+  RecordNativeMemoryLifecycle(memory::ResourceKind::kIndexConversion,memory::LifecycleAction::kCreate,
+      memory::LifecycleReason::kCacheMiss,resource->handle,resource->generation,resource->handle,
+      host.size(),host.capacity(),0,active_texture_frame_,index32?32:16);
+  return host;
+}
+
 const Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload*
-Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
+Gta4NativeGraphicsSystem::FindConvertedVertexPayload(
     const NativeBufferResource* resource, const NativePipelineState& state,
     uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion) {
   if (!resource || resource->payload.empty() || !state.vertex_declaration_resource ||
@@ -22738,6 +22768,25 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
       break;
     }
   }
+  return converted_payload;
+}
+
+const Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload*
+Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
+    const NativeBufferResource* resource, const NativePipelineState& state,
+    uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion,
+    bool share_metal_payload) {
+  if (!resource || resource->payload.empty() || !state.vertex_declaration_resource ||
+      !state.vertex_shader_resource || vertex_stream >= kVertexStreamCount) return nullptr;
+  const auto& declaration = *state.vertex_declaration_resource;
+  const auto& shader = *state.vertex_shader_resource;
+  const auto& stream_state = state.vertex_streams[vertex_stream];
+  if (!stream_state.stride || stream_state.offset >= resource->payload.size()) return nullptr;
+  uint32_t conversion_offset = stream_state.offset;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (metal_conversion) conversion_offset = metal_conversion->plan.Offset(stream_state.offset);
+#endif
+  const auto* converted_payload = FindConvertedVertexPayload(resource,state,vertex_stream,metal_conversion);
   VertexPayloadConversionCounts conversions{};
   if (!converted_payload) {
     if (resource->converted_vertex_payloads.size() >= kNativeMaximumVertexConversionsPerBuffer) {
@@ -22751,7 +22800,7 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
         RecordNativeMemoryLifecycle(
             memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kDestroy,
             memory::LifecycleReason::kSuperseded, oldest->declaration_hash, resource->generation,
-            resource->handle, oldest->payload.size(), oldest->payload.capacity(), 0,
+            resource->handle, oldest->Data().size(), oldest->Data().capacity(), 0,
             oldest->last_used_frame, oldest->stream);
         resource->converted_vertex_payloads.erase(oldest);
       }
@@ -22776,7 +22825,7 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
     RecordNativeMemoryLifecycle(
         memory::ResourceKind::kVertexConversion, memory::LifecycleAction::kCreate,
         memory::LifecycleReason::kCacheMiss, declaration.content_hash, resource->generation,
-        resource->handle, converted_payload->payload.size(), converted_payload->payload.capacity(),
+        resource->handle, converted_payload->Data().size(), converted_payload->Data().capacity(),
         0, active_texture_frame_, vertex_stream);
   }
   if (conversions.components_16 || conversions.dec3n || conversions.color_uint) {
@@ -22792,6 +22841,17 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
           conversions.color_uint);
     }
   }
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if(share_metal_payload&&!converted_payload->metal_owner) {
+    auto& entry=const_cast<NativeBufferResource::ConvertedVertexPayload&>(*converted_payload);
+    const auto conversion=metal_conversion?std::array<uint64_t,4>{metal_conversion->identity,conversion_offset}:
+        std::array<uint64_t,4>{entry.declaration_hash,entry.shader_hash,vertex_stream,
+                              (uint64_t(conversion_offset)<<32)|stream_state.stride};
+    entry.metal_owner=PublishNativeGeometryPayload<theft4::render::Bytes>(
+        entry.payload,++next_native_metal_allocation_,conversion);
+    if(!entry.metal_owner)return nullptr;
+  }
+#endif
   return converted_payload;
 }
 
@@ -22812,18 +22872,7 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
       allocation = *existing;
       return true;
     }
-    std::vector<uint8_t>& host_payload =
-        index32 ? resource->host_index32_payload : resource->host_index16_payload;
-    if (host_payload.empty()) {
-      host_payload.resize(resource->payload.size());
-      profile::CpuCall(profile::CpuOp::kIndexConvert, [&] { return CopyGuestIndicesToHost(host_payload.data(), resource->payload.data(),
-                             resource->payload.size(), index32); });
-      RecordNativeMemoryLifecycle(
-          memory::ResourceKind::kIndexConversion, memory::LifecycleAction::kCreate,
-          memory::LifecycleReason::kCacheMiss, resource->handle, resource->generation,
-          resource->handle, host_payload.size(), host_payload.capacity(), 0, active_texture_frame_,
-          index32 ? 32 : 16);
-    }
+    const auto& host_payload = PrepareConvertedIndexPayload(resource, index32);
     NativePersistentBufferKey persistent_key{};
     persistent_key.generation = resource->generation;
     persistent_key.kind =
@@ -22865,7 +22914,7 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
     if (metal_capture_ && metal_capture_->pending) {
       const auto* converted = PrepareConvertedVertexPayload(resource, *vertex_state, vertex_stream);
       if (!converted) return false;
-      allocation.host_data = converted->payload.data();
+      allocation.host_data = converted->Data().data();
     }
 #endif
     return true;
@@ -22901,14 +22950,14 @@ bool Gta4NativeGraphicsSystem::UploadBufferResource(
       PrepareConvertedVertexPayload(resource, *vertex_state, vertex_stream);
   if (!converted_payload) return false;
   if (!GetOrCreatePersistentBuffer(
-          command_buffer, resource, persistent_key, converted_payload->payload.data(),
-          VkDeviceSize(converted_payload->payload.size()), NativeUploadKind::kVertex, allocation)) {
+          command_buffer, resource, persistent_key, converted_payload->Data().data(),
+          VkDeviceSize(converted_payload->Data().size()), NativeUploadKind::kVertex, allocation)) {
     if (!AllocateUpload(resource->payload.size(), kNativePersistentBufferAlignment, allocation,
                         NativeUploadKind::kVertex)) {
       return false;
     }
-    std::memcpy(allocation.mapping, converted_payload->payload.data(),
-                converted_payload->payload.size());
+    std::memcpy(allocation.mapping, converted_payload->Data().data(),
+                converted_payload->Data().size());
   }
   if (!memoize_gpu_allocation()) return false;
   return expose_cpu_vertices();
@@ -23012,7 +23061,7 @@ void Gta4NativeGraphicsSystem::RunParallelGuestConstants() {
         command.index_buffer && prepared_index_conversions_.size() < 32) {
       const auto& buffer = *command.index_buffer;
       const bool index32 = (buffer.flags & kIndex32Flag) != 0;
-      const auto& host = index32 ? buffer.host_index32_payload : buffer.host_index16_payload;
+      const auto& host = buffer.IndexPayload(index32);
       if (host.empty() && !buffer.payload.empty() &&
           buffer.payload.size() <= 2 * 1024 * 1024 - preparation_index_bytes_ &&
           std::none_of(prepared_index_conversions_.begin(), prepared_index_conversions_.end(),
@@ -23054,7 +23103,7 @@ void Gta4NativeGraphicsSystem::FinishParallelGuestConstants() {
     const auto* buffer = converted.buffer;
     const bool index32 = converted.index32;
     auto& host = index32 ? buffer->host_index32_payload : buffer->host_index16_payload;
-    if (!host.empty()) continue;
+    if (!buffer->IndexPayload(index32).empty()) continue;
     host = std::move(converted.payload);
     RecordNativeMemoryLifecycle(memory::ResourceKind::kIndexConversion, memory::LifecycleAction::kCreate,
         memory::LifecycleReason::kCacheMiss, buffer->handle, buffer->generation, buffer->handle,

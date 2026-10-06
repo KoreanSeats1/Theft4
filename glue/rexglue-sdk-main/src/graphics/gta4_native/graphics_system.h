@@ -103,6 +103,7 @@
 #endif
 struct ShaderCacheEntry;
 struct ShaderOverrideCacheEntry;
+namespace theft4::render { struct Bytes; }
 #ifdef THEFT4_NATIVE_METAL_CAPTURE
 namespace theft4::render { struct Image; }
 #endif
@@ -273,6 +274,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
       uint32_t stream_offset = 0;
       uint32_t stride = 0;
       std::vector<uint8_t> payload;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+      std::shared_ptr<const theft4::render::Bytes> metal_owner;
+#endif
+      const std::vector<uint8_t>& Data() const;
       uint32_t created_frame = 0;
       uint32_t last_used_frame = 0;
     };
@@ -293,6 +298,10 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     mutable std::vector<ConvertedVertexPayload> converted_vertex_payloads;
     mutable std::vector<uint8_t> host_index16_payload;
     mutable std::vector<uint8_t> host_index32_payload;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    mutable std::array<std::shared_ptr<const theft4::render::Bytes>,2> metal_index_owners{};
+#endif
+    const std::vector<uint8_t>& IndexPayload(bool index32) const;
     // The render worker owns both this immutable resource and the persistent
     // buffer map. Entries remain valid until this owner retires; retaining the
     // pointers avoids rehashing the global cache for every streamed draw.
@@ -1809,7 +1818,20 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // The returned cache entry is borrowed until another conversion on this owner.
   const NativeBufferResource::ConvertedVertexPayload* PrepareConvertedVertexPayload(
       const NativeBufferResource* resource, const NativePipelineState& state,
-      uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion = nullptr);
+      uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion = nullptr,
+      bool share_metal_payload = false);
+  const NativeBufferResource::ConvertedVertexPayload* FindConvertedVertexPayload(
+      const NativeBufferResource* resource, const NativePipelineState& state,
+      uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion);
+  const std::vector<uint8_t>& PrepareConvertedIndexPayload(
+      const NativeBufferResource* resource, bool index32);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  const std::shared_ptr<const theft4::render::Bytes>& PrepareNativeMetalVertexPayload(
+      NativeResourceView<NativeBufferResource> resource, const NativePipelineState& state,
+      uint32_t vertex_stream, const NativeMetalVertexConversion* conversion);
+  const std::shared_ptr<const theft4::render::Bytes>& PrepareNativeMetalIndexPayload(
+      const NativeBufferResource* resource, bool index32);
+#endif
   bool UploadBufferResource(const NativeBufferResource* resource,
                             VkCommandBuffer command_buffer, bool index_buffer, bool index32,
                             const NativePipelineState* vertex_state, uint32_t vertex_stream,

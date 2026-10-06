@@ -1,9 +1,12 @@
 # Theft4 0.3 architecture and recompilation lessons
 
-This record describes the implementation prepared on `codex/direct-metal-96`.
+This record describes the 0.3 implementation promoted from `codex/direct-metal-96`
+to main. The tested build 123 implementation is commit
+`295c716ff27d7e22da2888d20d2ed2e941e0d037`; promotion adds documentation and
+retained ignore rules without changing that implementation.
 The promotion baseline is main build 94, commit
 `b6b4a823403ff38623ce3a46bab369c858c21251`. The preceding build 121 is
-`eb9a14619df39f7efbdd6e1bf40aaf5983086948`. Candidate 0.3 is build 123;
+`eb9a14619df39f7efbdd6e1bf40aaf5983086948`. The 0.3 version is build 123;
 its exact source revision belongs in the built app's `Theft4SourceRevision` and
 the private artifact manifest. The [change manifest](THEFT4_0.3_CHANGE_MANIFEST.json)
 lists the intervening commits and touched source paths.
@@ -87,6 +90,115 @@ SPIR-V representation and SPIRV-Cross; it is not a runtime Vulkan draw layer.
 | BC-incompatible devices: `Theft4TexturePreparation.mm`, `theft4_astc_texture.*` | Unsupported BC formats caused missing/black textures. Repeated expansion to RGBA costs memory, and on-demand conversion can stall gameplay. | Capability-gated static preparation saves ASTC textures once and reuses the result. The full inventory and title texture layouts are GTA IV specific. The general lesson is persistent format preparation keyed to content/capability, not an age-based device blacklist. |
 | Diagnostics: `theft4_retail_mode.h`, profiling policy and capture code | Development clocks, inventories, per-frame counters and detailed GPU timing could contaminate ordinary performance. Sparse or misleading timestamps also obscured regressions. | The optimized policy is applied before runtime construction and removes development work. Build 123 removes the user-facing mode switch; graphs and bounded long captures are independent opt-ins, with frontend stage clocks enabled only during the capture. Engineering-only launch overrides remain separate. GPU clock calibration, bounded long traces and worker-phase attribution support honest comparisons. Correctness checks remain independent of telemetry. |
 
+## Why the rebuild mattered
+
+### Removing the API layer exposed the remaining application work
+
+The original working iOS renderer was a practical bring-up route: it reused an
+established Vulkan implementation and MoltenVK's Metal translation. That was a
+valuable reference while the runtime, shaders and device integration were being
+proven. The direct Metal backend then removed that live realization route, but
+initially inherited or added expensive CPU preparation, allocations and cache
+lookups of its own.
+
+The early native slowdown was therefore not evidence that Metal was inherently
+slower or that recompiling the Xbox 360 game was the wrong foundation. It showed
+that a shorter API path could still do more application-side work. The corrections
+were specific: separate preparation from realization, stop preparing a second
+ready-draw vector, share immutable geometry and constants, distinguish persistent
+geometry from transient frame uploads, and recycle only completed GPU storage.
+The strength of 0.3 is that those costs are now addressed at their owners, rather
+than hidden behind a resolution reduction or a larger global cache.
+
+No controlled study assigns the entire observed FPS change to one of these
+changes. CPU fixture comparisons prove narrower improvements; the user's iPad
+runs establish the practical gameplay improvement under their tested conditions.
+
+### Sharing geometry required a correctness model, not just a pointer
+
+A source shader hash is not the definition of a vertex conversion. Different
+shaders can require the same byte transformation; an offset can either denote a
+reusable whole record or a different crossing layout. The new exact conversion
+recipe records the transformation and canonicalizes only safe whole-record
+relationships. Every draw still has its own validated view.
+
+The converted allocation can then be shared across the CPU cache, frame packet
+and GPU upload without making another complete vector. Its immutable owner, not
+an address alone, protects the meaning of the data. A retired cache entry does
+not destroy storage still referenced by queued or submitted draws. This is why
+removing duplicate copies remains safe under cache pressure and delayed GPU
+completion, not merely in a warm single-frame test.
+
+The randomized converter comparisons and owner/version/bounds tests are a useful
+pattern for future ports: optimize the ownership and reuse of proven bytes while
+retaining an independent oracle for what those bytes must be.
+
+### Useful caches stay useful when they fill
+
+The index-range cache originally cleared its entire 8,192-entry set at capacity.
+That policy made the bound easy to enforce, but also discarded the hot working
+set. The final implementation evicts one cold range and preserves repeated
+lookups. Intrusive recency links reuse the existing map allocation; complete
+keys and ownership checks remain the equality contract.
+
+The larger resource caches have a related distinction: static geometry can be
+valuable across many frames, while shader constants change with the frame's
+work. Keeping both in the same residency competition displaced persistent data
+with transient uploads. Separate budgets and completion-owned transient storage
+repair that competition. Incremental sweeps and journaled registries prevent
+maintenance from becoming a large periodic task of their own.
+
+These changes address several sources of churn. They do not establish that every
+remaining gameplay spike is a cache overflow. First-use pipelines, title
+streaming, CPU production, memory pressure, focus and OS scheduling still need
+correlated on-device evidence.
+
+### Rendering a city is a dependency problem
+
+The Metal Lab proved shader and binding behavior in controlled GPU cases. Private
+saved draw replay added real title inputs. Neither could supply every attachment
+written by earlier passes in a live game frame. Lighting aliases, reflection
+storage, depth handoffs and output rotation required a model of ordered contents
+and lifetimes, not merely a function that encodes a draw.
+
+The frame plan makes those operations explicit and retains title-frame continuity
+across internal submissions. Mutable GPU storage is separate from immutable CPU
+uploads. Missing early reflection contents can defer that update instead of
+invalidating an otherwise renderable scene. Depth and channel contracts are
+represented explicitly rather than guessed from a cleared test target.
+
+This is one of the most useful changes for a future backend: a complete frame
+contract can explain and validate dependencies independently of a particular
+API's handle types. The exact GTA IV aliases and formats remain title-specific.
+
+### Native rewrites have a deliberate boundary
+
+The LOD selector is a bounded native rewrite. It has defined inputs, output words
+and comparisons that can be checked against an independent oracle. It preserves
+resident-mesh fallback and leaves the game in charge of streaming and transitions.
+That is a stronger basis for a hot-routine replacement than simply reducing
+visibility or bypassing guest code with an approximate result.
+
+Physics, traffic, animation and scripts remain AOT game behavior using the
+compatibility runtime. The next native rewrites need their own profiles and
+oracles, especially where state, determinism or memory layout crosses a service
+boundary. 0.3's graphics success provides a method for doing that work; it is not
+evidence those systems have already been rewritten.
+
+### Diagnostics should describe the workload, not become the workload
+
+The final user flow makes optimized normal play the default. There is no public
+Retail Mode toggle. Independent FPS/CPU/frame-time overlays activate only their
+requested sampling; Long Performance Capture is an explicit bounded session
+choice. Frontend stage clocks are enabled for that capture while development
+inventories, probes, private draw recording and detailed GPU counters stay off.
+
+Captures label their time domains and unavailable development counters. This
+matters because publication intervals, renderer CPU spans, submit wall time and
+GPU execution are different quantities. Reporting one as another can send an
+optimization effort after the wrong problem. The general lesson is to define
+both the measurement contract and its overhead alongside the rendering contract.
+
 ## Critical correctness contracts
 
 - **Immutable identity:** an address is not an ownership identity. Recycled addresses,
@@ -109,13 +221,20 @@ SPIR-V representation and SPIRV-Cross; it is not a runtime Vulkan draw layer.
 
 ## Evidence, and what it does not establish
 
-Build 121 passed 26 CPU contracts and, separately in Diagnostic and Retail modes,
-45 GPU cases and 32 saved draw replays. GPU lifetime tests retire CPU sources before
-completion; conversion tests compare 5,000 randomized layouts and 15,000 suffixes
-against the live conservative converter. Build 122 adds index-cache saturation,
-hot/cold eviction, complete range parity, owner/version change, bounds and lifetime
-checks. These are stronger than a shader-compilation-only test, but are not a
-substitute for a complete iPad route or a long-session soak.
+The promoted build 123 implementation passed 34 launcher/build tests and 27 CPU
+contracts. It separately passed 45 GPU cases and 32 saved draw replays in both
+optimized and diagnostic configurations, plus worker and delayed-GPU upload
+lifetime checks. The optimized signed ARM64 app was installed and normally
+launched on the M5; preference migration was verified on device. This does not
+claim an additional instrumented build 123 gameplay run after the excellent
+user-confirmed build 122 result.
+
+Conversion tests compare 5,000 randomized layouts and 15,000 suffixes against the
+live conservative converter. The index-cache tests cover saturation, hot/cold
+retention, independent range parity, complete key/owner/version changes, bounds
+and lifetime; the index contracts also passed ASAN/UBSAN checks during preparation.
+These checks are stronger than shader compilation alone, but they do not replace
+full iPad routes, device comparisons or long-session soak testing.
 
 Representative **Mac CPU subpath fixtures**, not total-game speedups:
 
@@ -140,7 +259,7 @@ from clear attachments cannot prove a lighting/reflection dependency is correct.
 
 Reuse the architecture patterns: separated preparation/realization; reflected
 bindings; bounded owner/version caches; completion-owned storage; incremental
-registry maintenance; exact conversion recipes; independent retail policy; and
+registry maintenance; exact conversion recipes; independent optional diagnostics; and
 paired baseline/candidate measurements. The Metal encoder and resource utilities
 are candidates for reuse after an interface/ABI audit.
 

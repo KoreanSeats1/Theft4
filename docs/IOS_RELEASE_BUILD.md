@@ -7,7 +7,7 @@ when those inputs are missing. Legacy Vulkan/MoltenVK archives remain build
 prerequisites; their presence does not mean normal Metal gameplay submits through
 that backend.
 
-0.3 is a promotion candidate. The local M5 build and host checks do not establish
+0.3 source is committed to main. The local M5 build and host checks do not establish
 that a completely fresh machine or public sideload package has been validated.
 See [release status](THEFT4_0.3_MAIN_INTEGRATION.md),
 [architecture](THEFT4_0.3_ARCHITECTURE.md) and [release notes](RELEASE_0.3.md).

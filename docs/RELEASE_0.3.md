@@ -1,8 +1,8 @@
 # Theft4 0.3 — direct Metal and a rebuilt rendering path
 
-Release candidate: Apple version **0.3.0**, build **123**, launcher label **0.3**.
-This is preparation for promotion to main, not an announcement that a public IPA
-or TestFlight build has been published.
+Apple version **0.3.0**, build **123**, launcher label **0.3**.
+Source is committed to main. Public IPA/TestFlight publication is a separate step.
+The full engineering changelog is [recorded here](../CHANGELOG.md#03--direct-metal-rebuilt-geometry-and-a-faster-native-rendering-path--2026-10-06).
 
 0.3 is the largest rendering change in Theft4 so far. The running game now sends
 its prepared frames directly to Metal. This includes the actual city, characters,
@@ -11,9 +11,9 @@ The renderer and its CPU preparation, resource lifetimes and upload caches have
 been substantially rebuilt around Apple's graphics API.
 
 On the M5 iPad, the tester reports a huge improvement and very good gameplay at
-the selected native resolution, with a remaining spike that now recovers. The latest retrieved log confirms a
-2416×1359 native internal/output target with no upscaling. This
-is much closer to the desired console experience. It does not establish a locked
+the selected native resolution, with a remaining spike that now recovers.
+Subsequent build 122 testing was also reported as excellent. The latest retrieved native log confirms a 2416×1359
+internal/output target with no upscaling. This is much closer to the desired console experience. It does not establish a locked
 30 FPS in every scene, uninterrupted long-session stability, or equivalent
 performance on other hardware. The engineering target remains under 30 ms of
 frame work, leaving margin inside the 33.3 ms interval for 30 FPS.
@@ -86,7 +86,7 @@ the original console.
   retirement until their completion receipt releases them.
 - Metal bindings skip redundant state changes, and depth/stencil variants reuse
   compatible render pipelines. Host utility pipelines have persistent archives.
-- The final 0.3 candidate adds bounded index-range eviction instead of clearing
+- The final 0.3 geometry pass adds bounded index-range eviction instead of clearing
   all 8,192 entries, plus a fast repeat lookup and cheaper bucket hashing. Hot
   ranges survive saturation without weakening index, vertex or restart checks.
 - A selected LOD routine is expressed as native C++ with tests for the original
@@ -148,11 +148,20 @@ installation before requesting an update package it may not need.
 
 ## Verification and remaining work
 
-The previous installed build 121 passed 26 CPU checks, 45 GPU graphics checks and
-32 saved game draw replays in both Diagnostic and Retail modes, plus backend-worker
-and upload-lifetime tests. Build 122 adds a dedicated index-cache contract test.
-The candidate's final build and installation evidence is kept with its artifact;
-do not treat a Lab check or saved draw replay as a complete gameplay test.
+Build 123 passed 34 launcher/build tests and 27 CPU contracts. GPU validation
+passed 45 graphics cases and 32 saved game draw replays in each of optimized and
+diagnostic configurations, plus worker and delayed-GPU upload lifetime checks.
+The signed ARM64 Release build uses verified `-O3 -DNDEBUG`; strict signature,
+entitlements and all 2,736 shader libraries were checked. Build 123 was installed
+in place and normally launched on the M5, and its preference migration was read
+back from the device. This is separate from the user's excellent build 122
+gameplay report; no new instrumented build 123 gameplay benchmark is claimed.
+
+The index-cache contract test covers saturation, hot/cold retention, independent
+range parity, generation/owner changes and lifetime. Geometry conversion tests
+compare randomized layouts and suffixes against the conservative converter.
+Tests, saved draw replay and the Metal Lab are evidence for their specific
+contracts, rather than replacements for full gameplay and soak testing.
 
 Initial hitches remain. App-focus/multitasking recovery, dense scenes, long sessions,
 thermal behavior and non-M5 devices still require device validation. In particular,
@@ -162,11 +171,11 @@ shader experiment regressed and was reverted; it is not part of this release.
 
 The detailed provenance, implementation map and lessons for future recompilation
 projects are in [the 0.3 architecture record](THEFT4_0.3_ARCHITECTURE.md).
-Promotion and packaging status are in [the main integration plan](THEFT4_0.3_MAIN_INTEGRATION.md).
+Promotion and packaging status are in [the main integration record](THEFT4_0.3_MAIN_INTEGRATION.md).
 
 ## Install the sideloaded IPA
 
-A public 0.3 IPA has not been published by this preparation. When an unsigned
+A public 0.3 IPA has not been published by the source promotion. When an unsigned
 `ios-arm64.ipa` is attached to the release, install it using AltStore, SideStore
 or a compatible tool that re-signs it with your account. GitHub's Source code ZIP
 is not the app. Update the existing `com.lukebrosious.theft4` installation in place
@@ -184,4 +193,7 @@ See [the complete sideload instructions](IOS_SIDELOAD_INSTALL.md) for staging,
 the validated update hash, Files/Finder paths and troubleshooting. The deployment
 minimum is ARM64 iOS/iPadOS 26.0; it is not proof of playability on every eligible
 device. Game files, title updates, saves and private captures are not distributed.
-The public artifact's SHA-256 will be recorded after it is built and audited.
+A local unsigned 0.3.0 build 123 package has been built and audited. Its SHA-256
+is `851d06004a2d52ae0d9f7b7fe88f5ea77ae3e075d0f20e42ca4d2efc0cb0c40b`.
+It has not been uploaded or validated through every recipient signing flow;
+a separately rebuilt public artifact must carry its own hash.

@@ -2,11 +2,11 @@
   "version": "0.3.0",
   "launcher_label": "0.3",
   "build": 123,
-  "promotion_status": "candidate; main unchanged; no public release",
+  "promotion_status": "0.3 source promoted to local main; no public release/tag",
   "baseline_main_commit": "b6b4a823403ff38623ce3a46bab369c858c21251",
   "historical_upstream_audit_commit": "36b729dcc166910c88a2960164707ba9d9e5138c",
   "recorded_pre_candidate_commit": "eb9a14619df39f7efbdd6e1bf40aaf5983086948",
-  "source_revision_provenance": "The final build app and artifact manifests record the exact candidate commit.",
+  "source_revision_provenance": "The signed build 123 records the tested implementation commit. Final promotion adds documentation and retained ignore rules only.",
   "prior_development_commits": [
     {
       "commit": "38e44249f29d16f27058e0ef69f95c7cc6be0e1b",
@@ -498,6 +498,42 @@
   "private_game_data_in_manifest": false,
   "known_remaining_issue": "Initial gameplay spike still occurs and recovers; locked 30 across scenes/devices unverified",
   "remote_main_checked": "f5f30b373fc5b397364b81fb840f1d638267c14f",
-  "remote_main_change": "Restored README donation block; retained in candidate and remote history to be integrated before final build",
-  "user_diagnostics": "Optimized normal play without a Retail Mode toggle; independent optional overlays and bounded Long Performance Capture. Development probes and detailed GPU counters remain disabled."
+  "remote_main_change": "Restored README donation block; retained with its history through merge 322d16d3 before final build.",
+  "user_diagnostics": "Optimized normal play without a Retail Mode toggle; independent optional overlays and bounded Long Performance Capture. Development probes and detailed GPU counters remain disabled.",
+  "tested_implementation_commit": "295c716ff27d7e22da2888d20d2ed2e941e0d037",
+  "owner_work_preservation": {
+    "files": 15,
+    "stash_name": "pre-0.3-main-owner-experiments-20261006",
+    "backup_directory": "out/release-promotions/0.3-main-20261006",
+    "excluded_from_release": true
+  },
+  "candidate_commits": [
+    {
+      "commit": "458ee22d01873055b93378592935da82e614f7f0",
+      "subject": "Prepare Theft4 0.3 with bounded geometry analysis and direct Metal release routing"
+    },
+    {
+      "commit": "322d16d3fa13c7c01c32b586ec5bd7e6c9f65567",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/direct-metal-96"
+    },
+    {
+      "commit": "295c716ff27d7e22da2888d20d2ed2e941e0d037",
+      "subject": "Make optimized play the 0.3 default with independent optional performance tools"
+    }
+  ],
+  "verification": {
+    "python_tests": 34,
+    "cpu_contracts": 27,
+    "gpu_graphics_cases_per_configuration": 45,
+    "saved_draw_replays_per_configuration": 32,
+    "configurations": [
+      "optimized",
+      "diagnostic"
+    ],
+    "delayed_gpu_lifetime": true,
+    "strict_signature": true,
+    "shader_libraries": 2736,
+    "m5_installed_build": 123,
+    "gameplay_evidence": "User-confirmed excellent build 122 run; no new controlled build 123 benchmark."
+  }
 }

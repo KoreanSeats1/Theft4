@@ -796,3 +796,7 @@ CMakeUserPresets.json
 !/docs/THEFT4_0.3_MAIN_INTEGRATION.md
 !/docs/THEFT4_0.3_CHANGE_MANIFEST.json
 !/tools/theft4_renderer_build_args.sh
+
+# Retained investigation document exemptions from the pre-0.3 main checkout
+!/docs/M5_TRANSITION_INVESTIGATION_2026-09-25.md
+!/docs/M5_TRANSITION_BUILD_LEDGER.json

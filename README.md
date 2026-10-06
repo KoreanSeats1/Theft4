@@ -17,9 +17,9 @@
 **SUBMIT your custom device log here: [Theft4 Tester Log & Bug Submission](https://docs.google.com/forms/d/e/1FAIpQLScZNq2hjni8wgChCYl1oaRdJU0XPsVLFWwmVtqYxnIQ708t7A/viewform?usp=publish-editor)**
 
 Help improve Theft4 on your device: capture a slow or problematic scene with the
-built-in **short performance capture**, export the saved log, and upload it with
+built-in **Long Performance Capture**, export the saved log, and upload it with
 your survey answers and screenshots. Smooth runs are useful comparisons too.
-**[Follow the capture, export, and submission instructions below.](#capture-and-submit-a-short-performance-log)**
+**[Follow the capture, export, and submission instructions below.](#capture-and-submit-a-performance-log)**
 
 # Theft4
 
@@ -37,10 +37,11 @@ LibertyRecomp/ReXGlue's generated-code and runtime foundation. The official app
 identity remains `com.lukebrosious.theft4`.
 
 > [!NOTE]
-> 0.3 is a release candidate being prepared for main. It has not been published
-> as a public IPA or TestFlight release by this update. The M5 tester reports a
-> huge improvement and very good native-resolution gameplay, with a remaining
-> spike that recovers. Locked 30 FPS across every scene/device is not established.
+> 0.3 is committed to main. Public IPA/TestFlight publication is a separate step.
+> M5 testing reports excellent visuals and a major native-resolution performance
+> improvement, with a remaining spike that recovers. The tested native run used
+> 2416 × 1359 without upscaling. Locked 30 FPS across every scene/device is not
+> established.
 
 ## What changed in 0.3
 
@@ -66,74 +67,58 @@ The [0.2.1 notes](docs/RELEASE_0.2.1.md) remain the historical public-release re
 Legacy Vulkan code/build dependencies and game compatibility services are retained;
 direct Metal does not mean every subsystem has been rewritten from source.
 
-### Capture and submit a short performance log
+<a id="capture-and-submit-a-short-performance-log"></a>
 
-0.3 uses optimized normal play automatically, with no Retail Mode toggle. Enable
-optional FPS/CPU/frame-time overlays in the launcher. For logging, enable
-**System → Long Performance Capture** before Play; it resets Off on every launch
-and leaves development probes and detailed GPU profiling disabled.
+### Capture and submit a performance log
 
-#### Which file do we need?
+0.3 uses optimized normal play automatically, with no Retail Mode toggle.
+Development logging and probes stay disabled. Optional graphs and Long
+Performance Capture are separate choices; recording does not require a crash.
 
-Upload the **`Theft4-Performance-Capture-<date-and-time>.txt`** file created by
-**System → Download Latest Log Capture** after a short capture has finished.
-This is Theft4's own diagnostic export—not an Apple crash report, a save export,
-or just a screenshot of the graph. **The game does not need to crash.**
+#### 1. Enable capture before Play, then reproduce the issue
 
-The short capture records **120 detailed samples across roughly 360 submitted
-frames**, including renderer CPU/GPU timing and counters. Expensive resource and
-process-memory inventories are sampled at capture start and then periodically,
-not every frame. The exported text bundle includes available profile data,
-runtime/lifecycle logs, the aligned lightweight frame-stage trace, and app/device
-information. Upload the whole `.txt` file; you do not need to extract individual
-CSV or JSON sections.
+1. Open **System → Long Performance Capture** in the launcher and enable it.
+   This choice resets Off every time the app opens. It records bounded timings
+   for up to five minutes, even when every overlay is hidden.
+2. Optionally open **Interface** and enable **Frame-Time Graph** and **Frame
+   Counter**. The graph can show recording status and offers capture actions.
+3. Note your graphics settings, press **Play**, then drive the route or reach the
+   scene you want to test. Record the issue while it happens: a first visit, a
+   heavy camera turn, a hitch or a focus transition. Smooth runs are useful too.
+4. With the graph enabled, **hold the frame-time graph** to mark a lag spike or
+   choose **Stop and save capture**. The recording indicator ends when stopped.
+   The capture also stops and saves when the app enters the background, or after
+   five minutes. Save your game separately; capture does not save game progress.
 
-#### 1. Enable the graph, then reproduce the issue
+The report includes publication intervals, renderer stage timing and bounded
+runtime/scheduling observations, along with available configuration and memory
+information. Detailed development counters may be absent or zero because the
+ordinary optimized policy remains active. Publication timestamps measure frames
+handed to the presenter; they are not physical display scanout timestamps.
 
-1. In the Theft4 launcher, open **Interface** and enable **Frame-Time Graph**.
-   Enable **Frame Counter** too, so screenshots include FPS.
-2. Note your graphics settings, then press **Play**. Reach the scene you want to
-   test before starting the capture: a busy intersection, city overview, driving,
-   turning a corner, stutter, or a visual problem. A smooth scene is also useful
-   as a baseline.
-3. **Double-tap the frame-time graph** to begin the short detailed capture.
-   On current builds, this gesture works directly; no System capture switch is
-   required. If an older build has a **Detailed performance capture** switch,
-   enable that before starting the game, then use the same double-tap gesture.
-4. Keep playing the same route or hold the same camera view while it records.
-   The graph shows **REC**, then **SAVED** when the profile finishes. At 30 FPS,
-   the capture usually takes roughly **12 seconds at 30 FPS**; allow more time
-   at lower FPS.
-   **Wait for SAVED before closing the app.** If it shows **ERR**, mention that
-   in your report; do not describe it as a completed capture.
+Capture adds measurement overhead. Describe gameplay before recording as well as
+during it, and use the same route/settings without recording when comparing
+normal performance. Note app switching, charging, Low Power Mode and how long
+the device had been running. Avoid changing graphics settings midway through a
+comparison.
 
-Capture **while the problem is happening**, not only after it has recovered.
-If the issue appears only after the device warms up, reproduce that and report
-how many minutes you had been playing. For streaming or first-visit stutters,
-start just before entering the affected area and say whether you had visited
-it earlier in the session. Avoid changing graphics settings during a comparison.
+#### 2. Export the saved report to Files
 
-> Profiling itself adds overhead. Describe how the game felt **before** recording
-> as well as during it. Repeat the same scene without recording when judging
-> normal performance; a captured FPS reading alone is not a clean benchmark.
-
-#### 2. Save the log to Files
-
-1. Once the graph says **SAVED**, take any useful screenshots. Save your game
-   normally if needed—the performance capture does **not** save game progress.
-2. Close Theft4 from the app switcher and reopen it to the launcher.
-3. Open **System → Download Latest Log Capture**. This packages the saved
-   diagnostics; it does not start a new recording.
-4. The dated `.txt` is saved automatically under
+1. Stop and save using the graph, or background the app to save, before closing.
+   Reopen Theft4 to its launcher if necessary.
+2. Open **System → Download Latest Log Capture**. This exports existing data; it
+   does not start another recording.
+3. The dated **`Theft4-Performance-Capture-<date-and-time>.txt`** is saved under
    **Files → On My iPhone/iPad → Theft4 → Diagnostics**. The share sheet also
-   lets you choose **Save to Files** and copy it somewhere convenient, such as
-   iCloud Drive.
-5. Use the file with the export date/time for this test. Export **before starting
-   another game session**, so the runtime context still matches your capture.
+   lets you save elsewhere, including iCloud Drive.
+4. Upload the complete `.txt`; individual CSV/JSON sections do not need to be
+   extracted. Export before starting another test so the latest context matches
+   the run. If export reports a failure, retain the app data and report the error.
 
-There is one short profile per app launch. To record a second test, export the
-first, relaunch, and repeat. A successful export alone does not prove that a
-new short profile was recorded: wait for **SAVED** during the run first.
+One long capture is available per app launch. Export the first, reopen, and
+explicitly enable capture again for another run. Older releases and engineering
+launches also have a short detailed profiler; its double-tap workflow is not the
+normal 0.3 capture procedure.
 
 #### 3. Fill out the survey and attach the file
 
@@ -175,7 +160,7 @@ original `.txt` and report the exact error instead of substituting a screenshot
 of the log.
 
 <details>
-<summary>Screenshot guide: enable the graph and recognize a completed capture</summary>
+<summary>Screenshot guide: enable the graph; historical capture indicator</summary>
 
 ![Theft4 Interface page with Frame Counter and Frame-Time Graph enabled](docs/images/capture-interface.png)
 
@@ -184,10 +169,9 @@ launcher UI in an isolated simulator preview; no game data is loaded.*
 
 ![Theft4 gameplay screenshot with FPS and the green SAVED indicator on the frame-time graph](docs/images/capture-saved-gameplay.png)
 
-*Example gameplay capture: look for SAVED on the graph in the top-right before
-quitting to export. Double-tap that graph while the scene you want to diagnose
-is visible. This screenshot illustrates the controls; it is not a performance
-guarantee for your device or settings.*
+*Historical screenshot from the earlier short-profiler workflow. In normal 0.3,
+enable Long Performance Capture before Play and hold the graph to mark or stop
+the run. The image illustrates graph placement; it is not a performance guarantee.*
 
 </details>
 

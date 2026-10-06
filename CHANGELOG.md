@@ -1,37 +1,244 @@
 # Theft4 engineering changelog
 
-## 0.3 candidate — live direct Metal and renderer rebuild — 2026-10-05
+## 0.3 — direct Metal, rebuilt geometry and a faster native rendering path — 2026-10-06
 
-- Version 0.3.0, launcher 0.3, build 123; prepared on the isolated Metal branch.
-  Main promotion and public distribution remain pending.
-- The actual game now submits ordered frames directly to Metal with offline
-  stock/late/depth shader libraries, reflected bindings, native passes and
-  direct presentation. Legacy dependencies and AOT/runtime services remain.
-- Corrected depth conventions, float-pair lighting targets, channel masks,
-  reflections, aliased storage, topology, mip/plane sampling and GPU lifetime.
-- Reduced CPU preparation with streamed encoding, shared shader constants,
-  snapshot/projection reuse, bounded incremental caches and GPU-retired uploads.
-- Reused equivalent vertex conversions and large upload views; shared converted
-  vertex/index allocations remove duplicate CPU geometry packets.
-- Build 123 removes the Retail Mode toggle. Normal play keeps development probes
-  off; FPS/CPU/frame-time overlays and bounded Long Performance Capture remain
-  independent opt-ins. Old hidden retail overlay preferences are migrated once.
-- Build 122 replaces full index-range cache clearing with cold-entry eviction,
-  preserves hot ranges and speeds repeat lookups with complete identity checks.
-- Added sharpening, corrected saved AA-Off startup, native LOD selection,
-  persistent frame-speed choices, default intro skipping and development telemetry
-  suppression for normal play. Existing resolution, FSR, save and launcher options are retained.
-- Carried forward capability-gated persistent ASTC preparation and the already-
-  updated game-file verification flow from build 94.
-- Updated both build entry points to select Metal explicitly and reject missing
-  offline shader inputs; normal builds omit private asset draw capture.
-- M5 tester reports a huge native-resolution gameplay improvement, with a
-  remaining spike that recovers. No universal locked-30 guarantee is claimed.
-- Documented original audited LibertyRecomp, earlier Theft4 and Metal-bring-up
-  limitations separately, including reusable patterns and reverted experiments.
+**Version 0.3.0 · build 123 · iPhone and iPad**
 
-See [release notes](docs/RELEASE_0.3.md) and
-[the architecture record](docs/THEFT4_0.3_ARCHITECTURE.md).
+Theft4 0.3 moves the running game onto a direct Metal graphics backend and rebuilds
+much of the work that feeds it. The city, characters, lighting, reflections,
+effects and final presentation now run through ordered native Metal frames. This
+is the largest rendering update in the project so far, developed across more
+than 80 commits beyond main build 94.
+
+The strongest result is the M5 iPad gameplay improvement reported in testing:
+excellent image clarity and substantially smoother native-resolution play. The
+latest retrieved native run used a **2416 × 1359** internal/output target without
+upscaling. A remaining spike can still occur, but the latest tested runs recover
+well. The target remains less than **30 ms** of frame work inside the **33.3 ms**
+interval for 30 FPS; universal locked 30 FPS and long-session stability have not
+been established.
+
+### A complete game renderer directly through Metal
+
+The earlier working iOS route realized graphics through Vulkan and MoltenVK.
+0.3 separates the game's CPU-side rendering meaning from graphics API allocation:
+shader interfaces, effective pipeline keys, geometry conversions, sampler policy
+and texture views become immutable prepared inputs. A dedicated Metal worker
+consumes those inputs without creating a Vulkan provider or presenter for normal
+Metal gameplay.
+
+The backend supports ordered game passes, color resolves, depth transfers,
+reflections, host effects and CAMetalLayer presentation. It retains frame
+continuity across internal submissions and rebinds rotating drawables correctly.
+Complete-frame dependencies are part of the design: replaying one draw over a
+clear surface was useful validation, but insufficient to render the real city.
+
+The stock game shader corpus is exported and compiled offline into Metal
+libraries with explicit reflected bindings, stage identities, alpha-discard
+variants and depth variants. The tested bundle contains **2,736 game and host
+libraries**. New Metal pipeline variants and driver compilation can still incur
+first-use work; offline shader preparation does not eliminate every pipeline hitch.
+
+LibertyRecomp's generated game code and ReXGlue's compatibility services remain
+the foundation. The game executes signed ahead-of-time ARM64 code without a CPU
+JIT. Guest memory layouts, calling conventions and service behavior still matter.
+Legacy Vulkan/MoltenVK libraries remain linked for compatibility and comparison.
+This release rewrites the active graphics path, not every game subsystem.
+
+### Correct rendering before shortcuts
+
+Early live Metal builds exposed differences that were invisible in simpler Lab
+scenes. These were repaired in the new backend rather than attributed to the
+original desktop renderer:
+
+- Preserve reversed viewport depth and the game's negative-one-to-one depth
+  convention, including depth-only and attachmentless draws.
+- Represent packed lighting aliases and float-pair multiple render targets with
+  their intended formats, channel masks and storage identities.
+- Preserve virtual resource registration order and distinguish immutable uploaded
+  textures from mutable GPU-produced surfaces.
+- Wait for valid written reflection content without rejecting an otherwise valid
+  scene at an early reflection update.
+- Lower buffered and indexed rectangles explicitly; retain per-instance stream 16
+  and complete index/vertex/view bounds validation.
+- Preserve sampled mip ranges, row and plane pitches, layers, cube faces and
+  swizzles instead of treating every fetch as a simple flat byte upload.
+- Keep stock blending, alpha discard, sample coverage and output behavior under
+  GPU pixel validation. Explicit guest texture locks reconstruct coherent guest
+  data; ordinary presentation stays on the GPU.
+- Restore compression eligibility for color targets by correcting storage and
+  usage roles. Required attachment contents, stores and synchronization are
+  preserved; a store is discarded only after proving overwrite-before-read.
+
+The image quality improvement is the tester's observation of this faithful new
+path. There are no new art assets, invented lighting model or advertised HDR
+feature hidden behind that claim.
+
+### Geometry that can be reused, rather than repeatedly rebuilt
+
+The final geometry passes address repeated work directly. Equivalent vertex byte
+conversions now share an exact conversion recipe instead of being separated by
+incidental shader/declaration identities. Whole-record offsets can reuse the
+conversion while each draw retains its precise offset, range and layout.
+
+Converted vertex and index allocations are shared by the CPU conversion cache,
+immutable draw packet and Metal upload. The renderer no longer copies a complete
+converted buffer into a second CPU packet solely to hand it across a boundary.
+Owners remain valid if a CPU cache entry retires before the GPU finishes.
+
+Large immutable geometry now participates in the bounded upload-view memo. Warm
+lookups avoid repeated general cache work without using a hash or raw address as
+proof of identity. Owner, generation, source size, conversion and range checks
+remain authoritative.
+
+The 8,192-entry index-range cache no longer clears every mesh when it fills. It
+evicts one cold range, preserves the working set and has a fast immediately
+repeated lookup. Recency links live in existing map entries, avoiding another
+allocation and duplicated full key. Restart handling and independent index extrema
+are unchanged.
+
+A selected LOD routine is rewritten as native C++ with an independent behavior
+oracle. Threshold precision, strict comparisons, FORCE_HIGH_LOD, missing resident
+meshes and output words are preserved. Unusual blend inputs keep the original
+path. The game continues to own streaming and fades; this is not a blanket traffic,
+physics, world-population or animation rewrite.
+
+### Less work between a game command and a GPU draw
+
+Frame encoding now streams prepared draws into Metal without first constructing
+a second full vector of ready draws. Compact immutable plans, pooled draw storage
+and journaled registry updates reduce allocation, copying and repeated traversal.
+
+Shader constants reuse immutable parent snapshots and exact projections. Known
+usage masks materialize only required changed register ranges; unknown layouts
+retain the conservative full-bank path. Shared bank ownership and bounded vector
+pools avoid repeating the same constant bytes for neighboring draws.
+
+Encoder state skips redundant bindings. Compatible render pipelines can share
+raster state while depth/stencil variants remain explicit. Host utility pipelines
+have persistent archives, avoiding needless reconstruction between launches.
+These changes reduce setup work while retaining draw order and stock shaders.
+
+### Caches with a lifetime and a budget
+
+Transient constants and persistent geometry no longer compete for the same upload
+residency. Frame upload storage is recycled after GPU completion rather than
+retained indefinitely or overwritten while a submitted draw still needs it.
+Weak source ownership detects retired CPU data; completion receipts retain the
+resources required by in-flight GPU work.
+
+Maintenance is incremental and bounded. Registry journals replace whole-map
+copies, cold entries retire in controlled amounts, and pressure handling avoids
+sorting entire caches every frame. Accounting considers real backing capacities,
+not just the number of logical bytes requested.
+
+The intent is a useful, reusable working set—not an ever-growing buffer that
+merely postpones the next stall. A larger cache cannot repair incorrect ownership
+or unnecessary duplicate data; those problems were addressed independently.
+
+### Graphics controls and everyday play
+
+- Add adjustable **sharpening strength**, with bounded output and preserved alpha.
+- Honor saved **AA Off** before the headless renderer starts. FXAA and SMAA remain
+  selectable. FSR 1 upscaling remains independent and is not temporal AA.
+- Keep **Native Pixels** as a centered 16:9 physical-pixel target with no FSR for
+  that selection, preserving the game's projection rather than stretching it.
+- Persist effective graphics choices. **Frame Speed** preserves the chosen
+  resolution, uses original shadows, earlier resident LOD and shorter world
+  distance, and disables optional blur and edge filtering.
+- Keep **Optimized distance** explicit: 0.70× world distance with existing title
+  transitions, not a new occlusion or pop-in smoothing algorithm.
+- Default **Skip Intro Videos** On, skipping opening credits and logos while
+  retaining game loading and initialization.
+- Retain Game Mode metadata and the tested local build's sustained execution
+  request; OS scheduling still depends on the device and signing configuration.
+- Preserve the official app identity, game files, saves, settings and prepared
+  caches on in-place update. Save export/import and automatic pre-import backups
+  remain available.
+
+### Optimized by default; diagnostics when requested
+
+There is **no Retail Mode toggle** in 0.3. Normal icon launches keep development
+logging, probes, private draw capture and detailed GPU profiling disabled.
+Rendering validation and resource synchronization remain enabled.
+
+FPS, CPU usage and the frame-time graph are independent options, Off by default
+on a fresh install. Hidden legacy retail overlay choices are migrated once;
+deliberately enabled overlay settings persist. FPS timers and graph sampling run
+only when their corresponding feature is requested.
+
+**Long Performance Capture** remains available before Play for a bounded
+five-minute report, even with all overlays hidden. It resets Off on every app
+launch. Frontend stage clocks become active for the requested capture without
+turning on development probes or detailed GPU counters. Enable the frame-time
+graph to mark a spike or stop and save with a long press; backgrounding also saves.
+Export the result from **System → Download Latest Log Capture**. Capture has its
+own measurement overhead and is not the default gameplay workload.
+
+### Compatibility for GPUs without BC textures
+
+0.3 carries forward build 94's capability-gated texture preparation. Unsupported
+BC1/BC2/BC3 static textures are converted to persistent ASTC copies before play,
+with explanatory setup, progress, a time estimate, pause/resume and cache reuse.
+Cache deletion requires confirmation. Relevant content/cache changes or deletion
+can require preparation again; uncatalogued runtime textures can still convert
+on first encounter.
+
+The decision uses actual GPU BC support rather than an age-based device list.
+The tested M5 supports BC directly; the tested A12Z requires preparation. This
+restores texture compatibility without treating large RGBA expansion as the
+normal static-texture solution. It does not make an older device's CPU or GPU
+faster, and the new Metal route's performance still needs testing on those devices.
+
+**Check Game Files** also retains the improved already-updated installation flow:
+verify transferred files before asking for an update package they may not need.
+
+### What this contributes beyond the original recomp foundation
+
+The original audited iOS graph had platform-selection drift, desktop dependency
+assumptions and no complete CMake-owned UIKit scene host. Theft4's earlier releases
+established the embedded iOS runtime, app lifecycle, audio/input, installation and
+working Vulkan presentation. 0.3 builds on that work with a separate Metal
+realization boundary and a substantially rebuilt rendering implementation.
+
+The useful strengths for future recomp work are concrete: immutable API-neutral
+frame contracts; explicit reflected shader bindings; exact conversion identities;
+bounded owner/version caches; completion-owned resources; incremental maintenance;
+and validation that progresses from CPU contracts to GPU pixels, ordered frames
+and live gameplay. Those patterns can transfer to another port. GTA IV shader
+hashes, target aliases, texture layouts and LOD addresses cannot be assumed to.
+
+Direct Metal alone was not a speed guarantee. Early native builds were slower;
+duplicate CPU work, upload competition, target storage, frame dependencies and
+resource lifetime had to be corrected before the large gameplay improvement.
+The build 115 uniform/depth experiment regressed and was reverted. Keeping that
+history makes this release more useful to future ports than a claim that one API
+switch automatically solved performance.
+
+### Validation and release status
+
+Build 123 passed **34 launcher/build tests, 27 CPU contracts, 45 GPU graphics cases
+and 32 saved game draw replays in each of optimized and diagnostic configurations**,
+plus worker and delayed-GPU upload lifetime checks. The signed ARM64 Release build
+uses verified `-O3 -DNDEBUG`, preserves all 2,736 shader libraries and was installed
+and normally launched on the M5. Preference migration was checked on device.
+
+Scoped Mac CPU fixtures recorded geometry publication changing from 7.134 to
+4.214 ms for an initial batch, with 32 MiB of duplicate storage removed; large
+upload-view lookup from 0.552 to 0.384 ms; and index lookup from 0.174 to 0.156 ms.
+These are separate subpath measurements, not whole-game frame times or additive
+FPS gains. Gameplay improvement is user-confirmed; a controlled universal 30 FPS
+claim is not.
+
+Source is promoted to main for 0.3. A public release/tag, uploaded IPA and
+TestFlight distribution are separate steps. Initial hitches, multitasking/focus
+recovery, dense scenes, long sessions, thermal behavior and non-M5 devices remain
+validation priorities.
+
+Read the [full release notes](docs/RELEASE_0.3.md) and
+[architecture, provenance and future recomp lessons](docs/THEFT4_0.3_ARCHITECTURE.md).
+The [main integration record](docs/THEFT4_0.3_MAIN_INTEGRATION.md) records what was
+promoted and how unrelated local experiments were preserved.
 
 ## Build 94 — BC texture compatibility integration — 2026-10-02
 

@@ -9,8 +9,8 @@ See [the current architecture](../../docs/THEFT4_0.3_ARCHITECTURE.md) and
 The dated milestone descriptions below are retained as development history;
 statements that the game still uses only Vulkan, that Metal defaults Off, or that
 buffered rectangles/frame integration are still missing describe those earlier
-milestones, not the 0.3 candidate. Current build121 validation passed 45 graphics
-cases and 32 saved draw replays in each of Diagnostic/Retail modes. The Lab is
+milestones, not the current 0.3 renderer. Build 123 passed 27 CPU contracts,
+45 graphics cases and 32 saved draw replays in each of diagnostic/optimized modes. The Lab is
 still a validation app, and its success is not a whole-game performance result.
 
 ## Historical implementation milestones

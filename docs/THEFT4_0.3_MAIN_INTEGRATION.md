@@ -1,82 +1,82 @@
-# Theft4 0.3 promotion preparation
+# Theft4 0.3 main integration record
 
-Candidate: **0.3.0 (123)**, launcher **0.3**, official bundle
-`com.lukebrosious.theft4`, branch `codex/direct-metal-96`.
-Status: prepare and test the candidate; **main has not been changed and no public
-release has been published**.
+**0.3.0 (123)** · launcher **0.3** · `com.lukebrosious.theft4`
 
-## Source and release scope
+The user approved source promotion on 2026-10-06. Main receives the complete
+`codex/direct-metal-96` implementation and this release documentation. Public
+IPA/TestFlight publication, version tagging and source pushing are separate from
+the local main commit recorded here.
 
-- Local main is build 94, `b6b4a823403ff38623ce3a46bab369c858c21251`.
-- Remote main was checked during preparation: `f5f30b373fc5b397364b81fb840f1d638267c14f`.
-  Its change from the shared public base is the restored README donation block.
-  The candidate preserves that block. Integrate the remote commit into the isolated
-  candidate before its final build so promotion preserves its history as well.
-- The branch contains 79 development commits through installed build 121, plus
-  the 0.3 candidate pass. [The change manifest](THEFT4_0.3_CHANGE_MANIFEST.json)
-  inventories the changes; [release notes](RELEASE_0.3.md) describe users' changes,
-  and [architecture](THEFT4_0.3_ARCHITECTURE.md) separates upstream foundations,
-  previous Theft4 work and direct Metal rewrites.
-- The version metadata is changed, but that does not publish or tag a release.
-  The final built app and signed-artifact manifest identify its exact commit.
+## What was promoted
 
-## Main checkout preservation
+The tested implementation is
+`295c716ff27d7e22da2888d20d2ed2e941e0d037`. It contains the live direct Metal game
+renderer, geometry/constant/cache/lifetime work, capability-gated texture support,
+launcher changes and optimized default policy with optional graphs/captures.
+The final promotion adds documentation and ignore-rule reconciliation; it does
+not change the build 123 implementation.
 
-Main contains uncommitted logging/cache experiments, tests, source files and
-investigation documents. Its changed files have been fingerprinted and its
-tracked patch saved privately with the candidate artifact. This preparation does
-not discard, stage, commit or reset that checkout.
+Local main began at build 94,
+`b6b4a823403ff38623ce3a46bab369c858c21251`. Remote main was refreshed before
+promotion and remains `f5f30b373fc5b397364b81fb840f1d638267c14f`; its restored
+README donation block and history are already included. Both are ancestors of
+the promoted branch, allowing a fast-forward without rewriting shared history.
 
-The candidate overlaps local changes in **README.md** and **.gitignore**. The
-README donation block is already included in the candidate. Local `.gitignore`
-exemptions for the transition investigation and ledger must be retained when
-reconciling the files. Other main experiments are separate from the tested Metal
-candidate; do not silently fold them into the release or report their behavior
-as already tested.
+The [change manifest](THEFT4_0.3_CHANGE_MANIFEST.json) inventories the development
+history and paths. The [changelog](../CHANGELOG.md), [release notes](RELEASE_0.3.md)
+and [architecture record](THEFT4_0.3_ARCHITECTURE.md) distinguish the original
+upstream foundation, previous Theft4 work and the new renderer's rewrites.
 
-Before changing main, preserve its owner changes in a reviewed checkpoint or
-recoverable patch/untracked-file backup. Check the candidate against that source
-state, reconcile README/ignore rules, then promote without overwriting unrelated
-work. Re-run relevant checks if the resulting release tree includes additional
-main experiments. Avoid a force checkout, hard reset or blanket staging.
+## Existing main work preserved
 
-## Candidate verification
+Fifteen tracked/untracked owner files were backed up byte-for-byte before source
+promotion. They include separate logging/cache experiments, tests, source files
+and transition-investigation documents. They are excluded from the tested release.
 
-Required before promotion:
+Their recoverable Git stash is named
+`pre-0.3-main-owner-experiments-20261006`. An additional exact-file backup, tracked
+patch, status and SHA-256 manifest are under the local ignored directory
+`out/release-promotions/0.3-main-20261006/`. These local artifacts are not bundled
+or published. The promotion leaves the stash available; it does not drop it.
 
-1. Optimized signed ARM64 Release build with both direct Metal options On,
-   official identity, version 0.3.0/build 123, and private asset draw capture Off.
-2. The CPU contracts, including the new bounded index-cache test; Diagnostic and
-   Retail GPU validation; all 32 saved draw replays; worker/upload lifetime checks.
-3. Exact source provenance, strict signature verification, expected entitlements
-   and unchanged stock/host shader libraries. User files and prepared texture
-   caches are retained during in-place device installation.
-4. M5 gameplay on the same route/settings used for build 121. Check initial spike
-   recovery, heavy turns, image correctness and continued cache reuse. Ordinary
-   play automatically uses the optimized policy; overlays are independent and a
-   bounded capture can be enabled before Play without enabling development probes.
-5. Separate non-M5/focus/long-session checks before claiming broad performance or
-   universal console-equivalent stability. They are not implied by the M5 result.
+The owner README donation change is already present through remote main. The
+`.gitignore` exemptions for the transition investigation and ledger are retained.
+The frozen dependency submodule patch state is unchanged. Restoring experiments
+later requires reviewing them against the new renderer and running relevant
+checks; they must not be silently folded into a build described as tested 123.
 
-The latest user-confirmed build 121 is a major improvement but still spikes and
-recovers. Build 122's index change has CPU parity and saturation tests plus a
-scoped Mac benchmark; its device performance requires the user's next run.
-The remaining spike is disclosed in the release notes, not described as solved.
+## Verification supporting the promotion
 
-## Public distribution after source promotion
+- 34 launcher/build tests and 27 CPU contracts passed.
+- 45 GPU graphics cases and 32 saved game draw replays passed independently in
+  optimized and diagnostic configurations; worker and delayed-GPU upload lifetime
+  checks also passed.
+- The signed ARM64 Release build has verified `-O3 -DNDEBUG`, both direct Metal
+  options On, official identity and private game-asset draw capture Off.
+- Strict signature and entitlements were checked; all 2,736 stock/host libraries
+  are byte-identical to the preceding tested bundle.
+- Build 123 was installed in place and normally launched on the M5. Saved
+  preferences confirm migration and removal of the old Retail Mode preference.
+- The user reported excellent build 122 gameplay following the final geometry
+  pass. Build 123 changes the optional diagnostic controls; no new controlled
+  whole-game benchmark is claimed.
+- A local unsigned build 123 IPA passed archive, architecture, metadata and
+  checksum audits. SHA-256:
+  `851d06004a2d52ae0d9f7b7fe88f5ea77ae3e075d0f20e42ca4d2efc0cb0c40b`.
 
-Both generator and public release helper now explicitly select direct Metal,
-require offline game/host manifests and omit private draw capture. Tests with
-fake build tools verify routing and rejection before packaging; they are not a
-fresh-machine/full-IPA build validation.
+Remaining spikes, focus recovery, dense scenes, long sessions, thermals and
+non-M5 performance still require device validation. None is described as
+universally solved by source promotion.
 
-After the final release tree is agreed, build an unsigned public IPA with
-`tools/build_ios_release.sh 0.3.0`, following [the build guide](IOS_RELEASE_BUILD.md).
-Run the existing architecture/privacy audit, verify required shader files, record
-the IPA SHA-256 and validate signing/install in the intended distribution flow.
-Keep game assets, title updates, user saves/caches, raw draw captures, device logs,
-developer signing material and local source paths out of the public package.
+## Distribution after source promotion
 
-Only then create the version tag and publish the corresponding notes/artifact
-through the chosen release process. The current task prepares that result;
-it has not pushed main, created a tag, uploaded an IPA or changed TestFlight.
+Both generator and public release helper explicitly select Metal, require offline
+game/host manifests and omit private draw capture. The build guide documents the
+remaining legacy dependency prerequisites and recipient signing validation.
+
+Follow [the build guide](IOS_RELEASE_BUILD.md) for a public unsigned package,
+record the hash of the actual distributed artifact, and verify the intended
+sideload/signing flow. Keep game files, updates, saves, prepared user caches,
+private draw captures, device logs and development signing material out of it.
+The source promotion does not create a GitHub release/tag, upload an IPA or
+change TestFlight.

@@ -96,10 +96,10 @@ nlohmann::json UploadViewBenchmark(metal::Renderer& renderer) {
     {"uploaded_bytes",after.uploaded_bytes-before.uploaded_bytes},{"range_byte_parity",true}};
 }
 int main(int argc,char** argv) {
-  if(argc<3||argc>7)return 2;
-  bool streaming=false,profile_gpu=false,heavy=false,pooled=true;
+  if(argc<3||argc>8)return 2;
+  bool streaming=false,profile_gpu=false,heavy=false,pooled=true,textured=false;
   for(int i=3;i<argc;++i){streaming|=std::string(argv[i])=="--streaming";profile_gpu|=std::string(argv[i])=="--profile";
-    heavy|=std::string(argv[i])=="--heavy";if(std::string(argv[i])=="--immutable-uploads")pooled=false;}
+    heavy|=std::string(argv[i])=="--heavy";textured|=std::string(argv[i])=="--textures";if(std::string(argv[i])=="--immutable-uploads")pooled=false;}
   try {@autoreleasepool {
     std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer,128,384*1024*1024,pooled};
     Require(renderer.Ready(),"Metal unavailable");
@@ -134,6 +134,17 @@ int main(int argc,char** argv) {
       validation_ms.push_back(std::chrono::duration<double,std::milli>(Clock::now()-began).count());
     }
     prototype=Draw(200);
+    std::vector<std::shared_ptr<const render::Image>> image_set;
+    if(textured) {
+      prototype->draw.pipeline.fragment.hash=0xB9589DA9F4B1770Full;
+      const std::array<uint8_t,4> red{255,0,0,255};
+      for(size_t i=0;i<384;++i) {
+        auto image=std::make_shared<render::Image>();image->format=render::Format::RGBA8Unorm;
+        image->width=image->height=1;image->source=Bytes(red,10000+i).source;image->mips={{0,0,1,1,1,4,4,0,4}};
+        image_set.push_back(image);
+      }
+      prototype->draw.fetches[0].sampler=std::make_shared<render::Sampler>();
+    }
     uint64_t buffers_created=0,uploaded=0;std::vector<metal::GpuPassTiming> pass_timings;
     std::deque<std::shared_ptr<render::FramePlan>> retained_generations;
     const auto frames=streaming?52u:heavy?32u:22u;
@@ -143,6 +154,7 @@ int main(int argc,char** argv) {
       auto plan=Plan(surface,frame+2);auto& draws=std::get<render::Pass>(plan->commands[0]).commands;
       for(size_t i=0;i<draws_per_frame;++i) {
         auto c=std::make_shared<render::Capture>(*prototype);
+        if(textured)c->draw.fetches[0].image=image_set[(i*13)%image_set.size()];
         // Per-object constants change, while vertices and other banks stay static.
         std::vector<uint8_t> data(4096);const uint32_t value=uint32_t(i);
         std::memcpy(data.data(),&value,4);c->draw.constants[0]=Bytes(data,1000+frame*1000+i);
@@ -198,6 +210,7 @@ int main(int argc,char** argv) {
       {"synthetic_submission_draws",draws_per_frame},{"submission_median_ms",median(submit_ms)},
       {"submission_samples_ms",submit_ms},{"validation_samples_ms",validation_ms},
       {"measured_frames",submit_ms.size()},{"buffer_allocations",buffers_created},{"uploaded_bytes",uploaded},{"pixel_parity",true}};
+    report["texture_working_set"]=image_set.size();
     report["streaming_geometry"]=streaming;report["passes_per_frame"]=pass_count;report["reusable_frame_uploads"]=pooled;
     if(profile_gpu) {
       report["gpu_profile_samples"]=nlohmann::json::array();

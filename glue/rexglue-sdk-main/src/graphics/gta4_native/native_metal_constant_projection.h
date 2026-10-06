@@ -15,17 +15,25 @@ template<class Payload> class NativeMetalConstantProjection {
       const std::shared_ptr<const ConstantStateVersion>& version,const NativeConstantUsage& usage) {
     if(!usage.known||bank>=2||!version)return {};
     auto& e=entries_[bank][Slot(vertex,pixel)];
+    if(e.vertex!=vertex||e.pixel!=pixel||e.mask!=usage.banks[bank]||!e.payload)return {};
+    // Most projection hits reference the identical immutable version. Prove
+    // both pointer and control-block identity without a weak-to-strong atomic
+    // acquisition or replacing an unchanged weak owner on every draw.
+    if(e.version_pointer==version.get()&&!e.version.owner_before(version)&&
+       !version.owner_before(e.version)) {
+      if(diagnostics_)++hits;
+      return e.payload;
+    }
     auto previous=e.version.lock();
-    if(e.vertex!=vertex||e.pixel!=pixel||e.mask!=usage.banks[bank]||!e.payload||
-       !CanReuseConstantProjection(previous.get(),version.get(),e.mask))return {};
+    if(!CanReuseConstantProjection(previous.get(),version.get(),e.mask))return {};
     if(diagnostics_){++hits;if(previous!=version)++changed_version_hits;}
-    e.version=version;return e.payload;
+    e.version=version;e.version_pointer=version.get();return e.payload;
   }
   void Remember(uint64_t vertex,uint64_t pixel,size_t bank,
       const std::shared_ptr<const ConstantStateVersion>& version,const NativeConstantUsage& usage,
       std::shared_ptr<const Payload> payload) {
     if(usage.known&&bank<2&&version&&payload)
-      entries_[bank][Slot(vertex,pixel)]={vertex,pixel,usage.banks[bank],version,std::move(payload)};
+      entries_[bank][Slot(vertex,pixel)]={vertex,pixel,usage.banks[bank],version,std::move(payload),version.get()};
   }
   // Replay into a new, zero-initialized ABI prefix covering every known read.
   // Unknown reflection retains the full-bank fallback. The previous host
@@ -59,6 +67,7 @@ template<class Payload> class NativeMetalConstantProjection {
     uint64_t vertex=0,pixel=0;NativeConstantMask mask{};
     std::weak_ptr<const ConstantStateVersion> version;
     std::shared_ptr<const Payload> payload;
+    const ConstantStateVersion* version_pointer=nullptr;
   };
   std::array<std::array<Entry,256>,2> entries_{};
 };

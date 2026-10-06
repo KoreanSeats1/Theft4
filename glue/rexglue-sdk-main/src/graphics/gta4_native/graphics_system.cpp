@@ -2,6 +2,7 @@
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "native_metal_frame_continuity.h"
 #include "native_metal_constant_projection.h"
+#include "native_metal_shared_constants.h"
 #include "native_incremental_owner_cache.h"
 #include "native_batch_payload_cache.h"
 #include "native_transactional_map.h"

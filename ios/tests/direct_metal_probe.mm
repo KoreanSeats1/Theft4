@@ -1420,7 +1420,15 @@ struct Probe {
     d.fetches[0].image=image;d.fetches[0].sampler=std::make_shared<r::Sampler>();
     auto prepared=adapter.Realize(capture,error);Require(bool(prepared));
     auto target=Color();auto frame=renderer.BeginFrame(error);Require(bool(frame));
-    Require(frame.BeginPass(Pass(target,nil,nil),error));Require(frame.Encode(*prepared,error));
+    Require(frame.BeginPass(Pass(target,nil,nil),error));
+    Require(!prepared->samplers.empty()&&!prepared->textures.empty());
+    auto invalid=*prepared;invalid.samplers.back().index=16;
+    Require(!frame.Encode(invalid,error));error.clear();
+    invalid=*prepared;invalid.textures.back().index=31;
+    Require(!frame.Encode(invalid,error));error.clear();
+    // Late binding failures must not affect the subsequent accepted draw or
+    // range cache, even after admission has populated earlier borrowed slots.
+    Require(frame.Encode(*prepared,error));Require(frame.Encode(*prepared,error));
     Require(frame.EndPass(error));auto receipt=frame.Submit(error);Require(bool(receipt));Require(receipt.Wait(error));
     auto pixels=renderer.ReadRGBA8(target,error);Require(pixels.size()==W*H*4);
     for(NSUInteger y=0;y<H;++y)for(NSUInteger x=0;x<W;++x)for(size_t channel=0;channel<4;++channel)

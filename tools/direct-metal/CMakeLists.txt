@@ -67,6 +67,40 @@ target_include_directories(native_lod_selection_test PRIVATE "${CMAKE_BINARY_DIR
   "${ROOT}/glue/rexglue-sdk-main/include" "${ROOT}/glue/rexglue-sdk-main/thirdparty/simde")
 target_compile_options(native_lod_selection_test PRIVATE -UNDEBUG)
 add_test(NAME native_lod_selection COMMAND native_lod_selection_test)
+# Differentially check the exact live shared-bank writer and semantic key,
+# including every key field and immutable environment ownership transition.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/metal_draw_frontend.inc")
+file(READ "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp" shared_source)
+string(FIND "${shared_source}" "struct NativeSharedConstants {" shared_begin)
+string(FIND "${shared_source}" "struct NativeDrawDescriptorKey {" shared_end)
+math(EXPR shared_length "${shared_end}-${shared_begin}")
+string(SUBSTRING "${shared_source}" ${shared_begin} ${shared_length} shared_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-shared-abi.inc" "${shared_body}")
+string(FIND "${shared_source}" "float MotionBlurTimeScale(" shared_begin)
+string(FIND "${shared_source}" "VkPrimitiveTopology ConvertPrimitiveTopology(" shared_end)
+math(EXPR shared_length "${shared_end}-${shared_begin}")
+string(SUBSTRING "${shared_source}" ${shared_begin} ${shared_length} shared_body)
+file(APPEND "${CMAKE_BINARY_DIR}/metal-shared-abi.inc" "${shared_body}")
+file(READ "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/metal_draw_frontend.inc" shared_source)
+string(FIND "${shared_source}" "  NativeMetalSharedConstantKey shared_semantics;" shared_begin)
+string(FIND "${shared_source}" "  auto shared_bytes=native_metal_frame_->shared_constants.Find" shared_end)
+math(EXPR shared_length "${shared_end}-${shared_begin}")
+string(SUBSTRING "${shared_source}" ${shared_begin} ${shared_length} shared_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-shared-key.inc" "${shared_body}return shared_semantics;\n")
+string(FIND "${shared_source}" "    NativeSharedConstants shared;" shared_begin)
+string(FIND "${shared_source}" "    const auto shared_data=" shared_end)
+math(EXPR shared_length "${shared_end}-${shared_begin}")
+string(SUBSTRING "${shared_source}" ${shared_begin} ${shared_length} shared_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-shared-writer.inc" "${shared_body}return shared;\n")
+add_executable(metal_shared_constant_test metal_shared_constant_test.cpp)
+target_include_directories(metal_shared_constant_test PRIVATE "${CMAKE_BINARY_DIR}"
+  "${ROOT}/glue/rexglue-sdk-main/thirdparty/xxHash"
+  "${ROOT}/glue/rexglue-sdk-main/include"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_compile_options(metal_shared_constant_test PRIVATE -UNDEBUG)
+add_test(NAME metal_shared_constant_contract COMMAND metal_shared_constant_test)
 add_executable(batch_payload_cache_test batch_payload_cache_test.cpp)
 target_include_directories(batch_payload_cache_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
   "${ROOT}/thirdparty/json/include")

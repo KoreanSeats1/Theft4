@@ -54,6 +54,15 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
   NativeIncrementalOwnerCache<std::array<uint64_t,8>,BytesRecord,BufferSize,BytesKeyHash> buffers;
   NativeBatchPayloadCache<std::array<uint64_t,8>,theft4::render::Bytes,BytesKeyHash> constant_packets;
   std::array<std::shared_ptr<const theft4::render::Bytes>,2> unused_constants;
+  NativeMetalSharedConstantMemo<theft4::render::Bytes,EnvironmentalDataV1> shared_constants;
+  std::unique_ptr<NativeSharedFrameArena<theft4::render::Bytes,16>> constant_arena;
+  std::shared_ptr<theft4::render::Bytes> AcquireConstant() {
+    auto bytes=constant_arena->Acquire();
+    // Full banks never exceed 4096 bytes. Reserve once to prevent vector
+    // growth from exceeding the arena's per-object external storage charge.
+    if(bytes->value.capacity()<4096)bytes->value.reserve(4096);
+    return bytes;
+  }
   NativeIncrementalOwnerCache<uint64_t,ImageRecord,ImageSize> images;
   struct PipelineTemplate {
     theft4::render::Pipeline pipeline;
@@ -118,6 +127,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
     native_metal_frame_->contents.clear();
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
     native_metal_frame_->constant_packets.Reset();native_metal_frame_->unused_constants={};
+    native_metal_frame_->shared_constants.Clear();native_metal_frame_->constant_arena.reset();
     native_metal_frame_->pipelines.clear();native_metal_frame_->samplers.clear();
     native_metal_frame_->projected_constants.reset();
     native_metal_frame_->virtual_journal.FinishBatch();
@@ -215,6 +225,15 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     // Retain attribute capacity but release all immutable resource owners.
     auto attributes=std::move(capture.draw.pipeline.attributes);capture={};
     attributes.clear();capture.draw.pipeline.attributes=std::move(attributes);
+  });
+  // Release old draw owners first. Shared projections and pending accepted
+  // plans independently pin their pages, so BeginBatch can never overwrite
+  // one of their constant payloads. The 96 MiB cap includes vector capacity.
+  if(!native_metal_frame_->constant_arena)
+    native_metal_frame_->constant_arena=std::make_unique<NativeSharedFrameArena<r::Bytes,16>>(
+        96*1024*1024,!theft4_retail_mode(),4096);
+  native_metal_frame_->constant_arena->BeginBatch([](r::Bytes& bytes){
+    bytes.generation=0;bytes.conversion={};bytes.value.clear();
   });
   arena_done=tick();
   // CPU ownership/content journals are speculative until the entire batch is
@@ -1127,6 +1146,8 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.buffers=std::move(native_metal_frame_->buffers);
   next.constant_packets=std::move(native_metal_frame_->constant_packets);
   next.unused_constants=std::move(native_metal_frame_->unused_constants);
+  next.shared_constants=std::move(native_metal_frame_->shared_constants);
+  next.constant_arena=std::move(native_metal_frame_->constant_arena);
   next.virtual_journal=std::move(native_metal_frame_->virtual_journal);
   next.pending_texture_generations=std::move(native_metal_frame_->pending_texture_generations);
   next.retired_texture_generations=native_metal_frame_->retired_texture_generations;

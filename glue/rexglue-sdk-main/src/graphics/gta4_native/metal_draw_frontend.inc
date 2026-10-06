@@ -292,7 +292,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
           mask[0],mask[1],mask[2],mask[3],required};
       bytes=native_metal_frame_->constant_packets.Find(covered_key);
       if(!bytes) {
-        auto covered=std::make_shared<r::Bytes>();covered->value.resize(extent);
+        auto covered=native_metal_frame_->AcquireConstant();covered->value.resize(extent);
         const uint64_t written=projected_constants.WriteMasked(key.vertex_shader_hash,key.pixel_shader_hash,
             bank,version,constant_usage,covered->value,
             [](const r::Bytes& payload){return std::span<const uint8_t>(payload.value);},CopyGuestWordsToHost);
@@ -310,7 +310,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     if(!bytes) {
       const auto* guest=AuthoritativeConstantState::MaterializeView(version);
       if(!guest||guest->size()!=required)return reject("Metal constant materialization failed");
-      auto full=std::make_shared<r::Bytes>();full->generation=++next_native_metal_allocation_;
+      auto full=native_metal_frame_->AcquireConstant();full->generation=++next_native_metal_allocation_;
       full->conversion={3,bank,version->token.revision,required};full->value.resize(required);
       CopyGuestWordsToHost(full->value.data(),guest->data(),required);
       bytes=std::move(full);
@@ -319,45 +319,66 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     if(!bytes)return reject("Metal constant packet allocation failed");draw.constants[bank]={bytes,0,bytes->value.size()};
     projected_constants.Remember(key.vertex_shader_hash,key.pixel_shader_hash,bank,version,constant_usage,bytes);
   }
-  NativeSharedConstants shared;
-  // Descriptor arrays remain zero: offline Metal lowering binds each reflected
-  // fetch directly, without guest descriptor indices or GPU addresses.
-  shared.booleans=PackNativeShaderBooleans(command.shader_state->vertex_booleans,command.shader_state->pixel_booleans);
-  shared.alpha_threshold=fixed.alpha_reference;shared.alpha_to_mask=fixed.alpha_to_mask;
-  shared.alpha_to_mask_sample_count=uint32_t(target.samples);
-  shared.half_pixel_offset_x=1.0f/target.logical_width;shared.half_pixel_offset_y=-1.0f/target.logical_height;
-  const auto scale=CalculateFragmentCoordinateScale(target.logical_width,target.logical_height,target.width,target.height);
-  shared.fragment_coordinate_scale_x=scale.x;shared.fragment_coordinate_scale_y=scale.y;
-  for(size_t i=0;i<4;++i)shared.clip_plane[i]=std::bit_cast<float>(fixed.clip_plane_bits[i]);
-  shared.clip_plane_enabled=(fixed.user_clip_plane_enable_mask&1u)!=0;
+  NativeMetalSharedConstantKey shared_semantics;
+  shared_semantics.width=target.width;shared_semantics.height=target.height;
+  shared_semantics.logical_width=target.logical_width;shared_semantics.logical_height=target.logical_height;
+  shared_semantics.samples=uint32_t(target.samples);
+  shared_semantics.booleans=PackNativeShaderBooleans(command.shader_state->vertex_booleans,command.shader_state->pixel_booleans);
+  shared_semantics.alpha_reference_bits=std::bit_cast<uint32_t>(fixed.alpha_reference);
+  shared_semantics.alpha_to_mask=fixed.alpha_to_mask;
+  shared_semantics.clip_plane_bits=fixed.clip_plane_bits;
+  shared_semantics.clip_enabled=fixed.user_clip_plane_enable_mask&1u;
+  shared_semantics.color_mask=target.color_attachment_mask;
+  shared_semantics.lod_limit_bits=std::bit_cast<uint32_t>(caps.maximum_sampler_lod_bias);
   for(size_t i=0;i<kNativeColorOutputTargetCount;++i)
-    shared.color_output[i]=NativeColorOutput(state.render_targets[i].address,(target.color_attachment_mask&(1u<<i))!=0);
+    shared_semantics.color_info[i]=state.render_targets[i].address;
   for(size_t i=0;i<kShaderTextureCount;++i)
-    shared.sampler_lod_bias[i]=NativeSamplerLodBias(command.texture_fetches[i].lod_bias,caps.maximum_sampler_lod_bias);
-  shared.motion_blur_time_scale=MotionBlurTimeScale(command.environmental_data.get());
-  if(command.environmental_data) {
-    const auto& e=*command.environmental_data;shared.environmental_valid_fields=e.valid_fields;
-    shared.fog_parameters[0]=e.fog_density;shared.fog_parameters[1]=e.fog_height_falloff;
-    shared.fog_parameters[2]=e.fog_altitude_tweak;shared.fog_parameters[3]=e.fog_power;
-    std::copy(e.camera_position.begin(),e.camera_position.end(),shared.camera_position);
-    std::copy(e.view_inverse_matrix.begin(),e.view_inverse_matrix.end(),shared.view_inverse_matrix);
-    shared.projection_scale[0]=e.projection_matrix[0];shared.projection_scale[1]=e.projection_matrix[5];
+    shared_semantics.lod_bias[i]=command.texture_fetches[i].lod_bias;
+  auto shared_bytes=native_metal_frame_->shared_constants.Find(shared_semantics,command.environmental_data);
+  if(!shared_bytes) {
+    NativeSharedConstants shared;
+    // Descriptor arrays remain zero: offline Metal lowering binds each reflected
+    // fetch directly, without guest descriptor indices or GPU addresses.
+    shared.booleans=PackNativeShaderBooleans(command.shader_state->vertex_booleans,command.shader_state->pixel_booleans);
+    shared.alpha_threshold=fixed.alpha_reference;shared.alpha_to_mask=fixed.alpha_to_mask;
+    shared.alpha_to_mask_sample_count=uint32_t(target.samples);
+    shared.half_pixel_offset_x=1.0f/target.logical_width;shared.half_pixel_offset_y=-1.0f/target.logical_height;
+    const auto scale=CalculateFragmentCoordinateScale(target.logical_width,target.logical_height,target.width,target.height);
+    shared.fragment_coordinate_scale_x=scale.x;shared.fragment_coordinate_scale_y=scale.y;
+    for(size_t i=0;i<4;++i)shared.clip_plane[i]=std::bit_cast<float>(fixed.clip_plane_bits[i]);
+    shared.clip_plane_enabled=(fixed.user_clip_plane_enable_mask&1u)!=0;
+    for(size_t i=0;i<kNativeColorOutputTargetCount;++i)
+      shared.color_output[i]=NativeColorOutput(state.render_targets[i].address,(target.color_attachment_mask&(1u<<i))!=0);
+    for(size_t i=0;i<kShaderTextureCount;++i)
+      shared.sampler_lod_bias[i]=NativeSamplerLodBias(command.texture_fetches[i].lod_bias,caps.maximum_sampler_lod_bias);
+    shared.motion_blur_time_scale=MotionBlurTimeScale(command.environmental_data.get());
+    if(command.environmental_data) {
+      const auto& e=*command.environmental_data;shared.environmental_valid_fields=e.valid_fields;
+      shared.fog_parameters[0]=e.fog_density;shared.fog_parameters[1]=e.fog_height_falloff;
+      shared.fog_parameters[2]=e.fog_altitude_tweak;shared.fog_parameters[3]=e.fog_power;
+      std::copy(e.camera_position.begin(),e.camera_position.end(),shared.camera_position);
+      std::copy(e.view_inverse_matrix.begin(),e.view_inverse_matrix.end(),shared.view_inverse_matrix);
+      shared.projection_scale[0]=e.projection_matrix[0];shared.projection_scale[1]=e.projection_matrix[5];
+    }
+    const auto shared_data=std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&shared),sizeof(shared));
+    const uint64_t shared_hash=XXH3_64bits(shared_data.data(),shared_data.size());
+    // Shared shader policy is content-addressed, not owned by a per-object
+    // matrix bank. Compare the entire payload on hits to handle hash collisions.
+    // Its values include camera/environment data that changes every frame. Keep
+    // them with this batch rather than accumulating in the geometry LRU.
+    const std::array<uint64_t,8> shared_key{4,shared_hash};
+    shared_bytes=native_metal_frame_->constant_packets.Find(shared_key);
+    if(!shared_bytes||shared_bytes->value.size()!=shared_data.size()||
+        std::memcmp(shared_bytes->value.data(),shared_data.data(),shared_data.size())) {
+      auto prepared=native_metal_frame_->AcquireConstant();prepared->generation=++next_native_metal_allocation_;
+      prepared->conversion={4,shared_hash};prepared->value.assign(shared_data.begin(),shared_data.end());
+      shared_bytes=std::move(prepared);
+      if(!native_metal_frame_->constant_packets.Store(shared_key,shared_bytes))return reject("Metal shared constant cache allocation failed");
+    }
+    if(!shared_bytes)return reject("Metal shared constant allocation failed");
+    native_metal_frame_->shared_constants.Remember(shared_semantics,command.environmental_data,shared_bytes);
   }
-  const auto shared_data=std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&shared),sizeof(shared));
-  const uint64_t shared_hash=XXH3_64bits(shared_data.data(),shared_data.size());
-  // Shared shader policy is content-addressed, not owned by a per-object
-  // matrix bank. Compare the entire payload on hits to handle hash collisions.
-  // Its values include camera/environment data that changes every frame. Keep
-  // them with this batch rather than accumulating in the geometry LRU.
-  const std::array<uint64_t,8> shared_key{4,shared_hash};
-  auto shared_bytes=native_metal_frame_->constant_packets.Find(shared_key);
-  if(!shared_bytes||shared_bytes->value.size()!=shared_data.size()||
-      std::memcmp(shared_bytes->value.data(),shared_data.data(),shared_data.size())) {
-    shared_bytes=make_bytes(shared_data,{4,shared_hash});
-    if(!native_metal_frame_->constant_packets.Store(shared_key,shared_bytes))return reject("Metal shared constant cache allocation failed");
-  }
-  if(!shared_bytes)return reject("Metal shared constant allocation failed");
-  draw.constants[2]={shared_bytes,0,sizeof(shared)};
+  draw.constants[2]={shared_bytes,0,sizeof(NativeSharedConstants)};
   phase(timing.constants);
 
   if(up_stride) {

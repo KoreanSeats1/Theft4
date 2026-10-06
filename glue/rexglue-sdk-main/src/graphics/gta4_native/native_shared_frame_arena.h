@@ -13,11 +13,18 @@ class NativeSharedFrameArena {
   struct Page {std::array<T,PageSize> values{};size_t used=0;};
   std::vector<std::shared_ptr<Page>> pages_;
   std::vector<size_t> available_;
-  size_t cursor_=0,maximum_pages_;
+  size_t cursor_=0,maximum_pages_,page_charge_;
   bool diagnostics_;
  public:
   size_t page_allocations=0,pooled_objects=0,fallback_objects=0,recycled_objects=0;
-  explicit NativeSharedFrameArena(size_t byte_budget=32*1024*1024,bool diagnostics=true):maximum_pages_(byte_budget/sizeof(Page)),diagnostics_(diagnostics){}
+  // Optional external charge covers bounded storage owned by each object,
+  // such as a constant vector reserved to 4096 bytes. Callers must enforce
+  // that maximum; charging it before allocation bounds retained pool storage.
+  explicit NativeSharedFrameArena(size_t byte_budget=32*1024*1024,bool diagnostics=true,
+      size_t external_bytes_per_object=0):maximum_pages_(0),page_charge_(sizeof(Page)),diagnostics_(diagnostics){
+    if(external_bytes_per_object>(size_t(-1)-sizeof(Page))/PageSize)return;
+    page_charge_+=PageSize*external_bytes_per_object;maximum_pages_=byte_budget/page_charge_;
+  }
   template<class Reset> void BeginBatch(Reset&& reset){
     available_.clear();cursor_=0;
     for(size_t i=0;i<pages_.size();++i)if(pages_[i].use_count()==1){
@@ -34,6 +41,6 @@ class NativeSharedFrameArena {
     auto& page=pages_[available_[cursor_]];auto* value=&page->values[page->used++];if(diagnostics_)++pooled_objects;
     return std::shared_ptr<T>(page,value);
   }
-  size_t AllocatedBytes()const{return pages_.size()*sizeof(Page);}
+  size_t AllocatedBytes()const{return pages_.size()*page_charge_;}
 };
 }

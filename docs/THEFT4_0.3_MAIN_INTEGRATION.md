@@ -2,10 +2,10 @@
 
 **0.3.0 (123)** · launcher **0.3** · `com.lukebrosious.theft4`
 
-The user approved source promotion on 2026-10-06. Main receives the complete
-`codex/direct-metal-96` implementation and this release documentation. Public
-IPA/TestFlight publication, version tagging and source pushing are separate from
-the local main commit recorded here.
+The user approved source promotion and GitHub publication on 2026-10-06. Main
+contains the complete `codex/direct-metal-96` implementation and this release
+documentation, published to `KoreanSeats1/Theft4`. Public IPA/TestFlight
+distribution and version tagging remain separate steps.
 
 ## What was promoted
 
@@ -18,7 +18,8 @@ not change the build 123 implementation.
 
 Local main began at build 94,
 `b6b4a823403ff38623ce3a46bab369c858c21251`. Remote main was refreshed before
-promotion and remains `f5f30b373fc5b397364b81fb840f1d638267c14f`; its restored
+promotion and publication; its prior revision was
+`f5f30b373fc5b397364b81fb840f1d638267c14f`; its restored
 README donation block and history are already included. Both are ancestors of
 the promoted branch, allowing a fast-forward without rewriting shared history.
 
@@ -80,3 +81,17 @@ sideload/signing flow. Keep game files, updates, saves, prepared user caches,
 private draw captures, device logs and development signing material out of it.
 The source promotion does not create a GitHub release/tag, upload an IPA or
 change TestFlight.
+
+## GitHub source publication
+
+The approved push updates `origin/main` without force-pushing or rewriting shared
+history. It publishes the full source history, [verbose changelog](../CHANGELOG.md),
+[release notes](RELEASE_0.3.md), [architecture comparison and recomp lessons](THEFT4_0.3_ARCHITECTURE.md),
+[change manifest](THEFT4_0.3_CHANGE_MANIFEST.json), build guide and corrected capture
+instructions. The old runtime diagrams are replaced with the actual Metal route.
+
+The tested runtime remains the build 123 implementation identified above. This
+publication pass changes documentation only. The exact published source revision
+is available from GitHub main's commit history; the already installed app retains
+its implementation revision in `Theft4SourceRevision`. No app release attachment,
+version tag or TestFlight upload is implied by publishing the source.

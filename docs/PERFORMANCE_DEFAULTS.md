@@ -1,5 +1,11 @@
 # Build 94: consolidated performance defaults
 
+> **Historical build-94 integration record.** Theft4 0.3 now selects the direct
+> Metal renderer. See [current release notes](RELEASE_0.3.md),
+> [architecture](THEFT4_0.3_ARCHITECTURE.md) and [build instructions](IOS_RELEASE_BUILD.md)
+> for active rendering and diagnostic policy. The settings below describe the
+> earlier working Vulkan renderer and the inherited texture-preparation flow.
+
 The main branch integrates the build-93 renderer/runtime history. The device configuration was read from the M5 on 2026-10-02. Renderer efficiency, parallel render preparation, graphics preparation, fused SMAA, hardware SMAA filtering, frame resource sharing, frame assembly, command stream, utility CPU cleanup, memory-pressure recovery, parallel texture conversion, render-target reuse, frame scheduling and direct guest clock are enabled automatically. Runtime Wait Improvements remains disabled. The obsolete display-aligned submission and old performance-comparison controls are absent from Settings.
 
 The app applies these launch policies directly from ios/bridge/theft4_performance_defaults.h. Persisted old experiment choices no longer override the consolidated configuration. Hardware capability checks and compatible-path fallbacks inside the renderer still apply. Normal graphics, display, touch-control and lightweight capture settings remain adjustable; save import/export on main is retained. The renderer/runtime integration deliberately selects build93 for overlapping old pacing/profiler changes instead of reviving previous experiments.

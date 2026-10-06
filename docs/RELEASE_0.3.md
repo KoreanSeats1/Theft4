@@ -1,7 +1,8 @@
 # Theft4 0.3 — direct Metal and a rebuilt rendering path
 
 Apple version **0.3.0**, build **123**, launcher label **0.3**.
-Source is committed to main. Public IPA/TestFlight publication is a separate step.
+Source and the full engineering record are published on GitHub main. Public
+IPA/TestFlight publication is a separate step.
 The full engineering changelog is [recorded here](../CHANGELOG.md#03--direct-metal-rebuilt-geometry-and-a-faster-native-rendering-path--2026-10-06).
 
 0.3 is the largest rendering change in Theft4 so far. The running game now sends

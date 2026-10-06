@@ -194,26 +194,37 @@ has been transferred or backed up.
 
 ## Current status
 
-The following has been demonstrated on a physical ARM64 iPad:
+**0.3.0 build 123 uses the live direct Metal game renderer by default.** The
+signed Release app has been installed and normally launched on the M5 iPad.
+Recent gameplay testing reports excellent visual clarity and a major
+native-resolution performance improvement; the retrieved native run used
+2416 × 1359 without upscaling. A remaining spike can occur and recover. Locked
+30 FPS across all scenes and devices has not been established.
 
-- a development-signed UIKit application containing the statically compiled GTA IV AOT code;
-- Xbox guest memory, kernel, threading, filesystem, XEX loading, and TU8 patch application;
-- execution reaching and continuing beyond the recompiled title entry point;
-- real GTA IV PM4 command processing and on-device Xenos shader translation;
-- Vulkan shader and pipeline creation through statically linked MoltenVK;
-- a UIKit-owned `CAMetalLayer`, three-image swapchain, and repeated Metal presentation;
-- native GameController and RemoteIO integration at the host boundary;
-- real XMA decoding, improved audio delivery, and centered 16:9 presentation;
-- the full opening 3D sequence and first player-control state in a Release build.
+The implementation includes:
 
-The promoted native renderer has reached gameplay on the M5 iPad. The measured
-captures above show real improvement in command delivery, while frame time
-still varies substantially in heavy scenes.
+- signed ahead-of-time ARM64 game code, Xbox guest memory and compatibility
+  services, matching XEX/TU8 loading, and native input/audio host integration;
+- a complete live Metal route with game shaders, ordered render passes, depth
+  and lighting contracts, reflections, effects and CAMetalLayer presentation;
+- shared geometry and shader constants, bounded CPU/GPU caches and storage
+  recycling protected by GPU completion;
+- capability-gated static BC-to-ASTC preparation for GPUs without BC support,
+  including progress, ETA, pause/resume and persistent cache reuse;
+- optimized normal launches with independent optional graphs and bounded
+  performance capture.
 
-The game has visibly booted on the test iPad, but this does **not** mean the port
-is complete or generally playable. Broader physical-controller acceptance,
-frontend/import UX, correctness, compatibility, performance, and
-long-duration stability remain active work.
+Build 123 passed 34 launcher/build tests, 27 CPU contracts, and 45 GPU graphics
+cases plus 32 saved draw replays in each of optimized and diagnostic configurations.
+Worker and delayed-GPU lifetime checks also passed. Tests prove their specific
+contracts; device coverage, long sessions, thermals and focus recovery still
+require broader validation. Older-device texture compatibility is not a promise
+of M5-equivalent performance.
+
+The source update and full engineering record are published on main. App release
+artifacts and TestFlight distribution are separate from the source publication.
+See the [0.3 release notes](docs/RELEASE_0.3.md) and
+[current architecture record](docs/THEFT4_0.3_ARCHITECTURE.md).
 
 ## Engineering record
 
@@ -225,15 +236,17 @@ Its scene and effects are released before the game runtime starts.
 
 **Graphics** offers independent scene resolution and FSR choices, texture
 filtering, shadows, draw distance, model detail, reflection quality, edge
-smoothing and motion blur. The performance preset starts with 540p + FSR and
-conservative quality settings; all controls can be adjusted afterward. Changes
+smoothing, depth of field, motion blur and adjustable sharpening. **Frame Speed**
+preserves the selected resolution, uses original shadows, earlier resident LOD
+and shorter world distance, and disables optional blur and edge filtering. Changes
 apply at the next game launch. **Interface** provides the FPS counter,
 frame-time graph and touch controls. Existing preferences remain in the app
 data after an in-place update.
 Motion blur applies at the next game launch. Turning it off selects the stock
 non-blur composite variant; it does not disable depth of field or the entire
-post-processing pass. Device visual/performance acceptance is pending. See the
-[motion-blur and fast-driving test plan](docs/THEFT4_MOTION_BLUR_AND_STREAMING.md).
+post-processing pass. See the
+[earlier motion-blur and fast-driving test plan](docs/THEFT4_MOTION_BLUR_AND_STREAMING.md)
+for the experiment history.
 
 Enable touch controls for
 a movement stick, swipe-to-look on empty screen space, Xbox buttons/triggers,
@@ -245,8 +258,8 @@ Touch gameplay and save/reload are still undergoing device verification.
 GPU freezes during extended play and app switching are known issues; the
 input/display switches do not change renderer stability settings.
 
-The promoted renderer uses two completion-owned native frame slots. Scene
-resolution and output mode are selected in Graphics before launch; 720p remains
+The promoted renderer uses bounded completion-owned frames and GPU-retired
+upload storage. Scene resolution and output mode are selected in Graphics before launch; 720p remains
 available. Long-session stability and background/foreground recovery still
 need device testing.
 
@@ -257,11 +270,11 @@ measured outcomes, rejected approaches, and remaining verification:
 - [3D performance execution plan](THEFT4_3D_PERFORMANCE_PLAN.md) — ordered work and
   the latest renderer checkpoint;
 - [CPU-first native-renderer audit](docs/THEFT4_CPU_PERFORMANCE_AUDIT.md) — the
-  current 1080p city CPU profile, logging/validation costs, safe optimization
+  historical 1080p city CPU profile, logging/validation costs, safe optimization
   experiments and paced-30 acceptance criteria;
 - [Current paced-30 implementation plan](docs/THEFT4_30FPS_IMPLEMENTATION_PLAN.md)
-  — ordered CPU optimization passes, tests and keep/revert gates; planned,
-  not yet implemented;
+  — historical planning baseline for CPU passes, tests and keep/revert gates;
+  see the 0.3 architecture record for what was implemented;
 - [September 16 GPU diagnosis](THEFT4_GPU_DIAGNOSTIC_2026-09-16.md) — trace-backed
   generic-renderer analysis and experiment design;
 - [iOS architecture report](LIBERTYRECOMP_IOS_ARCHITECTURE.md) and
@@ -275,26 +288,27 @@ captures, logs, device identifiers, and signing material are deliberately exclud
 ## Architecture
 
 ```text
-Theft4 UIKit application
+Theft4 UIKit application and iOS lifecycle
         |
-        v
-Versioned C bridge and iOS lifecycle adapters
+Versioned bridge + LibertyRecomp / ReXGlue compatibility runtime
         |
-        v
-LibertyRecomp / ReXGlue compatibility runtime
+        +--> signed AOT game code (PowerPC -> C++ -> ARM64)
+        +--> Xbox memory, kernel, threading, filesystem, input and audio services
         |
-        +--> statically recompiled GTA IV code (PowerPC -> C++ -> ARM64)
-        +--> Xbox kernel, memory, threading, filesystem, input and audio services
-        +--> generic Xenos command processor + runtime shader translation
-        |
-        +--> opt-in GTA-IV-specific renderer + cached native SPIR-V
-                                   |
-                                   v
-                            Vulkan / MoltenVK
-                                   |
-                                   v
-                                 Metal
+        +--> GTA IV ordered rendering commands
+                    |
+             Immutable CPU frame preparation
+             geometry / constants / texture views / pipeline recipes
+                    |
+             Native Metal worker and encoders
+                    |
+             Metal GPU resources and CAMetalLayer presentation
+                    |
+             Completion receipts -> retirement and upload recycling
+
+Offline stock shader export -> reflected Metal libraries -> native Metal pipelines
 ```
+
 
 The iOS application owns `UIApplication`/`UIScene`, the visible view and
 `CAMetalLayer`, device storage, user interaction, and lifecycle. The runtime is
@@ -338,8 +352,10 @@ its optional first argument to configure device signing:
 ./Generate-Theft4-Xcode.command YOUR_TEAM_ID
 ```
 
-The current graphics bring-up expects the documented public MoltenVK archives;
-the generator fails with an explicit explanation if they have not been built.
+The direct Metal build requires the documented offline game/host Metal libraries.
+Legacy MoltenVK archives remain link prerequisites; their presence does not mean
+normal gameplay submits through Vulkan. The generator rejects missing shader
+inputs rather than silently selecting another renderer.
 Then follow:
 
 - [iOS core build](docs/IOS_CORE_BUILD.md)
@@ -356,10 +372,12 @@ The new guide covers signing, game-file transfer, starting the game, and the
 explicit Debug opt-in. CMake files, not generated project build settings, remain
 the source of truth.
 
-The GTA-IV-specific renderer is currently an experimental build/launch option,
-not the broadly validated default. Its switches, exact measured result, retail
-fidelity settings, and fallback behavior are documented in the
-[engineering changelog](CHANGELOG.md).
+The GTA-IV-specific direct Metal renderer is the default for 0.3. An explicit
+`THEFT4_RENDERER=vulkan` build selects the retained comparison path. The
+[build guide](docs/IOS_RELEASE_BUILD.md) documents both routes, offline shader
+preparation, signing and remaining dependency prerequisites; the
+[architecture record](docs/THEFT4_0.3_ARCHITECTURE.md) explains the implemented
+boundaries and validation evidence.
 
 GitHub's automatic source ZIP does not contain the contents of Git submodules.
 For a complete checkout, use the recursive clone command above. The release IPA
@@ -373,9 +391,11 @@ Theft4 is built on substantial existing open-source work. It began as an iOS
 porting branch of [LibertyRecomp](https://github.com/OZORDI/LibertyRecomp) and
 preserves that project's Git history and GPL license. The runtime and translation
 stack draws heavily from ReXGlue and Xenia; its ahead-of-time approach was
-inspired by XenonRecomp; graphics uses XenosRecomp, Vulkan, SPIR-V tooling, and
-MoltenVK. FFmpeg, SDL, and numerous smaller libraries are included or referenced
-through pinned dependencies.
+inspired by XenonRecomp. The direct Metal renderer uses offline stock shader export,
+SPIR-V tooling and SPIRV-Cross to produce reflected Metal libraries. The earlier
+Vulkan/MoltenVK implementation remains available for comparison. FFmpeg, SDL
+and numerous smaller libraries are included or referenced through pinned
+dependencies.
 
 See [Third-party projects and attribution](docs/ATTRIBUTION.md) and the license
 files in each dependency for details. XeniOS was used as an iOS behavior and

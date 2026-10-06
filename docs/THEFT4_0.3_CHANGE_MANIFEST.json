@@ -2,7 +2,7 @@
   "version": "0.3.0",
   "launcher_label": "0.3",
   "build": 123,
-  "promotion_status": "0.3 source promoted to local main; no public release/tag",
+  "promotion_status": "0.3 source promoted to main and published to GitHub; no public app release/tag",
   "baseline_main_commit": "b6b4a823403ff38623ce3a46bab369c858c21251",
   "historical_upstream_audit_commit": "36b729dcc166910c88a2960164707ba9d9e5138c",
   "recorded_pre_candidate_commit": "eb9a14619df39f7efbdd6e1bf40aaf5983086948",
@@ -535,5 +535,13 @@
     "shader_libraries": 2736,
     "m5_installed_build": 123,
     "gameplay_evidence": "User-confirmed excellent build 122 run; no new controlled build 123 benchmark."
+  },
+  "source_publication": {
+    "repository": "https://github.com/KoreanSeats1/Theft4",
+    "branch": "main",
+    "authorized_date": "2026-10-06",
+    "push_mode": "ordinary fast-forward; no force push",
+    "runtime_changes_in_publication_pass": false,
+    "app_artifact_publication": false
   }
 }

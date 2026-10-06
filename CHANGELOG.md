@@ -230,7 +230,8 @@ These are separate subpath measurements, not whole-game frame times or additive
 FPS gains. Gameplay improvement is user-confirmed; a controlled universal 30 FPS
 claim is not.
 
-Source is promoted to main for 0.3. A public release/tag, uploaded IPA and
+Source and the full technical documentation are published to GitHub main for
+0.3. A public release/tag, uploaded IPA and
 TestFlight distribution are separate steps. Initial hitches, multitasking/focus
 recovery, dense scenes, long sessions, thermal behavior and non-M5 devices remain
 validation priorities.
@@ -414,7 +415,8 @@ the public native-renderer and performance-documentation checkpoint.
   Host checks passed 36 cases / 461,192 assertions; signed Release build passed.
   SHA-256 `e20a6dc7dda50e043ba6f9699c5f41b43fd1541e4fb2eb1e23bfa06f8714e6f5`,
   UUID `63C3D9BD-F75B-3188-9F33-3C093DE1ADE4`. Device stability and reclamation
-  hitch cost remain unverified. See the [investigation/test protocol](docs/THEFT4_TWO_FRAME_RESOURCE_LIFETIME.md).
+  hitch cost remain unverified. For the later 0.3 lifetime design, see the
+  [current ownership contracts](docs/THEFT4_0.3_ARCHITECTURE.md#critical-correctness-contracts).
 - Installed in place and launched with the bounded GPU failure recorder, without
   LLDB/Metal validation. App data was not uninstalled or removed. Launcher
   startup is not gameplay acceptance; the foreground city soak is still pending.

@@ -45,7 +45,7 @@ extern "C" void theft4_intro_configure(bool enabled) {
 
 extern "C" void sub_82145420(PPCContext& ctx, uint8_t* base) {
   const bool eligible = skip_intro.load(std::memory_order_relaxed) &&
-      policy::IsColdStart(ctx.lr, ctx.r3.u32, ctx.r4.u32) &&
+      policy::IsColdStart(uint32_t(ctx.lr), ctx.r3.u32, ctx.r4.u32) &&
       GuestSpan(base, kActive, 1) && !REX_LOAD_U8(kActive);
   const ParserScope scope(eligible);
   // Preserve initialization, asset loading, audio readiness and screen markers.

@@ -373,9 +373,6 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _astcConversion.onTintColor = Ink(0x35CDD1);
     _astcConversion.accessibilityIdentifier = @"settings.astcConversion";
 #endif
-    _retailMode = [UISwitch new];
-    _retailMode.onTintColor = Ink(0x35CDD1);
-    _retailMode.accessibilityIdentifier = @"settings.retailMode";
     _skipIntro = [UISwitch new];
     _skipIntro.onTintColor = Ink(0x35CDD1);
     _skipIntro.accessibilityIdentifier = @"settings.skipIntro";
@@ -395,8 +392,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
         [self setting:@"SKIP INTRO VIDEOS" detail:@"Skip opening credits and Rockstar logos at the next launch. Game loading still completes normally." toggle:_skipIntro],
-        [self setting:@"RETAIL MODE" detail:@"Disables development logging, profiling, captures and debug overlays. Turn off and reopen to restore diagnostic tools and saved overlay choices." toggle:_retailMode],
-        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
+        Copy(@"Optimized for normal play. Development logging and probes stay off. Optional graphs and performance captures are available in the launcher.", 12, NO),
+        [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of timing, without development probes. Turn on the frame-time graph to mark a spike or stop and save; capture also saves when the app goes into the background. Data stays in memory during play." toggle:_performanceCapture],
         _downloadLogButton,
         Copy(@"SAVE TRANSFER", 13, YES),
         Copy(@"Export a dated backup to Files → On My iPhone/iPad → Theft4 → Save Exports. Import a Theft4 save-export folder only while the game is closed; current saves are backed up first.", 12, NO),

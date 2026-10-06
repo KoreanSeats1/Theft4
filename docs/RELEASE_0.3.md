@@ -1,6 +1,6 @@
 # Theft4 0.3 — direct Metal and a rebuilt rendering path
 
-Release candidate: Apple version **0.3.0**, build **122**, launcher label **0.3**.
+Release candidate: Apple version **0.3.0**, build **123**, launcher label **0.3**.
 This is preparation for promotion to main, not an announcement that a public IPA
 or TestFlight build has been published.
 
@@ -113,10 +113,12 @@ slower until their preparation, uploads, storage and lifetime behavior were fixe
   existing LOD transitions; it is not a new occlusion or fading algorithm.
 - **Skip Intro Videos** defaults On, skipping the opening credits and logos while
   retaining the game's normal loading and initialization.
-- **Retail Mode** defaults On for new settings. It disables development logging,
-  profiling, captures and debug overlays before runtime startup. Turn it Off and
-  reopen to restore diagnostics and saved overlay choices. Required rendering
-  validation and synchronization remain enabled.
+- Ordinary play uses the optimized policy automatically, with no Retail Mode
+  toggle. Development logging, probes and detailed GPU profiling stay off.
+  FPS, CPU usage and frame-time graphs are independent options, off by default.
+  **Long Performance Capture** is available before Play for a bounded five-minute
+  timing report; it does not enable development probes. Capture resets Off each
+  app launch. Required rendering validation and synchronization remain enabled.
 - Game Mode is declared, and the tested development build retains the sustained
   execution request. These settings do not prove that the OS keeps Game Mode active
   or grants identical scheduling on every device or signing profile.

@@ -111,10 +111,11 @@ insufficient: an earlier empty Release flag built the renderer at `-O0`.
 
 ## Diagnostics, comparisons and game installation
 
-Retail Mode defaults On for fresh settings and suppresses development telemetry.
-For a capture, turn it Off and reopen; then enable Long Performance Capture before
-Play. Captures and debug overlays cannot be forced back On midway through a retail
-session. Runtime correctness checks and resource synchronization remain required.
+Normal icon launches always suppress development telemetry, independent of old
+Retail Mode preferences; the toggle has been removed. Optional FPS, CPU and
+frame-time overlays do not enable development probes. Enable Long Performance
+Capture before Play for bounded timings; it resets Off on each app launch. Runtime
+correctness checks and resource synchronization remain required.
 Ordinary builds omit the private asset draw recorder; engineering replay builds
 can enable `THEFT4_NATIVE_METAL_CAPTURE` deliberately.
 

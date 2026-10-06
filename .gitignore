@@ -786,6 +786,7 @@ CMakeUserPresets.json
 !/tests/ios/test_xcode_generator.py
 !/tests/ios/test_installation_routing.py
 !/tests/ios/test_capture_defaults.py
+!/tests/ios/test_optional_performance_controls.py
 !/docs/THEFT4_LAB_PACING_CAPTURE.md
 !/tools/analyze_lab_pacing.py
 

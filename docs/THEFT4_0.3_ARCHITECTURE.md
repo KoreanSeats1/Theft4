@@ -3,7 +3,7 @@
 This record describes the implementation prepared on `codex/direct-metal-96`.
 The promotion baseline is main build 94, commit
 `b6b4a823403ff38623ce3a46bab369c858c21251`. The preceding build 121 is
-`eb9a14619df39f7efbdd6e1bf40aaf5983086948`. Candidate 0.3 is build 122;
+`eb9a14619df39f7efbdd6e1bf40aaf5983086948`. Candidate 0.3 is build 123;
 its exact source revision belongs in the built app's `Theft4SourceRevision` and
 the private artifact manifest. The [change manifest](THEFT4_0.3_CHANGE_MANIFEST.json)
 lists the intervening commits and touched source paths.
@@ -85,7 +85,7 @@ SPIR-V representation and SPIRV-Cross; it is not a runtime Vulkan draw layer.
 | Host effects and output: `theft4_postfx_plan.*`, `theft4_metal_host_shaders.*`, `present_constants.h` | The former Vulkan host shaders and attachment operations did not automatically become valid native Metal passes. | The effects builder and bundled host libraries cover the existing sun/DOF, edge filtering, depth transfer, scaling, FSR/presentation and sharpening operations in order. Cache their pipelines and avoid unnecessary stores only after proving overwrite-before-read. |
 | Texture upload/readback: `PrepareNativeMetalFetch`, `native_color_readback.h` | Pitches, dimensions, cropped planes and GPU-generated aliases differ from a simple CPU byte upload. Guest texture locks need coherent title-format bytes. | Preparation preserves mip/slice/swizzle semantics; explicit locks flush and read native GPU storage, then reconstruct validated guest layouts. Normal frame presentation avoids readback. Rare compatibility transfers are explicit synchronization points. |
 | BC-incompatible devices: `Theft4TexturePreparation.mm`, `theft4_astc_texture.*` | Unsupported BC formats caused missing/black textures. Repeated expansion to RGBA costs memory, and on-demand conversion can stall gameplay. | Capability-gated static preparation saves ASTC textures once and reuses the result. The full inventory and title texture layouts are GTA IV specific. The general lesson is persistent format preparation keyed to content/capability, not an age-based device blacklist. |
-| Diagnostics: `theft4_retail_mode.h`, profiling policy and capture code | Development clocks, inventories, per-frame counters and detailed GPU timing could contaminate ordinary performance. Sparse or misleading timestamps also obscured regressions. | Retail policy is applied before runtime construction and removes development work; diagnostic launch restores opt-in captures. GPU clock calibration, bounded long traces and worker-phase attribution support honest comparisons. Correctness checks remain independent of telemetry. |
+| Diagnostics: `theft4_retail_mode.h`, profiling policy and capture code | Development clocks, inventories, per-frame counters and detailed GPU timing could contaminate ordinary performance. Sparse or misleading timestamps also obscured regressions. | The optimized policy is applied before runtime construction and removes development work. Build 123 removes the user-facing mode switch; graphs and bounded long captures are independent opt-ins, with frontend stage clocks enabled only during the capture. Engineering-only launch overrides remain separate. GPU clock calibration, bounded long traces and worker-phase attribution support honest comparisons. Correctness checks remain independent of telemetry. |
 
 ## Critical correctness contracts
 

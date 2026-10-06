@@ -61,6 +61,9 @@ bool theft4_native_set_active(bool active);
 // Counts distinct content publications successfully handed to the iOS Vulkan/Metal
 // swapchain. UIKit samples this monotonically increasing value for the small
 // on-screen FPS indicator; no logging or GPU readback is involved.
+// Explicit UI opt-in; disabled when the FPS overlay is hidden. Graph/capture
+// sampling has its own opt-in, and all three are off during ordinary play.
+void theft4_frame_counter_set_enabled(bool enabled);
 void theft4_frame_counter_note_published(void);
 uint64_t theft4_frame_counter_published_frames(void);
 

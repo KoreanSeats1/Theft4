@@ -82,7 +82,7 @@ checksum_path="$ipa_path.sha256"
 stage_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/theft4-ipa.XXXXXX")"
 trap '/bin/rm -rf -- "$stage_root"' EXIT INT TERM
 /bin/mkdir -p "$stage_root/Payload" "$output_dir"
-/usr/bin/ditto "$app_path" "$stage_root/Payload/Theft4.app"
+/usr/bin/ditto --norsrc --noextattr --noqtn "$app_path" "$stage_root/Payload/Theft4.app"
 staged_app="$stage_root/Payload/Theft4.app"
 
 # A development profile restricts installation to registered devices and also
@@ -102,12 +102,25 @@ fi
 # Avoid publishing Finder quarantine/resource-fork metadata as __MACOSX
 # entries. None of it is part of the iOS application payload.
 /usr/bin/xattr -cr "$staged_app"
+# Imported AppleDouble sidecars are ordinary files, so xattr clearing alone
+# cannot remove them. They are metadata, never iOS application resources.
+/usr/bin/find "$staged_app" -type f -name '._*' -delete
 
 (
   cd "$stage_root"
-  /usr/bin/ditto -c -k --keepParent Payload "$ipa_path"
+  /usr/bin/ditto --norsrc --noextattr --noqtn -c -k --keepParent Payload "$ipa_path"
 )
 /usr/bin/unzip -tq "$ipa_path" >/dev/null
+python3 - "$ipa_path" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    names = archive.namelist()
+    if any(part == '__MACOSX' or part.startswith('._')
+           for name in names for part in name.split('/')):
+        raise SystemExit('Refusing to package Finder/AppleDouble metadata')
+    if len(names) != len(set(names)):
+        raise SystemExit('Refusing to package duplicate archive entries')
+PY
 
 checksum="$(/usr/bin/shasum -a 256 "$ipa_path" | /usr/bin/awk '{print $1}')"
 print "$checksum  ${ipa_path:t}" > "$checksum_path"

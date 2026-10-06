@@ -619,7 +619,6 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)applyFrameSpeedGraphicsChoices;
 - (void)applyFrameSpeedGraphicsPreset;
 - (void)restorePreviousGraphicsPreset;
-- (void)retailModeChanged:(UISwitch *)sender;
 #ifdef THEFT4_INTRO_TEST_BUILD
 - (void)runIntroTestImportSmokeIfRequested;
 #endif
@@ -728,9 +727,10 @@ static void bootEvent(void *context, const char *event) {
     _legacyIPadProfile = configureDeviceProfile();
     const char *deviceProfile = getenv("THEFT4_DEVICE_PROFILE") ?: "";
     _limitedMemoryProfile = strcmp(deviceProfile, "iphone-6gb") == 0 || strcmp(deviceProfile, "legacy-ipad") == 0;
+    [self migratePerformanceOverlayDefaults];
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
-        @"Theft4ShowCPUUsage": @YES,
-        @"Theft4ShowFPS": @YES,
+        @"Theft4ShowCPUUsage": @NO,
+        @"Theft4ShowFPS": @NO,
         @"Theft4ShowFrameTime": @NO,
         @"Theft4ShowTouchControls": @NO,
         @"Theft4AnisotropicFiltering": @(!_legacyIPadProfile),
@@ -924,13 +924,9 @@ static void bootEvent(void *context, const char *event) {
     [_bringupOverlay.frameSpeedButton addTarget:self action:@selector(applyFrameSpeedGraphicsPreset) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.restoreGraphicsButton addTarget:self action:@selector(restorePreviousGraphicsPreset) forControlEvents:UIControlEventTouchUpInside];
     _bringupOverlay.restoreGraphicsButton.hidden = ![speedDefaults dictionaryForKey:@"Theft4PreviousGraphicsSettings107"];
-    _bringupOverlay.retailMode.on = theft4_retail_mode();
-    [_bringupOverlay.retailMode addTarget:self action:@selector(retailModeChanged:) forControlEvents:UIControlEventValueChanged];
-    if (theft4_retail_mode()) {
-        _showCPUUsage.on=NO;_showFrameTime.on=NO;_showFPS.on=NO;_performanceCapture.on=NO;
-        _showCPUUsage.enabled=NO;_showFrameTime.enabled=NO;_showFPS.enabled=NO;_performanceCapture.enabled=NO;
-        _downloadLogButton.enabled=NO;_bringupOverlay.restartButton.hidden=YES;
-    }
+    // Development probes remain disabled; user overlays and bounded captures
+    // are independent opt-ins. Export remains available for previously saved logs.
+    _bringupOverlay.restartButton.hidden = theft4_retail_mode();
     const char *diagnosticCapture = getenv("THEFT4_DIAGNOSTIC_CAPTURE");
     if (!theft4_retail_mode() && diagnosticCapture && strcmp(diagnosticCapture, "1") == 0) _performanceCapture.on = YES;
     [_bringupOverlay refreshConfigurationSummary];
@@ -990,7 +986,7 @@ static void bootEvent(void *context, const char *event) {
     UITapGestureRecognizer *capture = [[UITapGestureRecognizer alloc]
         initWithTarget:self action:@selector(requestNativeProfile)];
     capture.numberOfTapsRequired = 2;
-    [_frameTimeView addGestureRecognizer:capture];
+    if (!theft4_retail_mode()) [_frameTimeView addGestureRecognizer:capture];
     UILongPressGestureRecognizer *marker = [[UILongPressGestureRecognizer alloc]
         initWithTarget:self action:@selector(markPerformanceScene:)];
     [_frameTimeView addGestureRecognizer:marker];
@@ -1000,14 +996,6 @@ static void bootEvent(void *context, const char *event) {
         [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
         [_frameTimeView.widthAnchor constraintEqualToConstant:244],
         [_frameTimeView.heightAnchor constraintEqualToConstant:126]]];
-    if (!theft4_retail_mode()) {
-    _fpsTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                target:self
-                                              selector:@selector(refreshFrameRate)
-                                              userInfo:nil
-                                               repeats:YES];
-    [NSRunLoop.mainRunLoop addTimer:_fpsTimer forMode:NSRunLoopCommonModes];
-    }
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -1875,6 +1863,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                               _metalView.bounds.size.height, scale);
 }
 
+- (void)migratePerformanceOverlayDefaults {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults boolForKey:@"Theft4OptionalOverlays03"]) return;
+    // Retail previously hid saved developer overlay choices. Do not silently
+    // activate those old choices when removing its toggle. Subsequent explicit
+    // overlay choices persist normally; existing diagnostic users retain theirs.
+    if ([defaults boolForKey:@"Theft4RetailMode"]) {
+        for (NSString *key in @[@"Theft4ShowCPUUsage", @"Theft4ShowFPS", @"Theft4ShowFrameTime"])
+            [defaults setBool:NO forKey:key];
+    }
+    [defaults removeObjectForKey:@"Theft4RetailMode"];
+    [defaults setBool:YES forKey:@"Theft4OptionalOverlays03"];
+}
+
 - (void)resetAutomaticCaptureForNewSession {
     _performanceCapture.on = NO;
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4DetailedPerformanceCapture"];
@@ -1885,7 +1887,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)recordWindowState:(NSString *)event {
-    if (theft4_retail_mode()) return;
+    if (theft4_retail_mode() && !_publicationCaptureActive) return;
     UIWindow *window = self.view.window;
     CGRect bounds = window.bounds;
     CAMetalLayer *layer = (CAMetalLayer *)_metalView.layer;
@@ -1903,7 +1905,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)performanceProfileChanged:(NSNotification *)notification {
-    if (theft4_retail_mode()) return;
+    if (theft4_retail_mode() && !_publicationCaptureActive) return;
     NSString *fields = Theft4PerformanceProfileFields();
     const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1981,28 +1983,19 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [NSUserDefaults.standardUserDefaults setBool:_bringupOverlay.fsrUpscaling.on forKey:@"Theft4LabFSREnabled"];
     }
     [_bringupOverlay refreshConfigurationSummary];
-    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
-    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
+    [NSUserDefaults.standardUserDefaults setBool:_showCPUUsage.on forKey:@"Theft4ShowCPUUsage"];
+    [NSUserDefaults.standardUserDefaults setBool:_showFPS.on forKey:@"Theft4ShowFPS"];
     [NSUserDefaults.standardUserDefaults setBool:_showControls.on forKey:@"Theft4ShowTouchControls"];
     [NSUserDefaults.standardUserDefaults setBool:_anisotropicFiltering.on
         forKey:@"Theft4AnisotropicFiltering"];
     [NSUserDefaults.standardUserDefaults setBool:_enhancedOutput.on
         forKey:@"Theft4EnhancedOutput1080p"];
     _fpsLabel.hidden = !_gamePresentation || _launcherDuringGame || !_showFPS.on;
-    if (!theft4_retail_mode()) [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
+    [NSUserDefaults.standardUserDefaults setBool:_showFrameTime.on forKey:@"Theft4ShowFrameTime"];
     [self updateFrameTimeHUD];
     _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
     _fpsLastFrames = theft4_frame_counter_published_frames();
     _fpsLastTime = CACurrentMediaTime();
-}
-
-- (void)retailModeChanged:(UISwitch *)sender {
-    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4RetailMode"];
-    UIAlertController *notice=[UIAlertController alertControllerWithTitle:@"Reopen Theft4"
-        message:sender.on ? @"Save your game, then close and reopen Theft4 to turn off development logging, profiling, captures and debug overlays. Your diagnostic preferences are preserved." : @"Save your game, then close and reopen Theft4 to restore diagnostic tools and your saved overlay preferences. Long Performance Capture is available to enable again."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [notice addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:notice animated:YES completion:nil];
 }
 
 - (void)applyFrameSpeedGraphicsChoices {
@@ -2515,8 +2508,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)updateFrameTimeHUD {
-    [_cpuUsageView setMonitoringActive:(!theft4_retail_mode() && _gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
-    BOOL visible = !theft4_retail_mode() && _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
+    const BOOL sampleFPS = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFPS.on;
+    theft4_frame_counter_set_enabled(sampleFPS);
+    const BOOL needsTimer = sampleFPS || _publicationCaptureActive;
+    if (needsTimer && !_fpsTimer) {
+        _fpsLastFrames = theft4_frame_counter_published_frames();
+        _fpsLastTime = CACurrentMediaTime();
+        _fpsTimer = [NSTimer timerWithTimeInterval:0.5 target:self
+            selector:@selector(refreshFrameRate) userInfo:nil repeats:YES];
+        [NSRunLoop.mainRunLoop addTimer:_fpsTimer forMode:NSRunLoopCommonModes];
+    } else if (!needsTimer) {
+        [_fpsTimer invalidate];
+        _fpsTimer = nil;
+    }
+    [_cpuUsageView setMonitoringActive:(_gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
+    BOOL visible = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
     _frameTimeTop.constant = _showFPS.on ? 52 : 10;
     theft4_frame_time_set_enabled(visible);
@@ -2540,9 +2546,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 [controller->_frameTimeView setCaptureCompleted:(status == 2)];
                 [controller record:(status == 2 ? @"capture.complete" : @"capture.failed")];
                 if (controller->_publicationCaptureStartedForNativeProfile) {
-                    theft4_publication_capture_stop();
-                    [controller drainPublicationCapture];
-                    controller->_publicationCaptureActive = NO;
+                    [controller stopPublicationCapture];
                     controller->_publicationCaptureStartedForNativeProfile = NO;
                     dispatch_async(controller->_publicationCaptureQueue, ^{
                         [controller appendPublicationCaptureText:@"status,,,,saved-with-native-profile\n"];
@@ -2579,9 +2583,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [_frameTimeView setCaptureRequested:YES];
         [self record:@"capture.requested"];
     } else if (_publicationCaptureStartedForNativeProfile) {
-        theft4_publication_capture_stop();
-        [self drainPublicationCapture];
-        _publicationCaptureActive = NO;
+        [self stopPublicationCapture];
         _publicationCaptureStartedForNativeProfile = NO;
     }
 }
@@ -2793,7 +2795,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (BOOL)beginPublicationCapture {
-    if (theft4_retail_mode()) return NO;
     if (_publicationCaptureActive) return YES;
     if (!_supportURL || _publicationCaptureWriteFailed || _publicationCaptureURL) return NO;
     NSURL *directory = [[_supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES]
@@ -2821,6 +2822,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         @"# build%@: host_tick_frequency=%llu; CPU fields are renderer-thread ns, not full simulation frame work; Metal preparation=sweep+journal, recording=lowering, finalization=content retirement, driver_submit=backend CPU including admission and waits; Vulkan-only fields are unavailable on Metal; zero is not proof of no work; fence waits are not GPU durations; sample_valid flags1=CPU-publish 2=CPU-interval 4=memory 8=runtime-counters 16=task-events 32=decompressions 64=available-memory; sparse assembly1frame/60 with overlapping wall categories; pressure texture bytes mean retirement; cumulative counters may overlap; pipeline_creates/compile/wait are per-present; compiler/cache snapshots use bit8; phase IDs0=unknown1=scene2=lighting3=light-setup4=light-draw5=radar6=postfx; appended counts are recording observations; boundary metadata per-present; activity epochs reset CPU intervals; prewarm and renderer-efficiency counters cumulative; dynamic counts are state groups; preparation counters per-publication with overlapping helper work; helper_cpu_ns zero=unavailable; assembly and texture counters cumulative; texture wall spans overlap; prepared index counts per-publication; bounded16384 records\nframe,begin_tick,end_tick,commands,completion_ticks,fence_wait_ticks,preparation_ticks,recording_ticks,finalization_ticks,queue_lock_ticks,driver_submit_ticks,submission,slot,result,cpu_publish_ns,cpu_interval_ns,cpu_interval_ticks,sample_valid,footprint_bytes,resident_bytes,compressed_bytes,texture_images,memory_warnings,%s\n",
         NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"],
         (unsigned long long)rex_gta4_light_capture_frequency(), rex_gta4_light_capture_extra_columns()];
+    lightHeader = [[NSString stringWithFormat:@"# development_probes=%@; optional capture clocks enabled; development-only counter fields may be zero\n",
+        theft4_retail_mode() ? @"off" : @"on"] stringByAppendingString:lightHeader];
     if (![lightHeader writeToURL:_lightCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
         _lightCaptureURL = nil;
         [self record:@"capture.timing_start_failed"];
@@ -2863,6 +2866,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureCursor = theft4_publication_capture_start();
     _publicationCaptureStartTime = CACurrentMediaTime();
     _publicationCaptureActive = YES;
+    [_frameTimeView setCaptureRequested:YES];
+    [self updateFrameTimeHUD];
     [self record:@"capture.long_started"];
     return YES;
 }
@@ -2876,12 +2881,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     rex_gta4_light_capture_stop();
     [self drainPublicationCapture];
     _publicationCaptureActive = NO;
+    [_frameTimeView setCaptureRequested:NO];
     dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:@"status,,,,saved\n"]; });
     // Drain already-started audio scopes once more without blocking the UI.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), _publicationCaptureQueue, ^{
         [self collectFrameScheduling];
         [self flushFrameScheduling];
     });
+    [self updateFrameTimeHUD];
     [self record:@"capture.long_stopped"];
 }
 
@@ -3249,11 +3256,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
-        if (![defaults objectForKey:@"Theft4RetailMode"]) [defaults setBool:YES forKey:@"Theft4RetailMode"];
+        // Ordinary icon launches always use the optimized policy, independent
+        // of old Retail Mode preferences. Explicit engineering launch overrides
+        // remain available to validation tools, never exposed as a user setting.
         const char *override=getenv("THEFT4_RETAIL_MODE");
         if (!override || (strcmp(override,"0") && strcmp(override,"1")))
-            setenv("THEFT4_RETAIL_MODE",[defaults boolForKey:@"Theft4RetailMode"]?"1":"0",1);
+            setenv("THEFT4_RETAIL_MODE","1",1);
         theft4_apply_retail_diagnostic_policy();
         if (theft4_retail_mode()) {freopen("/dev/null","w",stdout);freopen("/dev/null","w",stderr);}
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(Theft4AppDelegate.class));

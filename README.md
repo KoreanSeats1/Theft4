@@ -55,7 +55,7 @@ encoding. This is the full game renderer, not just the separate Metal Lab.
 | Frame time | Streamed draw encoding, redundant-binding avoidance, shared constants, incremental registry maintenance and completion-owned storage reuse. |
 | Geometry | Exact reusable conversion recipes, shared vertex/index allocations, large upload-view reuse and bounded index-range eviction without clearing every mesh. |
 | Visual controls | Adjustable sharpening, corrected AA-Off startup, existing resolution/FSR choices, resident LOD and explicit draw-distance profiles. Native Pixels uses a centered 16:9 physical-pixel target. |
-| Everyday use | Default-on intro skipping, Retail Mode for play without development telemetry, preserved saves/settings and Game Mode metadata. |
+| Everyday use | Default-on intro skipping, development telemetry disabled for normal play, optional graphs and bounded captures, preserved saves/settings and Game Mode metadata. |
 | Older GPUs | Capability-gated one-time BC-to-ASTC preparation with progress, estimate, resume, cache reuse and confirmed deletion. BC-capable GPUs skip this sweep. |
 | Future ports | A source-backed record of the rewritten boundaries, prior costs, fidelity contracts, measurements and title-specific assumptions. |
 
@@ -68,8 +68,10 @@ direct Metal does not mean every subsystem has been rewritten from source.
 
 ### Capture and submit a short performance log
 
-For 0.3, turn **System → Retail Mode Off** and reopen Theft4 before enabling
-captures or debug overlays. Turn Retail Mode On and reopen for ordinary play.
+0.3 uses optimized normal play automatically, with no Retail Mode toggle. Enable
+optional FPS/CPU/frame-time overlays in the launcher. For logging, enable
+**System → Long Performance Capture** before Play; it resets Off on every launch
+and leaves development probes and detailed GPU profiling disabled.
 
 #### Which file do we need?
 

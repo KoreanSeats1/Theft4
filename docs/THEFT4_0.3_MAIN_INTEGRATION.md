@@ -1,6 +1,6 @@
 # Theft4 0.3 promotion preparation
 
-Candidate: **0.3.0 (122)**, launcher **0.3**, official bundle
+Candidate: **0.3.0 (123)**, launcher **0.3**, official bundle
 `com.lukebrosious.theft4`, branch `codex/direct-metal-96`.
 Status: prepare and test the candidate; **main has not been changed and no public
 release has been published**.
@@ -45,7 +45,7 @@ main experiments. Avoid a force checkout, hard reset or blanket staging.
 Required before promotion:
 
 1. Optimized signed ARM64 Release build with both direct Metal options On,
-   official identity, version 0.3.0/build 122, and private asset draw capture Off.
+   official identity, version 0.3.0/build 123, and private asset draw capture Off.
 2. The CPU contracts, including the new bounded index-cache test; Diagnostic and
    Retail GPU validation; all 32 saved draw replays; worker/upload lifetime checks.
 3. Exact source provenance, strict signature verification, expected entitlements
@@ -53,7 +53,8 @@ Required before promotion:
    caches are retained during in-place device installation.
 4. M5 gameplay on the same route/settings used for build 121. Check initial spike
    recovery, heavy turns, image correctness and continued cache reuse. Ordinary
-   play can use Retail On; a diagnostic capture needs Retail Off and a fresh launch.
+   play automatically uses the optimized policy; overlays are independent and a
+   bounded capture can be enabled before Play without enabling development probes.
 5. Separate non-M5/focus/long-session checks before claiming broad performance or
    universal console-equivalent stability. They are not implied by the M5 result.
 

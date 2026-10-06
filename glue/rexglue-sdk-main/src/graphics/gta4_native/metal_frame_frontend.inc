@@ -196,7 +196,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     const PresentCommand& present,const std::shared_ptr<const NativeTextureResource>& source,
     const std::shared_ptr<const EnvironmentalDataV1>& environmental_data,std::string& error,bool diagnostic_scan) {
   namespace r=theft4::render;
-  const auto tick=[] {return theft4_retail_mode()?uint64_t(0):rex::chrono::Clock::QueryHostTickCount();};
+  const auto tick=[] {return theft4_retail_mode()&&!light::current?uint64_t(0):rex::chrono::Clock::QueryHostTickCount();};
   const auto began=tick();uint64_t arena_done=began,retire_done=began,owners_done=began;
   uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
   if(!frame_backend_){error="Metal backend missing";return false;}

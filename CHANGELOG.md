@@ -2,7 +2,7 @@
 
 ## 0.3 candidate — live direct Metal and renderer rebuild — 2026-10-05
 
-- Version 0.3.0, launcher 0.3, build 122; prepared on the isolated Metal branch.
+- Version 0.3.0, launcher 0.3, build 123; prepared on the isolated Metal branch.
   Main promotion and public distribution remain pending.
 - The actual game now submits ordered frames directly to Metal with offline
   stock/late/depth shader libraries, reflected bindings, native passes and
@@ -13,11 +13,14 @@
   snapshot/projection reuse, bounded incremental caches and GPU-retired uploads.
 - Reused equivalent vertex conversions and large upload views; shared converted
   vertex/index allocations remove duplicate CPU geometry packets.
+- Build 123 removes the Retail Mode toggle. Normal play keeps development probes
+  off; FPS/CPU/frame-time overlays and bounded Long Performance Capture remain
+  independent opt-ins. Old hidden retail overlay preferences are migrated once.
 - Build 122 replaces full index-range cache clearing with cold-entry eviction,
   preserves hot ranges and speeds repeat lookups with complete identity checks.
 - Added sharpening, corrected saved AA-Off startup, native LOD selection,
-  persistent frame-speed choices, default intro skipping and retail diagnostics
-  suppression. Existing resolution, FSR, save and launcher options are retained.
+  persistent frame-speed choices, default intro skipping and development telemetry
+  suppression for normal play. Existing resolution, FSR, save and launcher options are retained.
 - Carried forward capability-gated persistent ASTC preparation and the already-
   updated game-file verification flow from build 94.
 - Updated both build entry points to select Metal explicitly and reject missing

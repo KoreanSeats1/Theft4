@@ -1,7 +1,7 @@
 {
   "version": "0.3.0",
   "launcher_label": "0.3",
-  "build": 122,
+  "build": 123,
   "promotion_status": "candidate; main unchanged; no public release",
   "baseline_main_commit": "b6b4a823403ff38623ce3a46bab369c858c21251",
   "historical_upstream_audit_commit": "36b729dcc166910c88a2960164707ba9d9e5138c",
@@ -498,5 +498,6 @@
   "private_game_data_in_manifest": false,
   "known_remaining_issue": "Initial gameplay spike still occurs and recovers; locked 30 across scenes/devices unverified",
   "remote_main_checked": "f5f30b373fc5b397364b81fb840f1d638267c14f",
-  "remote_main_change": "Restored README donation block; retained in candidate and remote history to be integrated before final build"
+  "remote_main_change": "Restored README donation block; retained in candidate and remote history to be integrated before final build",
+  "user_diagnostics": "Optimized normal play without a Retail Mode toggle; independent optional overlays and bounded Long Performance Capture. Development probes and detailed GPU counters remain disabled."
 }

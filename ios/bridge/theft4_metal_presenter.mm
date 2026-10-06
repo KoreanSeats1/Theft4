@@ -26,6 +26,7 @@ std::atomic<uint64_t> completed_frames{0};
 std::atomic<uint64_t> published_game_frames{0};
 theft4::FrameTimeHistory<> frame_time_history;
 theft4::PublicationTrace<> publication_trace;
+std::atomic<bool> fps_counter_enabled{false};
 
 // Protected by presenter_lock. Latched before the game renderer is created.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
@@ -193,7 +194,8 @@ bool theft4_metal_present_clear(double red, double green, double blue,
 }
 
 void theft4_frame_counter_note_published(void) {
-  if (theft4_retail_mode()) return;
+  if (!fps_counter_enabled.load(std::memory_order_relaxed) &&
+      !frame_time_history.Enabled() && !publication_trace.Enabled()) return;
   const uint64_t frame = published_game_frames.fetch_add(1, std::memory_order_relaxed) + 1;
   if (frame_time_history.Enabled() || publication_trace.Enabled()) {
     const uint64_t now_ns = uint64_t(CACurrentMediaTime() * 1e9);
@@ -201,7 +203,10 @@ void theft4_frame_counter_note_published(void) {
     publication_trace.Record(frame, now_ns);
   }
 }
-uint64_t theft4_publication_capture_start(void) { return theft4_retail_mode()?0:publication_trace.Start(); }
+void theft4_frame_counter_set_enabled(bool enabled) {
+  fps_counter_enabled.store(enabled, std::memory_order_relaxed);
+}
+uint64_t theft4_publication_capture_start(void) { return publication_trace.Start(); }
 void theft4_publication_capture_stop(void) { publication_trace.Stop(); }
 uint32_t theft4_publication_capture_read(uint64_t* cursor,
     theft4_publication_sample* samples, uint32_t capacity, uint64_t* lost) {
@@ -213,7 +218,7 @@ uint32_t theft4_publication_capture_read(uint64_t* cursor,
 }
 
 void theft4_frame_time_set_enabled(bool enabled) {
-  frame_time_history.SetEnabled(enabled&&!theft4_retail_mode());
+  frame_time_history.SetEnabled(enabled);
 }
 
 void theft4_frame_time_copy(theft4_frame_time_snapshot* snapshot) {

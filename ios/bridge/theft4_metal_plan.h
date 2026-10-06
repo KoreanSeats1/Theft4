@@ -73,7 +73,7 @@ class PlanAdapter {
   // Bounded, submission-only memo. Avoid repeated
   // generation hashing and global LRU updates when draws share an upload.
   // Separate geometry/constants slots preserve their arena classification;
-  // large buffers are excluded. Views are released on every submission exit.
+  // Views are released on every submission exit, including large geometry.
   struct PreparedBufferView {
     const render::Bytes* identity=nullptr;
     std::weak_ptr<const render::Bytes> owner;

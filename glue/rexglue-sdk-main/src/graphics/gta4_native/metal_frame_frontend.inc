@@ -69,8 +69,13 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
     theft4::render::Primitive primitive;
     uint32_t cull=0;
     bool clockwise=false,lines=false,depth_clamp=false,primitive_restart=false;
+    std::array<std::shared_ptr<const NativeMetalVertexConversion>,kVertexStreamCount> vertex_conversions{};
   };
   std::unordered_map<NativePipelineKey,PipelineTemplate,NativePipelineKeyHash> pipelines;
+  // Stable across PSO-template eviction so geometry identities do not churn
+  // when fixed-function pipeline variants exceed that cache's limit. At 4096
+  // exact recipes, new layouts retain the legacy conversion path.
+  std::map<NativeMetalVertexConversionPlan,std::shared_ptr<const NativeMetalVertexConversion>> vertex_conversions;
   std::map<theft4::render::Sampler,std::shared_ptr<const theft4::render::Sampler>> samplers;
   uint64_t pipeline_hits=0,pipeline_misses=0;
   struct DrawTiming {uint64_t pipeline=0,constants=0,vertices=0,indices=0,fetches=0,validate=0;};
@@ -128,6 +133,7 @@ void Gta4NativeGraphicsSystem::ResetNativeMetalFrontend(bool clear_registrations
     native_metal_frame_->buffers.clear();native_metal_frame_->images.clear();
     native_metal_frame_->constant_packets.Reset();native_metal_frame_->unused_constants={};
     native_metal_frame_->shared_constants.Clear();native_metal_frame_->constant_arena.reset();
+    native_metal_frame_->vertex_conversions.clear();
     native_metal_frame_->pipelines.clear();native_metal_frame_->samplers.clear();
     native_metal_frame_->projected_constants.reset();
     native_metal_frame_->virtual_journal.FinishBatch();
@@ -1154,6 +1160,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   next.virtual_journal.FinishBatch();
   next.images=std::move(native_metal_frame_->images);
   next.pipelines=std::move(native_metal_frame_->pipelines);
+  next.vertex_conversions=std::move(native_metal_frame_->vertex_conversions);
   next.samplers=std::move(native_metal_frame_->samplers);
   next.pipeline_hits=native_metal_frame_->pipeline_hits;next.pipeline_misses=native_metal_frame_->pipeline_misses;
   next.projected_constants=std::move(native_metal_frame_->projected_constants);

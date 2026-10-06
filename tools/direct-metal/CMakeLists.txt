@@ -101,6 +101,30 @@ target_include_directories(metal_shared_constant_test PRIVATE "${CMAKE_BINARY_DI
   "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
 target_compile_options(metal_shared_constant_test PRIVATE -UNDEBUG)
 add_test(NAME metal_shared_constant_contract COMMAND metal_shared_constant_test)
+# Exercise the live converter and its live two-entry CPU cache. Reference
+# conversion uses each original shader/offset; sharing must preserve every
+# byte reachable through that draw's vertex view.
+file(READ "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp" vertex_source)
+string(FIND "${vertex_source}" "uint32_t ConvertVertexUsageToLocation(" vertex_begin)
+string(FIND "${vertex_source}" "VkFormat ConvertVertexElementFormat(" vertex_end)
+math(EXPR vertex_length "${vertex_end}-${vertex_begin}")
+string(SUBSTRING "${vertex_source}" ${vertex_begin} ${vertex_length} vertex_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-vertex-converter.inc" "${vertex_body}")
+string(FIND "${vertex_source}" "void CopyGuestWordsToHost(" vertex_begin)
+string(FIND "${vertex_source}" "void CopyGuestIndicesToHost(" vertex_end)
+math(EXPR vertex_length "${vertex_end}-${vertex_begin}")
+string(SUBSTRING "${vertex_source}" ${vertex_begin} ${vertex_length} vertex_body)
+file(APPEND "${CMAKE_BINARY_DIR}/metal-vertex-converter.inc" "${vertex_body}")
+string(FIND "${vertex_source}" "const Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload*\nGta4NativeGraphicsSystem::PrepareConvertedVertexPayload(" vertex_begin)
+string(FIND "${vertex_source}" "bool Gta4NativeGraphicsSystem::UploadBufferResource(" vertex_end)
+math(EXPR vertex_length "${vertex_end}-${vertex_begin}")
+string(SUBSTRING "${vertex_source}" ${vertex_begin} ${vertex_length} vertex_body)
+file(WRITE "${CMAKE_BINARY_DIR}/metal-vertex-cache.inc" "${vertex_body}")
+add_executable(metal_vertex_conversion_test metal_vertex_conversion_test.cpp)
+target_include_directories(metal_vertex_conversion_test PRIVATE "${CMAKE_BINARY_DIR}"
+  "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_compile_options(metal_vertex_conversion_test PRIVATE -UNDEBUG)
+add_test(NAME metal_vertex_conversion_contract COMMAND metal_vertex_conversion_test)
 add_executable(batch_payload_cache_test batch_payload_cache_test.cpp)
 target_include_directories(batch_payload_cache_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native"
   "${ROOT}/thirdparty/json/include")

@@ -275,7 +275,7 @@ BufferView PlanAdapter::UploadedViewFor(const std::shared_ptr<const render::Byte
   // A single-owner source often belongs to one newly recorded draw. Inserting
   // every such source made streaming slower despite good shared-source hits.
   // This is only a reuse hint: the full cache still validates every version.
-  if(!upload_batch_active_||source->value.size()>64*1024||source.use_count()==1)
+  if(!upload_batch_active_||source.use_count()==1)
     return upload();
   // Allocator alignment and regular source strides made the old low-bit,
   // 32-slot index collide frequently. Mix the address and bound each lookup

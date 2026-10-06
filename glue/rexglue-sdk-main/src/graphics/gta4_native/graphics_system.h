@@ -125,6 +125,7 @@ class VulkanSubmissionTracker;
 
 namespace rex::graphics::gta4_native {
 
+struct NativeMetalVertexConversion;
 class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
  public:
   Gta4NativeGraphicsSystem();
@@ -265,6 +266,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
 
   struct NativeBufferResource {
     struct ConvertedVertexPayload {
+      uint64_t metal_conversion_identity = 0;
       uint64_t declaration_hash = 0;
       uint64_t shader_hash = 0;
       uint32_t stream = 0;
@@ -1807,7 +1809,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   // The returned cache entry is borrowed until another conversion on this owner.
   const NativeBufferResource::ConvertedVertexPayload* PrepareConvertedVertexPayload(
       const NativeBufferResource* resource, const NativePipelineState& state,
-      uint32_t vertex_stream);
+      uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion = nullptr);
   bool UploadBufferResource(const NativeBufferResource* resource,
                             VkCommandBuffer command_buffer, bool index_buffer, bool index32,
                             const NativePipelineState* vertex_state, uint32_t vertex_stream,

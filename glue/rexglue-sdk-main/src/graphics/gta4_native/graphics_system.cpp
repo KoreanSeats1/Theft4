@@ -1,4 +1,5 @@
 #include "graphics_system.h"
+#include "native_metal_vertex_conversion.h"
 #ifdef THEFT4_DIRECT_METAL_BACKEND
 #include "native_metal_frame_continuity.h"
 #include "native_metal_constant_projection.h"
@@ -22711,18 +22712,26 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
 const Gta4NativeGraphicsSystem::NativeBufferResource::ConvertedVertexPayload*
 Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
     const NativeBufferResource* resource, const NativePipelineState& state,
-    uint32_t vertex_stream) {
+    uint32_t vertex_stream, const NativeMetalVertexConversion* metal_conversion) {
   if (!resource || resource->payload.empty() || !state.vertex_declaration_resource ||
       !state.vertex_shader_resource || vertex_stream >= kVertexStreamCount) return nullptr;
   const auto& declaration = *state.vertex_declaration_resource;
   const auto& shader = *state.vertex_shader_resource;
   const auto& stream_state = state.vertex_streams[vertex_stream];
   if (!stream_state.stride || stream_state.offset >= resource->payload.size()) return nullptr;
+  uint32_t conversion_offset = stream_state.offset;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (metal_conversion) conversion_offset = metal_conversion->plan.Offset(stream_state.offset);
+#endif
   const NativeBufferResource::ConvertedVertexPayload* converted_payload = nullptr;
   for (const auto& candidate : resource->converted_vertex_payloads) {
-    if (candidate.declaration_hash == declaration.content_hash &&
+    const bool same_conversion = metal_conversion ?
+        candidate.metal_conversion_identity == metal_conversion->identity :
+        candidate.metal_conversion_identity == 0 &&
+        candidate.declaration_hash == declaration.content_hash &&
         candidate.shader_hash == shader.hash && candidate.stream == vertex_stream &&
-        candidate.stream_offset == stream_state.offset && candidate.stride == stream_state.stride) {
+        candidate.stride == stream_state.stride;
+    if (same_conversion && candidate.stream_offset == conversion_offset) {
       converted_payload = &candidate;
       const_cast<NativeBufferResource::ConvertedVertexPayload&>(candidate).last_used_frame =
           active_texture_frame_;
@@ -22748,17 +22757,20 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
       }
     }
     NativeBufferResource::ConvertedVertexPayload candidate{};
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    candidate.metal_conversion_identity = metal_conversion ? metal_conversion->identity : 0;
+#endif
     candidate.declaration_hash = declaration.content_hash;
     candidate.shader_hash = shader.hash;
     candidate.stream = vertex_stream;
-    candidate.stream_offset = stream_state.offset;
+    candidate.stream_offset = conversion_offset;
     candidate.stride = stream_state.stride;
     candidate.created_frame = active_texture_frame_;
     candidate.last_used_frame = active_texture_frame_;
     candidate.payload.resize(resource->payload.size());
     conversions = ConvertGuestVertexPayload(
         candidate.payload.data(), resource->payload.data(), resource->payload.size(), declaration,
-        shader, vertex_stream, stream_state.offset, stream_state.stride);
+        shader, vertex_stream, conversion_offset, stream_state.stride);
     resource->converted_vertex_payloads.push_back(std::move(candidate));
     converted_payload = &resource->converted_vertex_payloads.back();
     RecordNativeMemoryLifecycle(

@@ -205,19 +205,41 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   cpu_key.ccw_stencil_fail=fixed.ccw_stencil_fail;cpu_key.ccw_stencil_depth_fail=fixed.ccw_stencil_depth_fail;
   cpu_key.ccw_stencil_pass=fixed.ccw_stencil_pass;cpu_key.ccw_stencil_function=fixed.ccw_stencil_function;
   auto& draw=capture->draw;
+  const NativeMetalFrameState::PipelineTemplate* pipeline_template=nullptr;
   if(auto found=native_metal_frame_->pipelines.find(cpu_key);found!=native_metal_frame_->pipelines.end()) {
     const auto& p=found->second;draw.pipeline=p.pipeline;draw.primitive=p.primitive;
     draw.cull=p.cull;draw.clockwise=p.clockwise;draw.lines=p.lines;draw.depth_clamp=p.depth_clamp;
     draw.primitive_restart=p.primitive_restart;if(!theft4_retail_mode())++native_metal_frame_->pipeline_hits;
+    pipeline_template=&p;
   } else {
     auto description=PrepareNativePipelineDescription(state,fixed,key,capabilities,
         select_shader(state.vertex_shader_resource),select_shader(state.pixel_shader_resource),error);
     if(!description)return false;
     if(!description->snapshot)return reject("Metal effective pipeline snapshot unavailable");
     if(!r::source::Pipeline(*description->snapshot,draw,error))return false;
-    if(native_metal_frame_->pipelines.size()>=4096)native_metal_frame_->pipelines.clear();
-    native_metal_frame_->pipelines.emplace(std::move(cpu_key),NativeMetalFrameState::PipelineTemplate{
-        draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,draw.primitive_restart});
+    if(native_metal_frame_->pipelines.size()>=4096) {
+      native_metal_frame_->pipelines.clear();
+    }
+    std::array<bool,kVertexStreamCount> required{};
+    std::array<std::shared_ptr<const NativeMetalVertexConversion>,kVertexStreamCount> vertex_conversions{};
+    if(!GetRequiredVertexStreams(state,required))return reject("Metal required vertex streams unavailable");
+    for(uint32_t stream=0;stream<kVertexStreamCount;++stream)if(required[stream]) {
+      auto plan=BuildNativeMetalVertexConversionPlan(*state.vertex_declaration_resource,
+          *state.vertex_shader_resource,stream,up_stride?up_stride:state.vertex_streams[stream].stride,
+          GetVertexElement16BitComponentCount,ConvertVertexUsageToLocation);
+      if(!plan)continue; // Unusual declarations retain the exact original cache path.
+      auto& recipes=native_metal_frame_->vertex_conversions;
+      auto found=recipes.find(*plan);
+      if(found!=recipes.end())vertex_conversions[stream]=found->second;
+      else if(recipes.size()<4096) {
+        auto recipe=std::make_shared<NativeMetalVertexConversion>();
+        recipe->plan=*plan;recipe->identity=++next_native_metal_allocation_;
+        vertex_conversions[stream]=recipe;recipes.emplace(*plan,std::move(recipe));
+      }
+    }
+    auto entry=native_metal_frame_->pipelines.emplace(std::move(cpu_key),NativeMetalFrameState::PipelineTemplate{
+        draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,draw.primitive_restart,std::move(vertex_conversions)});
+    pipeline_template=&entry.first->second;
     if(!theft4_retail_mode())++native_metal_frame_->pipeline_misses;
   }
   draw.first_vertex=first;draw.vertex_count=indexed?0:count;draw.base_vertex=base_vertex;
@@ -406,16 +428,19 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     for(uint32_t stream=0;stream<kVertexStreamCount;++stream)if(streams[stream]) {
       const auto& resource=command.vertex_buffers[stream];const auto& binding=state.vertex_streams[stream];
       if(!resource)return reject("Metal converted vertex source missing");
-      const auto cache_key=std::array<uint64_t,8>{1,resource->generation,state.vertex_declaration_resource->content_hash,
+      const auto& conversion=pipeline_template->vertex_conversions[stream];
+      const auto cache_key=conversion?std::array<uint64_t,8>{6,resource->generation,conversion->identity,
+          conversion->plan.Offset(binding.offset)}:std::array<uint64_t,8>{1,resource->generation,state.vertex_declaration_resource->content_hash,
           state.vertex_shader_resource->hash,stream,binding.offset,binding.stride};
       auto it=native_metal_frame_->buffers.find(cache_key);std::shared_ptr<const r::Bytes> bytes;
       if(it!=native_metal_frame_->buffers.end()&&!it->second.resource.expired()) {
         bytes=it->second.owner;it->second.used=next_native_metal_sequence_;native_metal_frame_->buffers.Touch(it);
       } else {
-        const auto* converted=PrepareConvertedVertexPayload(resource.get(),state,stream);
+        const auto* converted=PrepareConvertedVertexPayload(resource.get(),state,stream,conversion.get());
         if(!converted)return reject("Metal vertex conversion failed");
         bytes=cached_bytes(cache_key,NativeResourceView<NativeBufferResource>(resource).Share(),converted->payload,
-            {converted->declaration_hash,converted->shader_hash,stream,(uint64_t(binding.offset)<<32)|binding.stride});
+            conversion?std::array<uint64_t,4>{conversion->identity,conversion->plan.Offset(binding.offset)}:
+              std::array<uint64_t,4>{converted->declaration_hash,converted->shader_hash,stream,(uint64_t(binding.offset)<<32)|binding.stride});
       }
       if(!bytes||binding.offset>=bytes->value.size())return reject("Metal converted vertex packet bounds");
       draw.vertices[stream]={bytes,binding.offset,bytes->value.size()-binding.offset};

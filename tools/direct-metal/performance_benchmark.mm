@@ -47,11 +47,12 @@ std::shared_ptr<render::FramePlan> Plan(std::shared_ptr<render::Surface> surface
 // Exercise the actual upload adapter with a scattered geometry working set,
 // repeated constant banks and different ranges of each immutable source.
 // Excludes source creation, GPU execution and shader loading from CPU timing.
-nlohmann::json UploadViewBenchmark(metal::Renderer& renderer) {
-  metal::PlanAdapter adapter{renderer};std::string error;
+nlohmann::json UploadViewBenchmark(metal::Renderer& renderer,bool large=false) {
+  metal::PlanAdapter adapter{renderer,384*1024*1024};std::string error;
   std::array<std::vector<render::Buffer>,2> buffers;
-  for(size_t kind=0;kind<2;++kind)for(size_t i=0;i<(kind?128:2048);++i) {
-    std::array<uint8_t,4096> data{};data.fill(uint8_t(i));
+  const size_t geometry_sources=large?1024:2048,geometry_bytes=large?128*1024:4096;
+  for(size_t kind=0;kind<2;++kind)for(size_t i=0;i<(kind?128:geometry_sources);++i) {
+    std::vector<uint8_t> data(kind?4096:geometry_bytes,uint8_t(i));
     buffers[kind].push_back(Bytes(data,1+i));
   }
   std::vector<double> samples;uint64_t checksum=0;
@@ -79,21 +80,32 @@ nlohmann::json UploadViewBenchmark(metal::Renderer& renderer) {
   // must never substitute another source's bytes.
   adapter.BeginUploadBatch();
   for(size_t kind=0;kind<2;++kind)for(size_t i=0;i<buffers[kind].size();++i) {
-    auto range=buffers[kind][i];range.offset=256;range.length=128;
+    auto range=buffers[kind][i];range.offset=range.source->value.size()-128;range.length=128;
     const auto view=kind?adapter.ConstantFor(range,error):adapter.BufferFor(range,error);
     Require(view.buffer&&view.length==128,error);
     const auto* data=static_cast<const uint8_t*>(view.buffer.contents)+view.offset;
     for(size_t j=0;j<128;++j)Require(data[j]==uint8_t(i),"Upload view substituted another source");
   }
+  // The large-geometry memo must retain the full cache's version-size and
+  // range rejection even after a successful hit in this submission.
+  auto range=buffers[0].front();
+  auto owner=std::const_pointer_cast<render::Bytes>(range.source);
+  const auto original_size=owner->value.size();
+  owner->value.push_back(0);
+  Require(!adapter.BufferFor(range,error).buffer&&!error.empty(),"Upload memo accepted changed generation size");
+  owner->value.resize(original_size);
+  range.offset=original_size;range.length=1;
+  Require(!adapter.BufferFor(range,error).buffer&&!error.empty(),"Upload memo accepted invalid range");
   adapter.EndUploadBatch();auto sorted=samples;std::sort(sorted.begin(),sorted.end());
   const auto after=adapter.ResourceStats();
   return {{"scope","Synthetic upload-adapter CPU work; not game FPS"},
     {"gpu",renderer.Device().name.UTF8String},{"draws_per_batch",4096},{"lookups_per_batch",20480},
-    {"geometry_sources",2048},{"constant_sources",128},{"measured_batches",samples.size()},
+    {"geometry_sources",geometry_sources},{"geometry_source_bytes",geometry_bytes},{"constant_sources",128},{"measured_batches",samples.size()},
     {"median_cpu_ms",sorted[sorted.size()/2]},{"samples_ms",samples},{"checksum",checksum},
     {"memo_hits",after.prepared_view_hits-before.prepared_view_hits},
     {"memo_misses",after.prepared_view_misses-before.prepared_view_misses},
-    {"uploaded_bytes",after.uploaded_bytes-before.uploaded_bytes},{"range_byte_parity",true}};
+    {"uploaded_bytes",after.uploaded_bytes-before.uploaded_bytes},{"range_byte_parity",true},
+    {"version_size_and_range_rejection",true}};
 }
 int main(int argc,char** argv) {
   if(argc<3||argc>8)return 2;
@@ -103,8 +115,8 @@ int main(int argc,char** argv) {
   try {@autoreleasepool {
     std::string error;metal::Renderer renderer{1};metal::FrameAdapter adapter{renderer,128,384*1024*1024,pooled};
     Require(renderer.Ready(),"Metal unavailable");
-    if(argc==4&&std::string_view(argv[3])=="--upload-views") {
-      const auto report=UploadViewBenchmark(renderer);std::ofstream output(argv[2]);
+    if(argc==4&&(std::string_view(argv[3])=="--upload-views"||std::string_view(argv[3])=="--upload-views-large")) {
+      const auto report=UploadViewBenchmark(renderer,std::string_view(argv[3])=="--upload-views-large");std::ofstream output(argv[2]);
       Require(bool(output),"Benchmark report could not be opened");
       output<<report.dump(2)<<'\n';std::cout<<report.dump(2)<<'\n';return 0;
     }

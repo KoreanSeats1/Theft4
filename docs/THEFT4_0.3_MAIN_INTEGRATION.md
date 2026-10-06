@@ -4,8 +4,10 @@
 
 The user approved source promotion and GitHub publication on 2026-10-06. Main
 contains the complete `codex/direct-metal-96` implementation and this release
-documentation, published to `KoreanSeats1/Theft4`. Public IPA/TestFlight
-distribution and version tagging remain separate steps.
+documentation, published to `KoreanSeats1/Theft4`. The separately authorized
+[GitHub release `v0.3`](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3)
+now distributes the audited unsigned build 123 IPA and checksum. TestFlight
+publication remains separate.
 
 ## What was promoted
 
@@ -95,3 +97,19 @@ publication pass changes documentation only. The exact published source revision
 is available from GitHub main's commit history; the already installed app retains
 its implementation revision in `Theft4SourceRevision`. No app release attachment,
 version tag or TestFlight upload is implied by publishing the source.
+
+## GitHub app release
+
+On 2026-10-06, the user separately authorized publication of the downloadable
+0.3 release. Tag `v0.3` includes the tested build 123 runtime and the release
+documentation; the IPA retains its implementation revision `295c716f`. The
+release distributes `Theft4-0.3.0-123-ios-arm64.ipa` and its SHA-256 file.
+The IPA hash is
+`851d06004a2d52ae0d9f7b7fe88f5ea77ae3e075d0f20e42ca4d2efc0cb0c40b`.
+
+The archive was rechecked for ARM64, version/build, all 2,736 shader libraries,
+duplicate entries, ZIP integrity and absence of signing/provisioning material,
+game XEX/update files, private draw captures and AppleDouble metadata. Users
+must re-sign it using their sideloading tool and update in place to retain data.
+The GitHub publication does not imply TestFlight delivery or a universal
+locked-30-FPS result.

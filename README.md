@@ -37,7 +37,8 @@ LibertyRecomp/ReXGlue's generated-code and runtime foundation. The official app
 identity remains `com.lukebrosious.theft4`.
 
 > [!NOTE]
-> 0.3 is committed to main. Public IPA/TestFlight publication is a separate step.
+> **0.3 is available:** [download the unsigned iOS IPA](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3).
+> Update in place using your sideloading tool. TestFlight publication is separate.
 > M5 testing reports excellent visuals and a major native-resolution performance
 > improvement, with a remaining spike that recovers. The tested native run used
 > 2416 × 1359 without upscaling. Locked 30 FPS across every scene/device is not
@@ -221,8 +222,10 @@ contracts; device coverage, long sessions, thermals and focus recovery still
 require broader validation. Older-device texture compatibility is not a promise
 of M5-equivalent performance.
 
-The source update and full engineering record are published on main. App release
-artifacts and TestFlight distribution are separate from the source publication.
+The source update and full engineering record are published on main. The
+[0.3 GitHub release](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3)
+includes the unsigned ARM64 IPA and its SHA-256 checksum. TestFlight distribution
+remains separate.
 See the [0.3 release notes](docs/RELEASE_0.3.md) and
 [current architecture record](docs/THEFT4_0.3_ARCHITECTURE.md).
 

@@ -1,8 +1,9 @@
 # Theft4 0.3 — direct Metal and a rebuilt rendering path
 
 Apple version **0.3.0**, build **123**, launcher label **0.3**.
-Source and the full engineering record are published on GitHub main. Public
-IPA/TestFlight publication is a separate step.
+Source and the full engineering record are published on GitHub main. The
+[0.3 GitHub release](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3)
+includes the unsigned ARM64 IPA and its checksum. TestFlight publication is separate.
 The full engineering changelog is [recorded here](../CHANGELOG.md#03--direct-metal-rebuilt-geometry-and-a-faster-native-rendering-path--2026-10-06).
 
 0.3 is the largest rendering change in Theft4 so far. The running game now sends
@@ -176,9 +177,10 @@ Promotion and packaging status are in [the main integration record](THEFT4_0.3_M
 
 ## Install the sideloaded IPA
 
-A public 0.3 IPA has not been published by the source promotion. When an unsigned
-`ios-arm64.ipa` is attached to the release, install it using AltStore, SideStore
-or a compatible tool that re-signs it with your account. GitHub's Source code ZIP
+Download `Theft4-0.3.0-123-ios-arm64.ipa` from the
+[0.3 release assets](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3).
+Install it using AltStore, SideStore or a compatible tool that re-signs it with
+your account. GitHub's Source code ZIP
 is not the app. Update the existing `com.lukebrosious.theft4` installation in place
 to preserve game files, saves, settings and prepared caches; do not delete it first.
 
@@ -194,7 +196,8 @@ See [the complete sideload instructions](IOS_SIDELOAD_INSTALL.md) for staging,
 the validated update hash, Files/Finder paths and troubleshooting. The deployment
 minimum is ARM64 iOS/iPadOS 26.0; it is not proof of playability on every eligible
 device. Game files, title updates, saves and private captures are not distributed.
-A local unsigned 0.3.0 build 123 package has been built and audited. Its SHA-256
+The published unsigned 0.3.0 build 123 package has been audited. Its SHA-256
 is `851d06004a2d52ae0d9f7b7fe88f5ea77ae3e075d0f20e42ca4d2efc0cb0c40b`.
-It has not been uploaded or validated through every recipient signing flow;
-a separately rebuilt public artifact must carry its own hash.
+The published IPA is the audited package identified by this hash. It has not
+been validated through every recipient signing flow; a separately rebuilt
+artifact must carry its own hash.

@@ -376,6 +376,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _retailMode = [UISwitch new];
     _retailMode.onTintColor = Ink(0x35CDD1);
     _retailMode.accessibilityIdentifier = @"settings.retailMode";
+    _skipIntro = [UISwitch new];
+    _skipIntro.onTintColor = Ink(0x35CDD1);
+    _skipIntro.accessibilityIdentifier = @"settings.skipIntro";
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xB6884D);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
@@ -391,6 +394,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     NSMutableArray<UIView *> *systemRows = [NSMutableArray arrayWithArray:@[
         Copy(@"RUNTIME", 13, YES),
         Copy(@"Native ARM64 game code. Your game files. Your city.", 17, NO),
+        [self setting:@"SKIP INTRO VIDEOS" detail:@"Skip opening credits and Rockstar logos at the next launch. Game loading still completes normally." toggle:_skipIntro],
         [self setting:@"RETAIL MODE" detail:@"Disables development logging, profiling, captures and debug overlays. Turn off and reopen to restore diagnostic tools and saved overlay choices." toggle:_retailMode],
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of lightweight timing. Hold the frame-time graph to stop and save before closing. Data is kept in memory during play." toggle:_performanceCapture],
         _downloadLogButton,

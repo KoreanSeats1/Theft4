@@ -78,6 +78,7 @@ extern const rex::PPCImageInfo PPCImageConfig;
 extern "C" void gta4_transition_hooks_link_anchor();
 extern "C" void gta4_fault_probe_hooks_link_anchor();
 extern "C" void theft4_ios_audio_hotpaths_link_anchor();
+extern "C" void theft4_intro_configure(bool enabled);
 
 namespace {
 // This bring-up entry is deliberately one-shot per process. A runtime owns
@@ -217,6 +218,13 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // The launch policy independently selects scene and drawable sizes.
         // Native hooks derive scene = logical video / 1.5 for FSR Quality.
         // The CAMetalLayer is already sized before swapchain creation.
+        const char* skip_intro_value = std::getenv("THEFT4_SKIP_INTRO");
+        if (skip_intro_value && std::string_view(skip_intro_value) != "0" &&
+            std::string_view(skip_intro_value) != "1")
+            throw std::runtime_error("THEFT4_SKIP_INTRO must be 0 or 1");
+        const bool skip_intro = !skip_intro_value || std::string_view(skip_intro_value) == "1";
+        theft4_intro_configure(skip_intro);
+        REXLOG_INFO("Theft4 skip intro: {} (startup initialization retained)", skip_intro);
         const int motion_blur = theft4::motion_blur::ParseSetting(std::getenv("THEFT4_MOTION_BLUR"));
         if (motion_blur < 0)
             throw std::runtime_error("THEFT4_MOTION_BLUR must be 0 or 1");

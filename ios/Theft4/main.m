@@ -597,6 +597,8 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)checkBaseGame;
 - (void)chooseTitleUpdate;
 - (void)resetAutomaticCaptureForNewSession;
+- (void)recordWindowState:(NSString *)event;
+- (void)skipIntroChanged:(UISwitch *)sender;
 - (void)downloadLatestLogCapture;
 - (void)exportSavesToFiles;
 - (void)importSavesFromFiles;
@@ -814,6 +816,10 @@ static void bootEvent(void *context, const char *event) {
     _reflectionQuality = _bringupOverlay.reflectionQuality;
     _antiAliasing = _bringupOverlay.antiAliasing;
     _performanceCapture = _bringupOverlay.performanceCapture;
+    _bringupOverlay.skipIntro.on = ![NSUserDefaults.standardUserDefaults objectForKey:@"Theft4SkipIntro"] ||
+        [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4SkipIntro"];
+    [_bringupOverlay.skipIntro addTarget:self action:@selector(skipIntroChanged:)
+        forControlEvents:UIControlEventValueChanged];
     rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
     _exportSavesButton = _bringupOverlay.exportSavesButton;
     _importSavesButton = _bringupOverlay.importSavesButton;
@@ -1874,12 +1880,35 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4DetailedPerformanceCapture"];
 }
 
+- (void)skipIntroChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4SkipIntro"];
+}
+
+- (void)recordWindowState:(NSString *)event {
+    if (theft4_retail_mode()) return;
+    UIWindow *window = self.view.window;
+    CGRect bounds = window.bounds;
+    CAMetalLayer *layer = (CAMetalLayer *)_metalView.layer;
+    NSString *fields = [NSString stringWithFormat:
+        @"%@ scene_state=%ld key_window=%d window_points=%.0fx%.0f drawable_pixels=%.0fx%.0f %@",
+        event, (long)window.windowScene.activationState, window.isKeyWindow,
+        bounds.size.width, bounds.size.height, layer.drawableSize.width, layer.drawableSize.height,
+        Theft4PerformanceProfileFields()];
+    [self record:fields];
+    if (_publicationCaptureActive) {
+        NSString *row = [NSString stringWithFormat:@"marker,,%llu,,%@\n",
+            (unsigned long long)(CACurrentMediaTime() * 1e9), fields];
+        dispatch_async(_publicationCaptureQueue, ^{ [self appendPublicationCaptureText:row]; });
+    }
+}
+
 - (void)performanceProfileChanged:(NSNotification *)notification {
     if (theft4_retail_mode()) return;
     NSString *fields = Theft4PerformanceProfileFields();
     const uint64_t timestamp = (uint64_t)(CACurrentMediaTime() * 1e9);
     dispatch_async(dispatch_get_main_queue(), ^{
         [self record:[@"performance.profile_changed " stringByAppendingString:fields]];
+        [self recordWindowState:@"performance.window_state"];
         if (!self->_publicationCaptureActive) return;
         NSString *row = [NSString stringWithFormat:@"marker,,%llu,,%@\n",
             (unsigned long long)timestamp, fields];
@@ -2961,6 +2990,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!theft4_retail_mode()) [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
         theft4_apply_performance_defaults();
+        setenv("THEFT4_SKIP_INTRO", _bringupOverlay.skipIntro.on ? "1" : "0", 1);
         if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime
         // reads and validates its native-renderer launch configuration.
@@ -3089,6 +3119,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     theft4_native_set_active(true);
 #endif
     [self record:@"scene.active"];
+    [self recordWindowState:@"window.active"];
     [self refreshInstallationFlow];
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
     if (!_bootRan && [NSProcessInfo.processInfo.arguments containsObject:@"--theft4-prepare-textures"]) {
@@ -3198,6 +3229,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)sceneWillResignActive:(UIScene *)scene { [self.controller pause]; }
 - (void)sceneDidEnterBackground:(UIScene *)scene { [self.controller record:@"scene.background"]; }
 - (void)sceneWillEnterForeground:(UIScene *)scene { [self.controller record:@"scene.foreground"]; }
+- (void)windowScene:(UIWindowScene *)windowScene didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace
+    interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation traitCollection:(UITraitCollection *)previousTraitCollection {
+    [self.controller recordWindowState:@"window.geometry_changed"];
+}
 - (void)sceneDidDisconnect:(UIScene *)scene {
     [self.controller record:@"scene.disconnected"];
     [self.controller shutdown];

@@ -7,9 +7,10 @@
     <key>CFBundleDisplayName</key><string>${THEFT4_DISPLAY_NAME}</string>
     <key>Theft4LabBuild</key>${THEFT4_LAB_PLIST_VALUE}
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>Theft4ReleaseName</key><string>0.2.0b</string>
-    <key>CFBundleVersion</key><string>121</string>
+    <key>CFBundleShortVersionString</key><string>0.3.0</string>
+    <key>Theft4ReleaseName</key><string>0.3</string>
+    <key>CFBundleVersion</key><string>122</string>
+    <key>Theft4SourceRevision</key><string>${THEFT4_RENDER_SOURCE_REVISION}</string>
     <!-- Declares App Store export-compliance status for standard/exempt crypto only. -->
     <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>LSApplicationCategoryType</key><string>public.app-category.games</string>

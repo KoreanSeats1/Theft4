@@ -788,3 +788,10 @@ CMakeUserPresets.json
 !/tests/ios/test_capture_defaults.py
 !/docs/THEFT4_LAB_PACING_CAPTURE.md
 !/tools/analyze_lab_pacing.py
+
+# Source-backed 0.3 release and integration records.
+!/docs/RELEASE_0.3.md
+!/docs/THEFT4_0.3_ARCHITECTURE.md
+!/docs/THEFT4_0.3_MAIN_INTEGRATION.md
+!/docs/THEFT4_0.3_CHANGE_MANIFEST.json
+!/tools/theft4_renderer_build_args.sh

@@ -1,0 +1,502 @@
+{
+  "version": "0.3.0",
+  "launcher_label": "0.3",
+  "build": 122,
+  "promotion_status": "candidate; main unchanged; no public release",
+  "baseline_main_commit": "b6b4a823403ff38623ce3a46bab369c858c21251",
+  "historical_upstream_audit_commit": "36b729dcc166910c88a2960164707ba9d9e5138c",
+  "recorded_pre_candidate_commit": "eb9a14619df39f7efbdd6e1bf40aaf5983086948",
+  "source_revision_provenance": "The final build app and artifact manifests record the exact candidate commit.",
+  "prior_development_commits": [
+    {
+      "commit": "38e44249f29d16f27058e0ef69f95c7cc6be0e1b",
+      "subject": "Reduce native frame preparation and preserve a build 95 comparison"
+    },
+    {
+      "commit": "d4ce229233a0a835199dd75c3bf99be36fa7da50",
+      "subject": "Add standalone direct Metal game shader renderer and validation lab"
+    },
+    {
+      "commit": "75af6076e15ce7940b07955aba7afddef0311b2a",
+      "subject": "Add game shader lookup and immutable Metal resource generation interfaces"
+    },
+    {
+      "commit": "1b0b2713f640f8ff04c20b22253ca07d00c5bbcb",
+      "subject": "Fix Metal Lab startup with UIKit scene lifecycle"
+    },
+    {
+      "commit": "e6ea7494066c202dba1a183d50646d11cdcd87b9",
+      "subject": "Add immutable Metal draw adapter and bounded game capture replay"
+    },
+    {
+      "commit": "60dbbdf67ccf99ee80d3cdbf7e1b71c356ccb5cc",
+      "subject": "Preserve diagnostics for rejected-only Metal capture runs"
+    },
+    {
+      "commit": "0704cea1a384b9cbab0c45bcb5f49c4fa9c14d1b",
+      "subject": "Adapt captured texture plane pitches for direct Metal uploads"
+    },
+    {
+      "commit": "8087d95f1cee996bfd11e023a322faf9b1ec1198",
+      "subject": "Seed isolated Metal draw replay for reversed depth"
+    },
+    {
+      "commit": "2d672136edaf843a453c21b3c2e28b287c70f510",
+      "subject": "Execute ordered Metal frame passes and port host utility shaders"
+    },
+    {
+      "commit": "3f77742c896b5b023ea5578fdb92bd82e6a44c51",
+      "subject": "Integrate host utility programs into ordered Metal frames"
+    },
+    {
+      "commit": "348ae2ebf59d4ff8b2b9d2445945c8954525a807",
+      "subject": "Present ordered captured Metal frames in one GPU submission"
+    },
+    {
+      "commit": "f485a3e402415c02088b28d770f0e6d72c8536d6",
+      "subject": "Separate CPU pipeline and vertex preparation from Vulkan realization"
+    },
+    {
+      "commit": "43654eef606f7a514219d6307ffd215cf16f7baf",
+      "subject": "Prepare shader identities and interfaces before backend realization"
+    },
+    {
+      "commit": "e1958549abc2fc85b763d88ef26d0a34fa013196",
+      "subject": "Choose effective pipeline keys with explicit backend capabilities"
+    },
+    {
+      "commit": "dadf77d101acbb49135ec0465aa5de45162b0bd1",
+      "subject": "Preserve sampled GPU mip ranges, layers, cube faces and channel views"
+    },
+    {
+      "commit": "dcb9bf5fb54fa341d41305c074e8111b71191891",
+      "subject": "Prepare sampler policy without allocating Vulkan sampler objects"
+    },
+    {
+      "commit": "d5a23cc3a87a708c7874e39cc697ac606f9f0d86",
+      "subject": "Lower the game negative depth convention into offline Metal vertex variants"
+    },
+    {
+      "commit": "17cce66cb2e16717443b12a1ad5b49293c834f81",
+      "subject": "Prepare game texture payloads and upload packets before backend allocation"
+    },
+    {
+      "commit": "7de318a33db95bb765a1f7ac046c3bfd34e606db",
+      "subject": "Connect direct Metal submission and lifecycle to the native render worker"
+    },
+    {
+      "commit": "b8abae8f34f2af105db168213b9e5832a818d06b",
+      "subject": "Connect title draws and ordered color resolves to Metal frames"
+    },
+    {
+      "commit": "cb04fdb781a06717e870dc2482cfd9a3db2469c0",
+      "subject": "Route game depth transfers and packed lighting aliases through Metal"
+    },
+    {
+      "commit": "de012b16a8e86d2d6e538d88f0bd2e7aa1fbb324",
+      "subject": "metal: track surface placement and coherent reflection storage"
+    },
+    {
+      "commit": "def5037a6e033c0c226ec557ded4541cff399b06",
+      "subject": "Implement ordered Metal effects and explicit game startup route"
+    },
+    {
+      "commit": "748f79be59096b4eb7888004e822a4bdbb9e9bc3",
+      "subject": "Implement native Metal guest texture lock readback"
+    },
+    {
+      "commit": "a0bbec86d02260cfd482b33967a171e561915842",
+      "subject": "Preserve virtual resource registration order in Metal frames"
+    },
+    {
+      "commit": "3d801b958e888b280ef5b065ad48d5fb3f886879",
+      "subject": "Lower buffered and indexed rectangle draws for direct Metal"
+    },
+    {
+      "commit": "c606ec3909abc6b10a0753bd1e94d484faaacc11",
+      "subject": "Execute attachmentless title draws directly through Metal"
+    },
+    {
+      "commit": "8a589de7599826cb838ba1595d5a60c13cc92924",
+      "subject": "Retain title frame continuity across internal Metal submissions"
+    },
+    {
+      "commit": "6baae0727184e900d92b03ed3971569d854cf489",
+      "subject": "Require ARC ownership for iOS direct Metal renderer sources"
+    },
+    {
+      "commit": "8c0494da3d83ba3e0e3a8c8cf40868d80f9891fd",
+      "subject": "Preserve reversed viewport depth ranges in Metal draws"
+    },
+    {
+      "commit": "0380848340a5542a27c46f4834a39a798a983810",
+      "subject": "Rebind rotating Metal drawables for persistent logical outputs"
+    },
+    {
+      "commit": "8b443da41b350159ba45ef9c6c12a7f208ceb09d",
+      "subject": "Report exact Metal resolve placement failures in gameplay"
+    },
+    {
+      "commit": "9950fb63434f30e32d4db89725f9e35dc150c7c1",
+      "subject": "Defer unwritten reflection updates without rejecting scene frames"
+    },
+    {
+      "commit": "3279e043b908299bda6a5d61f50b60eb69a6143a",
+      "subject": "Audit whole rejected Metal batches and surface descriptors"
+    },
+    {
+      "commit": "8d03ddb86b6fae20cf710537332d3eaf05a5d8a0",
+      "subject": "Support title format37 float-pair MRTs and correct channel masks"
+    },
+    {
+      "commit": "0ecb9b52f7c3e905bff6807c567cf9a32db6d6ae",
+      "subject": "Separate private target storage and scan all rejected Metal preparations"
+    },
+    {
+      "commit": "3e46a3f6be8c84200f87ec48a1781e9bbbadce50",
+      "subject": "Resolve cropped sample-plane views and audit distinct frame failures"
+    },
+    {
+      "commit": "04f27f6d48b529afdf6b0a61c596b8d7d78d89d9",
+      "subject": "Isolate malformed title draw ranges without rejecting valid scene frames"
+    },
+    {
+      "commit": "fc1b179ebf454327aeaeef578b3a9727f51099b0",
+      "subject": "Reduce native Metal frame validation and driver setup work"
+    },
+    {
+      "commit": "0ff993e43bc2b986d36261f17202db2bd7c4a7ad",
+      "subject": "Reduce direct Metal per-draw preparation and constant uploads"
+    },
+    {
+      "commit": "cebf417e1abbfb2f9ac0d58a7d637e8fc8dfedb2",
+      "subject": "Reduce Metal resource lookup and placeholder binding overhead"
+    },
+    {
+      "commit": "7bb606f8192d946d13aef742c9c4994c03efaa56",
+      "subject": "Bound native Metal upload lifetimes and consolidate frame admission"
+    },
+    {
+      "commit": "3a7889f85ac9460bd5eda0be870b30e6d35dba0b",
+      "subject": "Bound Metal preparation and texture lifetimes with 30 ms budget diagnostics"
+    },
+    {
+      "commit": "74f64319d4e036a4f3caf50a718170ffa9fe8427",
+      "subject": "Restore saved CPU and memory capture on the Metal publication path"
+    },
+    {
+      "commit": "5b77b5a7389592f7abfc9e5638a5c5557d81fd93",
+      "subject": "Prepare build 99 for complete Metal saved performance captures"
+    },
+    {
+      "commit": "9311547ca34fa42b1cb269bf691aa5202d04841f",
+      "subject": "Journal Metal registry changes and recycle draw storage without stale cache reuse"
+    },
+    {
+      "commit": "0561944ea2d94a2e5f5ca2a19a17d198b99ef958",
+      "subject": "Discard attachment stores only after proving an overwrite precedes every read"
+    },
+    {
+      "commit": "c82d3b37bfe611de7f1cb062319d345f7836c69b",
+      "subject": "Preserve aggregate capture initialization when adding storage generation"
+    },
+    {
+      "commit": "32d6052ad2eaffe23bf53338e9dade859e4cb281",
+      "subject": "Include registry commit and temporary retirement in renderer budget timing"
+    },
+    {
+      "commit": "fd56a9d69a2ca1c2dd807ca6feff553fad32c62a",
+      "subject": "Reuse Metal draw bindings and separate render pipelines from depth tests"
+    },
+    {
+      "commit": "500a14f101c47bceec3184d08ed09adf4e36a5ba",
+      "subject": "Restore lossless compression eligibility for Metal color targets and measure GPU regressions"
+    },
+    {
+      "commit": "6a063aa58d4119fe18361fe0602a8e79d3acc7c5",
+      "subject": "Avoid whole-cache pressure sorts and calibrate Metal GPU stage clocks"
+    },
+    {
+      "commit": "1705a8cc97c9b5c9606c9ad7543d381c64c6f006",
+      "subject": "Reduce native Metal frame preparation and attachment work in build 104"
+    },
+    {
+      "commit": "9f04778dcc079706aebcb42f7593af4a6cbf0401",
+      "subject": "Audit Metal cache lifetime, shader fallbacks and validation in build 105"
+    },
+    {
+      "commit": "6978973a7764db47fb69965e08544c02966a6693",
+      "subject": "Add temporary frame-speed-first launch preset for controlled M5 testing"
+    },
+    {
+      "commit": "26c882552f33bf134196cfbe389bed5440bad92f",
+      "subject": "Validate the centered 16:9 output policy across scene budgets"
+    },
+    {
+      "commit": "9e8192d12c643a5eb41f748b1cc2cdd28b539641",
+      "subject": "Include output-budget validation in the Metal CPU suite"
+    },
+    {
+      "commit": "e878579a69e05a462548e07ea4cbb86980dd3da8",
+      "subject": "Compact native Metal draw plans and append game draws without temporary vectors"
+    },
+    {
+      "commit": "1e0f9bb442742773bd6b9413d1f090ac1a2f1aab",
+      "subject": "Add retail diagnostics mode and reduce native draw resource overhead"
+    },
+    {
+      "commit": "1a94cdaa4cc456e23c8cc067e5354701ef7ca902",
+      "subject": "Persist effective speed settings while preserving selected resolution"
+    },
+    {
+      "commit": "c9d6b21c720006510817668ad5478d1fac9165a1",
+      "subject": "Describe only the draw distance behavior present in direct Metal"
+    },
+    {
+      "commit": "88eab1058a1878a8afec754c5f47ba661c11aba9",
+      "subject": "Keep transient constants out of geometry caches and retire dead upload pages"
+    },
+    {
+      "commit": "0e5d26b2deedb1015f0717128ff71291973501bf",
+      "subject": "Add bounded output sharpening and exact slow submission diagnostics"
+    },
+    {
+      "commit": "91c5d88ed4792ab9cd1e18eb3fe36c283a17e3ed",
+      "subject": "Bound constant residency and preserve high-memory geometry uploads"
+    },
+    {
+      "commit": "a3480ae373074cbf8744b110e0e26ac2bd2cf471",
+      "subject": "Initialize saved AA before headless Metal worker startup"
+    },
+    {
+      "commit": "2b78d23d566bc5e2ca3f150229111f6541db36bc",
+      "subject": "Reduce Metal constant uploads and recycle released upload backing"
+    },
+    {
+      "commit": "8bc0e983cbd5937a2379a93c6464a92b98911a0d",
+      "subject": "Honor iOS AA Off and memoize shared uploads during frame preparation"
+    },
+    {
+      "commit": "586aaa3e927536af15bfac5539e3cbb7cb2036a0",
+      "subject": "Keep gameplay captures coarse and reduce shared upload lookup churn"
+    },
+    {
+      "commit": "b918bc42dda87b6a1c196d4b4edf8eaf8f25e578",
+      "subject": "Disable development telemetry throughout the retail rendering path"
+    },
+    {
+      "commit": "011c9098887b33c6b5f216524529c09aae891090",
+      "subject": "Reduce native Metal preparation and persist utility pipelines for build 114"
+    },
+    {
+      "commit": "f6bc2514573f5a1c8d40dce931d7e5cda912a243",
+      "subject": "Preserve Metal uniform pointers and specialize depth conversion for build 115"
+    },
+    {
+      "commit": "f02388e9bff0e16f498a1228d9a49f258559a54e",
+      "subject": "Revert \"Preserve Metal uniform pointers and specialize depth conversion for build 115\""
+    },
+    {
+      "commit": "068528cbd5b1b6f6941194e9c2aa668a0d92dcbf",
+      "subject": "Stream Metal draw encoding and reuse GPU-retired uploads for build 116"
+    },
+    {
+      "commit": "2f1a8ee4f3115453d7579b3f90013ae8d058cf81",
+      "subject": "Enable system Game Mode for controlled build 117 comparison"
+    },
+    {
+      "commit": "5af1348d3c6329f109b0971c6e3f78bdd67ee17e",
+      "subject": "Skip startup presentation by default and mark window performance transitions for build 118"
+    },
+    {
+      "commit": "df1ba4f6010de35b65fc8799957ca82ce63d86d8",
+      "subject": "Make the 32-bit guest intro caller conversion explicit"
+    },
+    {
+      "commit": "da3a646788c21c4b3d5396bc5d869b1f49452a02",
+      "subject": "Reuse immutable shader constants and pool CPU payloads for build 119"
+    },
+    {
+      "commit": "a0738d6f3a4b4b90fbe59d26b7f664c5cbad71cf",
+      "subject": "Reuse equivalent vertex conversions and large Metal upload views"
+    },
+    {
+      "commit": "eb9a14619df39f7efbdd6e1bf40aaf5983086948",
+      "subject": "Share immutable converted geometry through native Metal submission"
+    }
+  ],
+  "candidate_pass": [
+    "Bounded LRU index ranges, fast repeated validation and independent-field hashing",
+    "Version/build identity and explicit direct Metal generator/release routing",
+    "Release, architecture, change inventory and main integration documentation"
+  ],
+  "changed_paths": [
+    ".gitignore",
+    "CHANGELOG.md",
+    "Generate-Theft4-Xcode.command",
+    "LIBERTYRECOMP_IOS_ARCHITECTURE.md",
+    "README.md",
+    "docs/FRAME_PREPARATION_95.md",
+    "docs/IOS_RELEASE_BUILD.md",
+    "docs/RELEASE_0.3.md",
+    "docs/THEFT4_0.3_ARCHITECTURE.md",
+    "docs/THEFT4_0.3_CHANGE_MANIFEST.json",
+    "docs/THEFT4_0.3_MAIN_INTEGRATION.md",
+    "glue/rexglue-sdk-main/gta4-recomp/src/gta4_fault_probe_hooks.cpp",
+    "glue/rexglue-sdk-main/gta4-recomp/src/gta4_lod_selection_policy.h",
+    "glue/rexglue-sdk-main/gta4-recomp/src/gta4_native_hooks.cpp",
+    "glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/frame_constant_arena.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.cpp",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/hdr_present_ps.glsl",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/hdr_present_ps.inc",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/metal_draw_capture.inc",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/metal_draw_frontend.inc",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/metal_frame_frontend.inc",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_batch_payload_cache.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_color_readback.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_command_recycler.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_deferred_cleanup.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_exclusive_generation_retirement.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_immutable_bindings.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_incremental_owner_cache.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_light_capture.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_masked_constants.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_metal_constant_projection.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_metal_frame_continuity.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_metal_shared_constants.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_metal_vertex_conversion.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_pipeline_policy.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_prepared_bindings.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_shader_realization.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_shared_frame_arena.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_shared_geometry_payload.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_snapshot_pages.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_surface_format.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_surface_storage.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_transactional_map.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/native_virtual_resource_registry.h",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/present_color.glsl",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/smaa/smaa_hardware_ps.inc",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/smaa/smaa_present_ps.glsl",
+    "glue/rexglue-sdk-main/src/graphics/gta4_native/smaa/smaa_present_ps.inc",
+    "ios/CMakeLists.txt",
+    "ios/Theft4/Info.plist.in",
+    "ios/Theft4/Theft4LauncherView.h",
+    "ios/Theft4/Theft4LauncherView.m",
+    "ios/Theft4/Theft4TexturePreparation.mm",
+    "ios/Theft4/main.m",
+    "ios/bridge/theft4_astc_texture.cpp",
+    "ios/bridge/theft4_astc_texture.h",
+    "ios/bridge/theft4_boot.cpp",
+    "ios/bridge/theft4_bootstrap_graphics.cpp",
+    "ios/bridge/theft4_bounded_cache_sweep.h",
+    "ios/bridge/theft4_draw_capture.cpp",
+    "ios/bridge/theft4_draw_capture.h",
+    "ios/bridge/theft4_frame_backend.h",
+    "ios/bridge/theft4_frame_plan.cpp",
+    "ios/bridge/theft4_frame_plan.h",
+    "ios/bridge/theft4_gta4_native_graphics.cpp",
+    "ios/bridge/theft4_gta4_native_graphics.h",
+    "ios/bridge/theft4_host_program.h",
+    "ios/bridge/theft4_intro_hooks.cpp",
+    "ios/bridge/theft4_metal_backend.h",
+    "ios/bridge/theft4_metal_backend.mm",
+    "ios/bridge/theft4_metal_frame.h",
+    "ios/bridge/theft4_metal_frame.mm",
+    "ios/bridge/theft4_metal_host_shaders.h",
+    "ios/bridge/theft4_metal_host_shaders.mm",
+    "ios/bridge/theft4_metal_plan.h",
+    "ios/bridge/theft4_metal_plan.mm",
+    "ios/bridge/theft4_metal_presenter.h",
+    "ios/bridge/theft4_metal_presenter.mm",
+    "ios/bridge/theft4_metal_profiling.h",
+    "ios/bridge/theft4_metal_resources.h",
+    "ios/bridge/theft4_metal_resources.mm",
+    "ios/bridge/theft4_metal_shader_catalog.cpp",
+    "ios/bridge/theft4_metal_shader_catalog.h",
+    "ios/bridge/theft4_metal_shader_store.h",
+    "ios/bridge/theft4_metal_shader_store.mm",
+    "ios/bridge/theft4_native_metal.h",
+    "ios/bridge/theft4_native_metal.mm",
+    "ios/bridge/theft4_postfx_plan.cpp",
+    "ios/bridge/theft4_postfx_plan.h",
+    "ios/bridge/theft4_primitive_expansion.cpp",
+    "ios/bridge/theft4_primitive_expansion.h",
+    "ios/bridge/theft4_render_plan.cpp",
+    "ios/bridge/theft4_render_plan.h",
+    "ios/bridge/theft4_render_plan_source.cpp",
+    "ios/bridge/theft4_render_plan_source.h",
+    "ios/bridge/theft4_retail_mode.h",
+    "ios/bridge/theft4_startup.cpp",
+    "ios/bridge/theft4_upload_budget.h",
+    "ios/bridge/theft4_vector_storage_pool.h",
+    "ios/tests/cached_tuple_reuse_test.cpp",
+    "ios/tests/direct_metal_capture.h",
+    "ios/tests/direct_metal_capture.mm",
+    "ios/tests/direct_metal_probe.h",
+    "ios/tests/direct_metal_probe.mm",
+    "ios/tests/frame_preparation_benchmark.cpp",
+    "ios/tests/lab_resolution_policy_test.cpp",
+    "ios/tests/masked_constant_replay_test.cpp",
+    "ios/tests/retail_diagnostic_policy_test.cpp",
+    "ios/tests/snapshot_pages_test.cpp",
+    "tests/ios/test_xcode_generator.py",
+    "tests/ios/theft4_astc_texture_test.cpp",
+    "tools/build_ios_release.sh",
+    "tools/direct-metal/CMakeLists.txt",
+    "tools/direct-metal/README.md",
+    "tools/direct-metal/backend_worker_test.mm",
+    "tools/direct-metal/batch_payload_cache_test.cpp",
+    "tools/direct-metal/color_readback_test.cpp",
+    "tools/direct-metal/compile_shaders.py",
+    "tools/direct-metal/descriptor_contract_test.cpp",
+    "tools/direct-metal/device/CMakeLists.txt",
+    "tools/direct-metal/device/Info.plist",
+    "tools/direct-metal/device/app.mm",
+    "tools/direct-metal/draw_preparation_benchmark.mm",
+    "tools/direct-metal/exclusive_generation_retirement_test.cpp",
+    "tools/direct-metal/frame_plan_test.cpp",
+    "tools/direct-metal/frame_upload_test.mm",
+    "tools/direct-metal/frontend_storage_test.cpp",
+    "tools/direct-metal/hardware_resolve_comparison.mm",
+    "tools/direct-metal/host_shader_export.cpp",
+    "tools/direct-metal/incremental_owner_cache_test.cpp",
+    "tools/direct-metal/index_range_cache_test.cpp",
+    "tools/direct-metal/lod_selection_test.cpp",
+    "tools/direct-metal/metal_aa_startup_test.cpp",
+    "tools/direct-metal/metal_constant_projection_test.cpp",
+    "tools/direct-metal/metal_frame_continuity_test.cpp",
+    "tools/direct-metal/metal_profiling_policy_test.cpp",
+    "tools/direct-metal/metal_shader_export.cpp",
+    "tools/direct-metal/metal_shared_constant_test.cpp",
+    "tools/direct-metal/metal_vertex_conversion_test.cpp",
+    "tools/direct-metal/performance_benchmark.mm",
+    "tools/direct-metal/primitive_expansion_test.cpp",
+    "tools/direct-metal/probe_main.mm",
+    "tools/direct-metal/render_plan_test.cpp",
+    "tools/direct-metal/resource_admission_cache_test.cpp",
+    "tools/direct-metal/shader_catalog_test.cpp",
+    "tools/direct-metal/shader_comparison_main.mm",
+    "tools/direct-metal/shader_contract.cpp",
+    "tools/direct-metal/shader_descriptor_contract.cpp",
+    "tools/direct-metal/shader_realization_test.cpp",
+    "tools/direct-metal/texture_usage_benchmark.mm",
+    "tools/direct-metal/upload_lifetime_test.mm",
+    "tools/direct-metal/upload_page_benchmark.mm",
+    "tools/direct-metal/upload_stress_test.mm",
+    "tools/direct-metal/virtual_resource_journal_test.cpp",
+    "tools/renderer-validation/CMakeLists.txt",
+    "tools/theft4_renderer_build_args.sh"
+  ],
+  "main_local_overlap": [
+    ".gitignore",
+    "README.md"
+  ],
+  "main_local_work_preserved": true,
+  "private_game_data_in_manifest": false,
+  "known_remaining_issue": "Initial gameplay spike still occurs and recovers; locked 30 across scenes/devices unverified",
+  "remote_main_checked": "f5f30b373fc5b397364b81fb840f1d638267c14f",
+  "remote_main_change": "Restored README donation block; retained in candidate and remote history to be integrated before final build"
+}

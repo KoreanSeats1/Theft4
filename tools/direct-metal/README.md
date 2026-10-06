@@ -1,4 +1,19 @@
-# Direct Metal renderer prototype
+# Direct Metal renderer and validation tools
+
+The tools below began as the isolated Metal Lab and draw-replay prototype.
+**0.3 now uses this backend for live game frames.** Normal generator/release
+entry points explicitly select Metal and require offline iOS game/host shaders.
+See [the current architecture](../../docs/THEFT4_0.3_ARCHITECTURE.md) and
+[build instructions](../../docs/IOS_RELEASE_BUILD.md).
+
+The dated milestone descriptions below are retained as development history;
+statements that the game still uses only Vulkan, that Metal defaults Off, or that
+buffered rectangles/frame integration are still missing describe those earlier
+milestones, not the 0.3 candidate. Current build121 validation passed 45 graphics
+cases and 32 saved draw replays in each of Diagnostic/Retail modes. The Lab is
+still a validation app, and its success is not a whole-game performance result.
+
+## Historical implementation milestones
 
 Branch: `codex/direct-metal-96`, based on the preserved build 95 comparison
 (`38e44249`). The game app continues to use its existing renderer. This prototype

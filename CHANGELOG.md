@@ -1,5 +1,35 @@
 # Theft4 engineering changelog
 
+## 0.3 candidate — live direct Metal and renderer rebuild — 2026-10-05
+
+- Version 0.3.0, launcher 0.3, build 122; prepared on the isolated Metal branch.
+  Main promotion and public distribution remain pending.
+- The actual game now submits ordered frames directly to Metal with offline
+  stock/late/depth shader libraries, reflected bindings, native passes and
+  direct presentation. Legacy dependencies and AOT/runtime services remain.
+- Corrected depth conventions, float-pair lighting targets, channel masks,
+  reflections, aliased storage, topology, mip/plane sampling and GPU lifetime.
+- Reduced CPU preparation with streamed encoding, shared shader constants,
+  snapshot/projection reuse, bounded incremental caches and GPU-retired uploads.
+- Reused equivalent vertex conversions and large upload views; shared converted
+  vertex/index allocations remove duplicate CPU geometry packets.
+- Build 122 replaces full index-range cache clearing with cold-entry eviction,
+  preserves hot ranges and speeds repeat lookups with complete identity checks.
+- Added sharpening, corrected saved AA-Off startup, native LOD selection,
+  persistent frame-speed choices, default intro skipping and retail diagnostics
+  suppression. Existing resolution, FSR, save and launcher options are retained.
+- Carried forward capability-gated persistent ASTC preparation and the already-
+  updated game-file verification flow from build 94.
+- Updated both build entry points to select Metal explicitly and reject missing
+  offline shader inputs; normal builds omit private asset draw capture.
+- M5 tester reports a huge native-resolution gameplay improvement, with a
+  remaining spike that recovers. No universal locked-30 guarantee is claimed.
+- Documented original audited LibertyRecomp, earlier Theft4 and Metal-bring-up
+  limitations separately, including reusable patterns and reverted experiments.
+
+See [release notes](docs/RELEASE_0.3.md) and
+[the architecture record](docs/THEFT4_0.3_ARCHITECTURE.md).
+
 ## Build 94 — BC texture compatibility integration — 2026-10-02
 
 - GPUs without direct BC support prepare static BC1/BC2/BC3 textures as saved

@@ -1,5 +1,11 @@
 # Theft4 / LibertyRecomp iOS Architecture Reconnaissance
 
+> **Historical audit:** this document describes the September 14–15 bring-up.
+> Theft4 0.3 now has a live direct Metal game renderer and substantially rewritten
+> frame preparation/resource ownership. See [the current architecture record](docs/THEFT4_0.3_ARCHITECTURE.md)
+> for the implemented boundaries, provenance, remaining compatibility services
+> and lessons for future recomp ports.
+
 **Validated implementation update (2026-09-15):** the Theft4 UIKit host now
 initializes the real ReXGlue kernel, applies the user's matching TU8, and runs
 the checked-in GTA IV AOT code on the physical M5 iPad without a CPU JIT. It

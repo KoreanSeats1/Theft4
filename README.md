@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL"><img src="https://img.shields.io/badge/Support%20Theft4-Donate-0070ba?logo=paypal&logoColor=white" alt="Support Theft4 via PayPal"></a>
+</p>
+
+> **[Support Theft4 via PayPal](https://www.paypal.com/donate/?hosted_button_id=XSBF9HXAS89EL)** — donations help fund continued development and testing.
+
 > **Thank you to everyone behind the unprecedented work on
 > [LibertyRecomp](https://github.com/OZORDI/LibertyRecomp) and the
 > [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).** Without their
@@ -23,61 +29,47 @@ original PowerPC game instructions are translated to C++ ahead of time and
 compiled into the signed application. Theft4 does not generate or download CPU
 code at runtime and does not require a JIT entitlement.
 
-This is not a source port and it is not a complete Xbox 360 emulator. It combines
-ahead-of-time translated game code with a compatibility runtime that recreates
-the Xbox services the title expects. The 0.2.1 iOS release promotes the latest
-native-renderer, launcher, save-transfer, and diagnostic work into the official
-app. It presents through Vulkan, MoltenVK and Metal. The official app and
-TestFlight build use `com.lukebrosious.theft4`.
+This is an ahead-of-time game recompilation with a compatibility runtime, not a
+PC source port or a complete Xbox 360 emulator. **Theft4 0.3** prepares the running
+game's frames directly for Metal, including native passes, game-shader bindings,
+lighting, reflections, effects and presentation. The game continues to use
+LibertyRecomp/ReXGlue's generated-code and runtime foundation. The official app
+identity remains `com.lukebrosious.theft4`.
 
-> [!WARNING]
-> Theft4 0.2.1 remains experimental. Dense scenes, extended play, physics,
-> heat and device compatibility still need testing. The GitHub IPA is an
-> unsigned sideload package; TestFlight uses a separately signed build.
+> [!NOTE]
+> 0.3 is a release candidate being prepared for main. It has not been published
+> as a public IPA or TestFlight release by this update. The M5 tester reports a
+> huge improvement and very good native-resolution gameplay, with a remaining
+> spike that recovers. Locked 30 FPS across every scene/device is not established.
 
-## What changed in 0.2.1
+## What changed in 0.3
 
-This important update adds safer device-specific graphics limits, save backup
-and restore, a redesigned launcher, and substantially better performance
-evidence collection. It also includes renderer work that reduces redundant CPU,
-GPU, pipeline, buffer, constant, and synchronization overhead without lowering
-the default image quality on newer devices. See the
-[complete 0.2.1 release notes](docs/RELEASE_0.2.1.md).
+The live direct Metal renderer replaces the previous Vulkan → MoltenVK route for
+normal Metal gameplay. Substantial follow-up work rebuilt frame ownership,
+geometry conversion, constant preparation, uploads, caches and native draw
+encoding. This is the full game renderer, not just the separate Metal Lab.
 
-| Area | Substantial change | Effect |
-| --- | --- | --- |
-| Command delivery | Batched producer-to-worker transfer, tighter queue locks, bounded storage reuse and compact state packets instead of full draw packets for common state changes | Less allocation, copying and lock waiting under dense command loads. |
-| Redundant state | Skip identical binding notifications and repeated vertex/index binds after validating resource identity; reuse immutable vertex-layout requirements | Avoid work that leaves GPU state unchanged while retaining draw order and resource ownership. |
-| Shader constants | Reuse validated parent snapshots and apply only changed ranges into fenced frame allocations | Avoid whole-block materialization and byte conversion for small updates. |
-| Textures | Separate texture content identity from sampling state; cache verified generations and limit A19 stage walks to shader-used slots | Reduce decode, hashing, upload planning and unused-stage traversal while still validating dirty resources. |
-| Pipelines and worker | Bound A19 prewarming, defer draws whose new pipeline is compiling, and record worker phases and queue pressure | Reduce avoidable stalls and make remaining hitches diagnosable. Newly visited areas still need visual checks. |
-| Frame lifetime | Two completion-owned native frame slots and bounded resource retirement | Preserve CPU/GPU overlap while protecting in-flight buffers and textures. |
-| Device safety | iPhones and iPads with less than 7 GiB of usable memory are capped at 900p + FSR and conservative pressure-heavy settings; lower 540p/720p choices remain available | Reduce rendering and memory pressure on 6 GB and older devices while leaving newer devices unchanged. |
-| Graphics and launcher | Stable centered 16:9 gameplay, plus Native Pixels and 540p/720p/900p/1080p, independent FSR, and expanded quality controls | Avoid the world, shadow and HUD distortion found in the withdrawn device-aspect experiment while keeping quality/performance choices explicit. |
-| Saves | Validated export and import with an automatic pre-import backup | Move or protect saves without copying the whole app container. |
-| Output and power controls | Independent resolution/FSR choices, fixed output policy where appropriate, Game Mode declaration, and conservative defaults for limited-memory profiles | Let testers tune quality against sustained speed, heat, and memory pressure. |
-| Diagnosis | Frame-time graph, lightweight long trace, 120-sample detailed GPU/CPU capture spread across about 360 submitted frames, resource inventory checkpoints, and Files export | Produce more concrete pipeline, buffer, GPU-pass, CPU-stage, queue, memory, and thermal evidence with lower capture overhead. |
+| Area | Change |
+| --- | --- |
+| Native graphics | Ordered Metal passes, game shaders, depth/lighting aliases, reflections, host effects and direct drawable presentation. |
+| Frame time | Streamed draw encoding, redundant-binding avoidance, shared constants, incremental registry maintenance and completion-owned storage reuse. |
+| Geometry | Exact reusable conversion recipes, shared vertex/index allocations, large upload-view reuse and bounded index-range eviction without clearing every mesh. |
+| Visual controls | Adjustable sharpening, corrected AA-Off startup, existing resolution/FSR choices, resident LOD and explicit draw-distance profiles. Native Pixels uses a centered 16:9 physical-pixel target. |
+| Everyday use | Default-on intro skipping, Retail Mode for play without development telemetry, preserved saves/settings and Game Mode metadata. |
+| Older GPUs | Capability-gated one-time BC-to-ASTC preparation with progress, estimate, resume, cache reuse and confirmed deletion. BC-capable GPUs skip this sweep. |
+| Future ports | A source-backed record of the rewritten boundaries, prior costs, fidelity contracts, measurements and title-specific assumptions. |
 
-One useful instrumented comparison is the M5 iPad build 32 to 33 command
-transfer change at 900p. Mean renderer interval fell from 40.57 to 37.84 ms,
-p95 from 47.58 to 45.58 ms, and intervals over 40 ms from 357/599 to 182/599.
-Mean batch-transfer time fell from 4.53 to 0.16 ms and queue-lock wait from
-7.40 to 1.54 ms. The routes and GPU work differed, so the whole-frame numbers
-are directional rather than a controlled speedup. The targeted transfer and
-lock spans show the clearest improvement. See the
-[build 33 review](docs/lab-experiments/build33-device-review.md).
-
-Later heavy scenes still miss the 33.3 ms target. An A19 iPhone Air capture in
-serious thermal state had a 44.5 ms median renderer interval versus 33.2 ms
-in a different, mostly nominal run. The scenes and output sizes differed as
-well. We cannot yet claim a measured temperature reduction or locked 30 FPS.
-Lower resolution reduces planned pixel work, while the CPU changes reduce
-measured command overhead. Same-route, same-settings play after warmup is needed
-to measure sustained frame times, comfort and battery use. See the
-[A19 capture review](docs/lab-experiments/build40-a19-air-two-capture-review.md)
-and [0.2.1 release notes](docs/RELEASE_0.2.1.md).
+Read the [complete 0.3 release notes](docs/RELEASE_0.3.md),
+[architecture and recompilation lessons](docs/THEFT4_0.3_ARCHITECTURE.md), and
+[main integration status](docs/THEFT4_0.3_MAIN_INTEGRATION.md).
+The [0.2.1 notes](docs/RELEASE_0.2.1.md) remain the historical public-release record.
+Legacy Vulkan code/build dependencies and game compatibility services are retained;
+direct Metal does not mean every subsystem has been rewritten from source.
 
 ### Capture and submit a short performance log
+
+For 0.3, turn **System → Retail Mode Off** and reopen Theft4 before enabling
+captures or debug overlays. Turn Retail Mode On and reopen for ordinary play.
 
 #### Which file do we need?
 

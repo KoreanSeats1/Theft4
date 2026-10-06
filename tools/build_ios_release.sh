@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   print -u2 "Usage: $0 [expected-version]"
-  print -u2 "Environment: THEFT4_MOLTENVK_IOS_LIB_DIR, DEVELOPER_DIR, CMAKE_BIN, THEFT4_BUILD_JOBS"
+  print -u2 "Environment: THEFT4_METAL_LIBRARIES, THEFT4_METAL_HOST_LIBRARIES, THEFT4_MOLTENVK_IOS_LIB_DIR, DEVELOPER_DIR, CMAKE_BIN, THEFT4_BUILD_JOBS"
 }
 
 if (( $# > 1 )); then
@@ -13,6 +13,7 @@ fi
 
 repo_root="${0:A:h:h}"
 cd "$repo_root"
+source "$repo_root/tools/theft4_renderer_build_args.sh"
 
 if [[ "$(uname -s)" != Darwin ]]; then
   print -u2 "The iOS release pipeline requires macOS and full Xcode."
@@ -86,6 +87,7 @@ print "Building Theft4 $version ($build_version) for public iOS sideloading"
   -DTHEFT4_COMPILE_GTA4_NATIVE_BACKEND=ON \
   -DTHEFT4_ENABLE_GTA4_NATIVE_BACKEND=ON \
   -DTHEFT4_LAB_BUILD=ON \
+  "${renderer_build_args[@]}" \
   -DTHEFT4_SIGN_DEVICE=OFF \
   -DTHEFT4_PUBLIC_BUILD=ON \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \

@@ -5,6 +5,7 @@ script_dir="${0:A:h}"
 cd "$script_dir"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+source "$script_dir/tools/theft4_renderer_build_args.sh"
 
 # Normal play uses the optimized build. Debug is an explicit developer choice.
 build_configuration="${THEFT4_BUILD_CONFIGURATION:-Release}"
@@ -69,6 +70,7 @@ configure_args=(
   -DTHEFT4_ENABLE_GAME_STARTUP=ON
   -DTHEFT4_COMPILE_GTA4_NATIVE_BACKEND=ON
   -DTHEFT4_ENABLE_GTA4_NATIVE_BACKEND=ON
+  "${renderer_build_args[@]}"
   -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
   -DTHEFT4_XENIOS_IOS_LIB_DIR="$xenios_lib_dir"
 )

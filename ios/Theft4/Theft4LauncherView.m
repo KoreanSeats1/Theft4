@@ -141,7 +141,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _masthead.textColor = Ink(0xE5DECA);
     [self addSubview:_masthead];
     BOOL lab = [NSBundle.mainBundle.infoDictionary[@"Theft4LabBuild"] boolValue];
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"Theft4ReleaseName"] ?: @"0.2.0b";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"Theft4ReleaseName"] ?: @"0.3";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"0";
     _edition = Copy([NSString stringWithFormat:@"AFTER HOURS   /   v%@ (%@)", version, build], 11, YES);
     _edition.textAlignment = NSTextAlignmentRight;

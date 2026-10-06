@@ -184,14 +184,30 @@ struct IndexRangeCache::Impl {
   };
   struct Hash {
     size_t operator()(const Key& k) const {
-      uint64_t h=reinterpret_cast<uintptr_t>(k.source);
-      const auto add=[&](uint64_t v){h^=v+0x9e3779b97f4a7c15ull+(h<<6)+(h>>2);};
-      add(k.generation);add(k.offset);add(k.size);for(auto v:k.conversion)add(v);
-      add(k.count);add(k.index_bytes);return size_t(h);
+      // Hashing selects a bucket only: complete Key equality and shared-owner
+      // checks below remain authoritative. Mix independent fields without the
+      // old serial hash-combine dependency for every word of every draw.
+      uint64_t h=reinterpret_cast<uintptr_t>(k.source)^std::rotl(k.offset,13)^std::rotl(k.size,27)^
+          k.generation^(uint64_t(k.count)<<32)^k.index_bytes;
+      h^=k.conversion[0]^std::rotl(k.conversion[1],11)^std::rotl(k.conversion[2],23)^std::rotl(k.conversion[3],37);
+      h^=h>>30;h*=0xbf58476d1ce4e5b9ull;h^=h>>27;return size_t(h);
     }
   };
-  struct Entry {std::weak_ptr<const Bytes> owner;IndexRange range;};
+  struct Entry {
+    std::weak_ptr<const Bytes> owner;IndexRange range;
+    const Key* key=nullptr;Entry* previous=nullptr;Entry* next=nullptr;
+  };
   std::unordered_map<Key,Entry,Hash> entries;
+  Entry* oldest=nullptr;Entry* newest=nullptr;Entry* last_entry=nullptr;
+  void Touch(Entry& entry) {
+    if(newest==&entry)return;
+    if(entry.previous)entry.previous->next=entry.next;
+    else if(oldest==&entry)oldest=entry.next;
+    if(entry.next)entry.next->previous=entry.previous;
+    entry.previous=newest;entry.next=nullptr;
+    if(newest)newest->next=&entry;else oldest=&entry;
+    newest=&entry;
+  }
   uint64_t scanned=0,hits=0;
 };
 IndexRangeCache::IndexRangeCache():impl_(std::make_unique<Impl>()){}
@@ -202,14 +218,39 @@ bool IndexRangeCache::Analyze(const Buffer& b,uint32_t count,uint32_t index_byte
   if(!count||(index_bytes!=2&&index_bytes!=4)||!View(b,uint64_t(count)*index_bytes)||b.offset%index_bytes)
     return Error(error,"Invalid game index view");
   const Impl::Key key{b.source.get(),b.source->generation,b.offset,b.source->value.size(),b.source->conversion,count,index_bytes};
+  // Lowering and admission often check the same immutable draw consecutively.
+  // Keep the complete key and weak control-block identity; every call still
+  // checks its view bounds before borrowing the cached range.
+  if(impl_->last_entry&&key==*impl_->last_entry->key&&
+      !impl_->last_entry->owner.owner_before(b.source)&&!b.source.owner_before(impl_->last_entry->owner)) {
+    impl_->Touch(*impl_->last_entry);range=impl_->last_entry->range;++impl_->hits;error.clear();return true;
+  }
   if(auto i=impl_->entries.find(key);i!=impl_->entries.end()&&
       !i->second.owner.owner_before(b.source)&&!b.source.owner_before(i->second.owner)) {
+    impl_->Touch(i->second);impl_->last_entry=&i->second;
     range=i->second.range;++impl_->hits;error.clear();return true;
   }
   if(!AnalyzeIndices(b,count,index_bytes,range,error))return false;
   impl_->scanned+=count;
-  if(impl_->entries.size()>=8192)impl_->entries.clear();
-  impl_->entries.insert_or_assign(key,Impl::Entry{b.source,range});return true;
+  // Evict one cold range, rather than dropping every warm mesh at saturation.
+  // References survive unordered_map rehash; invalidate the borrowed pointer
+  // before erasure or replacement. The cache never retains a CPU payload.
+  impl_->last_entry=nullptr;
+  if(auto old=impl_->entries.find(key);old!=impl_->entries.end()) {
+    old->second.owner=b.source;old->second.range=range;impl_->Touch(old->second);
+    impl_->last_entry=&old->second;return true;
+  }
+  if(impl_->entries.size()>=8192) {
+    const auto oldest_key=*impl_->oldest->key;
+    impl_->oldest=impl_->oldest->next;
+    if(impl_->oldest)impl_->oldest->previous=nullptr;else impl_->newest=nullptr;
+    impl_->entries.erase(oldest_key);
+  }
+  // Recency links live in the stable map nodes: no second allocation or copy
+  // of the complete index key for every inserted range.
+  auto [inserted,_]=impl_->entries.emplace(key,Impl::Entry{b.source,range});
+  inserted->second.key=&inserted->first;impl_->Touch(inserted->second);
+  impl_->last_entry=&inserted->second;return true;
 }
 uint64_t IndexRangeCache::ScannedIndices() const{return impl_->scanned;}
 uint64_t IndexRangeCache::Hits() const{return impl_->hits;}

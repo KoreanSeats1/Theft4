@@ -1,8 +1,94 @@
 # Install a sideloaded Theft4 IPA
 
-These instructions are for the unsigned ARM64 IPA attached to the Theft4 0.2.1
-GitHub release. The IPA contains the application and statically recompiled game code,
+These instructions are for the unsigned ARM64 IPA attached to the
+[Theft4 0.3.1 GitHub release](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3.1).
+The IPA contains the application and statically recompiled game code,
 but it does **not** contain Grand Theft Auto IV game data or a title update.
+
+## Copy-and-paste setup prompt for Codex or Claude
+
+Copy the entire block below into Codex or Claude. Use a session with access to
+your computer's files and tools if you want the assistant to carry out setup;
+a chat-only session can guide you through the manual steps. You can paste it
+without editing it: the assistant will ask for your device and input locations.
+This is a proposed setup workflow, not a guarantee of automatic installation.
+Apple sign-in, signing, device trust and some Files actions may need your input.
+
+```text
+Help me install and set up Theft4 on my iPhone or iPad, using the official
+release and my own legally obtained game files. Carry out the steps your tools
+support, and guide me through any steps that require me. Do not stop at a plan.
+
+Start by reading the current official instructions:
+https://github.com/KoreanSeats1/Theft4/blob/main/README.md
+https://github.com/KoreanSeats1/Theft4/blob/main/docs/IOS_SIDELOAD_INSTALL.md
+https://github.com/KoreanSeats1/Theft4/blob/main/docs/IOS_RELEASE_BUILD.md
+Official releases: https://github.com/KoreanSeats1/Theft4/releases
+
+Use the latest stable official release with an iOS ARM64 IPA, not a development
+or Lab build. Prefer the published app over compiling the entire game. If a
+TestFlight build is already available to me, I can use that instead of
+sideloading. Do not assume a GitHub release is available on TestFlight.
+
+First ask only for missing setup information, together: my device model and
+iOS/iPadOS version, my computer OS, where my GTA IV ISO/extracted files and
+matching title update are located, whether Theft4 is already installed, and
+which signing/sideloading tool or TestFlight access I already have. Inspect
+only the locations I provide or approve. The current release requires iOS or
+iPadOS 26 or later; check the current guide in case that changes.
+
+Then work through this checklist:
+1. Check compatibility and storage. Allow about 7 GB for the prepared game,
+   plus the app and transfer/staging space; devices needing ASTC preparation
+   need about 2.4 GB extra. Keep my original inputs unchanged. Never download
+   game data, title updates or keys from unofficial sources, or bypass checks.
+2. Download the official release IPA and check its SHA-256 against the published
+   checksum when supplied. GitHub Source code ZIPs are not installable apps.
+   Use my existing signing method; let me enter Apple credentials and complete
+   trust, verification or signing prompts myself. Never ask me to paste a
+   password into chat. Explain any new software or account requirements first.
+3. Close Theft4 before updating. Update the official com.lukebrosious.theft4
+   app in place so game files, saves, settings and prepared caches are retained.
+   Do not uninstall it or delete/replace its data. If I have only an old Lab
+   app, explain its separate container and help back up its data first.
+4. Check whether I already have a verified prepared game folder. Otherwise use
+   Theft4's validated staging tool and its documented build instructions, or
+   an official Game Preparer if one is actually supplied with the release.
+   Never assume that a helper binary exists or that a fresh source build works.
+   If a required tool/dependency is unavailable, tell me the exact blocker.
+   The supported pair is Xbox 360 USA GTA IV, title ID 545407F2, media ID
+   6AC07221, base 0.0.0.5, and TU8 patching to 0.0.8.5. Check the documented
+   patch hash and the tool's validation result; filenames alone prove nothing.
+   Stage into a new destination. Proceed only after verification succeeds.
+5. Open the installed app once to create its Files transfer folder, then close
+   it. Copy ALL CONTENTS of the verified computer-side game folder, including
+   hidden .install-manifest, into Files > On My iPhone/iPad > Theft4 > game.
+   Preserve the supplied layout: default.xex and default.xexp must be siblings,
+   with aes_key.bin, the archives and their extracted loose-file directories.
+   Do not copy the ISO/unopened update or create game/game. Wait for the entire
+   transfer to finish. Use the guide's Files/Finder method; if you cannot control
+   the transfer, give me the exact source/destination and wait for me to finish.
+6. Reopen Theft4 and use System > Check Game Files. Check the transferred
+   installation before asking for another update package. Resolve actual
+   validation errors rather than renaming files or disabling validation.
+7. If the app requires one-time ASTC texture preparation, let it finish before
+   Play. Explain the progress/ETA and extra space, keep the app open, preferably
+   on power, and preserve its resumable cache. Detection is by GPU capability,
+   not an assumed iPhone age cutoff; BC-capable devices skip this requirement.
+   Later launches reuse the results unless cache/game files change.
+8. Start with normal release defaults, optional mods and performance capture
+   off. Help me enable touch controls or pair my controller. Ask me to tap Play
+   and confirm a visible controllable 3D scene and working audio; installation
+   alone is not proof of working gameplay. If it fails, collect the exact error
+   and guide me through the current Long Performance Capture/export workflow.
+
+Keep game data, saves, signing material and device identifiers private; do not
+upload them to GitHub or a public issue. Do not change project source, graphics
+code, game files or security settings to make installation pass. Report the
+installed version/build, verification result, texture-preparation status and
+what gameplay I actually confirmed. Distinguish completed steps from anything
+still waiting on my input; do not promise locked 30 FPS on every device.
+```
 
 ## Requirements
 
@@ -11,6 +97,8 @@ but it does **not** contain Grand Theft Auto IV game data or a title update.
   Apple account. The release IPA is deliberately unsigned.
 - Approximately 7 GB of free device storage for a prepared base-game install,
   in addition to the app and any space required by the sideloading tool.
+  GPUs without direct BC texture support also need about 2.4 GB for the saved
+  ASTC texture cache; keep additional free space for preparation and transfers.
 - Your own legally obtained supported Xbox 360 game and title update:
   - title ID `545407F2`;
   - USA retail media ID `6AC07221`;
@@ -28,7 +116,7 @@ rename an incompatible update or bypass the validation checks.
    download GitHub's **Source code** archives as a substitute for the IPA.
 2. Import the IPA into AltStore, SideStore, or your preferred compatible
    sideloading tool and let that tool sign it with your Apple account.
-3. Install Theft4 on the destination iPhone or iPad. Version 0.2.1 uses
+3. Install Theft4 on the destination iPhone or iPad. The official release uses
    `com.lukebrosious.theft4`, the official app identifier. Update that app
    in place to retain its game files and saves. Do not delete the old app.
    The separate `com.theft4.m5lab` app is not the update target and has a
@@ -128,36 +216,46 @@ directory, or a folder named `game` into the device's existing `game` folder.
 ## 5. Verify and start
 
 1. Reopen Theft4 after the transfer completes.
-2. Open **System** and select **Verify Game Files**. Resolve any reported base or
-   title-update mismatch before continuing.
-3. Return to **Play** and start the game. A physical controller works whether
+2. Open **System** and select **Check Game Files**. This checks a prepared,
+   already-updated installation before requesting another update package.
+   Resolve any reported base or title-update mismatch before continuing.
+3. Complete the one-time texture preparation if the app requires it for your
+   GPU. Keep Theft4 open, preferably on power, and allow the lengthy first run;
+   the progress bar and ETA describe the work remaining. Pause/resume retains
+   completed conversions. Normal launches reuse the saved cache. BC-capable
+   GPUs skip this requirement automatically; deleting the cache or replacing
+   game files can require preparation again.
+4. Return to **Play** and start the game. A physical controller works whether
    touch controls are enabled or disabled.
 
 Theft4 stores runtime settings, caches, and saves in its private app container,
 separate from the shared `Documents/game` folder. An in-place update keeps this
 container. Deleting the app removes it, including saves.
 
-## 0.2.1 graphics and diagnostics
+## 0.3.1 graphics and diagnostics
 
-- Gameplay fills the device's native aspect ratio by default while preserving
-  the original HUD geometry. **Graphics** selects Native Pixels, 540p, 720p,
+- Gameplay uses a centered 16:9 scene by default. The optional **Mods → Native
+  Aspect Ratio** expands the view to the launch window while preserving
+  interface proportions; more visible scenery can increase rendering cost.
+  **Graphics** selects Native Pixels, 540p, 720p,
   900p or 1080p internal resolution, FSR,
   shadows, draw distance, model detail, reflections, anti-aliasing, filtering
-  and motion blur. **Apply Performance Preset** starts from 540p + FSR and
-  conservative quality settings. Changes apply at the next game launch.
+  and motion blur, plus adjustable sharpening. **Frame Speed** keeps the selected
+  resolution and reduces other quality costs. Changes apply at the next game launch.
 - **Interface** has the frame counter, a frame-time graph and touch controls.
   The graph shows frame publication intervals against a 33.3 ms target.
-- For a low-FPS report, open **System** before starting the game and enable
-  **Detailed Performance Capture**. In the slow scene, double-tap the frame-time
-  graph and allow the 120 detailed samples across roughly 360 submitted frames
-  to finish. Quit and relaunch, then tap
-  **Download Latest Log Capture**.
+- Normal play suppresses development telemetry. For a low-FPS report, open
+  **System → Long Performance Capture** before Play. It resets Off on each
+  app launch. Reproduce the issue, then hold the enabled frame-time graph and
+  choose **Stop and save capture**, or background the app to save. Capture also
+  saves after its five-minute limit. Reopen the launcher and select
+  **System → Download Latest Log Capture**.
   Save or share the dated text bundle from **Files → On My iPhone/iPad → Theft4
   → Diagnostics**. Include the device, route, graphics settings, play duration
   and whether the device felt hot. Profiling adds overhead; also describe an
-  ordinary run with capture off.
+  ordinary run with capture off. See the [full capture and submission guide](../README.md#capture-and-submit-a-performance-log).
 
-TestFlight testers update the signed 0.2.1 build in TestFlight, then follow the
+TestFlight testers update an available signed build in TestFlight, then follow the
 same game-folder and diagnostics steps. The official app identifier is
 `com.lukebrosious.theft4` for both distribution methods. The historical Lab
 app uses `com.theft4.m5lab` and keeps separate game files and saves. Before

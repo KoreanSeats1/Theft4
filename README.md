@@ -44,6 +44,16 @@ identity remains `com.lukebrosious.theft4`.
 > 2416 × 1359 without upscaling. Locked 30 FPS across every scene/device is not
 > established.
 
+## Get Theft4 running on your iPhone or iPad
+
+Start with the [installation guide](docs/IOS_SIDELOAD_INSTALL.md). Want Codex or
+Claude to help with setup? **[Copy the complete setup prompt](docs/IOS_SIDELOAD_INSTALL.md#copy-and-paste-setup-prompt-for-codex-or-claude)**
+into a session that can access your computer's files and tools. It walks the
+assistant through the official release, signing, exact game/TU8 validation,
+file transfer, one-time texture preparation where required, and a gameplay check.
+A chat-only assistant can guide the manual steps; Apple sign-in and device
+actions may still require you. You supply your own supported game files.
+
 ## What changed in 0.3.1
 
 The performance follow-up reduces cold geometry conversion, upload and driver

@@ -40,6 +40,7 @@
 #include "dirty_state_delta.h"
 #include "frame_constant_arena.h"
 #include "native_working_set.h"
+#include "native_geometry_retirement.h"
 #include "native_immutable_bindings.h"
 #include "native_preparation_task.h"
 #include "native_constant_projection.h"
@@ -1636,6 +1637,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void ReleaseUnusedTextureImages(
       uint32_t submitted_frame, const std::shared_ptr<const NativeTextureResource>& present_source);
   void ReleaseUnusedBufferResources(uint32_t submitted_frame);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  void ReleaseUnusedMetalBufferResources(uint32_t submitted_frame);
+#endif
   template <typename Visitor>
   static void VisitProtectedTextureGenerations(const NativeCommand& command, Visitor&& visit) {
     const auto texture = [&](const auto& resource) {
@@ -2056,6 +2060,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   std::unordered_map<uint32_t, std::shared_ptr<NativeVertexDeclaration>> vertex_declarations_;
   std::mutex buffer_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeBufferResource>> buffer_resources_;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  NativeGeometryRetirement metal_buffer_retirement_;
+#endif
   std::unordered_set<uint32_t> dirty_buffer_handles_;
   NativeBufferAliasIndex buffer_alias_index_;
   std::unordered_set<uint32_t> unindexed_buffer_handles_;

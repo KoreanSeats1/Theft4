@@ -36,6 +36,9 @@ void SetOutputPolicy(theft4_output_policy output) {
   launch_output = output;
   if (bound_layer) {
     bound_layer.contentsScale = 1.0;
+    // Projection uses the exact device shape. Fill the view even when a lower
+    // pixel budget rounds its width/height by one pixel.
+    bound_layer.contentsGravity = output.native_aspect ? kCAGravityResize : kCAGravityResizeAspect;
     bound_layer.drawableSize = CGSizeMake(output.output_width, output.output_height);
   }
   os_unfair_lock_unlock(&presenter_lock);
@@ -131,6 +134,18 @@ theft4_output_policy theft4_metal_get_output_policy(void) {
   const auto output = launch_output;
   os_unfair_lock_unlock(&presenter_lock);
   return output;
+}
+
+void theft4_metal_set_native_aspect_output(uint32_t render_height, bool fsr1,
+    uint32_t native_width, uint32_t native_height, bool fixed_1080_output_profile,
+    double safe_left, double safe_top, double safe_right, double safe_bottom) {
+  auto policy = theft4_output_policy_for_native_aspect_lab(
+      render_height, fsr1, native_width, native_height, fixed_1080_output_profile);
+  policy.safe_left = safe_left;
+  policy.safe_top = safe_top;
+  policy.safe_right = safe_right;
+  policy.safe_bottom = safe_bottom;
+  SetOutputPolicy(policy);
 }
 
 bool theft4_metal_has_layer(void) {

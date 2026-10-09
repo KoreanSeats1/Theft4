@@ -2,6 +2,7 @@
 #include "theft4_render_plan.h"
 #include "theft4_host_program.h"
 #include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <set>
@@ -165,11 +166,17 @@ struct FramePlan {
   std::optional<SurfaceView> output;
 };
 // Join consecutive draws only when their attachment storage is unchanged and
-// the new pass simply loads the previous stores. Clears/resolves and copies
-// remain explicit boundaries; this avoids an encoder per title draw.
+// the new pass simply loads the previous stores. Explicit full clear-only
+// initializations can fold into that pass's load actions when their attachment
+// extents/samples agree. Rectangle clears, copies, resolves and clears after
+// draws remain boundaries; no geometry is reordered or removed.
 // The returned pass also lets a producer append one draw directly, avoiding
 // a temporary one-element vector when the attachment set can be joined.
 Pass& AppendPass(FramePlan&,Pass);
+// Explicit clear submission may combine disjoint full-clear attachments.
+// Never use this for an empty draw scope that will receive geometry later.
+// Partial clears and invalid clear contracts fall back to ordinary boundaries.
+Pass& AppendClearPass(FramePlan&,Pass);
 // After successful frame admission only: identify stores overwritten before
 // any read. Bits0..3=color,4=depth,5=stencil; final cross-frame stores survive.
 std::vector<uint8_t> DeadAttachmentStores(const FramePlan&);
@@ -179,6 +186,15 @@ bool DeadClearPass(const Pass&,uint8_t dead_stores);
 // Applied after admission. Only host utilities proven to overwrite every
 // color pixel can omit the preceding attachment load/clear.
 std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan&);
+// Worker-owned CPU scratch. Analysis rewrites both result lists, with map
+// nodes confined to this reusable arena. Large inputs use ordinary allocator
+// overflow for that call; no GPU owner or map node escapes the analysis.
+struct FrameAttachmentAnalysis {
+  static constexpr size_t kArenaBytes=64*1024;
+  std::vector<uint8_t> dead_stores,redundant_loads;
+  std::unique_ptr<std::byte[]> arena=std::make_unique<std::byte[]>(kArenaBytes);
+};
+void AnalyzeFrameAttachments(const FramePlan&,FrameAttachmentAnalysis&);
 // Exact, unscaled linear UNORM materialization can use a native image copy.
 // All conversions, sample mappings, HDR and partial coverage stay shaders.
 std::optional<ImageCopy> IdentityResolveCopy(const FramePlan&,const Pass&);
@@ -191,6 +207,10 @@ bool SampledViewContains(const SampledSurfaceView&,const SurfaceView&);
 bool SampledViewDefined(const SampledSurfaceView&,const SurfaceContents&);
 struct DrawVertexRange {const Capture* capture=nullptr;uint64_t maximum_vertex=0;bool index_has_restart=false;};
 using DrawVertexRanges=std::vector<DrawVertexRange>;
+struct FrameValidationScratch {
+  DrawVertexRanges draw_ranges;
+  void Clear(){draw_ranges.clear();}
+};
 // Admission is transactional. Reads/loads of discarded or undefined content,
 // render/sample feedback, mismatched resolves and incompatible draw targets
 // reject before encoding. Draw coverage never proves whole-target definition:
@@ -198,4 +218,9 @@ using DrawVertexRanges=std::vector<DrawVertexRange>;
 bool ValidateFrame(const FramePlan&,const SurfaceContents& initial,
                    SurfaceContents& final,std::string& error,IndexRangeCache* indices=nullptr,
                    DrawVertexRanges* validated_draws=nullptr);
+// Reusable worker admission storage. Final contents remain transactional;
+// scratch ranges are empty on failure and must be cleared after consumption.
+bool ValidateFrame(const FramePlan&,const SurfaceContents& initial,
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices,
+                   FrameValidationScratch& scratch);
 }

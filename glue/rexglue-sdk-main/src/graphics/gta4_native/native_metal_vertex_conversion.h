@@ -3,6 +3,8 @@
 #include <array>
 #include <compare>
 #include <cstdint>
+#include <cstddef>
+#include <cstring>
 #include <optional>
 #include <type_traits>
 
@@ -27,6 +29,62 @@ struct NativeMetalVertexConversion {
   NativeMetalVertexConversionPlan plan;
   uint64_t identity=0; // Monotonic allocation identity, never a content hash.
 };
+
+struct NativeMetalVertexConversionCounts {
+  uint64_t components_16=0,dec3n=0,color_uint=0;
+};
+
+// Execute the already admitted semantic recipe. Unknown layouts continue to
+// use the declaration/shader converter. Writes retain declaration order,
+// including overlapping fields, incomplete records and unaligned streams.
+inline NativeMetalVertexConversionCounts ConvertNativeMetalVertexPayload(
+    uint8_t* destination,const uint8_t* source,size_t size,
+    const NativeMetalVertexConversionPlan& plan,uint32_t offset) {
+  NativeMetalVertexConversionCounts counts;
+  const auto endian=[&](size_t begin,size_t end) {
+    size_t i=begin;
+    for(;end-i>=4;i+=4) {
+      uint32_t value;std::memcpy(&value,source+i,4);
+      value=__builtin_bswap32(value);std::memcpy(destination+i,&value,4);
+    }
+    if(i<end)std::memcpy(destination+i,source+i,end-i);
+  };
+  const auto writes=[&](size_t begin,size_t end) {
+    for(uint32_t n=0;n<plan.count;++n) {
+      const auto& write=plan.writes[n];
+      const size_t width=write.kind==1?size_t(write.components_16)*2:4;
+      if(width>end-begin||write.offset>end-begin-width)continue;
+      for(size_t i=begin+write.offset;i<=end-width;i+=plan.stride) {
+        if(write.kind==1) {
+          for(uint32_t c=0;c<write.components_16;++c) {
+            uint16_t value;std::memcpy(&value,source+i+c*2,2);
+            value=__builtin_bswap16(value);std::memcpy(destination+i+c*2,&value,2);
+          }
+          ++counts.components_16;
+        } else if(write.kind==2) {
+          uint32_t value;std::memcpy(&value,destination+i,4);
+          value=(value&0x3FFFFFFF)|0x40000000;std::memcpy(destination+i,&value,4);
+          ++counts.dec3n;
+        } else if(write.kind==3) {
+          std::swap(destination[i],destination[i+2]);++counts.color_uint;
+        }
+      }
+    }
+  };
+  if(!plan.count||!plan.stride||offset>=size) {endian(0,size);return counts;}
+  // Small record-aligned tiles keep endian conversion and fixups in cache.
+  // Word boundaries must match the original whole-buffer endian operation.
+  // Cross-record fields use the original whole-buffer, element-major order.
+  if(plan.whole_records&&!(plan.stride%4)&&!(offset%4)) {
+    endian(0,offset);
+    const size_t tile=std::max(size_t(1),size_t(4096)/plan.stride)*plan.stride;
+    for(size_t begin=offset;begin<size;) {
+      const size_t end=begin+std::min(tile,size-begin);
+      endian(begin,end);writes(begin,end);begin=end;
+    }
+  } else {endian(0,size);writes(offset,size);}
+  return counts;
+}
 
 template<class Declaration,class Shader,class ComponentCount,class Location>
 std::optional<NativeMetalVertexConversionPlan> BuildNativeMetalVertexConversionPlan(

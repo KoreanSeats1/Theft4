@@ -154,6 +154,62 @@ static void Differential() {
   assert(!system.PrepareConvertedVertexPayload(&resource,invalid,0,&recipe));
   std::cout<<"live converter/cache differential: passed (5000 randomized layouts, 15000 suffix comparisons)\n";
 }
+static void RecipeDifferential() {
+  std::mt19937 rng(917381);
+  constexpr std::array<uint32_t,13> types{0x2C2359,0x1A235A,0x2C235F,0x1A2360,
+      0x1A2187,0x182886,0x2C83A4,0x2C23A5,0x2A23B9,0x1A23A6,0xDEADBEEF,0x2C2059,0x1A215A};
+  uint64_t tiled=0,fallback=0;
+  for(size_t trial=0;trial<40000;++trial) {
+    const size_t size=trial<100?trial:128+rng()%20000;
+    std::vector<uint8_t> source(size),reference(size),actual(size);
+    for(auto& byte:source)byte=uint8_t(rng());
+    Declaration declaration;Shader shader;const uint32_t stride=1+rng()%128;
+    for(size_t n=0,end=rng()%20;n<end;++n) {
+      declaration.elements.push_back({uint32_t(rng()%3),uint32_t(rng()%(stride+8)),
+          types[rng()%types.size()],uint8_t(rng()%4),uint8_t(rng()%4)});
+      const auto& e=declaration.elements.back();
+      if(rng()%3)shader.vertex_inputs.push_back({ConvertVertexUsageToLocation(e.usage,e.usage_index),Numeric(rng()%3)});
+    }
+    for(uint32_t stream=0;stream<3;++stream) {
+      const auto plan=Plan(declaration,shader,stream,stride);assert(plan);
+      const uint32_t offset=size?rng()%size:0;
+      const uint32_t canonical=plan->Offset(offset);
+      const auto expected=ConvertGuestVertexPayload(reference.data(),source.data(),size,declaration,shader,stream,canonical,stride);
+      const auto result=ConvertNativeMetalVertexPayload(actual.data(),source.data(),size,*plan,canonical);
+      assert(reference==actual);
+      assert(result.components_16==expected.components_16&&result.dec3n==expected.dec3n&&result.color_uint==expected.color_uint);
+      (plan->whole_records&&!(plan->stride%4)&&!(canonical%4)?tiled:fallback)++;
+    }
+  }
+  std::cout<<"compiled recipe differential: passed (120000 full-byte/count comparisons, tiled="<<tiled<<" fallback="<<fallback<<")\n";
+}
+static void RecipeBenchmark() {
+  // Streaming burst, including float-only attributes and common packed fields.
+  for(bool packed:{false,true}) {
+    Declaration declaration{{{0,0,0x2A23B9,0,0},{0,12,0x2C23A5,3,0},
+        {0,20,packed?0x1A2187u:0x2C83A4u,3,1},{0,24,packed?0x2C235Fu:0x2C23A5u,3,2}}};
+    Shader shader{{{0,Numeric::kFloat},{4,Numeric::kFloat},{5,Numeric::kFloat},{6,Numeric::kFloat}}};
+    auto plan=Plan(declaration,shader,0,32);assert(plan);
+    constexpr size_t bytes=512*1024,sources=128;
+    std::vector<uint8_t> source(bytes),output(bytes);for(size_t i=0;i<bytes;++i)source[i]=uint8_t(i*13);
+    std::array<std::vector<double>,2> times;uint64_t checksum=0;
+    for(size_t trial=0;trial<8;++trial)for(size_t order=0;order<2;++order) {
+      const size_t mode=(trial+order)%2;
+      const auto began=std::chrono::steady_clock::now();
+      for(size_t mesh=0;mesh<sources;++mesh) {
+        if(mode)ConvertNativeMetalVertexPayload(output.data(),source.data(),bytes,*plan,0);
+        else ConvertGuestVertexPayload(output.data(),source.data(),bytes,declaration,shader,0,0,32);
+        checksum+=output[mesh*32];
+      }
+      times[mode].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count());
+    }
+    for(size_t mode=0;mode<2;++mode) {
+      auto& t=times[mode];std::sort(t.begin(),t.end());
+      std::cout<<"recipe benchmark: packed="<<packed<<" mode="<<(mode?"compiled":"legacy")
+          <<" meshes="<<sources<<" total-bytes="<<bytes*sources<<" median-ms="<<t[t.size()/2]<<" checksum="<<checksum<<"\n";
+    }
+  }
+}
 static void Benchmark() {
   Declaration declaration{{{0,0,0x2C2359,0,0},{0,4,0x1A2187,3,0}}};
   std::array<Shader,4> shaders;
@@ -340,5 +396,5 @@ static void GeometryPublicationBenchmark(bool reverse=false) {
   };
   const auto first=run(reverse);const auto second=run(!reverse);assert(first==second);
 }
-int main(int argc,char** argv){Differential();SharedOwnership();Benchmark();
+int main(int argc,char** argv){Differential();RecipeDifferential();RecipeBenchmark();SharedOwnership();Benchmark();
   GeometryPublicationBenchmark(argc>1&&std::strcmp(argv[1],"--reverse-publication")==0);}

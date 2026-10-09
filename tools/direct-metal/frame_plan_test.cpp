@@ -47,6 +47,97 @@ int main() {
     assert(!DeadClearPass(overwrite,masks[1])); // Final stored content remains observable.
   }
 
+  {
+    FramePlan alias;alias.sequence=1;
+    auto ds=SurfaceFor(301),color=SurfaceFor(302);ds->format=Format::Depth32FloatStencil8;
+    alias.surfaces={ds,color};Pass seed;seed.depth=Color(301);seed.depth->view.aspect=Aspect::Depth;
+    seed.stencil=seed.depth;seed.stencil->view.aspect=Aspect::Stencil;
+    Pass convert;convert.colors[0]=Color(302);
+    HostDraw pack;pack.program=HostProgram::PackedDepthAlias;pack.pipeline.colors[0]=color->format;
+    pack.scissor={0,0,4,4};auto bytes=std::make_shared<Bytes>();bytes->generation=1;bytes->value.resize(64);
+    pack.constants={bytes,0,64};pack.fetches[0].produced=seed.depth->view;
+    pack.fetches[1].produced=seed.stencil->view;
+    pack.fetches[0].sampler=pack.fetches[1].sampler=std::make_shared<Sampler>();
+    convert.commands={pack};alias.commands={seed,convert};alias.output=convert.colors[0]->view;
+    assert(ValidateFrame(alias,{},result,error));assert(RedundantAttachmentLoads(alias)==std::vector<uint8_t>({0,1}));
+    auto full=alias;std::get<Pass>(full.commands[1]).colors[0]->load=Load::Discard;
+    // Admission remains conservative; only the post-admission encoder skips
+    // this load, after the complete plan has established defined contents.
+    assert(!ValidateFrame(full,{},result,error));
+    for(int boundary=0;boundary<5;++boundary) {
+      auto partial=alias;auto* draw=GetHostDraw(std::get<Pass>(partial.commands[1]).commands[0]);
+      if(boundary==0)draw->scissor[2]=2;
+      if(boundary==1)draw->pipeline.blends[0].enabled=true;
+      if(boundary==2)draw->pipeline.blends[0].write_mask=7;
+      if(boundary==3)draw->pipeline.depth_test=true;
+      if(boundary==4)draw->pipeline.sample_mask=0;
+      assert(RedundantAttachmentLoads(partial)==std::vector<uint8_t>({0,0}));
+    }
+  }
+
+  // Individual full MRT/depth/stencil clears fold into the first geometry
+  // pass, but never add attachments to a different real draw's contract.
+  {
+    FramePlan reference;reference.sequence=1;
+    auto a=SurfaceFor(201),b=SurfaceFor(202),ds=SurfaceFor(203);
+    ds->format=Format::Depth32FloatStencil8;reference.surfaces={a,b,ds};
+    Pass ca;ca.colors[0]=Color(201);ca.colors[0]->clear_color={0.125,0.25,0.5,1};
+    Pass cb;cb.colors[1]=Color(202);cb.colors[1]->clear_color={0.75,0.5,0.25,1};
+    Pass cd;cd.depth=Color(203);cd.depth->view.aspect=Aspect::Depth;cd.depth->clear_depth=0.375;
+    Pass cs;cs.stencil=Color(203);cs.stencil->view.aspect=Aspect::Stencil;cs.stencil->clear_stencil=87;
+    Pass geometry;geometry.colors[0]=Color(201,Load::Load);geometry.colors[1]=Color(202,Load::Load);
+    geometry.depth=cd.depth;geometry.stencil=cs.stencil;geometry.depth->load=geometry.stencil->load=Load::Load;
+    auto capture=DrawFor();capture->draw.pipeline.colors[1]=b->format;
+    capture->draw.pipeline.depth=capture->draw.pipeline.stencil=ds->format;
+    geometry.commands={FrameDraw{capture,{}}};reference.commands={ca,cb,cd,cs,geometry};
+    auto folded=reference;folded.commands.clear();
+    for(size_t i=0;i<reference.commands.size();++i) {
+      const auto& pass=std::get<Pass>(reference.commands[i]);
+      if(i<4)AppendClearPass(folded,pass);else AppendPass(folded,pass);
+    }
+    assert(folded.commands.size()==1);
+    const auto& combined=std::get<Pass>(folded.commands[0]);assert(combined.commands.size()==1);
+    assert(combined.colors[0]->load==Load::Clear&&combined.colors[0]->clear_color==ca.colors[0]->clear_color);
+    assert(combined.colors[1]->load==Load::Clear&&combined.colors[1]->clear_color==cb.colors[1]->clear_color);
+    assert(combined.depth->load==Load::Clear&&combined.depth->clear_depth==0.375);
+    assert(combined.stencil->load==Load::Clear&&combined.stencil->clear_stencil==87);
+    SurfaceContents ref_final,fold_final;DrawVertexRanges ref_draws,fold_draws;
+    assert(ValidateFrame(reference,{},ref_final,error,nullptr,&ref_draws));
+    assert(ValidateFrame(folded,{},fold_final,error,nullptr,&fold_draws));
+    assert(ref_final==fold_final&&ref_draws.size()==fold_draws.size()&&ref_draws[0].capture==fold_draws[0].capture);
+    // The producer often appends its draw AFTER AppendPass returns.
+    auto empty_geometry=geometry;empty_geometry.commands.clear();
+    FramePlan deferred=reference;deferred.commands={ca,cb,cd,cs};
+    auto& joined_geometry=AppendPass(deferred,empty_geometry);joined_geometry.commands=geometry.commands;
+    assert(deferred.commands.size()==4&&joined_geometry.colors[0]->load==Load::Load&&joined_geometry.stencil->load==Load::Clear);
+    auto isolated=reference;isolated.commands={ca};auto other=cb;
+    // A real first-use draw arrives as an empty, all-Clear attachment scope;
+    // its producer appends the draw only after AppendPass has returned.
+    auto first_use_plan=isolated;
+    auto second_capture=DrawFor();second_capture->draw.pipeline.colors={};
+    second_capture->draw.pipeline.colors[1]=b->format;
+    auto& first_use=AppendPass(first_use_plan,other);first_use.commands={FrameDraw{second_capture,{}}};
+    const bool first_use_valid=ValidateFrame(first_use_plan,{},result,error);
+    if(!first_use_valid)std::cerr<<"Deferred first-use draw rejected: "<<error<<'\n';
+    assert(first_use_plan.commands.size()==2&&first_use_valid);
+    // A load-only empty scope may be followed by a draw with no color-zero.
+    other.colors[1]->load=Load::Load;AppendPass(isolated,other);assert(isolated.commands.size()==2);
+    isolated.commands={ca};other=cb;other.commands={RectClear{}};AppendClearPass(isolated,other);assert(isolated.commands.size()==2);
+    isolated.commands={ca};other=cb;other.colors[1]->resolve=SurfaceView{{201,1},0,0,Aspect::Color};
+    AppendClearPass(isolated,other);assert(isolated.commands.size()==2);
+    isolated.commands={ca};auto smaller=std::make_shared<Surface>(*b);smaller->width=2;isolated.surfaces[1]=smaller;
+    AppendClearPass(isolated,cb);assert(isolated.commands.size()==2);
+    auto multisampled=std::make_shared<Surface>(*b);multisampled->samples=4;isolated.surfaces[1]=multisampled;
+    isolated.commands={ca};AppendClearPass(isolated,cb);assert(isolated.commands.size()==2);
+    isolated=reference;isolated.commands={ca,ImageCopy{}};AppendClearPass(isolated,cb);assert(isolated.commands.size()==3);
+    isolated=reference;isolated.commands={ca};AppendClearPass(isolated,ca);assert(isolated.commands.size()==2);
+    isolated=reference;isolated.commands={ca};other=cb;other.colors[1]->view=ca.colors[0]->view;
+    AppendClearPass(isolated,other);assert(isolated.commands.size()==2);
+    isolated=reference;auto other_ds=std::make_shared<Surface>(*ds);other_ds->key={204,1};isolated.surfaces.push_back(other_ds);
+    isolated.commands={cd};other=cs;other.stencil->view.surface=other_ds->key;
+    AppendClearPass(isolated,other);assert(isolated.commands.size()==2);
+  }
+
   // Consecutive title draws retain their order in a single encoder. Admission
   // still sees the actual initial clear; later clears, target changes, copies,
   // discard stores and resolves are boundaries and cannot disappear.

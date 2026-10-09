@@ -21,6 +21,22 @@ inline size_t NativeMaskedConstantExtent(const NativeConstantMask& mask) {
   return 0;
 }
 
+// Shader reflection is immutable for a pipeline template. Merge its coverage
+// and determine both bank extents once, rather than repeating it for every draw.
+// Runtime validation/feature switches may still request the original full banks.
+struct NativeShaderConstantLayout {
+  NativeConstantUsage usage;
+  std::array<size_t,2> extents{};
+  static NativeShaderConstantLayout Prepare(const NativeConstantUsage& vertex,
+                                            const NativeConstantUsage* pixel) {
+    NativeShaderConstantLayout result;result.usage=vertex;
+    if(pixel)result.usage.Merge(*pixel);
+    for(size_t bank=0;bank<2;++bank)
+      result.extents[bank]=NativeMaskedConstantExtent(result.usage.banks[bank]);
+    return result;
+  }
+};
+
 inline bool NativeConstantMaskContains(const NativeConstantMask& covering,
                                       const NativeConstantMask& required) {
   for (size_t i = 0; i < covering.size(); ++i)

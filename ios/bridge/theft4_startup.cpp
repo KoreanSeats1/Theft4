@@ -6,6 +6,12 @@
 #include "theft4_metal_presenter.h"
 #include "theft4_motion_blur.h"
 #include "theft4_performance_defaults.h"
+#include "theft4_mod_mount.h"
+#include "theft4_timecycle_archive.h"
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+#include "gta4_aspect_hooks.h"
+#include "gta4_gameplay_mods.h"
+#endif
 #include "gta4_installer.h"
 #include <rex/image_info.h>
 #include <rex/cvar.h>
@@ -24,9 +30,13 @@
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 REXCVAR_DECLARE(bool, vulkan_presenter_probe_swapchain_pixels);
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+REXCVAR_DECLARE(bool, gta4_trace_aspect);
+#endif
 REXCVAR_DECLARE(std::string, render_target_path_vulkan);
 REXCVAR_DECLARE(bool, vulkan_dynamic_rendering);
 REXCVAR_DECLARE(bool, vulkan_submit_on_primary_buffer_end);
@@ -121,7 +131,20 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             rex::LogConfig logging;
             logging.log_file = log_path.c_str();
             logging.log_to_console = true;
+            // Explicit diagnostic launches can verify which guest file route
+            // supplies the time-cycle table. Retail launches never enable this.
+            if (const char* trace = std::getenv("THEFT4_MOD_FILE_TRACE");
+                trace && std::strcmp(trace, "1") == 0) {
+                logging.category_levels["fs"] = spdlog::level::trace;
+                logging.category_levels["krnl"] = spdlog::level::trace;
+                REXCVAR_SET(log_noisy, true);
+            }
             rex::InitLogging(logging);
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+            if (const char* trace = std::getenv("THEFT4_TRACE_ASPECT");
+                trace && std::strcmp(trace, "1") == 0)
+                REXCVAR_SET(gta4_trace_aspect, true);
+#endif
         }
         if (const char* flight = std::getenv("THEFT4_GPU_FLIGHT_TRACE");
             flight && std::string_view(flight) == "1") {
@@ -240,9 +263,12 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXLOG_INFO("Theft4 depth of field: {} (native title multiplier)",
                     depth_of_field_value && std::string_view(depth_of_field_value) == "0" ? "off" : "on");
         const auto output = theft4_metal_get_output_policy();
-        // Ship the proven projection path while full device-aspect world,
-        // shadow, post-process and HUD transforms remain under validation.
-        REXCVAR_SET(gta4_aspect_ratio, std::string("16:9"));
+        REXCVAR_SET(gta4_aspect_ratio, std::string(output.native_aspect ? "auto" : "16:9"));
+        gta4::aspect::ConfigureDisplay(output.native_aspect
+            ? gta4::aspect::Extent{output.aspect_width, output.aspect_height}
+            : gta4::aspect::Extent{}, output.native_aspect
+            ? gta4::aspect::SafeInsets{output.safe_left, output.safe_top, output.safe_right, output.safe_bottom}
+            : gta4::aspect::SafeInsets{});
         // Use the policy's logical size, not the physical drawable: its FSR
         // ratio produces exactly the selected 720p, 900p or 1080p scene.
         REXCVAR_SET(video_mode_width, int32_t(output.video_width));
@@ -252,11 +278,12 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         REXCVAR_SET(present_effect, output.fsr1 ? "fsr" : "bilinear");
         REXCVAR_SET(present_fsr_sharpness_reduction,
                     REXCVAR_GET(gta4_fsr1_sharpness_reduction));
-        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect=16:9 "
+        REXLOG_INFO("Theft4 output policy: render={}x{} output={}x{} aspect={} "
                     "upscaler={} quality=quality sharpness-reduction={} "
                     "fps-counter=content-sequence",
                     output.render_width, output.render_height,
                     output.output_width, output.output_height,
+                    output.native_aspect ? "display" : "16:9",
                     output.fsr1 ? "fsr1" : "native",
                     REXCVAR_GET(present_fsr_sharpness_reduction));
         // A same-scene iPad A/B showed that forced 8x filtering introduced
@@ -617,8 +644,26 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                     REXCVAR_GET(vulkan_transfer_in_draw_pass),
                     REXCVAR_GET(vulkan_tight_render_area));
         event(context, "Initializing Xbox services and registering the real AOT game functions");
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+        const auto modEnabled = [](const char* key) {
+            const char* value = std::getenv(key);
+            return value && std::strcmp(value, "1") == 0;
+        };
+        gta4::mods::ConfigureGameplay(modEnabled("THEFT4_MOD_GOD_MODE"),
+                                     modEnabled("THEFT4_MOD_UNLIMITED_AMMO"));
+#endif
         if (runtime.Setup(PPCImageConfig, std::move(config)) != 0)
             throw std::runtime_error("Xbox/AOT runtime setup failed");
+        if (const char* modDirectory = std::getenv("THEFT4_MOD_TIMECYCLE_DIRECTORY");
+            modDirectory && *modDirectory) {
+            event(context, "Preparing Custom Time Cycle by SBerrix; original game files preserved");
+            const auto archive = theft4::mods::PrepareTimeCycleArchive(game_directory,
+                modDirectory, support / "mods" / "custom-timecycle");
+            theft4::mods::MountTimeCycle(*runtime.file_system(), modDirectory, archive);
+            event(context, archive.empty()
+                ? "Custom Time Cycle by SBerrix enabled for loose game files"
+                : "Custom Time Cycle by SBerrix enabled for packed and loose game files");
+        }
         event(context, "Xbox services initialized; resolving game imports and applying TU8");
         if (runtime.LoadXexImage("game:/default.xex") != 0)
             throw std::runtime_error("Game module or Xbox import resolution failed");

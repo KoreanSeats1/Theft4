@@ -3201,11 +3201,7 @@ uint32_t GetFloat32VertexElementComponentCount(uint32_t type) {
   }
 }
 
-struct VertexPayloadConversionCounts {
-  uint64_t components_16 = 0;
-  uint64_t dec3n = 0;
-  uint64_t color_uint = 0;
-};
+using VertexPayloadConversionCounts = NativeMetalVertexConversionCounts;
 
 template <typename Declaration, typename Shader>
 VertexPayloadConversionCounts ConvertGuestVertexPayload(uint8_t* destination, const uint8_t* source,
@@ -4593,6 +4589,9 @@ bool Gta4NativeGraphicsSystem::SubmitTitleCommand(uint32_t title_id, uint32_t ab
         auto old = buffer_resources_.find(lifetime.resource);
         if (old != buffer_resources_.end() && old->second) generation = old->second->generation;
         buffer_resources_.erase(lifetime.resource);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+        metal_buffer_retirement_.Erase(lifetime.resource);
+#endif
         buffer_alias_index_.Erase(lifetime.resource);
         unindexed_buffer_handles_.erase(lifetime.resource);
         dirty_buffer_handles_.erase(lifetime.resource);
@@ -5439,6 +5438,9 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
         released_buffer_retained_bytes = buffer->second->payload.capacity();
       }
       erased_buffer = buffer_resources_.erase(release.resource) != 0;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+      metal_buffer_retirement_.Erase(release.resource);
+#endif
       buffer_alias_index_.Erase(release.resource);
       unindexed_buffer_handles_.erase(release.resource);
       dirty_buffer_handles_.erase(release.resource);
@@ -6217,6 +6219,9 @@ Gta4NativeGraphicsSystem::CaptureBufferResource(uint32_t handle) {
   resource->payload = std::move(payload);
   const bool replacing = existing != buffer_resources_.end() && existing->second;
   buffer_resources_[handle] = resource;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  metal_buffer_retirement_.Track(handle);
+#endif
   if (NativeBufferAliasInvalidationEnabled()) {
     const auto key = NativeBufferBackingKey(memory_, data_address, data_size);
     if (key && buffer_alias_index_.Insert(handle, *key, data_size)) {
@@ -7603,6 +7608,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         {
           std::lock_guard lock(buffer_resource_mutex_);
           buffer_resources_.clear();
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+          metal_buffer_retirement_.Clear();
+#endif
           buffer_alias_index_.Clear();
           unindexed_buffer_handles_.clear();
           dirty_buffer_handles_.clear();
@@ -20658,6 +20666,9 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
     buffer_alias_index_.Erase(candidate.handle);
     unindexed_buffer_handles_.erase(candidate.handle);
     buffer_resources_.erase(entry);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    metal_buffer_retirement_.Erase(candidate.handle);
+#endif
     if (ios_pressure) memory_pressure_buffer_freed_bytes_ += candidate.retained_bytes;
     if (ios_pressure && memory_pressure_buffer_freed_bytes_ -
             memory_pressure_buffer_start_bytes_ >= 33554432) break;
@@ -20670,6 +20681,40 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedBufferResources(uint32_t submitted_f
         reclaimed_resources, reclaimed_bytes, cache_bytes);
   }
 }
+
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+void Gta4NativeGraphicsSystem::ReleaseUnusedMetalBufferResources(uint32_t frame) {
+  // Metal does not execute the Vulkan callback's CPU-shadow housekeeping.
+  // Inspect at most 32 handles per title frame, not an entire source map or
+  // sorted candidate list. Queued commands pin their source generations;
+  // independent Metal views pin their immutable uploads after cache eviction.
+  NativeWorkBudget release_budget(8, 2 * 1024 * 1024);
+  std::lock_guard lock(buffer_resource_mutex_);
+  metal_buffer_retirement_.Sweep(32, [&](uint32_t handle) {
+    const auto found = buffer_resources_.find(handle);
+    if (found == buffer_resources_.end() || !found->second) return true;
+    const auto& owner = found->second;
+    const auto used = owner->last_used_frame.load(std::memory_order_relaxed);
+    if (!ShouldReclaimNativeBuffer(owner.use_count() == 1, false, frame, used,
+                                  kNativeBufferCacheRetentionFrames)) return false;
+    uint64_t bytes = owner->payload.capacity();
+    bytes += owner->IndexPayload(false).capacity() + owner->IndexPayload(true).capacity();
+    for (const auto& conversion : owner->converted_vertex_payloads)
+      bytes += conversion.Data().capacity();
+    // Permit one oversized retired source, then defer more destruction until
+    // another frame. A byte limit never clips or mutates a source allocation.
+    if (!release_budget.Consume(bytes)) return false;
+    RecordNativeMemoryLifecycle(memory::ResourceKind::kBuffer, memory::LifecycleAction::kDestroy,
+        memory::LifecycleReason::kUnused, handle, owner->generation, 0,
+        owner->payload.size(), bytes, 0, used, owner->flags);
+    dirty_buffer_handles_.erase(handle);
+    buffer_alias_index_.Erase(handle);
+    unindexed_buffer_handles_.erase(handle);
+    buffer_resources_.erase(found);
+    return true;
+  });
+}
+#endif
 
 void Gta4NativeGraphicsSystem::DestroyNativeSurfaceImage(NativeSurfaceImage& image) {
   if (auto it = surface_images_by_handle_.find(image.descriptor.handle); it != surface_images_by_handle_.end()) {
@@ -22817,9 +22862,14 @@ Gta4NativeGraphicsSystem::PrepareConvertedVertexPayload(
     candidate.created_frame = active_texture_frame_;
     candidate.last_used_frame = active_texture_frame_;
     candidate.payload.resize(resource->payload.size());
-    conversions = ConvertGuestVertexPayload(
-        candidate.payload.data(), resource->payload.data(), resource->payload.size(), declaration,
-        shader, vertex_stream, conversion_offset, stream_state.stride);
+    if(metal_conversion) {
+      conversions=ConvertNativeMetalVertexPayload(candidate.payload.data(),resource->payload.data(),
+          resource->payload.size(),metal_conversion->plan,conversion_offset);
+    } else {
+      conversions = ConvertGuestVertexPayload(
+          candidate.payload.data(), resource->payload.data(), resource->payload.size(), declaration,
+          shader, vertex_stream, conversion_offset, stream_state.stride);
+    }
     resource->converted_vertex_payloads.push_back(std::move(candidate));
     converted_payload = &resource->converted_vertex_payloads.back();
     RecordNativeMemoryLifecycle(

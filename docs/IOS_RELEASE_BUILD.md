@@ -1,4 +1,4 @@
-# Build Theft4 0.3 for iPhone and iPad
+# Build Theft4 0.3.1 for iPhone and iPad
 
 Use Release for gameplay. The default build entry points now select the live
 **direct Metal** game renderer explicitly. They require offline iPhoneOS game
@@ -92,7 +92,7 @@ when installing or verifying a launcher-only update.
 
 ```sh
 THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
-  ./tools/build_ios_release.sh 0.3.0
+  ./tools/build_ios_release.sh 0.3.1
 ```
 
 The script explicitly enables direct Metal and its normal-launch default, selects

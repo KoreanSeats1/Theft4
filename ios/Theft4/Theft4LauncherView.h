@@ -29,6 +29,10 @@
 @property(nonatomic, readonly) UISegmentedControl *antiAliasing;
 @property(nonatomic, readonly) UISwitch *performanceCapture;
 @property(nonatomic, readonly) UISwitch *skipIntro;
+@property(nonatomic, readonly) UISwitch *customTimeCycle;
+@property(nonatomic, readonly) UISwitch *nativeAspect;
+@property(nonatomic, readonly) UISwitch *godMode;
+@property(nonatomic, readonly) UISwitch *unlimitedAmmo;
 @property(nonatomic, readonly) UIButton *frameSpeedButton;
 @property(nonatomic, readonly) UIButton *restoreGraphicsButton;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY

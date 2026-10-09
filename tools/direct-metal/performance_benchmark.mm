@@ -8,6 +8,8 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <mach/mach.h>
+#include <pthread.h>
 #include <nlohmann/json.hpp>
 #ifndef THEFT4_PERF_OPTIMIZED
 #define THEFT4_PERF_OPTIMIZED 0
@@ -15,6 +17,13 @@
 using namespace theft4;
 using Clock=std::chrono::steady_clock;
 void Require(bool okay,const std::string& error){if(!okay)throw std::runtime_error(error);}
+static double ThreadCpuMs() {
+  thread_basic_info_data_t info{};mach_msg_type_number_t count=THREAD_BASIC_INFO_COUNT;
+  Require(thread_info(pthread_mach_thread_np(pthread_self()),THREAD_BASIC_INFO,
+      reinterpret_cast<thread_info_t>(&info),&count)==KERN_SUCCESS,"Thread CPU timing unavailable");
+  return (double(info.user_time.seconds)+info.system_time.seconds)*1000+
+      (double(info.user_time.microseconds)+info.system_time.microseconds)/1000;
+}
 render::Buffer Bytes(std::span<const uint8_t> data,uint64_t generation) {
   auto bytes=std::make_shared<render::Bytes>();bytes->generation=generation;bytes->value.assign(data.begin(),data.end());
   return {bytes,0,data.size()};
@@ -135,7 +144,7 @@ int main(int argc,char** argv) {
 #if THEFT4_PERF_OPTIMIZED
     render::IndexRangeCache ranges;
 #endif
-    std::vector<double> validation_ms,submit_ms;render::SurfaceContents final;
+    std::vector<double> validation_ms,submit_ms,submit_cpu_ms;render::SurfaceContents final;
     for(size_t frame=0;frame<12;++frame) {
       const auto began=Clock::now();
 #if THEFT4_PERF_OPTIMIZED
@@ -195,9 +204,10 @@ int main(int argc,char** argv) {
           plan->commands.push_back(std::move(split));
         }
       }
-      const auto before=adapter.ImmutableStats();const auto began=Clock::now();
+      const auto before=adapter.ImmutableStats();const auto cpu_began=ThreadCpuMs();const auto began=Clock::now();
       auto receipt=adapter.Submit(plan,error,nullptr,profile_gpu&&frame==frames-1);Require(bool(receipt),error);
       const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-began).count();
+      const auto cpu_elapsed=ThreadCpuMs()-cpu_began;
       Require(receipt.Wait(error),error);
       if(profile_gpu&&frame==frames-1) {
         pass_timings=receipt.GpuPassTimings();
@@ -207,7 +217,7 @@ int main(int argc,char** argv) {
         }
       }
       if(frame>=2) {
-        submit_ms.push_back(elapsed);const auto after=adapter.ImmutableStats();
+        submit_ms.push_back(elapsed);submit_cpu_ms.push_back(cpu_elapsed);const auto after=adapter.ImmutableStats();
         buffers_created+=after.buffer_creates-before.buffer_creates;uploaded+=after.uploaded_bytes-before.uploaded_bytes;
       }
       if(frame==frames-1) {
@@ -220,6 +230,7 @@ int main(int argc,char** argv) {
     nlohmann::json report{{"optimized",bool(THEFT4_PERF_OPTIMIZED)},{"gpu",renderer.Device().name.UTF8String},
       {"synthetic_validation_draws",600},{"indices_per_draw",65532},{"validation_median_ms",median(validation_ms)},
       {"synthetic_submission_draws",draws_per_frame},{"submission_median_ms",median(submit_ms)},
+      {"submission_thread_cpu_median_ms",median(submit_cpu_ms)},{"submission_thread_cpu_samples_ms",submit_cpu_ms},
       {"submission_samples_ms",submit_ms},{"validation_samples_ms",validation_ms},
       {"measured_frames",submit_ms.size()},{"buffer_allocations",buffers_created},{"uploaded_bytes",uploaded},{"pixel_parity",true}};
     report["texture_working_set"]=image_set.size();

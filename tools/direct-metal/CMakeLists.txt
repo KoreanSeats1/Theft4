@@ -39,6 +39,24 @@ target_include_directories(metal_descriptor_contract_test PRIVATE
   "${ROOT}/tools/XenosRecomp/thirdparty/zstd/lib")
 target_link_libraries(metal_descriptor_contract_test PRIVATE spirv-cross-core libzstd_static)
 enable_testing()
+# Compile the production Darwin wait implementation, including its real
+# event/semaphore transitions, in isolation from the game runtime.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${ROOT}/glue/rexglue-sdk-main/src/core/threading_mac.cpp")
+file(READ "${ROOT}/glue/rexglue-sdk-main/src/core/threading_mac.cpp" wait_source)
+string(FIND "${wait_source}" "struct MultiWaitWakeState {" wait_begin)
+string(FIND "${wait_source}" "template <>\nclass PosixCondition<Mutant>" wait_end)
+math(EXPR wait_length "${wait_end}-${wait_begin}")
+string(SUBSTRING "${wait_source}" ${wait_begin} ${wait_length} wait_body)
+file(WRITE "${CMAKE_BINARY_DIR}/darwin-wait-production.inc" "${wait_body}")
+add_executable(darwin_wait_poll_test darwin_wait_poll_test.cpp)
+target_include_directories(darwin_wait_poll_test PRIVATE "${CMAKE_BINARY_DIR}")
+target_compile_options(darwin_wait_poll_test PRIVATE -UNDEBUG)
+add_test(NAME darwin_wait_poll COMMAND darwin_wait_poll_test)
+add_executable(geometry_retirement_test geometry_retirement_test.cpp)
+target_include_directories(geometry_retirement_test PRIVATE "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native")
+target_compile_options(geometry_retirement_test PRIVATE -UNDEBUG)
+add_test(NAME native_geometry_retirement COMMAND geometry_retirement_test)
 add_executable(lab_resolution_policy_test "${ROOT}/ios/tests/lab_resolution_policy_test.cpp")
 target_include_directories(lab_resolution_policy_test PRIVATE "${ROOT}/ios/bridge"
   "${ROOT}/glue/rexglue-sdk-main/gta4-recomp/src")
@@ -160,6 +178,14 @@ add_executable(frame_plan_test frame_plan_test.cpp)
 target_link_libraries(frame_plan_test PRIVATE render_plan)
 target_compile_options(frame_plan_test PRIVATE -UNDEBUG)
 add_test(NAME frame_plan_contract COMMAND frame_plan_test)
+add_executable(frame_admission_storage_test frame_admission_storage_test.cpp)
+target_link_libraries(frame_admission_storage_test PRIVATE render_plan)
+target_compile_options(frame_admission_storage_test PRIVATE -UNDEBUG)
+add_test(NAME frame_admission_storage COMMAND frame_admission_storage_test)
+add_executable(trait_cache_test trait_cache_test.cpp)
+target_include_directories(trait_cache_test PRIVATE "${ROOT}/ios/bridge")
+target_compile_options(trait_cache_test PRIVATE -UNDEBUG)
+add_test(NAME metal_trait_cache COMMAND trait_cache_test)
 add_executable(resource_admission_cache_test resource_admission_cache_test.cpp)
 target_link_libraries(resource_admission_cache_test PRIVATE render_plan)
 target_compile_options(resource_admission_cache_test PRIVATE -UNDEBUG)
@@ -303,6 +329,18 @@ target_include_directories(metal_upload_page_benchmark PRIVATE "${ROOT}/ios/brid
 target_compile_options(metal_upload_page_benchmark PRIVATE -fobjc-arc)
 target_link_libraries(metal_upload_page_benchmark PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
 
+add_executable(metal_geometry_stream_test geometry_stream_upload_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_geometry_stream_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_geometry_stream_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_geometry_stream_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_geometry_pressure_test geometry_pressure_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
+target_include_directories(metal_geometry_pressure_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_geometry_pressure_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_geometry_pressure_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
 add_executable(metal_upload_lifetime_test upload_lifetime_test.mm
   "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_resources.mm")
 target_include_directories(metal_upload_lifetime_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
@@ -368,3 +406,55 @@ target_include_directories(metal_draw_preparation_benchmark PRIVATE "${ROOT}/ios
 target_compile_options(metal_draw_preparation_benchmark PRIVATE -fobjc-arc)
 target_link_libraries(metal_draw_preparation_benchmark PRIVATE metal_shader_catalog render_plan
   "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_draw_binding_storage_test draw_binding_storage_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm" "${ROOT}/ios/bridge/theft4_metal_shader_store.mm"
+  "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/ios/bridge/theft4_metal_plan.mm"
+  "${ROOT}/ios/bridge/theft4_metal_frame.mm" "${ROOT}/ios/bridge/theft4_metal_host_shaders.mm")
+target_include_directories(metal_draw_binding_storage_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_draw_binding_storage_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_draw_binding_storage_test PRIVATE metal_shader_catalog render_plan
+  "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_driver_trait_cache_test driver_trait_cache_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm")
+target_include_directories(metal_driver_trait_cache_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_driver_trait_cache_test PRIVATE -fobjc-arc -UNDEBUG)
+target_compile_definitions(metal_driver_trait_cache_test PRIVATE THEFT4_EXPECT_ASSOCIATIVE_TRAITS=1)
+target_link_libraries(metal_driver_trait_cache_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+add_executable(metal_pipeline_archive_test pipeline_archive_test.mm
+  "${ROOT}/ios/bridge/theft4_native_metal.mm")
+target_include_directories(metal_pipeline_archive_test PRIVATE "${ROOT}/ios/bridge" "${ROOT}/thirdparty/json/include")
+target_compile_options(metal_pipeline_archive_test PRIVATE -fobjc-arc -UNDEBUG)
+target_link_libraries(metal_pipeline_archive_test PRIVATE "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+add_test(NAME pipeline_archive_contract COMMAND metal_pipeline_archive_test "${CMAKE_BINARY_DIR}/private-deferred-archive")
+
+file(READ "${ROOT}/ios/bridge/theft4_metal_resources.mm" pool_source)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ROOT}/ios/bridge/theft4_metal_resources.mm" "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h")
+string(FIND "${pool_source}" "struct UploadPagePool {" pool_begin)
+string(FIND "${pool_source}" "struct UploadPageBacking {" pool_end)
+math(EXPR pool_length "${pool_end}-${pool_begin}")
+string(SUBSTRING "${pool_source}" ${pool_begin} ${pool_length} pool_body)
+file(WRITE "${CMAKE_BINARY_DIR}/upload-pool-body.inc" "${pool_body}")
+add_executable(upload_pool_lock_test upload_pool_lock_test.cpp)
+target_include_directories(upload_pool_lock_test PRIVATE "${CMAKE_BINARY_DIR}")
+target_compile_options(upload_pool_lock_test PRIVATE -UNDEBUG)
+add_test(NAME upload_pool_lock_scope COMMAND upload_pool_lock_test)
+file(READ "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native/graphics_system.h" pipeline_header)
+string(FIND "${pipeline_header}" "  struct NativePipelineKey {" key_begin)
+string(FIND "${pipeline_header}" "  struct NativePipeline {" key_end)
+math(EXPR key_length "${key_end}-${key_begin}")
+string(SUBSTRING "${pipeline_header}" ${key_begin} ${key_length} key_body)
+file(WRITE "${CMAKE_BINARY_DIR}/pipeline-template-key.inc" "${key_body}")
+string(FIND "${native_graphics}" "size_t Gta4NativeGraphicsSystem::NativePipelineKeyHash::operator()(" hash_begin)
+string(FIND "${native_graphics}" "size_t Gta4NativeGraphicsSystem::NativePersistentBufferKeyHash::operator()(" hash_end)
+math(EXPR hash_length "${hash_end}-${hash_begin}")
+string(SUBSTRING "${native_graphics}" ${hash_begin} ${hash_length} hash_body)
+file(WRITE "${CMAKE_BINARY_DIR}/pipeline-template-hash.inc" "${hash_body}")
+add_executable(pipeline_template_pressure_test pipeline_template_pressure_test.cpp)
+target_include_directories(pipeline_template_pressure_test PRIVATE "${CMAKE_BINARY_DIR}" "${ROOT}/ios/bridge" "${ROOT}/glue/rexglue-sdk-main/include"
+ "${ROOT}/glue/rexglue-sdk-main/src/graphics/gta4_native" "${ROOT}/glue/rexglue-sdk-main/thirdparty/xxHash"
+ "${ROOT}/glue/rexglue-sdk-main/thirdparty/vulkan-headers/include" "${ROOT}/thirdparty/json/include")
+target_compile_options(pipeline_template_pressure_test PRIVATE -UNDEBUG)
+add_test(NAME pipeline_template_pressure COMMAND pipeline_template_pressure_test "${CMAKE_BINARY_DIR}/PIPELINE_PRESSURE.json")

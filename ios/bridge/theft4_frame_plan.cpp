@@ -5,13 +5,13 @@
 #include <iterator>
 #include <map>
 #include <cstring>
+#include <memory_resource>
 
 namespace theft4::render {
-std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
-  struct Pending {size_t command;uint8_t slot;};
-  std::map<SurfaceKey,std::map<SurfaceView,Pending>> pending;
-  std::vector<uint8_t> masks(f.commands.size(),0);
-  const auto overwritten_loads=RedundantAttachmentLoads(f);
+namespace {
+template<class PendingMap> void AttachmentStores(const FramePlan& f,PendingMap& pending,
+    std::span<const uint8_t> overwritten_loads,std::vector<uint8_t>& masks) {
+  masks.assign(f.commands.size(),0);
   const auto read=[&](const SampledSurfaceView& view){
     auto found=pending.find(view.surface);if(found==pending.end())return;
     std::erase_if(found->second,[&](const auto& entry){return SampledViewContains(view,entry.first);});
@@ -34,7 +34,9 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
     }
     const auto& pass=std::get<Pass>(f.commands[n]);
     for(const auto& c:pass.commands){
-      if(const auto* draw=std::get_if<FrameDraw>(&c)){for(const auto& view:draw->produced)if(view)read(*view);}
+      if(const auto* draw=std::get_if<FrameDraw>(&c)) {
+        if(draw->produced.HasViews())for(const auto& view:draw->produced)if(view)read(*view);
+      }
       else if(const auto* host=GetHostDraw(c)){for(const auto& input:host->fetches)if(input.produced)read(*input.produced);}
     }
     const auto attachment=[&](const std::optional<Attachment>& a,uint8_t slot){
@@ -47,7 +49,50 @@ std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
     for(uint8_t slot=0;slot<4;++slot)attachment(pass.colors[slot],slot);
     attachment(pass.depth,4);attachment(pass.stencil,5);
   }
-  return masks;
+}
+struct PendingAttachment {size_t command;uint8_t slot;};
+// Some system pool resources forward every map-node allocation upstream.
+// Recycle exact-size nodes ourselves inside the worker's bounded arena.
+// Larger inputs retain ordinary allocation/deallocation semantics for overflow.
+class AttachmentNodeResource final:public std::pmr::memory_resource {
+  struct FreeNode {FreeNode* next;};
+  struct Bin {size_t bytes=0,alignment=0;FreeNode* head=nullptr;};
+  std::array<Bin,8> bins_{};
+  std::byte* begin_;size_t capacity_,used_=0;
+  std::pmr::memory_resource* overflow_=std::pmr::get_default_resource();
+  Bin* FindBin(size_t bytes,size_t alignment) {
+    for(auto& bin:bins_)if(bin.bytes==bytes&&bin.alignment==alignment)return &bin;
+    for(auto& bin:bins_)if(!bin.bytes){bin.bytes=bytes;bin.alignment=alignment;return &bin;}
+    return nullptr;
+  }
+  void* do_allocate(size_t bytes,size_t alignment) override {
+    if(auto* bin=FindBin(bytes,alignment)) {
+      if(bin->head){auto* node=bin->head;bin->head=node->next;return node;}
+      void* next=begin_+used_;size_t available=capacity_-used_;
+      const auto size=std::max(bytes,sizeof(FreeNode));
+      if(std::align(std::max(alignment,alignof(FreeNode)),size,next,available)) {
+        used_=static_cast<std::byte*>(next)-begin_+size;return next;
+      }
+    }
+    return overflow_->allocate(bytes,alignment);
+  }
+  void do_deallocate(void* p,size_t bytes,size_t alignment) override {
+    const auto address=reinterpret_cast<uintptr_t>(p),start=reinterpret_cast<uintptr_t>(begin_);
+    if(address>=start&&address-start<capacity_) {
+      auto* bin=FindBin(bytes,alignment);
+      // Every arena allocation registered its exact size/alignment first.
+      if(bin)bin->head=::new(p) FreeNode{bin->head};
+    } else overflow_->deallocate(p,bytes,alignment);
+  }
+  bool do_is_equal(const std::pmr::memory_resource& other)const noexcept override{return this==&other;}
+ public:
+  AttachmentNodeResource(std::byte* begin,size_t capacity):begin_(begin),capacity_(capacity){}
+};
+}
+std::vector<uint8_t> DeadAttachmentStores(const FramePlan& f) {
+  std::map<SurfaceKey,std::map<SurfaceView,PendingAttachment>> pending;
+  const auto loads=RedundantAttachmentLoads(f);std::vector<uint8_t> masks;
+  AttachmentStores(f,pending,loads,masks);return masks;
 }
 bool DeadClearPass(const Pass& pass,uint8_t dead_stores) {
   if(pass.attachmentless_extent[0]||std::any_of(pass.commands.begin(),pass.commands.end(),
@@ -73,7 +118,7 @@ bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& 
   if(host.scissor!=std::array<uint32_t,4>{0,0,w,h})return false;
   // These shaders contain no discard and always write the complete color.
   switch(host.program) {
-    case HostProgram::Resolve:case HostProgram::ResolveMSAA:
+    case HostProgram::Resolve:case HostProgram::ResolveMSAA:case HostProgram::PackedDepthAlias:
     case HostProgram::Present:case HostProgram::SplitPostFx:case HostProgram::SunShafts:
     case HostProgram::SmaaNeighborhood:case HostProgram::SmaaPresent:
     case HostProgram::SmaaHardwarePresent:case HostProgram::SmaaHardwareNeighborhood:return true;
@@ -81,12 +126,20 @@ bool FullHostColorOverwrite(const FramePlan& f,const Pass& pass,const HostDraw& 
   }
 }
 }
-std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan& f) {
-  std::vector<uint8_t> masks(f.commands.size(),0);
+static void AttachmentLoads(const FramePlan& f,std::vector<uint8_t>& masks) {
+  masks.assign(f.commands.size(),0);
   for(size_t i=0;i<f.commands.size();++i)if(const auto* pass=std::get_if<Pass>(&f.commands[i]))
     if(!pass->commands.empty())if(const auto* host=GetHostDraw(pass->commands.front()))
       if(FullHostColorOverwrite(f,*pass,*host)&&pass->colors[0]->load!=Load::Discard)masks[i]=1;
-  return masks;
+}
+std::vector<uint8_t> RedundantAttachmentLoads(const FramePlan& f) {
+  std::vector<uint8_t> masks;AttachmentLoads(f,masks);return masks;
+}
+void AnalyzeFrameAttachments(const FramePlan& f,FrameAttachmentAnalysis& scratch) {
+  AttachmentLoads(f,scratch.redundant_loads);
+  AttachmentNodeResource nodes{scratch.arena.get(),scratch.kArenaBytes};
+  std::pmr::map<SurfaceKey,std::pmr::map<SurfaceView,PendingAttachment>> pending{&nodes};
+  AttachmentStores(f,pending,scratch.redundant_loads,scratch.dead_stores);
 }
 std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass) {
   if(pass.commands.size()!=1)return {};
@@ -111,8 +164,66 @@ std::optional<ImageCopy> IdentityResolveCopy(const FramePlan& f,const Pass& pass
      extent!=std::array<uint32_t,2>{c[12],c[13]}||extent!=std::array<uint32_t,2>{c[14],c[15]})return {};
   return ImageCopy{{input.surface,input.level,input.slice,Aspect::Color},output,{},{},extent,false};
 }
-Pass& AppendPass(FramePlan& frame,Pass next) {
+static Pass& AppendPassImpl(FramePlan& frame,Pass next,bool explicit_clear) {
   auto* previous=frame.commands.empty()?nullptr:std::get_if<Pass>(&frame.commands.back());
+  // The title clears MRT/depth/stencil attachments individually before binding
+  // the complete geometry set. Keep those full clears as load actions in the
+  // first consuming pass, rather than storing and reloading each attachment.
+  // No draws, rectangle clears, copies or resolves may move across this fold.
+  if(previous&&previous->commands.empty()&&previous->attachmentless_extent==std::array<uint32_t,2>{}&&
+      next.attachmentless_extent==std::array<uint32_t,2>{}) {
+    auto colors=next.colors;auto depth=next.depth,stencil=next.stencil;
+    const auto clear_attachment=[](const std::optional<Attachment>& a) {
+      return !a||(a->load==Load::Clear&&a->store==Store::Store&&!a->resolve);
+    };
+    const bool clear_only=explicit_clear&&next.commands.empty()&&
+        std::all_of(next.colors.begin(),next.colors.end(),clear_attachment)&&
+        clear_attachment(next.depth)&&clear_attachment(next.stencil);
+    bool valid=true,has_clear=false;
+    std::optional<std::array<uint32_t,3>> shape;
+    const auto inspect=[&](const std::optional<Attachment>& a) {
+      if(!a)return;
+      const auto* s=FindSurface(frame,a->view.surface);
+      if(!s||!s->width||!s->height||!s->samples||a->view.level>=s->levels||
+          a->view.level>=std::bit_width(std::max(s->width,s->height))||a->view.slice>=SurfaceSlices(*s)||
+          !SupportsAspect(s->format,a->view.aspect)){valid=false;return;}
+      const std::array<uint32_t,3> extent{std::max(1u,s->width>>a->view.level),
+          std::max(1u,s->height>>a->view.level),s->samples};
+      if(shape&&*shape!=extent)valid=false;else shape=extent;
+    };
+    const auto fold=[&](const std::optional<Attachment>& a,std::optional<Attachment>& b) {
+      inspect(a);inspect(b);
+      if(!a)return;
+      has_clear=true;
+      if(a->load!=Load::Clear||a->store!=Store::Store||a->resolve){valid=false;return;}
+      if(!b) {
+        // Only combine disjoint clear-only initializations. Adding an unused
+        // attachment to a real draw changes that draw's pipeline contract.
+        if(!clear_only){valid=false;return;}
+        b=a;return;
+      }
+      if(b->view!=a->view||b->load!=Load::Load||b->store!=Store::Store||b->resolve){valid=false;return;}
+      b->load=Load::Clear;b->clear_color=a->clear_color;
+      b->clear_depth=a->clear_depth;b->clear_stencil=a->clear_stencil;
+    };
+    for(size_t slot=0;slot<4;++slot)fold(previous->colors[slot],colors[slot]);
+    fold(previous->depth,depth);fold(previous->stencil,stencil);
+    // Sequential clears of the same storage through different MRT slots
+    // cannot become simultaneous attachments (nor change their clear order).
+    for(size_t slot=0;slot<4;++slot)if(colors[slot])for(size_t other=0;other<slot;++other)
+      if(colors[other]&&colors[slot]->view.surface==colors[other]->view.surface&&
+          colors[slot]->view.level==colors[other]->view.level&&colors[slot]->view.slice==colors[other]->view.slice)valid=false;
+    if(valid&&depth&&stencil) {
+      const auto* d=FindSurface(frame,depth->view.surface);const auto* s=FindSurface(frame,stencil->view.surface);
+      if((d->format==Format::Depth32FloatStencil8||s->format==Format::Depth32FloatStencil8)&&
+          (depth->view.surface!=stencil->view.surface||depth->view.level!=stencil->view.level||
+           depth->view.slice!=stencil->view.slice))valid=false;
+    }
+    if(valid&&has_clear) {
+      next.colors=std::move(colors);next.depth=std::move(depth);next.stencil=std::move(stencil);
+      *previous=std::move(next);return *previous;
+    }
+  }
   const auto compatible=[](const std::optional<Attachment>& a,const std::optional<Attachment>& b) {
     if(bool(a)!=bool(b))return false;
     return !a||(a->view==b->view&&!a->resolve&&!b->resolve&&
@@ -127,6 +238,12 @@ Pass& AppendPass(FramePlan& frame,Pass next) {
     return *previous;
   }
   frame.commands.push_back(std::move(next));return std::get<Pass>(frame.commands.back());
+}
+Pass& AppendPass(FramePlan& frame,Pass next) {
+  return AppendPassImpl(frame,std::move(next),false);
+}
+Pass& AppendClearPass(FramePlan& frame,Pass next) {
+  return AppendPassImpl(frame,std::move(next),true);
 }
 const Surface* FindSurface(const FramePlan& f,SurfaceKey key) {
   for(const auto& s:f.surfaces)if(s&&s->key==key)return s.get();
@@ -207,10 +324,9 @@ bool SameStorage(const SurfaceView& a,const SurfaceView& b) {
   return a.surface==b.surface&&a.level==b.level&&a.slice==b.slice;
 }
 }
-bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
+static bool ValidateFrameImpl(const FramePlan& f,const SurfaceContents& initial,
                    SurfaceContents& final,std::string& error,IndexRangeCache* indices,
                    DrawVertexRanges* validated_draws) {
-  DrawVertexRanges draw_ranges;
   if(!f.sequence||f.surfaces.size()>4096||f.commands.empty()||f.commands.size()>4096)
     return Reject(error,"Invalid ordered frame size or sequence");
   std::map<SurfaceKey,const Surface*> declarations;
@@ -272,10 +388,15 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       continue;
     }
     const auto& pass=std::get<Pass>(command);
-    std::vector<const Attachment*> attachments;
-    for(const auto& a:pass.colors)if(a)attachments.push_back(&*a);
-    if(pass.depth)attachments.push_back(&*pass.depth);
-    if(pass.stencil)attachments.push_back(&*pass.stencil);
+    // Four colors plus depth/stencil, each with at most one resolve. These
+    // admission lists have a compile-time bound; no per-pass heap is needed.
+    constexpr size_t attachment_limit=std::tuple_size_v<decltype(pass.colors)>+2;
+    std::array<const Attachment*,attachment_limit> attachment_storage;
+    size_t attachment_count=0;
+    for(const auto& a:pass.colors)if(a)attachment_storage[attachment_count++]=&*a;
+    if(pass.depth)attachment_storage[attachment_count++]=&*pass.depth;
+    if(pass.stencil)attachment_storage[attachment_count++]=&*pass.stencil;
+    const auto attachments=std::span(attachment_storage.data(),attachment_count);
     uint32_t width=0,height=0,samples=0;
     if(attachments.empty()) {
       width=pass.attachmentless_extent[0];height=pass.attachmentless_extent[1];samples=1;
@@ -283,8 +404,16 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         return Reject(error,"Invalid attachmentless pass extent");
     } else if(pass.attachmentless_extent!=std::array<uint32_t,2>{})
       return Reject(error,"Attached pass has an attachmentless extent");
-    std::set<SurfaceView> occupied;
-    std::vector<SurfaceView> writes;
+    std::array<SurfaceView,attachment_limit*2> occupied,writes;
+    size_t occupied_count=0,write_count=0;
+    const auto contains=[&](const SurfaceView& view) {
+      const auto end=occupied.begin()+occupied_count;
+      return std::find(occupied.begin(),end,view)!=end;
+    };
+    const auto occupy=[&](const SurfaceView& view) {
+      if(contains(view))return false;
+      occupied[occupied_count++]=view;return true;
+    };
     const auto role=[&](const std::optional<Attachment>& a,Aspect aspect) {
       return !a||a->view.aspect==aspect;
     };
@@ -293,7 +422,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       return Reject(error,"Invalid depth/stencil attachment aspect");
     for(const auto* a:attachments) {
       if(!view_valid(a->view)||a->load>=Load::Count||a->store>=Store::Count||
-         !occupied.insert(a->view).second||!std::isfinite(a->clear_depth)||
+         !occupy(a->view)||!std::isfinite(a->clear_depth)||
          a->clear_depth<0||a->clear_depth>1||a->clear_stencil>255)
         return Reject(error,"Invalid ordered frame attachment");
       for(double c:a->clear_color)if(!std::isfinite(c))return Reject(error,"Nonfinite frame clear color");
@@ -301,9 +430,9 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       const auto w=Width(*s,a->view),h=Height(*s,a->view);
       if(!width){width=w;height=h;samples=s->samples;}
       if(width!=w||height!=h||samples!=s->samples)return Reject(error,"Ordered pass attachment dimensions differ");
-      for(const auto& previous:writes)if(SameStorage(previous,a->view)&&previous.aspect==a->view.aspect)
+      for(const auto& previous:std::span(writes.data(),write_count))if(SameStorage(previous,a->view)&&previous.aspect==a->view.aspect)
         return Reject(error,"Ordered pass writes an aliased attachment twice");
-      writes.push_back(a->view);
+      writes[write_count++]=a->view;
       if(a->load==Load::Load&&!contents.contains(a->view))return Reject(error,"Ordered pass loads undefined content");
       if(a->load==Load::Clear)contents.insert(a->view);
       if(a->load==Load::Discard)contents.erase(a->view);
@@ -316,12 +445,12 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
            (a->view.aspect==Aspect::Stencil&&a->filter!=ResolveFilter::Sample0))
           return Reject(error,"Unsupported ordered attachment resolve filter");
         if(!view_valid(*a->resolve)||a->resolve->aspect!=a->view.aspect||s->samples==1||
-           SameStorage(a->view,*a->resolve)||occupied.contains(*a->resolve))
+           SameStorage(a->view,*a->resolve)||contains(*a->resolve))
           return Reject(error,"Invalid ordered pass resolve destination");
         const auto* dst=find(a->resolve->surface);
         if(dst->samples!=1||dst->format!=s->format||Width(*dst,*a->resolve)!=w||Height(*dst,*a->resolve)!=h)
           return Reject(error,"Ordered pass resolve format or extent differs");
-        occupied.insert(*a->resolve);writes.push_back(*a->resolve);
+        occupy(*a->resolve);writes[write_count++]=*a->resolve;
       }
     }
     std::array<Format,4> color_formats{};
@@ -397,7 +526,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
             if(!sampled_valid(view,error,multisampled)||view.kind!=ImageKind::Texture2D||view.levels!=1||view.slices!=1||
                !SampledViewDefined(view,contents)||(find(view.surface)->samples>1)!=multisampled)
               return Reject(error,"Host utility samples undefined or incorrectly sampled GPU content");
-            for(const auto& attachment:writes)if(SampledViewContains(view,attachment))
+            for(const auto& attachment:std::span(writes.data(),write_count))if(SampledViewContains(view,attachment))
               return Reject(error,"Host utility samples its active attachment");
           }
         }
@@ -416,7 +545,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
       uint64_t maximum_vertex=0;bool index_has_restart=false;
       if(!Validate(*item.capture,error,nullptr,indices,validated_draws?&maximum_vertex:nullptr,&resources,
                    validated_draws?&index_has_restart:nullptr))return false;
-      if(validated_draws)draw_ranges.push_back({item.capture.get(),maximum_vertex,index_has_restart});
+      if(validated_draws)validated_draws->push_back({item.capture.get(),maximum_vertex,index_has_restart});
       const auto& c=*item.capture;const auto& p=c.draw.pipeline;
       if(c.width!=width||c.height!=height||p.samples!=samples)return Reject(error,"Draw extent differs from its ordered pass");
       if(p.colors!=color_formats)return Reject(error,"Draw color formats differ from its ordered pass");
@@ -427,7 +556,7 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
         if(view.aspect==Aspect::Stencil||!SampledViewDefined(view,contents)||
            c.draw.fetches[slot].image||!c.draw.fetches[slot].sampler)
           return Reject(error,"Draw samples unavailable GPU-produced content");
-        for(const auto& attachment:writes)if(SampledViewContains(view,attachment))
+        for(const auto& attachment:std::span(writes.data(),write_count))if(SampledViewContains(view,attachment))
           return Reject(error,"Ordered pass samples its active render attachment");
       }
     }
@@ -444,7 +573,24 @@ bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
   if(f.output&&(!view_valid(*f.output)||f.output->aspect!=Aspect::Color||
                find(f.output->surface)->samples!=1||!contents.contains(*f.output)))
     return Reject(error,"Frame output is unavailable or discarded");
-  final=std::move(contents);if(validated_draws)*validated_draws=std::move(draw_ranges);
+  final=std::move(contents);
   error.clear();return true;
+}
+bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices,
+                   DrawVertexRanges* validated_draws) {
+  DrawVertexRanges ranges;
+  if(!ValidateFrameImpl(f,initial,final,error,indices,validated_draws?&ranges:nullptr))return false;
+  if(validated_draws)*validated_draws=std::move(ranges);
+  return true;
+}
+bool ValidateFrame(const FramePlan& f,const SurfaceContents& initial,
+                   SurfaceContents& final,std::string& error,IndexRangeCache* indices,
+                   FrameValidationScratch& scratch) {
+  scratch.Clear();
+  if(!ValidateFrameImpl(f,initial,final,error,indices,&scratch.draw_ranges)) {
+    scratch.Clear();return false;
+  }
+  return true;
 }
 }

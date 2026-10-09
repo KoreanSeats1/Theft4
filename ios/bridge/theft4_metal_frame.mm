@@ -66,6 +66,8 @@ struct FrameAdapter::Impl {
   size_t maximum_resolve_specializations;
   std::map<render::SurfaceKey,Entry> surfaces;
   render::SurfaceContents contents;
+  render::FrameValidationScratch admission;
+  render::FrameAttachmentAnalysis attachments;
   FrameResourceStats stats;
   FrameTiming timing;
   std::set<std::string> logged_preparation_errors;
@@ -379,11 +381,14 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
   profile_gpu=profile_gpu&&Diagnostics;
   RetireResources(true);
   impl_->draws.BeginFrameUploadBatch(impl_->reuse_frame_uploads?impl_->uploads.Acquire():nullptr);
-  render::SurfaceContents final;render::DrawVertexRanges draw_ranges;
+  render::SurfaceContents final;
+  theft4::StorageCleanup admission_ranges{[&]{impl_->admission.Clear();}};
   theft4::StorageCleanup upload_views{[&]{impl_->draws.EndUploadBatch();}};
-  if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),&draw_ranges))return {};
-  const auto dead_stores=render::DeadAttachmentStores(*plan);
-  const auto redundant_loads=render::RedundantAttachmentLoads(*plan);
+  if(!render::ValidateFrame(*plan,impl_->contents,final,error,&impl_->draws.IndexRanges(),impl_->admission))return {};
+  const auto& draw_ranges=impl_->admission.draw_ranges;
+  render::AnalyzeFrameAttachments(*plan,impl_->attachments);
+  const auto& dead_stores=impl_->attachments.dead_stores;
+  const auto& redundant_loads=impl_->attachments.redundant_loads;
   uint64_t avoided_stores=0,avoided_loads=0,native_copies=0,render_passes=0,image_copies=0,avoided_clear_passes=0;
   size_t draw_range_index=0;
   const auto validated=clock_now();
@@ -452,7 +457,7 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
     if(dead&16u){descriptor.depthAttachment.storeAction=MTLStoreActionDontCare;if constexpr(Diagnostics)++avoided_stores;}
     if(dead&32u){descriptor.stencilAttachment.storeAction=MTLStoreActionDontCare;if constexpr(Diagnostics)++avoided_stores;}
     if(dead_load&1u){descriptor.colorAttachments[0].loadAction=MTLLoadActionDontCare;if constexpr(Diagnostics)++avoided_loads;}
-    if(!frame.BeginPass(descriptor,error))return {};
+    if(!frame.BeginOwnedPass(descriptor,error))return {};
     if constexpr(Diagnostics)++render_passes;
     for(const auto& command:pass.commands) {
       if(const auto* clear=std::get_if<render::RectClear>(&command)) {
@@ -470,7 +475,7 @@ template<bool Diagnostics> Receipt FrameAdapter::SubmitFrameImpl(const std::shar
           error="Immutable draw order changed after frame admission";return {};
         }
         const auto& admitted=draw_ranges[draw_range_index++];
-        if(!impl_->draws.PrepareValidated(*item.capture,admitted.maximum_vertex,admitted.index_has_restart,draw,error)) {
+        if(!impl_->draws.PrepareValidated(*item.capture,admitted.maximum_vertex,admitted.index_has_restart,draw,error,true)) {
           failed_preparation(item.capture->draw.pipeline.vertex.hash,item.capture->draw.pipeline.fragment.hash);continue;
         }
         if(item.produced.HasViews()) {

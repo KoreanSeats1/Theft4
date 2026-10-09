@@ -489,6 +489,7 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     UIButton *_start;
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
+    NSLayoutConstraint *_gameAspectConstraint;
     Theft4LauncherView *_bringupOverlay;
     UILabel *_fpsLabel;
     NSTimer *_fpsTimer;
@@ -763,17 +764,19 @@ static void bootEvent(void *context, const char *event) {
         }
         [graphicsDefaults setBool:YES forKey:@"Theft4GraphicsIndicesMigrationBuild66"];
     }
-    // The native game image is 1280x720. Keep its layer itself at 16:9 so
-    // MoltenVK's kCAGravityResize policy can't stretch it to the iPad aspect.
+    // Latch the launch shape, then preserve it through rotation/multitasking.
+    // The opt-in mod updates this ratio before creating the game render graph.
     self.view.backgroundColor = UIColor.blackColor;
     _metalView = [Theft4MetalView new];
     _metalView.translatesAutoresizingMaskIntoConstraints = NO;
     _metalView.userInteractionEnabled = NO;
     [self.view addSubview:_metalView];
+    _gameAspectConstraint = [_metalView.widthAnchor
+        constraintEqualToAnchor:_metalView.heightAnchor multiplier:(16.0 / 9.0)];
     [NSLayoutConstraint activateConstraints:@[
+        _gameAspectConstraint,
         [_metalView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [_metalView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [_metalView.widthAnchor constraintEqualToAnchor:_metalView.heightAnchor multiplier:(16.0 / 9.0)],
         [_metalView.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor],
         [_metalView.heightAnchor constraintLessThanOrEqualToAnchor:self.view.heightAnchor]
     ]];
@@ -819,6 +822,30 @@ static void bootEvent(void *context, const char *event) {
     _bringupOverlay.skipIntro.on = ![NSUserDefaults.standardUserDefaults objectForKey:@"Theft4SkipIntro"] ||
         [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4SkipIntro"];
     [_bringupOverlay.skipIntro addTarget:self action:@selector(skipIntroChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    _bringupOverlay.godMode.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ModGodMode"];
+    _bringupOverlay.unlimitedAmmo.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ModUnlimitedAmmo"];
+    [_bringupOverlay.godMode addTarget:self action:@selector(gameplayModChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    [_bringupOverlay.unlimitedAmmo addTarget:self action:@selector(gameplayModChanged:)
+        forControlEvents:UIControlEventValueChanged];
+#ifndef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    _bringupOverlay.godMode.on = NO;
+    _bringupOverlay.unlimitedAmmo.on = NO;
+    _bringupOverlay.godMode.enabled = NO;
+    _bringupOverlay.unlimitedAmmo.enabled = NO;
+#endif
+    _bringupOverlay.customTimeCycle.on = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"Theft4ModCustomTimeCycle"];
+    [_bringupOverlay.customTimeCycle addTarget:self action:@selector(customTimeCycleChanged:)
+        forControlEvents:UIControlEventValueChanged];
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+    _bringupOverlay.nativeAspect.on = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"Theft4ModNativeAspect"];
+#else
+    _bringupOverlay.nativeAspect.enabled = NO;
+#endif
+    [_bringupOverlay.nativeAspect addTarget:self action:@selector(nativeAspectChanged:)
         forControlEvents:UIControlEventValueChanged];
     rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
     _exportSavesButton = _bringupOverlay.exportSavesButton;
@@ -1857,6 +1884,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    if (!_executionAttempted) [self updateGameAspect];
     const CGFloat scale = self.view.window.screen.scale ?: UIScreen.mainScreen.scale;
     theft4_metal_resize_layer((__bridge void *)_metalView.layer,
                               _metalView.bounds.size.width,
@@ -1884,6 +1912,36 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)skipIntroChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4SkipIntro"];
+}
+
+- (void)gameplayModChanged:(UISwitch *)sender {
+    if (_executionAttempted) return;
+    NSString *key = sender == _bringupOverlay.godMode
+        ? @"Theft4ModGodMode" : @"Theft4ModUnlimitedAmmo";
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:key];
+}
+
+- (void)customTimeCycleChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4ModCustomTimeCycle"];
+}
+
+- (void)updateGameAspect {
+    const CGSize bounds = self.view.bounds.size;
+    if (_executionAttempted || !_gameAspectConstraint || bounds.width <= 0 || bounds.height <= 0) return;
+    const CGFloat ratio = _bringupOverlay.nativeAspect.on ? bounds.width / bounds.height : 16.0 / 9.0;
+    if (fabs(_gameAspectConstraint.multiplier - ratio) < 1e-7) return;
+    _gameAspectConstraint.active = NO;
+    _gameAspectConstraint = [_metalView.widthAnchor constraintEqualToAnchor:_metalView.heightAnchor
+        multiplier:ratio];
+    _gameAspectConstraint.active = YES;
+}
+
+- (void)nativeAspectChanged:(UISwitch *)sender {
+    if (_executionAttempted) return;
+    [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4ModNativeAspect"];
+    [self updateGameAspect];
+    [self.view layoutIfNeeded];
+    [_bringupOverlay refreshConfigurationSummary];
 }
 
 - (void)recordWindowState:(NSString *)event {
@@ -2480,16 +2538,18 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureActive = NO;
     [self record:@"ui.quit_game_for_fresh_launcher"];
     [NSUserDefaults.standardUserDefaults synchronize];
-    // Drain queued lightweight-capture writes before leaving. Do not call
-    // Runtime::Shutdown here while guest threads are still live.
+    // Drain queued lightweight-capture writes before leaving. Neither runtime
+    // shutdown nor exit() is safe with live guest threads: exit() invokes C++
+    // static destructors, including the renderer and global synchronization.
+    // Once explicit writes/settings are drained, terminate without destructors.
     dispatch_queue_t captureQueue = _publicationCaptureQueue;
     if (captureQueue) {
         dispatch_async(captureQueue, ^{
             [self appendPublicationCaptureText:@"status,,,,saved-on-quit\n"];
-            dispatch_async(dispatch_get_main_queue(), ^{ exit(0); });
+            dispatch_async(dispatch_get_main_queue(), ^{ _Exit(0); });
         });
     } else {
-        dispatch_async(dispatch_get_main_queue(), ^{ exit(0); });
+        dispatch_async(dispatch_get_main_queue(), ^{ _Exit(0); });
     }
 }
 
@@ -2985,6 +3045,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
     if (execute) {
+        // Resolve the shipped asset before consuming this one-shot runtime.
+        // Disabling the mod explicitly clears any previous launch override.
+        setenv("THEFT4_MOD_GOD_MODE", _bringupOverlay.godMode.on ? "1" : "0", 1);
+        setenv("THEFT4_MOD_UNLIMITED_AMMO", _bringupOverlay.unlimitedAmmo.on ? "1" : "0", 1);
+        NSString *timeCycle = _bringupOverlay.customTimeCycle.on
+            ? [NSBundle.mainBundle pathForResource:@"timecyc" ofType:@"dat"
+                inDirectory:@"Mods/CustomTimeCycle"] : nil;
+        if (_bringupOverlay.customTimeCycle.on && !timeCycle) {
+            [self bootEvent:@"Custom Time Cycle is missing. Turn it off in Mods to use the original."];
+            return;
+        }
+        if (timeCycle) setenv("THEFT4_MOD_TIMECYCLE_DIRECTORY",
+            timeCycle.stringByDeletingLastPathComponent.fileSystemRepresentation, 1);
+        else unsetenv("THEFT4_MOD_TIMECYCLE_DIRECTORY");
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
         NSString *preparationRoot = [_supportURL.path
             stringByAppendingPathComponent:@"texture-preparation"];
@@ -3024,12 +3098,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             distancePresets[_drawDistance.selectedSegmentIndex],_modelDetail.selectedSegmentIndex==0?"1.75":"1",
             shadowPresets[_shadowQuality.selectedSegmentIndex],antiAliasingPresets[_antiAliasing.selectedSegmentIndex],
             _depthOfField.on,_motionBlur.on,_anisotropicFiltering.on,sharpening]];
+        [self updateGameAspect];
         [self.view layoutIfNeeded];
         UIScreen *screen = self.view.window.screen ?: UIScreen.mainScreen;
         CGFloat nativeScale = screen.nativeScale;
         const uint32_t nativeWidth = (uint32_t)floor(_metalView.bounds.size.width * nativeScale);
         const uint32_t nativeHeight = (uint32_t)floor(_metalView.bounds.size.height * nativeScale);
-        if (_bringupOverlay.renderResolution) {
+        if (_bringupOverlay.nativeAspect.on) {
+            const UIEdgeInsets safe = _metalView.safeAreaInsets;
+            const CGSize bounds = _metalView.bounds.size;
+            theft4_metal_set_native_aspect_output(
+                _bringupOverlay.renderResolution ? _bringupOverlay.renderHeight : 720,
+                _bringupOverlay.renderResolution ? _bringupOverlay.fsrUpscaling.on : _enhancedOutput.on,
+                nativeWidth, nativeHeight,
+                strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 || _limitedMemoryProfile ||
+                    (!_bringupOverlay.renderResolution && !_fsrBoost.on),
+                bounds.width > 0 ? safe.left / bounds.width : 0,
+                bounds.height > 0 ? safe.top / bounds.height : 0,
+                bounds.width > 0 ? safe.right / bounds.width : 0,
+                bounds.height > 0 ? safe.bottom / bounds.height : 0);
+        } else if (_bringupOverlay.renderResolution) {
             theft4_metal_set_lab_output(_bringupOverlay.renderHeight,
                 _bringupOverlay.fsrUpscaling.on, nativeWidth, nativeHeight,
                 strcmp(getenv("THEFT4_DEVICE_PROFILE") ?: "", "a19") == 0 || _limitedMemoryProfile);
@@ -3044,6 +3132,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         _fsrBoost.enabled = NO;
         _bringupOverlay.renderResolution.enabled = NO;
         _bringupOverlay.sharpening.enabled = NO;
+        _bringupOverlay.customTimeCycle.enabled = NO;
+        _bringupOverlay.nativeAspect.enabled = NO;
+        _bringupOverlay.godMode.enabled = NO;
+        _bringupOverlay.unlimitedAmmo.enabled = NO;
         _bringupOverlay.frameSpeedButton.enabled = NO;
         _bringupOverlay.restoreGraphicsButton.enabled = NO;
         // This is a next-process setting, but users can still prepare the

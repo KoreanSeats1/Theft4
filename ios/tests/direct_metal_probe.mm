@@ -951,11 +951,17 @@ struct Probe {
     Require(cache.BufferCount()==1&&cache.Stats().resident_buffer_bytes==256*1024);
     retained.reset();cache.SweepRetired();Require(cache.BufferCount()==0&&cache.Stats().resident_buffer_bytes==0);
     // Distinct control blocks at the same pointer/generation must retire the
-    // old page entry once, without touching either retained immutable buffer.
+    // old entry once, without touching either retained immutable view. The
+    // compact geometry path may append to a disjoint tail of the same page.
     auto anchor=std::make_shared<int>(1);auto alias=std::shared_ptr<const void>(anchor.get(),[](const void*){});
     auto first=cache.UploadBuffer({anchor,1,{}},bytes,error);Require(first.buffer);
-    cache.BeginUploadBatch();auto replacement=cache.UploadBuffer({alias,1,{}},bytes,error);Require(replacement.buffer);
-    Require(first.buffer!=replacement.buffer&&cache.BufferCount()==1);
+    const std::array<uint8_t,16> replacement_bytes{19};
+    cache.BeginUploadBatch();auto replacement=cache.UploadBuffer({alias,1,{}},replacement_bytes,error);Require(replacement.buffer);
+    Require((first.buffer!=replacement.buffer || first.offset+first.length<=replacement.offset ||
+             replacement.offset+replacement.length<=first.offset)&&cache.BufferCount()==1);
+    Require(std::memcmp(static_cast<const uint8_t*>(first.buffer.contents)+first.offset,bytes.data(),bytes.size())==0);
+    Require(std::memcmp(static_cast<const uint8_t*>(replacement.buffer.contents)+replacement.offset,
+                        replacement_bytes.data(),replacement_bytes.size())==0);
     cache.SweepRetired();Require(cache.Stats().resident_buffer_bytes==256*1024);
     auto direct=cache.Buffer({anchor,2,{}},bytes,error);Require(direct);
     auto direct_replacement=cache.Buffer({alias,2,{}},bytes,error);Require(direct_replacement&&direct!=direct_replacement);

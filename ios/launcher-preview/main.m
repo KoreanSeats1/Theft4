@@ -6,6 +6,16 @@
 @property(nonatomic) Theft4LauncherView *launcher;
 @end
 @implementation PreviewController
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--portrait"])
+        return UIInterfaceOrientationMaskPortrait;
+    return [NSProcessInfo.processInfo.arguments containsObject:@"--landscape"]
+        ? UIInterfaceOrientationMaskLandscape : UIInterfaceOrientationMaskAll;
+}
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    return [NSProcessInfo.processInfo.arguments containsObject:@"--landscape"]
+        ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
+}
 - (void)loadView {
     self.launcher = [Theft4LauncherView new]; self.view = self.launcher;
     self.launcher.enhancedOutput.on = YES; self.launcher.anisotropicFiltering.on = YES;
@@ -18,6 +28,9 @@
     self.launcher.renderResolution.selectedSegmentIndex = [args containsObject:@"--1080p"] ? 3 :
         [args containsObject:@"--900p"] ? 2 : [args containsObject:@"--540p"] ? 0 : 1;
     self.launcher.fsrUpscaling.on = ![args containsObject:@"--no-fsr"];
+    self.launcher.godMode.on = [args containsObject:@"--god-mode"];
+    self.launcher.unlimitedAmmo.on = [args containsObject:@"--unlimited-ammo"];
+    self.launcher.nativeAspect.on = [args containsObject:@"--native-aspect"];
     self.launcher.statusLabel.text = @"LAUNCHER PREVIEW  /  NO GAME RUNTIME";
     self.launcher.detailLabel.text = @"Isolated simulator UI preview.\nNo game files, saves or runtime are accessed.";
     [self.launcher refreshConfigurationSummary];
@@ -45,16 +58,36 @@
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     NSArray *args = NSProcessInfo.processInfo.arguments;
-    if ([args containsObject:@"--landscape"]) {
+    if ([args containsObject:@"--landscape"] || [args containsObject:@"--portrait"]) {
+        [self setNeedsUpdateOfSupportedInterfaceOrientations];
         UIWindowSceneGeometryPreferencesIOS *geometry = [[UIWindowSceneGeometryPreferencesIOS alloc]
-            initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscapeRight];
+            initWithInterfaceOrientations:[args containsObject:@"--landscape"]
+                ? UIInterfaceOrientationMaskLandscapeRight : UIInterfaceOrientationMaskPortrait];
         [self.view.window.windowScene requestGeometryUpdateWithPreferences:geometry errorHandler:nil];
     }
     if ([args containsObject:@"--display"] || [args containsObject:@"--interface"] ||
-        [args containsObject:@"--system"]) {
+        [args containsObject:@"--system"] || [args containsObject:@"--mods"]) {
         NSString *identifier = [args containsObject:@"--display"] ? @"launcher.tab.1" :
-            [args containsObject:@"--interface"] ? @"launcher.tab.2" : @"launcher.tab.3";
+            [args containsObject:@"--interface"] ? @"launcher.tab.2" :
+            [args containsObject:@"--mods"] ? @"launcher.tab.4" : @"launcher.tab.3";
         [self selectInView:self.launcher identifier:identifier];
+    }
+    if ([args containsObject:@"--aspect-mod"] || [args containsObject:@"--gameplay-mods"]) {
+        [self selectInView:self.launcher identifier:@"launcher.tab.4"];
+        [self.launcher layoutIfNeeded];
+        UIView *ancestor = self.launcher.nativeAspect.superview;
+        while (ancestor && ![ancestor isKindOfClass:UIScrollView.class]) ancestor = ancestor.superview;
+        if (ancestor) {
+            UIScrollView *scroll = (UIScrollView *)ancestor;
+            UIView *control = [args containsObject:@"--gameplay-mods"]
+                ? self.launcher.godMode : self.launcher.nativeAspect;
+            CGRect region = [control convertRect:control.bounds toView:scroll];
+            region.origin.y = MAX(0, region.origin.y - 24);
+            if ([args containsObject:@"--gameplay-mods"])
+                region.size.height = MIN(260, scroll.bounds.size.height - 16);
+            else region.size.height += 300;
+            [scroll scrollRectToVisible:region animated:NO];
+        }
     }
     if ([args containsObject:@"--retire"]) [self retire];
     if ([args containsObject:@"--frame-time-preview"]) {

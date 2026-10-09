@@ -213,6 +213,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
             "${THEFT4_GTA4_NATIVE_ROOT}/split_postfx_pass.cpp"
             "${THEFT4_GTA4_NATIVE_ROOT}/sun_shafts_pass.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_aspect_hooks.cpp"
+            "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_gameplay_mods.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_font_selection_trace.cpp"
             "${THEFT4_GTA4_RECOMP_SOURCE_ROOT}/gta4_native_hooks.cpp"
             # Strong stage wrappers must be in this force-loaded archive.
@@ -364,6 +365,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
 
     target_sources(theft4_core_bridge PRIVATE
         bridge/theft4_startup.cpp
+        bridge/theft4_timecycle_archive.cpp
         bridge/theft4_bootstrap_graphics.cpp
         bridge/theft4_metal_presenter.mm
         bridge/theft4_bootstrap_audio.cpp
@@ -446,6 +448,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_include_directories(theft4_core_bridge PRIVATE
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/input"
+        "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/thirdparty/crypto"
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src"
         "${THEFT4_GENERATED_DIR}")
     target_link_libraries(theft4_core_bridge PRIVATE theft4_game_code
@@ -513,6 +516,12 @@ if(THEFT4_ENABLE_GAME_STARTUP)
 endif()
 
 set(THEFT4_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Assets.xcassets")
+set(THEFT4_TIMECYCLE_RESOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/CustomTimeCycle/timecyc.dat"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/CustomTimeCycle/preview.jpg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/CustomTimeCycle/metadata.plist")
+set_source_files_properties(${THEFT4_TIMECYCLE_RESOURCES} PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources/Mods/CustomTimeCycle")
 option(THEFT4_TEXTURE_PREPARATION_PREVIEW
     "Show the capability-gated texture source inventory during setup" OFF)
 if(THEFT4_BC_TEXTURE_COMPATIBILITY)
@@ -522,7 +531,7 @@ add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
     Theft4/Theft4TextureSources.m
     Theft4/Theft4LauncherView.m
     Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
-    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}")
+    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}" ${THEFT4_TIMECYCLE_RESOURCES})
 if(THEFT4_BC_TEXTURE_COMPATIBILITY)
     enable_language(OBJCXX)
     target_sources(Theft4 PRIVATE

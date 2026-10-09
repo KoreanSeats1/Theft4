@@ -320,6 +320,79 @@ int main(int argc,char** argv) {
         const auto value=expected(x,y);for(size_t c=0;c<4;++c)assert(pixels[(y*32+x)*4+c]==value[c]);
       }
     };
+    // Differential GPU proof for full clear prefixes: preserve both MRT
+    // colors, depth and stencil, including subsequent partial writes. The
+    // unoptimized and folded plans must publish identical final contents.
+    {
+      auto c0=std::make_shared<render::Surface>(*surface);c0->key={7001,1};
+      auto c1=std::make_shared<render::Surface>(*surface);c1->key={7002,1};
+      auto depth=depth_surface(7003);
+      auto raw=std::make_shared<render::FramePlan>();raw->sequence=7000;raw->surfaces={c0,c1,depth};
+      auto p0=std::get<render::Pass>(Clear(c0,1,0.125)->commands[0]);
+      auto p1=std::get<render::Pass>(Clear(c1,1,0.875)->commands[0]);
+      p1.colors[1]=p1.colors[0];p1.colors[0].reset();
+      auto both=depth_clear(depth,0.25,37);auto pd=both,ps=both;pd.stencil.reset();ps.depth.reset();
+      render::Pass consumer;consumer.colors[0]=p0.colors[0];consumer.colors[1]=p1.colors[1];
+      consumer.depth=both.depth;consumer.stencil=both.stencil;
+      for(auto* a:{&consumer.colors[0],&consumer.colors[1],&consumer.depth,&consumer.stencil})(*a)->load=render::Load::Load;
+      render::RectClear region;region.colors=3;region.depth=region.stencil=true;
+      region.rectangle={8,4,8,4};region.color={1,0,0,1};region.depth_value=0.75;region.stencil_value=42;
+      consumer.commands={region};raw->commands={p0,p1,pd,ps,consumer};raw->output=p0.colors[0]->view;
+      auto optimized=std::make_shared<render::FramePlan>(*raw);optimized->commands.clear();optimized->sequence++;
+      for(size_t i=0;i<raw->commands.size();++i) {
+        const auto& pass=std::get<render::Pass>(raw->commands[i]);
+        if(i<4)render::AppendClearPass(*optimized,pass);else render::AppendPass(*optimized,pass);
+      }
+      assert(optimized->commands.size()==1);
+      render::SurfaceContents raw_contents,optimized_contents;
+      assert(backend->Submit(raw,false,error,&raw_contents));
+      std::vector<uint8_t> baseline0,baseline1;
+      assert(backend->ReadRGBA8(*raw,p0.colors[0]->view,baseline0,error));
+      assert(backend->ReadRGBA8(*raw,p1.colors[1]->view,baseline1,error));
+      // Pack both aspects using the live shader, then compare its raw output.
+      const auto packed=[&](const std::shared_ptr<render::FramePlan>& source) {
+        auto f=std::make_shared<render::FramePlan>();f->sequence=source->sequence+10;f->surfaces={depth,c0};
+        auto pass=std::get<render::Pass>(Clear(c0,1,0)->commands[0]);
+        const std::array<uint32_t,16> constants{0,0,0,0,0,0,0,0,0,0,0,0x688,0,0,0,0};
+        auto bytes=std::make_shared<render::Bytes>();bytes->generation=f->sequence;bytes->value.resize(sizeof(constants));
+        std::memcpy(bytes->value.data(),constants.data(),sizeof(constants));
+        render::HostDraw pack;pack.program=render::HostProgram::PackedDepthAlias;
+        pack.pipeline.colors[0]=c0->format;pack.constants={bytes,0,sizeof(constants)};pack.scissor={0,0,32,16};
+        pack.fetches[0].produced=render::SurfaceView{depth->key,0,0,render::Aspect::Depth};
+        pack.fetches[1].produced=render::SurfaceView{depth->key,0,0,render::Aspect::Stencil};
+        pack.fetches[0].sampler=pack.fetches[1].sampler=std::make_shared<render::Sampler>();
+        pass.commands={pack};f->commands={pass};f->output=p0.colors[0]->view;
+        assert(backend->Submit(f,false,error));std::vector<uint8_t> output;
+        assert(backend->ReadRGBA8(*f,*f->output,output,error));return output;
+      };
+      const auto baseline_depth=packed(raw);
+      assert(backend->Submit(optimized,false,error,&optimized_contents));assert(raw_contents==optimized_contents);
+      assert(backend->ReadRGBA8(*optimized,p0.colors[0]->view,pixels,error)&&pixels==baseline0);
+      assert(backend->ReadRGBA8(*optimized,p1.colors[1]->view,pixels,error)&&pixels==baseline1);
+      assert(packed(optimized)==baseline_depth);
+      std::cout<<"Clear-prefix fusion: 5 passes to 1; both MRT colors and packed depth/stencil byte-identical\n";
+      // Reproduce the live producer's first-use ordering: a preceding clear
+      // targets depth/stencil, then a DIFFERENT empty all-Clear color scope
+      // receives its draw after AppendPass returns. It must not inherit DS.
+      auto unused_depth=depth_surface(7101);
+      auto target=std::make_shared<render::Surface>(*surface);target->key={7102,1};
+      auto first_use=Clear(target,7100,0);first_use->surfaces={surface,unused_depth,target};
+      auto color_scope=std::get<render::Pass>(first_use->commands[0]);first_use->commands.clear();
+      render::AppendClearPass(*first_use,depth_clear(unused_depth,0.25,37));
+      auto& destination=render::AppendPass(*first_use,std::move(color_scope));
+      assert(first_use->commands.size()==2&&!destination.depth&&!destination.stencil);
+      const std::array<uint32_t,16> copy_constants{0,0,0,0,0,0,0,0,1,0,0,2,32,16,32,16};
+      auto copy_bytes=std::make_shared<render::Bytes>();copy_bytes->generation=7100;copy_bytes->value.resize(sizeof(copy_constants));
+      std::memcpy(copy_bytes->value.data(),copy_constants.data(),sizeof(copy_constants));
+      render::HostDraw copy_draw;copy_draw.program=render::HostProgram::Resolve;
+      copy_draw.pipeline.colors[0]=target->format;copy_draw.constants={copy_bytes,0,sizeof(copy_constants)};
+      copy_draw.scissor={0,0,32,16};copy_draw.fetches[0].produced=render::SurfaceView{surface->key,0,0,render::Aspect::Color};
+      copy_draw.fetches[0].sampler=std::make_shared<render::Sampler>();destination.commands={copy_draw};
+      std::vector<uint8_t> source_pixels;assert(backend->ReadRGBA8(*first,*first->output,source_pixels,error));
+      assert(backend->Submit(first_use,false,error));assert(backend->ReadRGBA8(*first_use,*first_use->output,pixels,error));
+      assert(pixels==source_pixels);
+      std::cout<<"Deferred first-use color scope: no unrelated depth/stencil attachments; GPU output byte-identical\n";
+    }
     auto input_depth=depth_surface(300),copied_depth=depth_surface(301);
     auto ds=std::make_shared<render::FramePlan>();ds->sequence=50;ds->surfaces={input_depth,copied_depth};
     ds->commands={depth_clear(input_depth,0.25,37),depth_clear(copied_depth,1,19)};

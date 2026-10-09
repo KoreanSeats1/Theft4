@@ -1,5 +1,39 @@
 # Theft4 engineering changelog
 
+## 0.3.1 — performance improvements and optional mods — 2026-10-09
+
+**Version 0.3.1 · build 142 · iPhone and iPad**
+
+A follow-up to 0.3's direct Metal renderer, focused on reducing repeated CPU
+preparation, first-use geometry work, allocation and cache-pressure overhead.
+The original icon is retained. [Full release notes](docs/RELEASE_0.3.1.md).
+
+- Execute exact geometry conversion recipes in cache-friendly tiles where safe;
+  preserve declaration order and conservative handling of unusual layouts.
+- Append small immutable geometry to disjoint upload-page regions; reuse eligible
+  larger VM allocations only after final Metal release. Retire sources in bounded
+  increments and charge real backing sizes to existing budgets.
+- Reuse shader constant metadata, resolved shader interfaces, binding vectors,
+  frame admission bookkeeping and attachment dependency storage.
+- Cache immutable driver traits and reduce proven redundant attachment loads,
+  stores and clear-only pass boundaries while preserving frame contents.
+- Replace whole-cache clearing at 4,096 pipeline templates with individual cold
+  eviction; move upload VM allocation/deallocation outside the pool mutex.
+- Remove zero-sleep busy tails and per-poll lock-vector allocation in Darwin
+  multi-object waits; enforce finite deadlines during mutex contention.
+- Add optional Native Aspect Ratio with consistent camera/lighting reconstruction,
+  odd-size effects resolves and pause/radar proportion fixes.
+- Add SBerrix's Custom Time Cycle with packed/loose install support, plus optional
+  God Mode and Unlimited Ammo. Improve compact iPhone launcher layouts.
+- Retain capability-gated one-time ASTC preparation and existing caches on updates.
+
+Validated with native contracts, real-Metal pixel/lifetime cases, extracted
+camera/UI and mod contracts, sanitizer checks and Release compiler verification.
+Host fixture savings do not establish whole-game FPS gains. First-use spikes and
+heavy scenes remain under investigation; the target stays below 30 ms total work.
+No universal locked-30-FPS claim, broad physics/traffic rewrite or working realistic
+vehicle-handling mod is included. Detailed evidence: [engineering record](docs/IOS_MODS.md).
+
 ## 0.3 — direct Metal, rebuilt geometry and a faster native rendering path — 2026-10-06
 
 **Version 0.3.0 · build 123 · iPhone and iPad**

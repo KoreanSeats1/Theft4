@@ -343,13 +343,14 @@ class PosixConditionBase {
                         ? std::chrono::steady_clock::time_point::max()
                         : start_time + timeout;
 
+    // Retain the lock-vector capacity across polls. Clearing releases every
+    // acquired mutex, but does not allocate another vector on the next poll.
+    std::vector<std::unique_lock<std::mutex>> locks;
+    locks.reserve(handles.size());
     while (true) {
       size_t first_signaled = std::numeric_limits<size_t>::max();
       bool condition_met = false;
       bool all_locked = true;
-
-      std::vector<std::unique_lock<std::mutex>> locks;
-      locks.reserve(handles.size());
 
       for (size_t i = 0; i < handles.size(); ++i) {
 #if REX_PLATFORM_LINUX
@@ -375,6 +376,10 @@ class PosixConditionBase {
 
       if (!all_locked) {
         locks.clear();
+        // A contested mutex must not extend a finite wait indefinitely.
+        if (std::chrono::steady_clock::now() >= end_time) {
+          return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+        }
         std::this_thread::yield();
         continue;
       }
@@ -422,9 +427,10 @@ class PosixConditionBase {
       if (timeout == std::chrono::milliseconds::max()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } else {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
-        std::this_thread::sleep_for(sleep_time);
+        // Keep the sub-millisecond remainder. Truncating it to zero turns
+        // the end of every finite wait into repeated try-lock busy polling.
+        std::this_thread::sleep_until(std::min(
+            end_time, now + std::chrono::milliseconds(1)));
       }
     }
   }

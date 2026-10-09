@@ -70,8 +70,12 @@ struct Gta4NativeGraphicsSystem::NativeMetalFrameState {
     uint32_t cull=0;
     bool clockwise=false,lines=false,depth_clamp=false,primitive_restart=false;
     std::array<std::shared_ptr<const NativeMetalVertexConversion>,kVertexStreamCount> vertex_conversions{};
+    NativeShaderConstantLayout constant_layout;
   };
-  std::unordered_map<NativePipelineKey,PipelineTemplate,NativePipelineKeyHash> pipelines;
+  struct PipelineCount {size_t operator()(const PipelineTemplate&)const{return 1;}};
+  // Keep the same entry ceiling, but preserve warm templates when a new view
+  // introduces another variant. Draws own copied descriptors/recipe owners.
+  NativeIncrementalOwnerCache<NativePipelineKey,PipelineTemplate,PipelineCount,NativePipelineKeyHash> pipelines;
   // Stable across PSO-template eviction so geometry identities do not churn
   // when fixed-function pipeline variants exceed that cache's limit. At 4096
   // exact recipes, new layouts retain the legacy conversion path.
@@ -200,6 +204,13 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
   const auto began=tick();uint64_t arena_done=began,retire_done=began,owners_done=began;
   uint64_t sweep_done=began,copy_done=began,lower_done=began,validate_done=began,submit_done=began;
   if(!frame_backend_){error="Metal backend missing";return false;}
+  if(!diagnostic_scan) {
+    active_texture_frame_=NativeResourceFrameForBatch(
+        active_texture_frame_,present.submitted_frame,present.device!=0);
+    // This age clock is needed in retail too. Do not invoke Vulkan resource
+    // maintenance or enable its diagnostic profiler to advance it on Metal.
+    g_native_memory_profile_event_frame.store(active_texture_frame_,std::memory_order_relaxed);
+  }
   if(current_frame_.empty() && !present.device)return true;
   if(!native_metal_frame_)native_metal_frame_=std::make_unique<NativeMetalFrameState>();
   bool frontend_complete=false;
@@ -242,6 +253,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     bytes.generation=0;bytes.conversion={};bytes.value.clear();
   });
   arena_done=tick();
+  if(present.device&&!diagnostic_scan)ReleaseUnusedMetalBufferResources(active_texture_frame_);
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission
@@ -403,14 +415,13 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     GuestSurfaceView requested;if(!DecodeGuestSurfaceView(descriptor,false,requested))return nullptr;
     const NativeMetalFrameState::PlacementOwner* latest=nullptr;
     for(const auto& [key,writer]:next.placements) {
-      if(key.depth||key.placement_base_tiles!=requested.placement_base_tiles||
-         key.sample_pitch!=requested.sample_pitch||key.sample_width!=requested.sample_width)continue;
+      if(!NativeResolveSameRowLayout(key,requested))continue;
       const auto found=next.surfaces.find(writer.surface);
       if(found==next.surfaces.end()||found->second.is_reflection||
          found->second.materialized_serial!=writer.serial)continue;
       if(!latest||writer.serial>latest->serial)latest=&writer;
     }
-    // A newer incompatible/shorter write must not expose an older allocation.
+    // A newer incompatible/shorter/narrower write must not expose an older allocation.
     if(!latest||!NativeResolveContains(latest->view,requested))return nullptr;
     const auto& record=next.surfaces.Read(latest->surface);
     if(record.owner->format!=r::source::PixelFormat(ConvertSurfaceFormat(descriptor.format,false))||
@@ -495,11 +506,6 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     return ShouldApplyNativeSceneSampleOverride(reflection,has_bound,all_multisampled)?
         uint32_t(GetNativeSceneSampleOverride()):0u;
   };
-  const auto validate_append=[&](r::FrameCommand command) {
-    if(auto* pass=std::get_if<r::Pass>(&command))r::AppendPass(*plan,std::move(*pass));
-    else plan->commands.push_back(std::move(command));
-    return true;
-  };
   const auto clear_surface=[&](const std::shared_ptr<const r::Surface>& surface,
                               r::Aspect aspect,const ClearCommand& clear,uint32_t slot) {
     if(!prepare_surface(surface))return false;
@@ -541,7 +547,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
       }
     }
     if(attachment.load==r::Load::Clear)next.contents.insert(view);
-    claim(surface);return validate_append(std::move(pass));
+    claim(surface);r::AppendClearPass(*plan,std::move(pass));return true;
   };
   const auto produced_texture=[&](const std::shared_ptr<const NativeTextureResource>& resource) {
     auto existing=next.textures.find(resource->generation);
@@ -631,7 +637,7 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
             else pass.stencil=attachment;
             next.contents.insert(attachment.view);
           }
-        r::AppendPass(*plan,std::move(pass));
+        r::AppendClearPass(*plan,std::move(pass));
       }
     auto cpu=std::shared_ptr<NativeTextureImage>(std::move(description.image));cpu->source.reset();
     auto& record=next.textures[resource->generation];record={resource,surface,std::move(cpu)};

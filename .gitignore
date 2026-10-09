@@ -792,6 +792,11 @@ CMakeUserPresets.json
 
 # Source-backed 0.3 release and integration records.
 !/docs/RELEASE_0.3.md
+!/docs/RELEASE_0.3.1.md
+!/docs/IOS_MODS.md
+!/tests/ios/mods/extract_aspect_camera.py
+!/tests/ios/mods/extract_aspect_ui.py
+!/tests/ios/mods/extract_gameplay.py
 !/docs/THEFT4_0.3_ARCHITECTURE.md
 !/docs/THEFT4_0.3_MAIN_INTEGRATION.md
 !/docs/THEFT4_0.3_CHANGE_MANIFEST.json

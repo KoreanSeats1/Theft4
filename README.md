@@ -37,12 +37,30 @@ LibertyRecomp/ReXGlue's generated-code and runtime foundation. The official app
 identity remains `com.lukebrosious.theft4`.
 
 > [!NOTE]
-> **0.3 is available:** [download the unsigned iOS IPA](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3).
+> **0.3.1 is available:** [download the unsigned iOS IPA](https://github.com/KoreanSeats1/Theft4/releases/tag/v0.3.1).
 > Update in place using your sideloading tool. TestFlight publication is separate.
 > M5 testing reports excellent visuals and a major native-resolution performance
 > improvement, with a remaining spike that recovers. The tested native run used
 > 2416 × 1359 without upscaling. Locked 30 FPS across every scene/device is not
 > established.
+
+## What changed in 0.3.1
+
+The performance follow-up reduces cold geometry conversion, upload and driver
+allocation overhead, repeated draw preparation, frame bookkeeping and CPU wait
+busy polling. Bounded caches retain useful warm entries instead of clearing
+whole working sets. These changes retain the direct Metal renderer and original
+icon; they do not establish locked 30 FPS on every device.
+
+The optional **Mods** tab adds Native Aspect Ratio, SBerrix's Custom Time Cycle,
+God Mode and Unlimited Ammo. Native Aspect Ratio expands the scene to the
+launch window with matching camera/lighting reconstruction and proportional
+interface corrections. More visible scenery can cost additional frame time.
+The one-time ASTC preparation flow remains capability-gated for GPUs without
+BC texture support, and existing prepared caches are retained on app updates.
+
+Read the [0.3.1 release notes](docs/RELEASE_0.3.1.md) and the
+[detailed implementation and validation record](docs/IOS_MODS.md).
 
 ## What changed in 0.3
 
@@ -364,6 +382,7 @@ Then follow:
 - [iOS core build](docs/IOS_CORE_BUILD.md)
 - [iOS application and device build](docs/IOS_APP_BUILD.md)
 - [real AOT startup status](docs/IOS_GAME_STARTUP.md)
+- [iOS Mods: time-cycle replacement and Native Aspect Ratio](docs/IOS_MODS.md)
 - [desktop/upstream build guide](docs/BUILDING.md)
 - [lawful dumping guide](docs/DUMPING-en.md)
 

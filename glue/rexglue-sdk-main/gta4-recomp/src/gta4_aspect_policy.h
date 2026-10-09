@@ -66,6 +66,9 @@ constexpr Extent SelectExtent(Extent budget, std::string_view mode, Extent drawa
 struct Point {
   double x = 0, y = 0;
 };
+struct SafeInsets {
+  double left = 0, top = 0, right = 0, bottom = 0;
+};
 struct Rect {
   double left = 0, top = 0, right = 0, bottom = 0;
 };
@@ -90,6 +93,16 @@ inline Transform Layout(Extent output, Point anchor = {0.5, 0.5}) noexcept {
   const double sx = std::min(1.0, kReferenceAspect / aspect);
   const double sy = std::min(1.0, aspect / kReferenceAspect);
   return {sx, sy, (1 - sx) * anchor.x, (1 - sy) * anchor.y};
+}
+// Only edge-anchored UI moves into the device safe area. Preserve scale,
+// centered content and world-projected label positions.
+inline Transform SafeLayout(Extent output, Point anchor, SafeInsets insets) noexcept {
+  auto t = Layout(output, anchor);
+  if (anchor.x == 0) t.ox += insets.left;
+  if (anchor.x == 1) t.ox -= insets.right;
+  if (anchor.y == 0) t.oy += insets.top;
+  if (anchor.y == 1) t.oy -= insets.bottom;
+  return t;
 }
 // frontend_360.dat: TOP_position_of_top_line. The row origin is authored
 // relative to this fixed menu boundary, not relative to the top of the display.
@@ -170,10 +183,12 @@ struct DcIdentity {
 };
 constexpr bool HasUiDrawExecutor(uint32_t vtable) noexcept {
   switch (vtable) {
+    case 0x8200138C:  // sub_821BCEE0: already baked font batch
     case 0x820013A8:
     case 0x820013C4:
     case 0x820013E0:
     case 0x820013FC:
+    case 0x82001418:  // sub_821BD138: four normalized XY vertices, default UVs
     case 0x82001434:
     case 0x82001450:
     case 0x8200146C:

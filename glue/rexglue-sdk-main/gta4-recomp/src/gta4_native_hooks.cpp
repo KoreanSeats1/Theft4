@@ -2873,7 +2873,7 @@ NativeResolutionOverride GetNativeResolutionOverride(uint32_t requested_width,
       aspect_window ? aspect_window->GetActualPhysicalHeight() : 0};
   const auto selected = gta4::aspect::resolution::Select(
       gta4::aspect::resolution::Limit({result.display_width, result.display_height}, 0x0FFF),
-      REXCVAR_GET(gta4_aspect_ratio), drawable);
+      REXCVAR_GET(gta4_aspect_ratio), gta4::aspect::ConfiguredDisplay(drawable));
   result.display_width = result.width = selected.width;
   result.display_height = result.height = selected.height;
   result.override_width |= selected.width != requested_width;
@@ -5817,6 +5817,7 @@ extern "C" void sub_82A3DF50(PPCContext& ctx, uint8_t* base) {
   }
 
   const uint32_t device = ctx.r3.u32;
+  const gta4::aspect::NativeMenuClipScope menu_clip(base, device);
   StoreU32(base, device + 48, LoadU32(base, device + kUpCommandWriteOffset));
   if (g_pending_draw_primitive_up.device != device || !g_pending_draw_primitive_up.vertex_data) {
     return;
@@ -5856,6 +5857,7 @@ extern "C" void sub_82A3DF60(PPCContext& ctx, uint8_t* base) {
   }
 
   const uint32_t device = ctx.r3.u32;
+  const gta4::aspect::NativeMenuClipScope menu_clip(base, device);
   DrawPrimitiveCommand command{};
   command.device = device;
   ApplyDrawLightingContext(command, GetNativeLightingContext());
@@ -6258,6 +6260,7 @@ extern "C" void sub_828DC7F0(PPCContext& ctx, uint8_t* base) {
 }
 
 extern "C" void sub_828BE580(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareDerivedProjection(ctx, base);
   if (IsNativeMode() && ctx.lr == kExteriorReflectionProjectionReturnAddress) {
     const double distance = GetExteriorReflectionCaptureDistance();
     ctx.f4.f64 = distance;
@@ -7034,6 +7037,7 @@ extern "C" void sub_82A3E348(PPCContext& ctx, uint8_t* base) {
   }
 
   const uint32_t device = ctx.r3.u32;
+  const gta4::aspect::NativeMenuClipScope menu_clip(base, device);
   DrawIndexedPrimitiveCommand command{};
   command.device = device;
   ApplyDrawLightingContext(command, GetNativeLightingContext());

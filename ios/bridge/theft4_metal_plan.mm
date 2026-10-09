@@ -137,7 +137,9 @@ void PlanAdapter::FlushPipelineCache() {
 }
 bool PlanAdapter::Open(const std::string& libraries,std::string& error) {
   if(!shaders_.Open(libraries,error))return false;
+  EndUploadBatch();
   consecutive_pipeline_.reset();consecutive_source_={};consecutive_primitive_=render::Primitive::Count;
+  consecutive_vertex_metadata_=nullptr;consecutive_fragment_metadata_=nullptr;
   pipelines_.clear();render_pipelines_.clear();prepared_.clear();images_.clear();
   if(!pipeline_cache_directory_.empty())try {
     const auto path=std::filesystem::path(pipeline_cache_directory_)/"recipes.json";
@@ -228,16 +230,17 @@ std::shared_ptr<const Pipeline> PlanAdapter::PipelineFor(const render::Pipeline&
   if(consecutive_pipeline_&&primitive==consecutive_primitive_&&source==consecutive_source_) {
     error.clear();return consecutive_pipeline_;
   }
-  const auto remember=[&](std::shared_ptr<const Pipeline> result) {
-    if(result){consecutive_source_=source;consecutive_primitive_=primitive;consecutive_pipeline_=result;}
-    return result;
-  };
   if(p.vertex.variant>1||p.fragment.variant>1){error="Game shader override has not been lowered into the Metal catalog";return {};}
   const uint32_t required=p.samples==32 ? UINT32_MAX : (1u<<p.samples)-1;
   if((p.sample_mask&required)!=required){error="This game draw requires pipeline sample-mask shader lowering";return {};}
   const auto* vs_meta=shaders_.Metadata({p.vertex.hash,p.vertex.variant==1,p.negative_one_to_one},Stage::Vertex);
   const auto* ps_meta=p.fragment.hash ? shaders_.Metadata({p.fragment.hash,p.fragment.variant==1},Stage::Fragment) : nullptr;
   if(!vs_meta||(p.fragment.hash&&!ps_meta)){error="Captured game shader is absent from the offline Metal catalog";return {};}
+  const auto remember=[&](std::shared_ptr<const Pipeline> result) {
+    if(result){consecutive_source_=source;consecutive_primitive_=primitive;consecutive_pipeline_=result;
+      consecutive_vertex_metadata_=vs_meta;consecutive_fragment_metadata_=ps_meta;}
+    return result;
+  };
   const auto vs_specialization=vs_meta->Specialization(p.vertex.specialization);
   const auto ps_specialization=ps_meta?ps_meta->Specialization(p.fragment.specialization):p.fragment.specialization;
   render::Pipeline specialized;const auto* effective=&source;
@@ -393,7 +396,30 @@ bool PlanAdapter::Prepare(const render::Capture& capture,Draw& draw,std::string&
   if(!PrepareValidated(capture,maximum,index_has_restart,result,error))return false;
   draw=std::move(result);return true;
 }
-bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,bool index_has_restart,Draw& draw,std::string& error) {
+id<MTLTexture> PlanAdapter::AdmittedImageFor(const std::shared_ptr<const render::Image>& image,std::string& error) {
+  // Full ValidateFrame admission already checked this immutable owner. The
+  // first use still executes ImageFor's complete version/shape comparison.
+  // Neither public Prepare nor public ImageFor can bypass those checks.
+  if(!upload_batch_active_||!image)return ImageFor(image,error);
+  const auto address=reinterpret_cast<uintptr_t>(image.get())>>4;
+  const size_t start=(address^(address>>9)^(address>>19))&(kImageViewSlots-1);
+  AdmittedImageView* destination=nullptr;size_t destination_slot=0;
+  for(size_t probe=0;probe<4;++probe) {
+    const auto slot=(start+probe)&(kImageViewSlots-1);auto& entry=image_views_[slot];
+    if(entry.identity==image.get()&&!entry.owner.owner_before(image)&&!image.owner_before(entry.owner)) {
+      error.clear();return entry.texture;
+    }
+    if(!entry.identity){destination=&entry;destination_slot=slot;break;}
+  }
+  auto texture=ImageFor(image,error);
+  if(texture&&destination) {
+    image_view_slots_[image_view_count_++]=uint16_t(destination_slot);
+    *destination={image.get(),image,texture};
+  }
+  return texture;
+}
+bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maximum,bool index_has_restart,Draw& draw,std::string& error,
+                                  bool admitted_resources) {
   const auto& source=capture.draw;AcquireDrawBindings(draw);auto& result=draw;
   result.maximum_vertex=NSUInteger(maximum);
   result.pipeline=PipelineFor(source.pipeline,source.primitive,error);if(!result.pipeline)return false;
@@ -416,8 +442,11 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
       return Error(error,"Metal fixed restart markers differ from this game index stream; frontend expansion is required");
   }
   if((result.pipeline->vertex.textures||result.pipeline->fragment.textures)&&!EnsureDummyImages(error))return false;
-  const auto* vm=shaders_.Metadata({source.pipeline.vertex.hash,source.pipeline.vertex.variant==1,source.pipeline.negative_one_to_one},Stage::Vertex);
-  const auto* pm=source.pipeline.fragment.hash ? shaders_.Metadata({source.pipeline.fragment.hash,source.pipeline.fragment.variant==1},Stage::Fragment) : nullptr;
+  // The successful PipelineFor above established these for this exact source,
+  // including stage, late-alpha and clip-space variants. Reuse its catalog
+  // lookups rather than hashing both shader keys again for every draw.
+  const auto* vm=consecutive_vertex_metadata_;
+  const auto* pm=consecutive_fragment_metadata_;
   // Realize only reflected bindings. The previous dense 26 x 4 texture table
   // retained placeholders for every dimension, then walked the reflection a
   // second time to copy them. Static image declarations were already admitted;
@@ -426,8 +455,12 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
   if(!vm->bindings.empty()||(pm&&!pm->bindings.empty())) {
     result.textures.reserve(std::popcount(result.pipeline->vertex.textures)+std::popcount(result.pipeline->fragment.textures));
     result.samplers.reserve(std::popcount(result.pipeline->vertex.samplers)+std::popcount(result.pipeline->fragment.samplers));
-    std::array<id<MTLTexture>,26> images{};
-    std::array<id<MTLSamplerState>,26> samplers{};
+    // The worker-owned image/sampler caches and dummy_images_ retain these
+    // objects for the entire preparation. Borrow here, then transfer strong
+    // ownership into the completed draw's bindings. Avoid an extra ARC pair
+    // for every temporary fetch, without borrowing across draws or eviction.
+    id<MTLTexture> __unsafe_unretained images[26]{};
+    id<MTLSamplerState> __unsafe_unretained samplers[26]{};
     uint32_t initialized=0;
     const auto bind=[&](const ShaderMetadata* metadata) {
       if(!metadata)return Error(error,"Missing admitted game shader interface");
@@ -436,7 +469,8 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
         if(!(initialized&(1u<<slot))) {
           if(fetch.image) {
             if(size_t(fetch.image->kind)>=dummy_images_.size())return Error(error,"Game cube-array sampling needs a matching Metal shader interface");
-            images[slot]=ImageFor(fetch.image,error);if(!images[slot])return false;
+            images[slot]=admitted_resources?AdmittedImageFor(fetch.image,error):ImageFor(fetch.image,error);
+            if(!images[slot])return false;
           }
           if(fetch.sampler){samplers[slot]=SamplerFor(*fetch.sampler,error);if(!samplers[slot])return false;}
           initialized|=1u<<slot;
@@ -446,7 +480,7 @@ bool PlanAdapter::PrepareValidated(const render::Capture& capture,uint64_t maxim
           result.samplers.push_back({metadata->stage,binding.index,samplers[slot]});
         } else {
           const auto kind=size_t(binding.kind);
-          auto texture=fetch.image&&size_t(fetch.image->kind)==kind ? images[slot] : dummy_images_[kind];
+          id<MTLTexture> __unsafe_unretained texture=fetch.image&&size_t(fetch.image->kind)==kind ? images[slot] : dummy_images_[kind];
           if(!texture)return Error(error,"Missing game texture for a Metal fetch slot");
           result.textures.push_back({metadata->stage,binding.index,texture});
         }

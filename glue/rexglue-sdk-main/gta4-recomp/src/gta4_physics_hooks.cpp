@@ -1,5 +1,6 @@
 #include "gta4_physics_hooks.h"
 #include "gta4_init.h"
+#include "gta4_gameplay_mods.h"
 #include <rex/logging.h>
 
 #include <atomic>
@@ -47,6 +48,7 @@ void BoundPhysicsArgument(PPCContext& ctx, const char* stage) {
 // the scaled per-slice f1, and invokes Pre/Sim/manifold/Post in order. Keep that
 // entire loop and all original call side effects, rather than reproducing it.
 extern "C" void sub_824797C0(PPCContext& ctx, uint8_t* base) {
+  gta4::mods::BeforePhysics(base);
   gta4::physics::PhysicsUpdateScope scope(PhysicsGuardEnabled());
   __imp__sub_824797C0(ctx, base);
 }

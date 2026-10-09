@@ -1,5 +1,6 @@
 #include "theft4_render_plan_source.h"
 #include <bit>
+#include <bitset>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -75,7 +76,11 @@ bool DecodeImageUpload(const SampledImageDescription& description,
   }
   const uint32_t slices=cube ? 6 : array ? description.layers : 1;
   if(uint64_t(slices)*description.levels>2048)return reject("Too many sampled image upload subresources");
-  std::vector<bool> seen(size_t(slices)*description.levels);
+  const size_t subresources=size_t(slices)*description.levels;
+  // The validated limit is fixed. Keep coverage on the stack and allocate the
+  // final mip table once, rather than growing it during first-use uploads.
+  std::bitset<2048> seen;
+  image.mips.reserve(subresources);
   const auto multiply=[](uint64_t a,uint64_t b,uint64_t& result) {
     if(b&&a>std::numeric_limits<uint64_t>::max()/b)return false;
     result=a*b;return true;
@@ -112,7 +117,7 @@ bool DecodeImageUpload(const SampledImageDescription& description,
       image.mips.push_back({m.level,slice,m.width,m.height,m.depth,row,plane,m.payload_offset+relative,required});
     }
   }
-  if(std::find(seen.begin(),seen.end(),false)!=seen.end())
+  if(seen.count()!=subresources)
     return reject("Sampled image upload omits a mip/slice");
   output=std::move(image);error.clear();return true;
 }
@@ -171,6 +176,7 @@ bool Pipeline(const rex::graphics::gta4_native::NativePipelineRecipe::Snapshot& 
     error="Game pipeline state needs a frontend expansion before Metal capture";return false;
   }
   render::Draw out;auto& p=out.pipeline;
+  p.attributes.reserve(s.attribute_count);
   p.vertex={s.shaders[0].title_hash,s.shaders[0].variant,s.shaders[0].specialization_enabled ? s.specialization : 0};
   if(s.stage_count==2)p.fragment={s.shaders[1].title_hash,s.shaders[1].variant,s.shaders[1].specialization_enabled ? s.specialization : 0};
   for(uint32_t i=0;i<s.binding_count;++i) {

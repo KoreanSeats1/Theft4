@@ -23,9 +23,14 @@ struct OutputState {
   Extent render, output;
   bool ready = false;
   uint64_t generation = 0;
+  Extent display;
+  SafeInsets safe;
 };
 std::mutex output_mutex;
 OutputState output_state;
+std::mutex radar_mutex;
+Rect radar_screen_bounds{};
+uint64_t radar_bounds_generation = UINT64_MAX;
 thread_local UiContext ui_context;
 thread_local unsigned baked_font_depth = 0;
 thread_local unsigned append_depth = 0;
@@ -41,6 +46,8 @@ struct Emission {
 thread_local Emission emission;
 std::atomic<uint32_t> trace_count{0};
 std::atomic<uint32_t> loading_label_trace_count{0};
+std::array<std::atomic<uint32_t>, 4> camera_consumer_trace_count{};
+std::array<std::atomic<uint64_t>, 4> camera_consumer_trace_shape{};
 
 bool Span(uint8_t* base, uint32_t address, size_t size, bool write = false) {
   if (!base || !address || !size || uint64_t(address) + size > uint64_t(UINT32_MAX) + 1)
@@ -74,6 +81,9 @@ void Float(uint8_t* base, uint32_t address, double value) {
 OutputState Output() {
   std::lock_guard lock(output_mutex);
   return output_state;
+}
+Extent Shape(const OutputState& state) {
+  return state.display.valid() ? state.display : state.output;
 }
 bool Trace() {
   return REXCVAR_GET(gta4_trace_aspect) &&
@@ -119,18 +129,78 @@ bool DisplayViewport(uint8_t* base, uint32_t viewport, const OutputState& state)
 }
 std::optional<double> CameraAspect(uint8_t* base, uint32_t viewport) {
   const auto state = Output();
-  if (!DisplayViewport(base, viewport, state) || !ScreenCameraOwner(Owner(base, viewport)))
+  if (!DisplayViewport(base, viewport, state))
     return std::nullopt;
   const double width = Float(base, viewport + 672);
   const double height = Float(base, viewport + 676);
   if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0)
     return std::nullopt;
-  return double(state.output.width) / state.output.height * width / height;
+  const double aspect = Shape(state).aspect() * width / height;
+  if (!ScreenCameraOwner(Owner(base, viewport))) {
+    // A plain grcViewport copy has no CViewport owner at -16. Recognize only
+    // coherent, ALREADY expanded copies. This preserves their projection on
+    // subsequent rebuilds without expanding generic/light-space cameras.
+    const double authored = Float(base, viewport + 696);
+    const double resolved = ExpandVerticalFov(authored, Shape(state).aspect());
+    if (!std::isfinite(authored) || !std::isfinite(resolved) ||
+        std::abs(resolved - authored) <= 1e-5)
+      return std::nullopt;
+    const double tangent = std::tan(resolved * (3.14159265358979323846 / 360.0));
+    const auto matches = [](double a, double b) {
+      return std::isfinite(a) && std::isfinite(b) &&
+             std::abs(a - b) <= std::max(1.0, std::abs(b)) * 1e-5;
+    };
+    if (!matches(Float(base, viewport + 700), aspect) ||
+        !matches(Float(base, viewport + 712), tangent) ||
+        !matches(Float(base, viewport + 716), tangent * aspect) ||
+        !matches(Float(base, viewport + 448) * tangent * aspect, Float(base, viewport + 720)) ||
+        !matches(Float(base, viewport + 468) * tangent, Float(base, viewport + 724)))
+      return std::nullopt;
+  }
+  return aspect;
 }
-UiContext MakeContext(UiRole role, Point anchor) {
+void TraceCameraConsumer(uint8_t* base, uint32_t viewport, const char* role) {
+  const unsigned category = role[0] == 'a' ? 0 : role[0] == 'd' ? 1 : role[0] == 'p' ? 2 : 3;
+  if (!REXCVAR_GET(gta4_trace_aspect) ||
+      !rex::diagnostics::IsEnabled(rex::diagnostics::Category::kLogging) ||
+      !Span(base, viewport, 1000))
+    return;
+  // Repeated loading frames must not consume the entire budget before gameplay.
+  uint64_t shape = 14695981039346656037ull;
+  for (uint32_t offset : {696u, 700u, 712u, 716u, 448u, 468u})
+    shape = (shape ^ Read(base, viewport + offset)) * 1099511628211ull;
+  if (camera_consumer_trace_shape[category].exchange(shape, std::memory_order_relaxed) == shape ||
+      camera_consumer_trace_count[category].fetch_add(1, std::memory_order_relaxed) >= 48)
+    return;
+  REXLOG_INFO("gta4-aspect-consumer: role={} viewport={:08X} owner={:08X} size={}x{} "
+      "fov={} aspect-input={} tangent={},{} projection={},{}",
+      role, viewport, Owner(base, viewport), Read(base, viewport+688), Read(base, viewport+692),
+      Float(base,viewport+696), Float(base,viewport+700), Float(base,viewport+712),
+      Float(base,viewport+716), Float(base,viewport+448), Float(base,viewport+468));
+}
+std::optional<double> ResolvedConsumerFov(uint8_t* base, uint32_t viewport) {
+  // These two exact auxiliary callers accept copied grcViewports as well as
+  // owner-embedded main cameras. Copies retain the resolved projection/tangents
+  // but deliberately retain the authored (animation input) FOV at +696.
+  if (!DisplayViewport(base, viewport, Output()))
+    return std::nullopt;
+  const double tangent = Float(base, viewport + 712);
+  const double projection = Float(base, viewport + 468);
+  const double scale = Float(base, viewport + 724);
+  if (!std::isfinite(tangent) || tangent <= 0 || !std::isfinite(projection) ||
+      !std::isfinite(scale) || scale <= 0 ||
+      std::abs(tangent * projection - scale) > std::max(1.0, std::abs(scale)) * 1e-5)
+    return std::nullopt;
+  const double fov = std::atan(tangent) * (360.0 / 3.14159265358979323846);
+  return fov > 0 && fov < 179 ? std::optional<double>{fov} : std::nullopt;
+}
+UiContext MakeContext(UiRole role, Point anchor, bool safe = true) {
   const auto state = Output();
-  const auto transform = role == UiRole::kMenuBody ? MenuBodyLayout(state.output, anchor.y)
-                                                   : Layout(state.output, anchor);
+  const auto shape = Shape(state);
+  const auto transform = role == UiRole::kRadarLocal ? Transform{}
+      : role == UiRole::kMenuBody ? MenuBodyLayout(shape, anchor.y)
+      : safe && role != UiRole::kFixed ? SafeLayout(shape, anchor, state.safe)
+                                      : Layout(shape, anchor);
   return {transform, state.render, role, state.ready && role != UiRole::kNone, state.generation};
 }
 class EmitScope {
@@ -228,7 +298,7 @@ UiContext HudContext(PPCContext& ctx, uint8_t* base) {
   }
   return MakeContext(UiRole::kComponent, policy.world_position ? point
                                          : policy.specified    ? policy.anchor
-                                                               : ComponentAnchor(point));
+                                                               : ComponentAnchor(point), !policy.world_position);
 }
 void DrawHud(PPCContext& ctx, uint8_t* base, GuestFunction original) {
   const Scope scope(HudContext(ctx, base));
@@ -253,6 +323,22 @@ uint32_t FontState(PPCContext& ctx, uint8_t* base) {
 }
 }  // namespace
 
+void ConfigureDisplay(Extent display, SafeInsets insets) {
+  auto valid = [](double value) { return std::isfinite(value) && value >= 0 && value < 0.5; };
+  if (!display.valid()) display = {};
+  if (!display.valid() || !valid(insets.left) || !valid(insets.top) ||
+      !valid(insets.right) || !valid(insets.bottom) ||
+      insets.left + insets.right >= 1 || insets.top + insets.bottom >= 1)
+    insets = {};
+  std::lock_guard lock(output_mutex);
+  output_state.display = display;
+  output_state.safe = insets;
+  ++output_state.generation;
+}
+Extent ConfiguredDisplay(Extent fallback) {
+  const auto state = Output();
+  return state.display.valid() ? state.display : fallback;
+}
 void Publish(Extent render, Extent output) {
   if (!render.width || !render.height || !output.width || !output.height)
     return;
@@ -263,7 +349,8 @@ void Publish(Extent render, Extent output) {
               output.height != output_state.output.height ||
               render.width != output_state.render.width ||
               render.height != output_state.render.height;
-    output_state = {render, output, true, output_state.generation + uint64_t(changed)};
+    output_state = {render, output, true, output_state.generation + uint64_t(changed),
+                    output_state.display, output_state.safe};
   }
   if (changed) {
     const auto layout = Layout(output);
@@ -288,7 +375,7 @@ UiContext CurrentUi(uint8_t* base) {
   const bool startup = Span(base, kStartupViewport, 4) && viewport == Read(base, kStartupViewport);
   if (!PrimaryUiOwner(Owner(base, viewport)) && !startup)
     return {};
-  return {Layout(state.output), state.render, UiRole::kComponent, true, state.generation};
+  return {Layout(Shape(state)), state.render, UiRole::kComponent, true, state.generation};
 }
 UiContext MenuBodyUi(uint8_t* base) {
   // Nested list, slider and hitbox passes must not compute different snapshots.
@@ -311,8 +398,8 @@ UiContext TextUi(const PPCContext& ctx, uint8_t* base) {
   if (!context.active || !std::isfinite(ctx.f1.f64) || !std::isfinite(ctx.f2.f64))
     return context;
   const Point anchor = ComponentAnchor({ctx.f1.f64, ctx.f2.f64});
-  context.transform.ox = (1 - context.transform.sx) * anchor.x;
-  context.transform.oy = (1 - context.transform.sy) * anchor.y;
+  const auto state = Output();
+  context.transform = SafeLayout(Shape(state), anchor, state.safe);
   return context;
 }
 Scope::Scope(UiRole role, Point anchor) : previous_(ui_context) {
@@ -352,13 +439,17 @@ void FinalizeDc(uint8_t* base, uint32_t dc) {
   if (!Output().ready || !Span(base, dc, 8))
     return;
   const uint32_t vtable = Read(base, dc), token = StableDcToken(Read(base, dc + 4));
+  // Some frontend/HUD constructors run outside a component Scope. Preserve
+  // their verified display-UI layout at publication; playback can run on a
+  // different thread after the producer's viewport and Scope are gone.
+  const auto layout = LayoutDc(vtable) ? CurrentUi(base) : UiContext{};
   std::lock_guard lock(dc_mutex);
   // Invalidate on every publication, including reuse by a non-UI command.
   dc_layouts.erase(dc);
-  if (!LayoutDc(vtable) || !ui_context.active)
+  if (!layout.active)
     return;
   const uint64_t serial = ++next_dc_serial;
-  dc_layouts.emplace(dc, DcLayout{token, vtable, serial, ui_context});
+  dc_layouts.emplace(dc, DcLayout{token, vtable, serial, layout});
   dc_order.emplace_back(dc, serial);
   // Both containers are bounded. Token + vtable prevents address-reuse contamination.
   for (; dc_order.size() > kMaximumDcLayouts; dc_order.pop_front()) {
@@ -368,38 +459,149 @@ void FinalizeDc(uint8_t* base, uint32_t dc) {
       dc_layouts.erase(it);
   }
 }
+std::optional<Rect> RadarScreenBounds() {
+  const auto state = Output();
+  std::lock_guard lock(radar_mutex);
+  if (!state.ready || radar_bounds_generation != state.generation)
+    return std::nullopt;
+  return radar_screen_bounds;
+}
+void PrepareRadarViewport(PPCContext& ctx, uint8_t* base, uint32_t viewport) {
+  // sub_8239C9B8 builds the radar render pass's independent orthographic view
+  // at pass + 176. Its vertices, stencil mask, rings and blips use local 0..1
+  // coordinates. Correct the viewport once, rather than selected inner draws.
+  const auto state = Output();
+  if (uint64_t(viewport) + 768 > UINT32_MAX ||
+      !DisplayViewport(base, viewport, state) || !Span(base, viewport + 640, 128, true))
+    return;
+  const Extent pixels{Read(base, viewport + 688), Read(base, viewport + 692)};
+  const Rect authored{Float(base, viewport + 664), Float(base, viewport + 668),
+                      Float(base, viewport + 664) + Float(base, viewport + 672),
+                      Float(base, viewport + 668) + Float(base, viewport + 676)};
+  // The same pass also services the full pause map. Leave full-output views,
+  // offscreen targets, invalid rectangles and unrelated viewports unchanged.
+  const double width = authored.right - authored.left, height = authored.bottom - authored.top;
+  if (!std::isfinite(authored.left) || !std::isfinite(authored.top) ||
+      !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0 ||
+      width >= 0.5 || height >= 0.5)
+    return;
+  const auto transform = SafeLayout(Shape(state), {0, 1}, state.safe);
+  if (transform.identity()) {
+    std::lock_guard lock(radar_mutex);
+    radar_screen_bounds = authored;
+    radar_bounds_generation = state.generation;
+    return;
+  }
+  const auto mapped = transform.Map(authored);
+  const std::array<double,4> boundaries{mapped.left * pixels.width,
+      mapped.top * pixels.height, mapped.right * pixels.width, mapped.bottom * pixels.height};
+  // Bound conversion and subsequent signed width/height subtraction even for
+  // corrupt guest data. Real viewport boundaries fit in this pixel range.
+  if (std::any_of(boundaries.begin(), boundaries.end(), [](double value) {
+        return !std::isfinite(value) || value < -32768 || value > 32767;
+      })) return;
+  // Round the two boundaries together; the game setter rebuilds clipping,
+  // pixel-to-clip constants and derived matrices from this canonical window.
+  const int32_t left = int32_t(std::lround(mapped.left * pixels.width));
+  const int32_t top = int32_t(std::lround(mapped.top * pixels.height));
+  const int32_t right = int32_t(std::lround(mapped.right * pixels.width));
+  const int32_t bottom = int32_t(std::lround(mapped.bottom * pixels.height));
+  PPCContext window = ctx;
+  window.r3.u32 = viewport;
+  window.r4.s32 = left; window.r5.s32 = top;
+  window.r6.s32 = right - left; window.r7.s32 = bottom - top;
+  window.f1.f64 = Float(base, viewport + 680);
+  window.f2.f64 = Float(base, viewport + 684);
+  __imp__sub_828BE238(window, base);
+  const double x = Float(base, viewport + 664), y = Float(base, viewport + 668);
+  std::lock_guard lock(radar_mutex);
+  radar_screen_bounds = {x, y, x + Float(base, viewport + 672), y + Float(base, viewport + 676)};
+  radar_bounds_generation = state.generation;
+}
 void PrepareViewport(PPCContext& ctx, uint8_t* base) {
   const uint32_t viewport = ctx.r3.u32;
   const auto state = Output();
   if (!DisplayViewport(base, viewport, state) || !Span(base, viewport + 448, 280, true))
     return;
   const uint32_t owner = Owner(base, viewport);
-  const bool screen = ScreenCameraOwner(owner), phone = PhoneCameraOwner(owner);
+  const auto screen_aspect = CameraAspect(base, viewport);
+  const bool screen = screen_aspect.has_value(), phone = PhoneCameraOwner(owner);
   if (!screen && !phone)
     return;
   PPCContext query = ctx;
   __imp__sub_821ED2F0(query, base);
-  const auto screen_aspect = screen ? CameraAspect(base, viewport) : std::optional<double>{};
   const double aspect = screen_aspect ? *screen_aspect : query.f1.f64;
   const double authored = Float(base, viewport + 696);
-  const double fov = screen ? ExpandVerticalFov(authored, state.output.aspect()) : authored;
+  const double fov = screen ? ExpandVerticalFov(authored, Shape(state).aspect()) : authored;
   if (!std::isfinite(fov) || !std::isfinite(aspect) || fov <= 0 || fov >= 179 || aspect <= 0)
     return;
   constexpr double half_radians = 3.14159265358979323846 / 360.0;
   const double tangent = std::tan(fov * half_radians);
-  const auto layout = phone ? Layout(state.output, {1, 1}) : Transform{};
+  const auto layout = phone ? SafeLayout(Shape(state), {1, 1}, state.safe) : Transform{};
   const double expected_x = Float(base, viewport + 720) / (tangent * aspect) * layout.sx;
   const double expected_y = Float(base, viewport + 724) / tangent * layout.sy;
   const double actual_x = Float(base, viewport + 448), actual_y = Float(base, viewport + 468);
   if (!std::isfinite(expected_x) || !std::isfinite(expected_y))
     return;
-  if (std::abs(actual_x - expected_x) > std::max(1.0, std::abs(expected_x)) * 1e-5 ||
+  const double w = Float(base, viewport + 492);
+  const double offset_x = Float(base, viewport + 728) * layout.sx +
+      w * (2 * layout.ox + layout.sx - 1);
+  const double offset_y = Float(base, viewport + 732) * layout.sy +
+      w * (1 - layout.sy - 2 * layout.oy);
+  const bool phone_offset = phone &&
+      (std::abs(Float(base, viewport + 480) - offset_x) > 1e-5 ||
+       std::abs(Float(base, viewport + 484) - offset_y) > 1e-5);
+  if (phone_offset ||
+      std::abs(actual_x - expected_x) > std::max(1.0, std::abs(expected_x)) * 1e-5 ||
       std::abs(actual_y - expected_y) > std::max(1.0, std::abs(expected_y)) * 1e-5) {
     // Derived owners can be assigned after the base constructor. At first bind,
     // rebuild both the framing and the shape, not just their aspect quotient.
     PPCContext call = ctx;
     sub_828BDAD8(call, base);
   }
+}
+
+void PrepareCameraCopy(PPCContext& ctx, uint8_t* base) {
+  // Resolve late-assigned screen owners BEFORE the original complete copy.
+  // Otherwise lighting snapshots can capture an unexpanded projection before
+  // the main viewport's later bind repairs it for geometry.
+  PPCContext source = ctx;
+  source.r3 = ctx.r4;
+  PrepareViewport(source, base);
+}
+
+void PrepareDerivedProjection(PPCContext& ctx, uint8_t* base) {
+  // TU8 sub_827BCD28 / sub_827BCF90 construct auxiliary render viewports
+  // from the primary camera: r31 / r30 still hold that source grcViewport.
+  // Their destination belongs to an offscreen owner, so its projection builder
+  // deliberately does not apply the main-camera expansion a second time.
+  const uint32_t source = ctx.lr == 0x827BCE90 ? ctx.r31.u32
+                        : ctx.lr == 0x827BD198 ? ctx.r30.u32 : 0;
+  if (source) TraceCameraConsumer(base, source, "auxiliary-projection");
+  const auto resolved = source ? ResolvedConsumerFov(base, source) : std::nullopt;
+  if (!resolved)
+    return;
+  if (std::abs(ctx.f1.f64 - *resolved) > 1e-5)
+    ctx.f1.f64 = *resolved;
+  if (Trace())
+    REXLOG_INFO("gta4-aspect: derived-projection caller={:08X} source={:08X} fov={}",
+                uint32_t(ctx.lr), source, ctx.f1.f64);
+}
+
+void PrepareDerivedHalfAngle(PPCContext& ctx, uint8_t* base, uint32_t caller) {
+  // The second auxiliary path also computes its own tan/sin/cos after the
+  // viewport build. Keep all three consistent without modifying a shared
+  // camera field, changing camera animation, or expanding light-space views.
+  if (ctx.lr != caller)
+    return;
+  const auto resolved = ResolvedConsumerFov(base, ctx.r30.u32);
+  if (!resolved)
+    return;
+  const double fov = Float(base, ctx.r30.u32 + 696);
+  if (std::abs(*resolved - fov) <= 1e-5)
+    return;
+  // Match the single-precision fmuls used by the original PPC builder.
+  ctx.f1.f64 = double(float(float(*resolved) * Float(base, 0x82018970)));
 }
 
 void DrawQuad(PPCContext& ctx, uint8_t* base, GuestFunction original, bool textured) {
@@ -433,11 +635,76 @@ void DrawQuad(PPCContext& ctx, uint8_t* base, GuestFunction original, bool textu
   const EmitScope emit({layout.transform, !layout.transform.identity()});
   original(ctx, base);
 }
-void DrawRadarSection(PPCContext& ctx, uint8_t* base, GuestFunction original) {
-  const DcScope dc(ctx, base);
+void DrawUiVertices(PPCContext& ctx, uint8_t* base, GuestFunction original) {
   const auto layout = CurrentUi(base);
   const EmitScope emit({layout.transform, layout.active && !layout.transform.identity()});
   original(ctx, base);
+}
+void DrawRadarSection(PPCContext& ctx, uint8_t* base, GuestFunction original) {
+  const DcScope dc(ctx, base);
+  DrawUiVertices(ctx, base, original);
+}
+namespace {
+void DirtyMenuScissor(uint8_t* base, uint32_t device) {
+  // Native submission explicitly invalidates fixed/dynamic state whenever
+  // transport word 2 is dirty. Reuse its existing XDK default mask; leave
+  // constant, texture-fetch and integer-constant transport words untouched.
+  // Restoration must be visible to the following draw too.
+  constexpr uint64_t mask = 0x000013A0001809E8;
+  const uint32_t address = device + 16;
+  const uint64_t value = (uint64_t(Read(base, address)) << 32) | Read(base, address + 4);
+  Write(base, address, uint32_t((value | mask) >> 32));
+  Write(base, address + 4, uint32_t(value | mask));
+}
+}
+NativeMenuClipScope::NativeMenuClipScope(uint8_t* base, uint32_t device) {
+  // Do not use CurrentUi here: baked fonts deliberately disable position
+  // correction, but their captured pause context still requires clipping.
+  if (!ui_context.active || (ui_context.role != UiRole::kFixed &&
+      ui_context.role != UiRole::kMenuBody) || ui_context.transform.identity() ||
+      !Span(base, device, 12656, true))
+    return;
+  const auto state = Output();
+  // Pause-map offscreen targets can be drawn inside the compositor as well.
+  // Their own viewport/scissor must remain untouched.
+  if (!state.ready || Float(base, device + 12640) != 0 ||
+      Float(base, device + 12644) != 0 ||
+      Float(base, device + 12648) != state.render.width ||
+      Float(base, device + 12652) != state.render.height)
+    return;
+  const auto transform = Layout(Shape(state)).Pixels(state.render);
+  const auto panel = transform.Map(Rect{0, 0, double(state.render.width),
+                                       double(state.render.height)});
+  int left = int(std::ceil(panel.left)), top = int(std::ceil(panel.top));
+  int right = int(std::floor(panel.right)), bottom = int(std::floor(panel.bottom));
+  const uint32_t packed = Read(base, device + 10436);
+  const uint32_t end = Read(base, device + 10440);
+  const uint32_t window = Read(base, device + 10432);
+  const auto signed15 = [](uint32_t v) { v &= 0x7fff; return int(v & 0x4000 ? v | 0xffff8000u : v); };
+  const int dx = packed & 0x80000000u ? 0 : signed15(window);
+  const int dy = packed & 0x80000000u ? 0 : signed15(window >> 16);
+  // Packed bounds remain meaningful with the API enable bit off: the XDK
+  // setter has already intersected them with the active viewport.
+  left = std::max(left, int(packed & 0x3fff) + dx);
+  top = std::max(top, int((packed >> 16) & 0x3fff) + dy);
+  right = std::max(left, std::min(right, int(end & 0x3fff) + dx));
+  bottom = std::max(top, std::min(bottom, int((end >> 16) & 0x3fff) + dy));
+  if (left < 0 || top < 0 || right > 0x3fff || bottom > 0x3fff)
+    return;
+  base_ = base; device_ = device;
+  saved_ = {packed, end, Read(base, device + 11848)};
+  // Absolute bounds explicitly disable window-offset addition.
+  Write(base, device + 10436, 0x80000000u | uint32_t(left) | (uint32_t(top) << 16));
+  Write(base, device + 10440, uint32_t(right) | (uint32_t(bottom) << 16));
+  Write(base, device + 11848, 1);
+  DirtyMenuScissor(base, device);
+}
+NativeMenuClipScope::~NativeMenuClipScope() {
+  if (!base_) return;
+  Write(base_, device_ + 10436, saved_[0]);
+  Write(base_, device_ + 10440, saved_[1]);
+  Write(base_, device_ + 11848, saved_[2]);
+  DirtyMenuScissor(base_, device_);
 }
 void DrawWindow(PPCContext& ctx, uint8_t* base, GuestFunction original) {
   // Generated sub_821F6E38 forwards normalized measured bounds unchanged to
@@ -489,6 +756,14 @@ extern "C" void sub_821ED2F0(PPCContext& ctx, uint8_t* base) {
   if (const auto aspect = gta4::aspect::CameraAspect(base, viewport))
     ctx.f1.f64 = *aspect;
 }
+extern "C" void sub_821499C8(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareCameraCopy(ctx, base);
+  __imp__sub_821499C8(ctx, base);
+}
+extern "C" void sub_822C7700(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareCameraCopy(ctx, base);
+  __imp__sub_822C7700(ctx, base);
+}
 extern "C" void sub_828BDAD8(PPCContext& ctx, uint8_t* base) {
   using namespace gta4::aspect;
   const uint32_t viewport = ctx.r3.u32;
@@ -503,7 +778,7 @@ extern "C" void sub_828BDAD8(PPCContext& ctx, uint8_t* base) {
   if (aspect && Span(base, viewport + 696, 4, true)) {
     authored = Read(base, viewport + 696);
     const double original = std::bit_cast<float>(authored);
-    const double resolved = ExpandVerticalFov(original, state.output.aspect());
+    const double resolved = ExpandVerticalFov(original, Shape(state).aspect());
     changed = std::isfinite(resolved) && resolved != original;
     if (changed)
       Float(base, viewport + 696, resolved);
@@ -518,6 +793,7 @@ extern "C" void sub_828BDAD8(PPCContext& ctx, uint8_t* base) {
   if (changed)
     Write(base, viewport + 696, authored);
   phone_projection_build = previous_phone;
+  if (aspect) TraceCameraConsumer(base, viewport, "geometry");
 }
 extern "C" void sub_828BD1D8(PPCContext& ctx, uint8_t* base) {
   using namespace gta4::aspect;
@@ -526,11 +802,36 @@ extern "C" void sub_828BD1D8(PPCContext& ctx, uint8_t* base) {
     std::array<float, 16> matrix;
     for (size_t i = 0; i < matrix.size(); ++i)
       matrix[i] = Float(base, viewport + 448 + uint32_t(i) * 4);
-    TransformProjection(matrix, Layout(Output().output, {1, 1}));
+    const auto state = Output();
+    TransformProjection(matrix, SafeLayout(Shape(state), {1, 1}, state.safe));
     for (size_t i = 0; i < matrix.size(); ++i)
       Float(base, viewport + 448 + uint32_t(i) * 4, matrix[i]);
   }
   __imp__sub_828BD1D8(ctx, base);
+}
+extern "C" void sub_82A02158(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareDerivedHalfAngle(ctx, base, 0x827BD3D0);
+  __imp__sub_82A02158(ctx, base);
+}
+extern "C" void sub_829FFE18(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareDerivedHalfAngle(ctx, base, 0x827BD3E8);
+  __imp__sub_829FFE18(ctx, base);
+}
+extern "C" void sub_829FFD48(PPCContext& ctx, uint8_t* base) {
+  gta4::aspect::PrepareDerivedHalfAngle(ctx, base, 0x827BD3F8);
+  __imp__sub_829FFD48(ctx, base);
+}
+extern "C" void sub_82293878(PPCContext& ctx, uint8_t* base) {
+  using namespace gta4::aspect;
+  if (REXCVAR_GET(gta4_trace_aspect) && Span(base, kCurrentViewport, 4))
+    TraceCameraConsumer(base, Read(base, kCurrentViewport), "deferred-lighting");
+  __imp__sub_82293878(ctx, base);
+}
+extern "C" void sub_822CF9D0(PPCContext& ctx, uint8_t* base) {
+  using namespace gta4::aspect;
+  if (REXCVAR_GET(gta4_trace_aspect) && Span(base, kCurrentViewport, 4))
+    TraceCameraConsumer(base, Read(base, kCurrentViewport), "post-effects");
+  __imp__sub_822CF9D0(ctx, base);
 }
 extern "C" void sub_828C2290(PPCContext& ctx, uint8_t* base) {
   using namespace gta4::aspect;
@@ -559,7 +860,7 @@ extern "C" void sub_82143C88(PPCContext& ctx, uint8_t* base) {
     __imp__sub_82143C88(ctx, base);
     return;
   }
-  const Transform transform = Layout(state.output).Pixels(state.render);
+  const Transform transform = Layout(Shape(state)).Pixels(state.render);
   const Rect quad = transform.Map(Rect{ctx.f1.f64, ctx.f2.f64, ctx.f3.f64, ctx.f4.f64});
   if (!(quad.right > quad.left && quad.bottom > quad.top)) {
     __imp__sub_82143C88(ctx, base);
@@ -683,11 +984,26 @@ ASPECT_HUD_HOOK(sub_821C58E0)
     __imp__##address(ctx, base);                            \
   }
 ASPECT_DC_HOOK(sub_821BCF80)
-ASPECT_DC_HOOK(sub_821BCFA0)
+ASPECT_DC_HOOK(sub_821BCEE0)
 ASPECT_DC_HOOK(sub_821BD018)
-ASPECT_DC_HOOK(sub_821BD138)
 ASPECT_DC_HOOK(sub_821BD528)
 #undef ASPECT_DC_HOOK
+extern "C" void sub_821BCFA0(PPCContext& ctx, uint8_t* base) {
+  // Type 4 emits curved health/armor strips directly through sub_828C2290;
+  // its neighboring quads alone were corrected by DrawQuad.
+  gta4::aspect::DrawRadarSection(ctx, base, __imp__sub_821BCFA0);
+}
+extern "C" void sub_821C4148(PPCContext& ctx, uint8_t* base) {
+  // DrawHud has an immediate type-4 route as well as the queued executor.
+  // Map curved health/armor vertices at their common normalized primitive.
+  // EmitScope preserves an already active queued transform, so it applies once.
+  gta4::aspect::DrawUiVertices(ctx, base, __imp__sub_821C4148);
+}
+extern "C" void sub_821BD138(PPCContext& ctx, uint8_t* base) {
+  // Unlike the rectangle executors, this command calls sub_828C2290 directly.
+  // A DcScope alone retains the layout but never maps its emitted vertices.
+  gta4::aspect::DrawRadarSection(ctx, base, __imp__sub_821BD138);
+}
 extern "C" void sub_821BD218(PPCContext& ctx, uint8_t* base) {
   gta4::aspect::DrawRadarSection(ctx, base, __imp__sub_821BD218);
 }
@@ -739,6 +1055,29 @@ extern "C" void sub_821B5C90(PPCContext& ctx, uint8_t* base) {
 extern "C" void sub_82255CC8(PPCContext& ctx, uint8_t* base) {
   const gta4::aspect::Scope scope(gta4::aspect::MenuBodyUi(base));
   __imp__sub_82255CC8(ctx, base);
+}
+
+extern "C" void sub_8214DBD0(PPCContext& ctx, uint8_t* base) {
+  // The complete retail pause/frontend compositor includes the heading, tabs,
+  // backgrounds and footer outside the existing list/slider hooks. Capture
+  // their layout here, before deferred draw playback loses the UI viewport.
+  // Nested MenuBodyUi keeps its separate authored divider anchor.
+  const gta4::aspect::Scope scope(gta4::aspect::UiRole::kFixed);
+  __imp__sub_8214DBD0(ctx, base);
+}
+
+extern "C" void sub_8239C468(PPCContext& ctx, uint8_t* base) {
+  // This compositor draws inside the radar's orthographic subviewport. The
+  // viewport builder owns its screen mapping; retain local vertex coordinates.
+  const gta4::aspect::Scope scope(gta4::aspect::UiRole::kRadarLocal);
+  __imp__sub_8239C468(ctx, base);
+}
+
+extern "C" void sub_8239C9B8(PPCContext& ctx, uint8_t* base) {
+  const uint32_t pass = ctx.r3.u32;
+  __imp__sub_8239C9B8(ctx, base);
+  if (pass && uint64_t(pass) + 176 <= UINT32_MAX)
+    gta4::aspect::PrepareRadarViewport(ctx, base, pass + 176);
 }
 
 // The frontend appends this command inline, bypassing sub_82146790. Capture the

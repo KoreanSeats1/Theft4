@@ -245,6 +245,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   auto& draw=capture->draw;
   const NativeMetalFrameState::PipelineTemplate* pipeline_template=nullptr;
   if(auto found=native_metal_frame_->pipelines.find(cpu_key);found!=native_metal_frame_->pipelines.end()) {
+    native_metal_frame_->pipelines.Touch(found);
     const auto& p=found->second;draw.pipeline=p.pipeline;draw.primitive=p.primitive;
     draw.cull=p.cull;draw.clockwise=p.clockwise;draw.lines=p.lines;draw.depth_clamp=p.depth_clamp;
     draw.primitive_restart=p.primitive_restart;if(!theft4_retail_mode())++native_metal_frame_->pipeline_hits;
@@ -256,7 +257,7 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
     if(!description->snapshot)return reject("Metal effective pipeline snapshot unavailable");
     if(!r::source::Pipeline(*description->snapshot,draw,error))return false;
     if(native_metal_frame_->pipelines.size()>=4096) {
-      native_metal_frame_->pipelines.clear();
+      native_metal_frame_->pipelines.EvictOldest();
     }
     std::array<bool,kVertexStreamCount> required{};
     std::array<std::shared_ptr<const NativeMetalVertexConversion>,kVertexStreamCount> vertex_conversions{};
@@ -275,9 +276,13 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
         vertex_conversions[stream]=recipe;recipes.emplace(*plan,std::move(recipe));
       }
     }
-    auto entry=native_metal_frame_->pipelines.emplace(std::move(cpu_key),NativeMetalFrameState::PipelineTemplate{
-        draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,draw.primitive_restart,std::move(vertex_conversions)});
-    pipeline_template=&entry.first->second;
+    auto constant_layout=NativeShaderConstantLayout::Prepare(
+        state.vertex_shader_resource->constant_usage,
+        state.pixel_shader_resource?&state.pixel_shader_resource->constant_usage:nullptr);
+    native_metal_frame_->pipelines.Store(cpu_key,NativeMetalFrameState::PipelineTemplate{
+        draw.pipeline,draw.primitive,draw.cull,draw.clockwise,draw.lines,draw.depth_clamp,
+        draw.primitive_restart,std::move(vertex_conversions),std::move(constant_layout)});
+    pipeline_template=&native_metal_frame_->pipelines.find(cpu_key)->second;
     if(!theft4_retail_mode())++native_metal_frame_->pipeline_misses;
   }
   draw.first_vertex=first;draw.vertex_count=indexed?0:count;draw.base_vertex=base_vertex;
@@ -318,20 +323,18 @@ bool Gta4NativeGraphicsSystem::PrepareNativeMetalDraw(
   };
   const std::array<std::shared_ptr<const ConstantStateVersion>,2> versions{
       command.shader_state->vertex_constants,command.shader_state->pixel_constants};
-  auto constant_usage=state.vertex_shader_resource->constant_usage;
-  if(state.pixel_shader_resource)constant_usage.Merge(state.pixel_shader_resource->constant_usage);
+  auto constant_usage=pipeline_template->constant_layout.usage;
   if(!NativeConstantProjectionEnabled()||REXCVAR_GET(gta4_validate_native_hot_caches))constant_usage.known=false;
   if(!native_metal_frame_->projected_constants)
     native_metal_frame_->projected_constants=std::make_unique<NativeMetalConstantProjection<r::Bytes>>(!theft4_retail_mode());
   auto& projected_constants=*native_metal_frame_->projected_constants;
   for(size_t bank=0;bank<2;++bank) {
     const auto& version=versions[bank];const size_t required=bank?kPixelConstantsSize:kVertexConstantsSize;
-    const size_t extent=constant_usage.known?NativeMaskedConstantExtent(constant_usage.banks[bank]):required;
+    const size_t extent=constant_usage.known?pipeline_template->constant_layout.extents[bank]:required;
     draw.constant_bytes[bank]=uint32_t(extent);
     if(!version||version->byte_size!=required)return reject("Metal authoritative constant bank unavailable");
     std::shared_ptr<const r::Bytes> bytes;
-    if(constant_usage.known&&std::all_of(constant_usage.banks[bank].begin(),constant_usage.banks[bank].end(),
-        [](uint64_t mask){return !mask;})) {
+    if(constant_usage.known&&!extent) {
       bytes=native_metal_frame_->unused_constants[bank];
       if(!bytes) {
         const std::vector<uint8_t> zero(required);

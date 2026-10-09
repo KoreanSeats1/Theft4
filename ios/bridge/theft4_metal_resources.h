@@ -59,7 +59,8 @@ class FrameUploadPool {
 };
 class ResourceCache {
  public:
-  explicit ResourceCache(Renderer& renderer,size_t buffer_budget=128*1024*1024,bool recycle_pages=true);
+  explicit ResourceCache(Renderer& renderer,size_t buffer_budget=128*1024*1024,
+                         bool recycle_pages=true,bool compact_geometry=true);
   ~ResourceCache();
   ResourceCache(const ResourceCache&) = delete;
   ResourceCache& operator=(const ResourceCache&) = delete;
@@ -73,8 +74,9 @@ class ResourceCache {
                          std::string& error);
   // Call at resource retirement boundaries, rather than scanning on each draw.
   // Append-only pages reduce driver allocations for small immutable constants.
-  // BeginUploadBatch releases only the CPU's current page; encoded buffers and
-  // live resource versions retain their pages through GPU completion.
+  // BeginUploadBatch releases the current constant page. Geometry can append
+  // to its unused tail across frames; 256-byte alignment isolates prior views.
+  // Encoded buffers and live versions retain their pages through completion.
   void BeginUploadBatch();
   BufferView UniformBuffer(const ResourceVersion&,std::span<const uint8_t>,std::string& error);
   // Geometry and indices use a separate append-only arena from constants. Every

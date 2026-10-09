@@ -152,8 +152,34 @@ static void Benchmark() {
             << " covered_bytes=" << covered.second << '\n';
 }
 
+static void ShaderLayouts() {
+  std::mt19937_64 rng(139);
+  for(size_t test=0;test<10000;++test) {
+    NativeConstantUsage vertex,pixel;
+    vertex.known=test%5!=0;pixel.known=test%7!=0;
+    for(auto* usage:{&vertex,&pixel}) for(auto& bank:usage->banks)
+      for(auto& word:bank) word=test%3?rng():0;
+    // Include every bank boundary and empty coverage, rather than only dense masks.
+    if(test<512) {vertex.banks={};pixel.banks={};
+      vertex.banks[test/256][(test%256)/64]=uint64_t{1}<<(test%64);}
+    const auto* fragment=test%2?&pixel:nullptr;
+    auto reference=vertex;if(fragment)reference.Merge(*fragment);
+    const auto layout=NativeShaderConstantLayout::Prepare(vertex,fragment);
+    Check(layout.usage.known==reference.known && layout.usage.banks==reference.banks,
+          "Cached shader coverage differs");
+    for(size_t bank=0;bank<2;++bank) {
+      size_t extent=0;
+      for(size_t reg=0;reg<256;++reg)
+        if(reference.banks[bank][reg/64]&(uint64_t{1}<<(reg%64)))extent=(reg+1)*16;
+      Check(layout.extents[bank]==extent,"Cached shader extent differs from register walk");
+      Check((layout.extents[bank]==0)==std::all_of(reference.banks[bank].begin(),
+        reference.banks[bank].end(),[](uint64_t word){return !word;}),"Empty bank differs");
+    }
+  }
+  std::cout<<"PASS: 10000 shader layouts, absent/unknown fragment, empty banks and every register boundary\n";
+}
 int main(int argc, char**) {
-  RandomReplay(); RejectionAndBounds();
+  ShaderLayouts();RandomReplay(); RejectionAndBounds();
   std::cout << "PASS: 8000 randomized state/coverage replays, materialization, unread holes, boundaries and bounded fallback\n";
   if (argc > 1) Benchmark();
 }

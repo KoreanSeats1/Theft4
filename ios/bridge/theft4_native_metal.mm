@@ -1,4 +1,5 @@
 #include "theft4_retail_mode.h"
+#include "theft4_trait_cache.h"
 #include "theft4_native_metal.h"
 #include <algorithm>
 #include <bit>
@@ -198,18 +199,18 @@ struct Frame::Impl {
   // Strong, bounded entries prevent pointer reuse while cached traits are
   // admitted. Every draw still validates its own range and expected interface.
   struct BufferExtent {id<MTLBuffer> owner=nil;NSUInteger length=0;};
-  std::array<BufferExtent,64> buffer_extents;
+  theft4::TraitCache<BufferExtent> buffer_extents;
   struct TextureShape {id<MTLTexture> owner=nil;MTLTextureType type{};bool framebuffer_only=false;};
-  std::array<TextureShape,64> texture_shapes;
+  theft4::TraitCache<TextureShape> texture_shapes;
   template<bool Diagnostics> bool ValidView(const BufferView& v,NSUInteger required) {
     if(!v.buffer)return false;
-    auto& entry=buffer_extents[(reinterpret_cast<uintptr_t>((__bridge void*)v.buffer)>>4)%buffer_extents.size()];
-    if(entry.owner!=v.buffer){entry.owner=v.buffer;entry.length=v.buffer.length;if constexpr(Diagnostics)++stats.buffer_extent_queries;}
+    bool hit=false;auto& entry=buffer_extents.Lookup((__bridge const void*)v.buffer,hit);
+    if(!hit){entry={v.buffer,v.buffer.length};if constexpr(Diagnostics)++stats.buffer_extent_queries;}
     return v.offset<=entry.length&&v.length<=entry.length-v.offset&&required<=v.length;
   }
   template<bool Diagnostics> const TextureShape& ShapeFor(id<MTLTexture> texture) {
-    auto& entry=texture_shapes[(reinterpret_cast<uintptr_t>((__bridge void*)texture)>>4)%texture_shapes.size()];
-    if(entry.owner!=texture){entry.owner=texture;entry.type=texture.textureType;entry.framebuffer_only=texture.framebufferOnly;if constexpr(Diagnostics)++stats.texture_shape_queries;}
+    bool hit=false;auto& entry=texture_shapes.Lookup((__bridge const void*)texture,hit);
+    if(!hit){entry={texture,texture.textureType,texture.framebufferOnly};if constexpr(Diagnostics)++stats.texture_shape_queries;}
     return entry;
   }
   id<MTLCounterSampleBuffer> counters=nil;
@@ -479,11 +480,17 @@ bool Frame::ProfilePasses(size_t maximum_passes,std::span<const size_t> pass_map
   return impl_->counters!=nil;
 }
 bool Frame::BeginPass(MTLRenderPassDescriptor* pass, std::string& error) {
+  return BeginPassImpl(pass,true,error);
+}
+bool Frame::BeginOwnedPass(MTLRenderPassDescriptor* pass,std::string& error) {
+  return BeginPassImpl(pass,false,error);
+}
+bool Frame::BeginPassImpl(MTLRenderPassDescriptor* pass,bool copy,std::string& error) {
   if (!*this || impl_->encoder || !pass) return Error(error, "Invalid direct Metal pass transition");
   if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
   impl_->state={};
-  impl_->pass = [pass copy];
-  // Attachment properties are immutable for this encoder's copied descriptor.
+  impl_->pass = copy ? [pass copy] : pass;
+  // Attachment properties are immutable for this encoder's owned descriptor.
   // Read them once instead of messaging every Metal object for every draw.
   impl_->shape={};auto& shape=impl_->shape;
   for(size_t i=0;i<4;++i) {

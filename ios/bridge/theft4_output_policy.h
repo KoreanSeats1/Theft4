@@ -7,7 +7,7 @@
 #define THEFT4_LAB_NATIVE_16_9 UINT32_MAX
 
 // Shared by the Objective-C launcher/Metal layer and C++ runtime startup.
-// All choices retain the proven centered 16:9 presentation.
+// Original choices retain centered 16:9. The optional viewport mod expands it.
 typedef enum theft4_output_mode {
     THEFT4_OUTPUT_720P,
     THEFT4_OUTPUT_FSR_1080P,
@@ -24,6 +24,11 @@ typedef struct theft4_output_policy {
     // hooks divide these by 1.5 to select the internal scene resolution.
     uint32_t video_width;
     uint32_t video_height;
+    bool native_aspect;
+    // Exact physical shape, independent of rounded lower-resolution targets.
+    uint32_t aspect_width;
+    uint32_t aspect_height;
+    double safe_left, safe_top, safe_right, safe_bottom;
 } theft4_output_policy;
 
 static inline theft4_output_policy theft4_output_policy_for_mode(
@@ -130,4 +135,89 @@ static inline theft4_output_policy theft4_output_policy_for_a19_lab(
     uint32_t render_height) {
     const uint32_t height = theft4_lab_render_height(render_height);
     return theft4_output_policy_for_a19_lab_selected(height, height < 1080);
+}
+
+// Expand the original 16:9 rectangle rather than fitting it into a smaller
+// native-shaped rectangle. Retain the center's selected pixel density.
+static inline void theft4_expand_extent(uint32_t *width, uint32_t *height,
+    uint32_t display_width, uint32_t display_height, uint32_t maximum) {
+    if (!display_width || !display_height || !*width || !*height) return;
+    uint64_t w = *width, h = *height;
+    if (w * display_height > h * display_width)
+        h = (w * display_height + display_width / 2) / display_width;
+    else
+        w = (h * display_width + display_height / 2) / display_height;
+    if (w > maximum || h > maximum) {
+        if (w >= h) {
+            h = h * maximum / w;
+            w = maximum;
+        } else {
+            w = w * maximum / h;
+            h = maximum;
+        }
+    }
+    *width = (uint32_t)(w ? w : 1);
+    *height = (uint32_t)(h ? h : 1);
+}
+
+// Match the render-graph selection once. Keep the unfitted logical video budget:
+// fitting an integer extent twice can trim a different edge on the second fit.
+static inline theft4_output_policy theft4_output_policy_for_native_aspect_lab(
+    uint32_t render_height, bool fsr1, uint32_t native_width,
+    uint32_t native_height, bool fixed_1080_output_profile) {
+    theft4_output_policy policy = fixed_1080_output_profile
+        ? theft4_output_policy_for_fixed_1080_lab_selected_aspect(
+            render_height, fsr1, native_width, native_height)
+        : theft4_output_policy_for_lab(render_height, fsr1, native_width, native_height);
+    if (!native_width || !native_height) return policy;
+    policy.native_aspect = true;
+    policy.aspect_width = native_width;
+    policy.aspect_height = native_height;
+    if (theft4_lab_render_height(render_height) == THEFT4_LAB_NATIVE_16_9) {
+        policy.render_width = native_width;
+        policy.render_height = native_height;
+        theft4_expand_extent(&policy.render_width, &policy.render_height,
+            native_width, native_height, 4095);
+    } else {
+        theft4_expand_extent(&policy.render_width, &policy.render_height,
+            native_width, native_height, policy.fsr1 ? 2730 : 4095);
+    }
+    if (policy.fsr1) {
+        theft4_expand_extent(&policy.output_width, &policy.output_height,
+            native_width, native_height, 4095);
+        policy.video_width = policy.render_width * 3 / 2;
+        policy.video_height = policy.render_height * 3 / 2;
+    } else {
+        policy.video_width = policy.render_width;
+        policy.video_height = policy.render_height;
+    }
+    uint32_t width = policy.video_width < 640 ? 640 : policy.video_width;
+    uint32_t height = policy.video_height < 480 ? 480 : policy.video_height;
+    // Match LimitExtent followed by SelectExtent("auto", configured display).
+    if (width > 4095 || height > 4095) {
+        if (width >= height) {
+            height = (uint32_t)((uint64_t)height * 4095 / width);
+            width = 4095;
+        } else {
+            width = (uint32_t)((uint64_t)width * 4095 / height);
+            height = 4095;
+        }
+    }
+    if ((uint64_t)width * native_height > (uint64_t)height * native_width)
+        width = (uint32_t)((uint64_t)height * native_width / native_height);
+    else
+        height = (uint32_t)((uint64_t)width * native_height / native_width);
+    if (!width) width = 1;
+    if (!height) height = 1;
+    if (policy.fsr1 && (width * 2 + 1) / 3 >= 640 && (height * 2 + 1) / 3 >= 360) {
+        policy.render_width = (width * 2 + 1) / 3;
+        policy.render_height = (height * 2 + 1) / 3;
+    } else {
+        policy.fsr1 = false;
+        policy.render_width = width;
+        policy.render_height = height;
+        policy.output_width = width;
+        policy.output_height = height;
+    }
+    return policy;
 }

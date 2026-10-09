@@ -55,11 +55,6 @@ constexpr uint32_t kFrontendPayloadPresentOffset = 4;
 constexpr uint32_t kMaximumFrontendRows = 64;
 constexpr uint32_t kMaximumFrontendLists = 16;
 
-constexpr uint32_t kRadarQuadCaller = 0x8233AB4C;
-constexpr uint32_t kRadarVertexCount = 4;
-constexpr uint32_t kRadarVertexStride = 16;
-constexpr uint32_t kRadarVertexXOffset = 0;
-constexpr uint32_t kRadarVertexYOffset = 4;
 
 constexpr uint32_t kActionArrayOffset = 2328;
 constexpr uint32_t kActionStride = 12;
@@ -113,8 +108,6 @@ struct RowCapture {
   bool active = false;
 };
 
-struct RadarCapture {
-  Rect bounds{};
   bool active = false;
   bool has_quad = false;
 };
@@ -123,7 +116,6 @@ std::mutex g_geometry_mutex;
 FrontendGeometry g_frontend_geometry;
 RadarGeometry g_radar_geometry;
 thread_local RowCapture g_row_capture;
-thread_local RadarCapture g_radar_capture;
 
 std::mutex g_extension_mutex;
 GTA4TouchExtension g_extension;
@@ -728,45 +720,13 @@ void GTA4_TouchCaptureFrontendDraw(PPCContext& context, uint8_t* base,
   g_row_capture = std::move(previous);
 }
 
-extern "C" void sub_821BF050(PPCContext& context, uint8_t* base) {
-  if (g_radar_capture.active && context.lr == kRadarQuadCaller && context.r4.u32) {
-    Rect quad{};
-    bool first = true;
-    for (uint32_t vertex = 0; vertex < kRadarVertexCount; ++vertex) {
-      const uint32_t address = context.r4.u32 + vertex * kRadarVertexStride;
-      const float x = LoadFloat(base, address + kRadarVertexXOffset);
-      const float y = LoadFloat(base, address + kRadarVertexYOffset);
-      if (!std::isfinite(x) || !std::isfinite(y)) {
-        first = true;
-        break;
-      }
-      if (first) {
-        quad = {.left = x, .top = y, .right = x, .bottom = y};
-        first = false;
-      } else {
-        quad.left = std::min(quad.left, x);
-        quad.top = std::min(quad.top, y);
-        quad.right = std::max(quad.right, x);
-        quad.bottom = std::max(quad.bottom, y);
-      }
-    }
-    if (!first && quad.valid()) {
-      const auto layout = gta4::aspect::CurrentUi(base);
-      const auto mapped = layout.transform.Map(gta4::aspect::Rect{quad.left, quad.top, quad.right, quad.bottom});
-      quad = {.left = float(mapped.left), .top = float(mapped.top),
-              .right = float(mapped.right), .bottom = float(mapped.bottom)};
-      IncludeRect(g_radar_capture.bounds, quad);
-      g_radar_capture.has_quad = true;
-    }
-  }
-  __imp__sub_821BF050(context, base);
-}
-
 extern "C" void sub_8233ABF0(PPCContext& context, uint8_t* base) {
-  const gta4::aspect::Scope aspect_scope(gta4::aspect::UiRole::kRadar);
-  RadarCapture previous = g_radar_capture;
-  g_radar_capture = {.active = true};
+  const gta4::aspect::Scope aspect_scope(gta4::aspect::UiRole::kRadarLocal);
   __imp__sub_8233ABF0(context, base);
-  PublishRadarGeometry(g_radar_capture.has_quad ? g_radar_capture.bounds : Rect{});
-  g_radar_capture = previous;
+  // The map tiles are local to the radar viewport, not screen coordinates.
+  // Its canonical bounds are both more accurate and cheaper than scanning
+  // every streamed tile to estimate a screen-space minimap tap region.
+  const auto bounds = gta4::aspect::RadarScreenBounds();
+  PublishRadarGeometry(bounds ? Rect{float(bounds->left), float(bounds->top),
+                                     float(bounds->right), float(bounds->bottom)} : Rect{});
 }

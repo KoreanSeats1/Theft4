@@ -13,6 +13,8 @@ enum class UiRole {
   kMenuBody,
   kMenuFooter,
   kRadar,
+  // Radar primitives are local to an independently positioned subviewport.
+  kRadarLocal,
   kHelp,
   kComponent,
   kLoadingLabel
@@ -25,6 +27,10 @@ struct UiContext {
   uint64_t generation = 0;
 };
 void Publish(Extent render, Extent output);
+// Optional host display shape and normalized safe insets, configured before
+// launching guest code. Empty display retains the existing output-derived mode.
+void ConfigureDisplay(Extent display, SafeInsets insets = {});
+Extent ConfiguredDisplay(Extent fallback);
 inline void PublishOutput(Extent render, Extent output) {
   Publish(render, output);
 }
@@ -51,10 +57,28 @@ class DcScope {
   Scope scope_;
 };
 void FinalizeDc(uint8_t* base, uint32_t dc);
+std::optional<Rect> RadarScreenBounds();
+void PrepareRadarViewport(PPCContext& context, uint8_t* base, uint32_t viewport);
 void PrepareViewport(PPCContext& context, uint8_t* base);
+// Camera-derived render projections read authored FOV independently of the
+// primary viewport's already expanded matrices. Adjust only verified call sites.
+void PrepareDerivedProjection(PPCContext& context, uint8_t* base);
 void DrawQuad(PPCContext& context, uint8_t* base, GuestFunction original, bool textured);
+void DrawUiVertices(PPCContext& context, uint8_t* base, GuestFunction original);
 void DrawRadarSection(PPCContext& context, uint8_t* base, GuestFunction original);
 void DrawWindow(PPCContext& context, uint8_t* base, GuestFunction original);
+// Restrict pause UI to its fixed artwork panel, including deferred font draws.
+// A native submission snapshots the temporary scissor before it is restored.
+class NativeMenuClipScope {
+ public:
+  NativeMenuClipScope(uint8_t* base, uint32_t device);
+  ~NativeMenuClipScope();
+  NativeMenuClipScope(const NativeMenuClipScope&) = delete;
+ private:
+  uint8_t* base_ = nullptr;
+  uint32_t device_ = 0;
+  std::array<uint32_t, 3> saved_{};
+};
 // Inverse-layout adjustment lets the two retail columns use additional horizontal room.
 class FrontendLayoutScope {
  public:

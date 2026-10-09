@@ -41,6 +41,8 @@ class PlanAdapter {
   void EndUploadBatch() {
     for(size_t i=0;i<buffer_view_count_;++i)buffer_views_[buffer_view_slots_[i]]={};
     buffer_view_count_=0;upload_batch_active_=false;
+    for(size_t i=0;i<image_view_count_;++i)image_views_[image_view_slots_[i]]={};
+    image_view_count_=0;
     frame_upload_batch_.reset();
   }
   BufferView ConstantFor(const render::Buffer&,std::string& error);
@@ -59,7 +61,8 @@ class PlanAdapter {
   // independently strict, and Metal packet validation still runs before encode.
   // The internal destination must be a fresh Draw, owned by its caller's
   // storage cleanup; public Prepare uses a transaction-local destination.
-  bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,bool index_has_restart,Draw&,std::string& error);
+  bool PrepareValidated(const render::Capture&,uint64_t maximum_vertex,bool index_has_restart,Draw&,std::string& error,
+                        bool admitted_resources=false);
   void AcquireDrawBindings(Draw&);
   void RecycleDrawStorage(Draw& draw) noexcept;
   const bool diagnostics_;
@@ -109,6 +112,10 @@ class PlanAdapter {
   render::Pipeline consecutive_source_;
   render::Primitive consecutive_primitive_=render::Primitive::Count;
   std::shared_ptr<const Pipeline> consecutive_pipeline_;
+  // Borrowed from the worker-owned catalog. PipelineFor resolves these with
+  // the exact shader keys, and Open invalidates them before any new draws.
+  const ShaderMetadata* consecutive_vertex_metadata_=nullptr;
+  const ShaderMetadata* consecutive_fragment_metadata_=nullptr;
   std::map<render::Sampler,id<MTLSamplerState>> samplers_;
   std::array<id<MTLTexture>,4> dummy_images_{};
   struct Prepared {std::weak_ptr<const render::Capture> owner;std::shared_ptr<const Draw> draw;uint64_t generation=0;};
@@ -123,5 +130,17 @@ class PlanAdapter {
   std::unordered_map<const render::Image*,ImageEntry> images_;
   std::shared_ptr<const Pipeline> PipelineFor(const render::Pipeline& pipeline,render::Primitive primitive,std::string& error);
   bool EnsureDummyImages(std::string& error);
+  // Only immutable frame admission can use this submission-local memo.
+  // images_ retains the borrowed Metal state until after EndUploadBatch.
+  struct AdmittedImageView {
+    const render::Image* identity=nullptr;
+    std::weak_ptr<const render::Image> owner;
+    id<MTLTexture> __unsafe_unretained texture=nil;
+  };
+  static constexpr size_t kImageViewSlots=512;
+  std::array<AdmittedImageView,kImageViewSlots> image_views_{};
+  std::array<uint16_t,kImageViewSlots> image_view_slots_{};
+  size_t image_view_count_=0;
+  id<MTLTexture> AdmittedImageFor(const std::shared_ptr<const render::Image>&,std::string& error);
 };
 }

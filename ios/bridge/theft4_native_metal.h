@@ -133,7 +133,12 @@ class Frame {
   explicit operator bool() const;
  private:
   friend class Renderer;
+  friend class FrameAdapter;
   struct Impl;
+  // The ordered adapter creates a fresh private descriptor per pass. Retain
+  // that owner rather than copying it; public BeginPass still isolates input.
+  bool BeginOwnedPass(MTLRenderPassDescriptor*,std::string& error);
+  bool BeginPassImpl(MTLRenderPassDescriptor*,bool copy,std::string& error);
   template<bool Diagnostics> bool EncodeImpl(const Draw&,std::string& error);
   explicit Frame(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
